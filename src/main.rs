@@ -1,8 +1,13 @@
 mod structs;
 mod json_funcs;
+mod ol_api_containers;
 
 use std::{env, error::Error, process};
-use crate::{structs::{Config, SearchResp, DocEntry, UserInput, MissingInfoError}, json_funcs::json_from_title};
+use crate:: {
+        structs::{Config, UserInput, MissingInfoError}, 
+        json_funcs::json_from_title,
+        ol_api_containers::{SearchResp, DocEntry},
+    };
 
 fn main() {
     let config: Config = Config::build(env::args());

@@ -1,4 +1,4 @@
-use crate::{structs::{SearchResp}};
+use crate::ol_api_containers::SearchResp;
 use std::error::Error;
 
 pub fn json_from_title(s: &str) -> Result<SearchResp, Box<dyn Error>> {
