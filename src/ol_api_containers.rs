@@ -64,7 +64,7 @@ pub struct DocEntry {
 }
 
 impl DocEntry {
-    pub fn print(&self) -> () {
+    pub fn show(&self) -> () {
         if let Some(title) = self.title.as_deref() {
             println!("{}:", title)
         }
