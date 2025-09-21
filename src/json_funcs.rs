@@ -36,7 +36,7 @@ impl SearchQuery {
             .filter_map(|(k, str_opt)| str_opt.map(|s| (k, s)))
             .collect();
 
-        let mut url = Url::parse_with_params(
+        let mut url : Url = Url::parse_with_params(
             "https://openlibrary.org/search.json?",
             &params)?;
         url.query_pairs_mut() 

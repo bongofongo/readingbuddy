@@ -1,12 +1,14 @@
 mod structs;
 mod json_funcs;
 mod ol_api_containers;
+mod image_lib;
 
 use std::{env, error::Error, process};
 use crate:: {
         structs::{Config, UserInput, MissingInfoError}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
+        image_lib::image_from_url,
     };
 
 fn main() {
