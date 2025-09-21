@@ -3,39 +3,34 @@ use crate::structs::MissingInfoError;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct SearchResp {
-    // #[serde(alias = "numFound")]
     pub num_found : Option<u32>,
-    start : Option<u32>,
-    #[serde(alias = "NumFoundExact")]
-    num_found_exact : Option<bool>,
-    q : Option<String>,
-    pub docs : Option<Vec<DocEntry>>,
+    // start : Option<u32>,
+    // #[serde(alias = "NumFoundExact")]
+    // num_found_exact : Option<bool>,
+    pub q : Option<String>,
+    pub docs : Option<Vec<Works>>,
+
+
 }
 
 impl SearchResp {
-    pub fn get_works(&self) -> Result<&Vec<DocEntry>, Box<dyn Error>> {
+    pub fn get_works(&self) -> Result<&Vec<Works>, Box<dyn Error>> {
         return match self.docs {
             None => Err(Box::new(MissingInfoError)),
             Some(ref vec) => Ok(vec)
         }
     }
-    pub fn get_work(&self, i: usize) -> Result<&DocEntry, Box<dyn Error>> {
-        let work: Option<&DocEntry> = self.get_works()?
+    pub fn get_work(&self, i: usize) -> Result<&Works, Box<dyn Error>> {
+        let work: Option<&Works> = self.get_works()?
             .get(i);
         return match work {
             None => Err(Box::new(MissingInfoError)),
             Some(doc) => Ok(doc)
         }
     }
-    pub fn print(&self) -> () {
+    pub fn show(&self) -> () {
         if let Some(ref s) = self.num_found {
             println!("num_found: {}", s);
-        }
-        if let Some(ref s) = self.start {
-            println!("start: {}", s);
-        }
-        if let Some(ref s) = self.num_found_exact {
-            println!("num_found_exact: {}", s);
         }
         if let Some(ref s) = self.q {
             println!("q: {}", s);
@@ -44,26 +39,21 @@ impl SearchResp {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub struct DocEntry {
+pub struct Works {
+    pub title : Option<String>,
     pub author_name : Option<Vec<String>>,
-    edition_count : Option<u32>,
-    pub author_key : Option<Vec<String>>,
-    cover_i : Option<u64>,
-    pub cover_edition_key : Option<String>, 
-    ebook_access : Option<String>,
     pub first_publish_year : Option<u32>,
-    pub has_fulltext: Option<bool>,
-    pub ia : Option<Vec<String>>,
-    pub ia_collection_s : Option<String>,
+    pub cover_edition_key : Option<String>, 
     pub key : Option<String>,
     pub language : Option<Vec<String>>,
-    pub lending_edition_s : Option<String>,
-    lending_identifier_s : Option<String>,
-    public_scan_b : Option<bool>,
-    pub title: Option<String>
+    pub docs : Option<Vec<SearchResp>>, // if editions work
+    pub isbn : Option<Vec<String>>,
+    pub edition_key : Option<Vec<String>>,
+    pub first_sentence : Option<Vec<String>>
 }
 
-impl DocEntry {
+
+impl Works {
     pub fn show(&self) -> () {
         if let Some(title) = self.title.as_deref() {
             println!("{}:", title)
@@ -78,8 +68,24 @@ impl DocEntry {
         if let Some(key) = self.key.as_deref() {
             println!("\tKey: {}", key);
         };
-        if let Some(lending_edition) = self.lending_edition_s.as_deref() {
-            println!("\tlending_edition: {}", lending_edition);
+        if let Some(year) = self.first_publish_year {
+            println!("\tYear: {}", year);
         };
+        // if let Some(isbn) = self.isbn.as_deref() {
+        //     println!("\tISBN: {}", isbn);
+        // };
     }
+    // pub fn works_fields(&self) -> String {
+    //     
+    // }
 }
+
+
+
+
+
+
+
+
+
+

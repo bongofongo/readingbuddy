@@ -6,7 +6,7 @@ use std::{env, error::Error, process};
 use crate:: {
         structs::{Config, UserInput, MissingInfoError}, 
         json_funcs::{SearchQuery},
-        ol_api_containers::{SearchResp, DocEntry},
+        ol_api_containers::{SearchResp, Works},
     };
 
 fn main() {
@@ -21,7 +21,7 @@ fn main() {
 fn run () -> Result<(), Box<dyn Error>> {
     let search: SearchQuery = SearchQuery::poll_user();
     let json: SearchResp = search.get_ol_json()?;
-    let works: &Vec<DocEntry> = json.get_works()?;
+    let works: &Vec<Works> = json.get_works()?;
     for work in works {
         work.show();
     };
