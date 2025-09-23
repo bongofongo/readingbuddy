@@ -1,6 +1,6 @@
 use std::{error::Error, fs::File, io::copy};
 
-pub fn image_from_url(url : url::Url) -> Result<(), Box<dyn Error>> {
+pub fn image_from_url(url : &url::Url) -> Result<String, Box<dyn Error>> {
     let path_vec = url.path_segments() .ok_or_else(|| "file_not_found")?;
     let mut fname: String = String::from("images/covers/");
 
@@ -10,11 +10,11 @@ pub fn image_from_url(url : url::Url) -> Result<(), Box<dyn Error>> {
     };
 
     fname.push_str(s);
-    println!("\tDownloading... :{}", fname);
+    println!("\tDownloading... {}", fname);
 
     let mut response = reqwest::blocking::get(url.as_str())?;
 
-    let mut f = File::create(fname)?;
+    let mut f = File::create(&fname)?;
     copy(&mut response, &mut f)?;
-    Ok(())
+    Ok(fname.to_string())
 }

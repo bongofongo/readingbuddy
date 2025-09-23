@@ -3,17 +3,14 @@ mod json_funcs;
 mod ol_api_containers;
 mod image_lib;
 
-use std::{env, error::Error, process, io::{self, Write}};
+use std::{error::Error, io::{self, Write}};
 use crate:: {
         structs::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
-        image_lib::image_from_url,
     };
 
 fn main() {
-    // let config: Config = Config::build(env::args());
-
     while let Err(e) = run() {
         eprintln!("[error]: {}", e);
     }
@@ -30,11 +27,12 @@ fn run () -> Result<(), Box<dyn Error>> {
     };
 
     let index: usize = select_element("Please enter a number: ", works.len());
-    let b: Book = works.get(index)
+    let mut b: Book = works.get(index)
         .map(|w| w.to_book()).transpose()?
         .ok_or(MissingInfoError)?;
 
     println!("{:#?}", b);
+    b.download_image()?;
 
     Ok(())
 }

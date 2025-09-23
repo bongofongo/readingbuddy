@@ -2,7 +2,6 @@ use url::Url;
 use std::{error::Error, fmt};
 use crate::{
     structs::{MissingInfoError, Book, BookCover},
-    image_lib::image_from_url,
 };
 
 #[derive(serde::Deserialize, Debug)]
@@ -72,9 +71,6 @@ impl fmt::Debug for Works {
         let f_edition = first_opt(&self.edition_key);
         let f_first_sentence = first_opt(&self.first_sentence);
 
-
-
-
         f.debug_struct("Works")
             .field("title", &self.title.as_deref().unwrap_or(none))
             .field("Author", &author)
@@ -89,31 +85,6 @@ impl fmt::Debug for Works {
     }
 }
 impl Works {
-    pub fn show(&self) -> () {
-        if let Some(title) = self.title.as_deref() {
-            println!("{}:", title)
-        }
-        if let Some(authors) = self.author_name.as_ref() {
-            print!("\tAuthor(s): ");
-            for author in authors {
-                print!("{}, ", author);
-            };
-            println!("");
-        };
-        if let Some(key) = self.key.as_deref() {
-            println!("\tKey: {}", key);
-        };
-        if let Some(year) = self.first_publish_year {
-            println!("\tYear: {}", year);
-        };
-        if let Ok(url) = self.get_cover_image() {
-            println!("\tCover: {}", url.as_str());
-            if let Err(e) = image_from_url(url) {
-                println!("\t[Works::show()][error]: {}", e);
-            }
-        }
-    }
-
     pub fn get_cover_image(&self) -> Result<Url, Box<dyn Error>> {
         if let Some(k) = self.cover_edition_key.as_deref() {
             let s = format!("https://covers.openlibrary.org/b/olid/{k}-M.jpg");
@@ -124,7 +95,7 @@ impl Works {
     }
     pub fn to_book(&self) -> Result<Book, Box<dyn Error>> {
         let cover_url: Option<BookCover>= match self.get_cover_image() {
-            Ok(url) => Some(BookCover::UrlPath(url)),
+            Ok(url) => Some(BookCover::Urlpath(url)),
             Err(_) => None
         };
         fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
