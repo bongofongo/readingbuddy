@@ -5,7 +5,7 @@ mod image_lib;
 
 use std::{env, error::Error, process, io::{self, Write}};
 use crate:: {
-        structs::{Config, UserInput, MissingInfoError, Book}, 
+        structs::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
         image_lib::image_from_url,
@@ -14,9 +14,8 @@ use crate:: {
 fn main() {
     // let config: Config = Config::build(env::args());
 
-    if let Err(e) = run() {
+    while let Err(e) = run() {
         eprintln!("[error]: {}", e);
-        process::exit(1)
     }
 }
 
@@ -27,8 +26,7 @@ fn run () -> Result<(), Box<dyn Error>> {
 
     for (i, work) in works.iter().enumerate() {
         print!("{}: ", i);
-        let b: Book = work.to_book()?;
-        println!("{:#?}", b);
+        println!("{:#?}", work);
     };
 
     let index: usize = select_element("Please enter a number: ", works.len());

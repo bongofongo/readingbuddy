@@ -1,5 +1,5 @@
 use url::Url;
-use std::{error::Error};
+use std::{error::Error, fmt};
 use crate::{
     structs::{MissingInfoError, Book, BookCover},
     image_lib::image_from_url,
@@ -42,7 +42,7 @@ impl SearchResp {
     }
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Deserialize)]
 pub struct Works {
     pub title : Option<String>,
     pub author_name : Option<Vec<String>>,
@@ -56,7 +56,38 @@ pub struct Works {
     pub first_sentence : Option<Vec<String>>
 }
 
+impl fmt::Debug for Works {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let none: &str = "None";
+        let year = self.first_publish_year.map(|n| n.to_string());
+        let author: String = match &self.author_name {
+            Some(v) => v.join(", "),
+            None => none.to_string()
+        };
+        fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
+            opt.as_ref().and_then(|v| v.first().cloned())
+        }
+        let f_language = first_opt(&self.language);
+        let f_isbn = first_opt(&self.isbn);
+        let f_edition = first_opt(&self.edition_key);
+        let f_first_sentence = first_opt(&self.first_sentence);
 
+
+
+
+        f.debug_struct("Works")
+            .field("title", &self.title.as_deref().unwrap_or(none))
+            .field("Author", &author)
+            .field("Year", &year.as_deref().unwrap_or(none))
+            .field("Key", &self.key.as_deref().unwrap_or(none))
+            .field("Language", &f_language.as_deref().unwrap_or(none))
+            .field("ISBN", &f_isbn.as_deref().unwrap_or(none))
+            .field("Edition Key", &f_edition.as_deref().unwrap_or(none))
+            .field("First Sentence", &f_first_sentence.as_deref().unwrap_or(none))
+            .field("Cover Edition Key", &self.cover_edition_key.as_deref().unwrap_or(none))
+            .finish()
+    }
+}
 impl Works {
     pub fn show(&self) -> () {
         if let Some(title) = self.title.as_deref() {
