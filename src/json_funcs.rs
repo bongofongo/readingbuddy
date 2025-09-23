@@ -23,7 +23,6 @@ impl SearchQuery {
         vec![self.author.as_deref(), 
              self.title.as_deref(), 
              self.lang.as_deref(), 
-
              self.sort.as_deref(),]
     }
     
@@ -46,7 +45,7 @@ impl SearchQuery {
             first_publish_year, cover_edition_key, edition_key");
         
         println!("URL: {}", url.as_str());
-        Ok(url.into_string())
+        Ok(url.into())
     }
 
     fn str_to_opt(s: String) -> Option<String> {

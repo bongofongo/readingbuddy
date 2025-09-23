@@ -1,7 +1,5 @@
 use std::{error::Error, fs::File, io::copy};
 
-use crate::structs::MissingInfoError;
-
 pub fn image_from_url(url : url::Url) -> Result<(), Box<dyn Error>> {
     let path_vec = url.path_segments() .ok_or_else(|| "file_not_found")?;
     let mut fname: String = String::from("images/covers/");
