@@ -1,4 +1,4 @@
-use url::{Url};
+use url::Url;
 use crate::{ol_api_containers::SearchResp};
 use std::{error::Error, io};
 
@@ -23,6 +23,7 @@ impl SearchQuery {
         vec![self.author.as_deref(), 
              self.title.as_deref(), 
              self.lang.as_deref(), 
+
              self.sort.as_deref(),]
     }
     
@@ -32,7 +33,7 @@ impl SearchQuery {
 
     pub fn url_of_query (&self) -> Result<String, Box<dyn Error>> {
         let params: Vec<(&str, &str)> = self.get_keys().into_iter()
-            .zip(self.flatten().into_iter())
+            .zip(self.flatten().iter())
             .filter_map(|(k, str_opt)| str_opt.map(|s| (k, s)))
             .collect();
 

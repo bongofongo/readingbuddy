@@ -5,7 +5,7 @@ mod image_lib;
 
 use std::{env, error::Error, process};
 use crate:: {
-        structs::{Config, UserInput, MissingInfoError}, 
+        structs::{Config, UserInput, MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
         image_lib::image_from_url,
@@ -25,7 +25,8 @@ fn run () -> Result<(), Box<dyn Error>> {
     let json: SearchResp = search.get_ol_json()?;
     let works: &Vec<Works> = json.get_works()?;
     for work in works {
-        work.show();
+        let b: Book = work.to_book()?;
+        println!("{:#?}", b)
     };
     Ok(())
 }

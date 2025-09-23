@@ -1,7 +1,7 @@
 use url::Url;
 use std::{error::Error};
 use crate::{
-    structs::MissingInfoError,
+    structs::{MissingInfoError, Book, BookCover},
     image_lib::image_from_url,
 };
 
@@ -19,7 +19,7 @@ pub struct SearchResp {
 
 impl SearchResp {
     pub fn get_works(&self) -> Result<&Vec<Works>, Box<dyn Error>> {
-        return match self.docs {
+        match self.docs {
             None => Err(Box::new(MissingInfoError)),
             Some(ref vec) => Ok(vec)
         }
@@ -27,12 +27,12 @@ impl SearchResp {
     pub fn get_work(&self, i: usize) -> Result<&Works, Box<dyn Error>> {
         let work: Option<&Works> = self.get_works()?
             .get(i);
-        return match work {
+        match work {
             None => Err(Box::new(MissingInfoError)),
             Some(doc) => Ok(doc)
         }
     }
-    pub fn show(&self) -> () {
+    pub fn show(&self) -> (){
         if let Some(ref s) = self.num_found {
             println!("num_found: {}", s);
         }
@@ -90,6 +90,37 @@ impl Works {
             return Ok(url);
         };
         Err(Box::new(MissingInfoError))
+    }
+    pub fn to_book(&self) -> Result<Book, Box<dyn Error>> {
+        let cover_url: Option<BookCover>= match self.get_cover_image() {
+            Ok(url) => Some(BookCover::UrlPath(url)),
+            Err(_) => None
+        };
+        fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
+            opt.as_ref().and_then(|v| v.first().cloned())
+        }
+        let first_first_sentence = first_opt(&self.first_sentence);
+        let first_language = first_opt(&self.language);
+        let first_isbn = first_opt(&self.isbn);
+
+        let book = Book {
+            title: self.title.clone(),
+            author: self.author_name.clone(),
+            cover: cover_url,
+            total_pages: None,
+            current_page: None,
+            description: None,
+            first_sentence: first_first_sentence,
+            language: first_language,
+            isbn: first_isbn,
+            openlibrary_key: self.key.clone(),
+            first_publish_year: self.first_publish_year,
+            finished: None,
+            date_started: None
+        }; 
+
+        Ok(book)
+
     }
 }
 
