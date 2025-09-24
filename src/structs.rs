@@ -1,5 +1,9 @@
-use std::{error::Error, fmt, io};
-use crate::{image_lib::image_from_url};
+use std::{error::Error, fmt};
+use url::Url;
+use crate::{
+    image_lib::image_from_url,
+    gen_lib::get_user_input,
+    };
 
 // Gives an option to keep the cover local 
 // or to just link it and download it later.
@@ -39,6 +43,45 @@ impl Book {
         Ok(())
     }
 
+    pub fn poll_user(&mut self) -> Result<(), Box<dyn Error>> {
+        let prompt1: &str = "Is there anything you'd like to change? y/n: ";
+        let answer1: String = get_user_input(prompt1)?;
+        if answer1.as_str() == "n" { return Ok(()) };
+
+        let prompt2: &str = "Choose from the following options:\n\
+        Title\tAuthor\tCoverURL\tCoverPath\tYear\tDescription\n\
+        First Sentence\tLanguage\tISBN\tPage Count\tOpenLibrary Key:\n";
+        let answer2: String = get_user_input(prompt2)?;
+
+        let prompt3 = format!("Enter new {}: ", &answer2);
+        let decision: String = get_user_input(&prompt3)?;
+
+        match answer2.to_lowercase().as_str() {
+            "title" => self.title = Some(decision),
+            "author" => self.author = Some(vec![decision]),
+            "coverpath" => self.cover = Some(BookCover::Filepath(decision)),
+            "description" => self.description = Some(decision),
+            "first sentence" => self.first_sentence = Some(decision),
+            "language" => self.language = Some(decision),
+            "isbn" => self.isbn = Some(decision),
+            "openlibrary key" => self.openlibrary_key = Some(decision),
+            "coverurl" => {
+                let url: Url = Url::parse(&decision)?;
+                self.cover = Some(BookCover::Urlpath(url))
+            },
+            "year" => {
+                let year: u32 = decision.parse::<u32>()?;
+                self.first_publish_year = Some(year)
+            },
+            "page count" => {
+                let pages: u32 = decision.parse::<u32>()?;
+                self.total_pages = Some(pages)
+            },
+            _ => return Err(Box::new(InvalidInputError))
+        };
+        Ok(())
+    }
+
 }
 
 impl fmt::Debug for Book {
@@ -74,9 +117,6 @@ impl fmt::Debug for Book {
     }
 }
 
-
-
-
 #[derive(Debug)]
 pub struct MissingInfoError; 
 
@@ -89,6 +129,16 @@ impl fmt::Display for MissingInfoError {
 impl Error for MissingInfoError {}
 
 
+#[derive(Debug)]
+pub struct InvalidInputError; 
+
+impl fmt::Display for InvalidInputError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "didn't understand your input")
+    }
+}
+
+impl Error for InvalidInputError {}
 
 
 
