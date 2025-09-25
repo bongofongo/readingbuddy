@@ -3,3 +3,11 @@
 Cargo.lock
 
 plan.md
+
+/images
+
+/epubs
+
+/saves
+
+.DS_Store
