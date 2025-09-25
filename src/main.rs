@@ -1,4 +1,4 @@
-mod structs;
+mod books;
 mod json_funcs;
 mod ol_api_containers;
 mod image_lib;

@@ -5,16 +5,6 @@ use crate::{
     };
 use serde::{Serialize, Deserialize};
 
-// Gives an option to keep the cover local 
-// or to just link it and download it later.
-// pub enum BookCover {
-//     Urlpath(url::Url),
-//     Filepath(String)
-// }
-// impl Serialize for BookCover {
-//
-// }
-
 // Everything the user should be interacting with. 
 // Struct, the information of which should be saved persistently.
 #[derive(Deserialize, Serialize)]
