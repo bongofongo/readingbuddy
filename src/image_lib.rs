@@ -1,6 +1,8 @@
 use std::{error::Error, fs::File, io::copy};
+use url::Url;
 
-pub fn image_from_url(url : &url::Url) -> Result<String, Box<dyn Error>> {
+pub fn image_from_url(url_str : &str) -> Result<String, Box<dyn Error>> {
+    let url = Url::parse(url_str)?;
     let path_vec = url.path_segments() .ok_or_else(|| "file_not_found")?;
     let mut fname: String = String::from("images/covers/");
 

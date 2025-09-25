@@ -1,23 +1,28 @@
 use std::{error::Error, fmt};
-use url::Url;
 use crate::{
     image_lib::image_from_url,
     gen_lib::get_user_input,
     };
+use serde::{Serialize, Deserialize};
 
 // Gives an option to keep the cover local 
 // or to just link it and download it later.
-pub enum BookCover {
-    Urlpath(url::Url),
-    Filepath(String)
-}
+// pub enum BookCover {
+//     Urlpath(url::Url),
+//     Filepath(String)
+// }
+// impl Serialize for BookCover {
+//
+// }
 
 // Everything the user should be interacting with. 
 // Struct, the information of which should be saved persistently.
+#[derive(Deserialize, Serialize)]
 pub struct Book {
     pub title : Option<String>,
     pub author : Option<Vec<String>>,
-    pub cover : Option<BookCover>,
+    pub cover_url : Option<String>,
+    pub cover_path : Option<String>,
     pub total_pages : Option<u32>,
     pub description : Option<String>,
     pub first_sentence : Option<String>,
@@ -32,54 +37,56 @@ pub struct Book {
 
 impl Book {
     pub fn download_image(&mut self) -> Result<(), Box<dyn Error>> {
-        match &self.cover {
-            Some(BookCover::Urlpath(url)) => {
-                let fname: String = image_from_url(url)?;
-                self.cover = Some(BookCover::Filepath(fname));
+        match &self.cover_url {
+            Some(url) => 
+            {
+                let fname = image_from_url(url)?;
+                self.cover_path = Some(fname);
             },
-            Some(BookCover::Filepath(fp)) => println!("{}", &fp),
-            None => println!("[error]: no image found")
+            None => match &self.cover_path {
+                Some(fp) => println!("{}", &fp),
+                _ => println!("[error]: no image found"),
+            },
         };
         Ok(())
     }
 
     pub fn poll_user(&mut self) -> Result<(), Box<dyn Error>> {
-        let prompt1: &str = "Is there anything you'd like to change? y/n: ";
-        let answer1: String = get_user_input(prompt1)?;
-        if answer1.as_str() == "n" { return Ok(()) };
+        loop {
+            let prompt1: &str = "Is there anything you'd like to change? y/n: ";
+            let answer1: String = get_user_input(prompt1)?;
+            if answer1.as_str() == "n" { return Ok(()) };
 
-        let prompt2: &str = "Choose from the following options:\n\
-        Title\tAuthor\tCoverURL\tCoverPath\tYear\tDescription\n\
-        First Sentence\tLanguage\tISBN\tPage Count\tOpenLibrary Key:\n";
-        let answer2: String = get_user_input(prompt2)?;
+            let prompt2: &str = "Choose from the following options:\n\
+            Title\tAuthor\tCoverURL\tCoverPath\tYear\tDescription\n\
+            First Sentence\tLanguage\tISBN\tPage Count\tOpenLibrary Key:\n";
+            let answer2: String = get_user_input(prompt2)?;
 
-        let prompt3 = format!("Enter new {}: ", &answer2);
-        let decision: String = get_user_input(&prompt3)?;
+            let prompt3 = format!("Enter new {}: ", &answer2);
+            let decision: String = get_user_input(&prompt3)?;
 
-        match answer2.to_lowercase().as_str() {
-            "title" => self.title = Some(decision),
-            "author" => self.author = Some(vec![decision]),
-            "coverpath" => self.cover = Some(BookCover::Filepath(decision)),
-            "description" => self.description = Some(decision),
-            "first sentence" => self.first_sentence = Some(decision),
-            "language" => self.language = Some(decision),
-            "isbn" => self.isbn = Some(decision),
-            "openlibrary key" => self.openlibrary_key = Some(decision),
-            "coverurl" => {
-                let url: Url = Url::parse(&decision)?;
-                self.cover = Some(BookCover::Urlpath(url))
-            },
-            "year" => {
-                let year: u32 = decision.parse::<u32>()?;
-                self.first_publish_year = Some(year)
-            },
-            "page count" => {
-                let pages: u32 = decision.parse::<u32>()?;
-                self.total_pages = Some(pages)
-            },
-            _ => return Err(Box::new(InvalidInputError))
-        };
-        Ok(())
+            match answer2.to_lowercase().as_str() {
+                "title" => self.title = Some(decision),
+                "author" => self.author = Some(vec![decision]),
+                "coverpath" => self.cover_path = Some(decision),
+                "description" => self.description = Some(decision),
+                "first sentence" => self.first_sentence = Some(decision),
+                "language" => self.language = Some(decision),
+                "isbn" => self.isbn = Some(decision),
+                "openlibrary key" => self.openlibrary_key = Some(decision),
+                "coverurl" => self.cover_url = Some(decision),
+                "year" => {
+                    let year: u32 = decision.parse::<u32>()?;
+                    self.first_publish_year = Some(year)
+                },
+                "page count" => {
+                    let pages: u32 = decision.parse::<u32>()?;
+                    self.total_pages = Some(pages)
+                },
+                _ => return Err(Box::new(InvalidInputError))
+            };
+            println!("{:#?}", self);
+        }
     }
 
 }
@@ -96,17 +103,12 @@ impl fmt::Debug for Book {
             None => none.to_string()
         };
 
-        let cover: &str = match &self.cover {
-            Some(BookCover::Urlpath(url)) => url.as_str(),
-            Some(BookCover::Filepath(fp)) => fp,
-            None => "empty"
-        };
-
         f.debug_struct("Book")
             .field("Title", &self.title.as_deref().unwrap_or(none))
             .field("Author", &author) 
             .field("Page Count", &pages.as_deref().unwrap_or(none))
-            .field("Cover", &cover)
+            .field("Cover URL", &self.cover_url.as_deref().unwrap_or(none))
+            .field("Cover Path", &self.cover_path.as_deref().unwrap_or(none))
             .field("First Sentence", &self.first_sentence.as_deref().unwrap_or(none))
             .field("Description", &self.description.as_deref().unwrap_or(none))
             .field("Year", &year.as_deref().unwrap_or(none))

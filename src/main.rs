@@ -3,19 +3,33 @@ mod json_funcs;
 mod ol_api_containers;
 mod image_lib;
 mod gen_lib;
+mod epub_lib;
 
+use epub::doc::EpubDoc;
 use std::{error::Error};
 use crate:: {
-        structs::{MissingInfoError, Book, BookCover}, 
+        structs::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
         gen_lib::{select_element, get_user_input},
+        epub_lib::read_epub,
     };
 
-fn main() {
+fn main() -> std::io::Result<()> {
     while let Err(e) = run() {
         eprintln!("[error]: {}", e);
     }
+    // if let Err(e) = run_epub() {
+    //     eprintln!("[error]: {}", e);
+    // }
+    Ok(())
+}
+
+fn run_epub() -> Result<(), Box<dyn Error>> {
+    let fp = get_user_input("Enter epub filepath: ")?;
+    let doc = EpubDoc::new(&fp)?;
+    read_epub(&doc)?;
+    Ok(())
 }
 
 fn run () -> Result<(), Box<dyn Error>> {
@@ -37,11 +51,11 @@ fn run () -> Result<(), Box<dyn Error>> {
     while let Err(e) = b.poll_user() {
         println!("[error]: {}", e);
     };
-    if let Some(BookCover::Urlpath(_url)) = &b.cover && 
+    if let Some(_) = &b.cover_url && 
         let "y" = get_user_input("Download image? y/n: ")?.as_str() {
-            b.download_image()?
+            b.download_image()?;
+            println!("{:#?}", b)
     };
-    println!("{:#?}", b);
 
     Ok(())
 }
