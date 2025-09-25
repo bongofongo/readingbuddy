@@ -8,7 +8,7 @@ mod epub_lib;
 use epub::doc::EpubDoc;
 use std::{error::Error};
 use crate:: {
-        structs::{MissingInfoError, Book}, 
+        books::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
         gen_lib::{select_element, get_user_input},

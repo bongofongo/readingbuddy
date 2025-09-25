@@ -1,7 +1,6 @@
-use url::Url;
 use std::{error::Error, fmt};
 use crate::{
-    structs::{MissingInfoError, Book, BookCover},
+    books::{MissingInfoError, Book},
 };
 
 #[derive(serde::Deserialize, Debug)]
@@ -85,19 +84,14 @@ impl fmt::Debug for Works {
     }
 }
 impl Works {
-    pub fn get_cover_image(&self) -> Result<Url, Box<dyn Error>> {
+    pub fn get_cover_image(&self) -> Result<String, Box<dyn Error>> {
         if let Some(k) = self.cover_edition_key.as_deref() {
             let s = format!("https://covers.openlibrary.org/b/olid/{k}-M.jpg");
-            let url: Url = Url::parse(&s)?;
-            return Ok(url);
+            return Ok(s.to_string());
         };
         Err(Box::new(MissingInfoError))
     }
     pub fn to_book(&self) -> Result<Book, Box<dyn Error>> {
-        let cover_url: Option<BookCover>= match self.get_cover_image() {
-            Ok(url) => Some(BookCover::Urlpath(url)),
-            Err(_) => None
-        };
         fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
             opt.as_ref().and_then(|v| v.first().cloned())
         }
@@ -108,7 +102,8 @@ impl Works {
         let book = Book {
             title: self.title.clone(),
             author: self.author_name.clone(),
-            cover: cover_url,
+            cover_url: self.cover_edition_key.clone(),
+            cover_path: None,
             total_pages: None,
             current_page: None,
             description: None,
