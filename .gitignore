@@ -4,10 +4,8 @@ Cargo.lock
 
 plan.md
 
-/images
-
 /epubs
 
-/saves
+/database
 
 .DS_Store
