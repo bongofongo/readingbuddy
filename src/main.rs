@@ -7,6 +7,9 @@ mod epub_lib;
 
 use epub::doc::EpubDoc;
 use std::{error::Error};
+use std::time::Duration;
+use tokio::time::sleep;
+use crate::gen_lib::create_db;
 use crate:: {
         books::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
@@ -15,14 +18,19 @@ use crate:: {
         epub_lib::read_epub,
     };
 
-fn main() -> std::io::Result<()> {
-    while let Err(e) = run() {
+const DB_URL: &str = "sqlite://database/app.db";
+const IMAGE_PATH: &str = "database/images/";
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    while let Err(e) = run().await {
         eprintln!("[error]: {}", e);
+        sleep(Duration::from_secs(1)).await;
     }
+    Ok(())
     // if let Err(e) = run_epub() {
     //     eprintln!("[error]: {}", e);
     // }
-    Ok(())
 }
 
 fn run_epub() -> Result<(), Box<dyn Error>> {
@@ -32,9 +40,9 @@ fn run_epub() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run () -> Result<(), Box<dyn Error>> {
+async fn run () -> Result<(), Box<dyn Error>> {
     let search: SearchQuery = SearchQuery::poll_user();
-    let json: SearchResp = search.get_ol_json()?;
+    let json: SearchResp = search.get_ol_json().await?;
     let works: &Vec<Works> = json.get_works()?;
 
     for (i, work) in works.iter().enumerate() {
@@ -47,15 +55,18 @@ fn run () -> Result<(), Box<dyn Error>> {
         .map(|w| w.to_book()).transpose()?
         .ok_or(MissingInfoError)?;
 
+    b.language = Some("eng".to_string());
     println!("{:#?}", b);
     while let Err(e) = b.poll_user() {
         println!("[error]: {}", e);
     };
     if let Some(_) = &b.cover_url && 
         let "y" = get_user_input("Download image? y/n: ")?.as_str() {
-            b.download_image()?;
+            b.download_image(IMAGE_PATH).await?;
             println!("{:#?}", b)
     };
 
+    create_db(DB_URL).await?;
+    b.db_add(DB_URL).await?;
     Ok(())
 }

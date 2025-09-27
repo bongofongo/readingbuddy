@@ -1,5 +1,6 @@
 use std::{io::{self, Write}, error::Error};
 
+
 pub fn get_user_input(s: &str) -> Result<String, Box<dyn Error>> {
     print!("{}", s);
     let mut input = String::new();
@@ -27,4 +28,22 @@ pub fn select_element(s: &str, len: usize) -> usize {
         println!("Try again.")
     }
 }
+
+
+use sqlx::{migrate::MigrateDatabase, Sqlite};
+
+pub async fn create_db(url: &str) -> Result<(), Box<dyn Error>> {
+    if !Sqlite::database_exists(url).await.unwrap_or(false) {
+        println!("Creating database {}", url);
+        match Sqlite::create_database(url).await {
+            Ok(_) => println!("Create db success"),
+            Err(error) => panic!("error: {}", error),
+        }
+    } else {
+        println!("Database already exists");
+    };
+
+    Ok(())
+}
+
 

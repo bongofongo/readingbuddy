@@ -4,10 +4,15 @@ use crate::{
     gen_lib::get_user_input,
     };
 use serde::{Serialize, Deserialize};
+use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json};
+
+fn to_i64(opt: Option<u32>) -> Option<i64> {
+    opt.map(|v| v as i64)
+}
 
 // Everything the user should be interacting with. 
 // Struct, the information of which should be saved persistently.
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, sqlx::FromRow)]
 pub struct Book {
     pub title : Option<String>,
     pub author : Option<Vec<String>>,
@@ -17,7 +22,7 @@ pub struct Book {
     pub description : Option<String>,
     pub first_sentence : Option<String>,
     pub language : Option<String>,
-    pub isbn : Option<String>,
+    pub isbn : Option<i64>,
     pub openlibrary_key : Option<String>,
     pub first_publish_year : Option<u32>,
     pub current_page : Option<u32>,
@@ -26,12 +31,10 @@ pub struct Book {
 }
 
 impl Book {
-    pub fn download_image(&mut self) -> Result<(), Box<dyn Error>> {
+    pub async fn download_image(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
         match &self.cover_url {
-            Some(url) => 
-            {
-                let fname = image_from_url(url)?;
-                self.cover_path = Some(fname);
+            Some(url) => {
+                self.cover_path = image_from_url(url, path).await.ok();
             },
             None => match &self.cover_path {
                 Some(fp) => println!("{}", &fp),
@@ -62,9 +65,12 @@ impl Book {
                 "description" => self.description = Some(decision),
                 "first sentence" => self.first_sentence = Some(decision),
                 "language" => self.language = Some(decision),
-                "isbn" => self.isbn = Some(decision),
                 "openlibrary key" => self.openlibrary_key = Some(decision),
                 "coverurl" => self.cover_url = Some(decision),
+                "isbn" => {
+                    let isbn = decision.parse::<i64>()?;
+                    self.isbn = Some(isbn)
+                },
                 "year" => {
                     let year: u32 = decision.parse::<u32>()?;
                     self.first_publish_year = Some(year)
@@ -79,6 +85,97 @@ impl Book {
         }
     }
 
+    pub async fn db_create_table(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query("CREATE TABLE IF NOT EXISTS books (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                author TEXT,
+                cover_url TEXT,
+                cover_path TEXT,
+                total_pages INTEGER, 
+                description TEXT,
+                first_sentence TEXT,
+                language TEXT,
+                isbn INTEGER,
+                openlibrary_key TEXT,
+                first_publish_year INTEGER,
+                current_page INTEGER,
+                finished INTEGER,
+                date_started INTEGER,
+                UNIQUE(isbn)
+                );")
+            .execute(pool).await?;
+
+        Ok(())
+    }
+
+
+    pub async fn db_upsert_book(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        let author_json: Option<Json<&Vec<String>>> = self.author.as_ref().map(Json);
+        let set_clause = r#"
+            title              = COALESCE(excluded.title,              books.title),
+            author             = COALESCE(excluded.author,             books.author),
+            cover_url          = COALESCE(excluded.cover_url,          books.cover_url),
+            cover_path         = COALESCE(excluded.cover_path,         books.cover_path),
+            total_pages        = COALESCE(excluded.total_pages,        books.total_pages),
+            description        = COALESCE(excluded.description,        books.description),
+            first_sentence     = COALESCE(excluded.first_sentence,     books.first_sentence),
+            language           = COALESCE(excluded.language,           books.language),
+            isbn               = COALESCE(excluded.isbn,               books.isbn),
+            openlibrary_key    = COALESCE(excluded.openlibrary_key,    books.openlibrary_key),
+            first_publish_year = COALESCE(excluded.first_publish_year, books.first_publish_year),
+            current_page       = COALESCE(excluded.current_page,       books.current_page),
+            finished           = COALESCE(excluded.finished,           books.finished),
+            date_started       = COALESCE(excluded.date_started,       books.date_started)
+            "#;
+
+        let sql = if self.isbn.is_some() {
+            format!(r#" INSERT INTO books (
+                title, author, cover_url, cover_path, total_pages, description,
+                first_sentence, language, isbn, openlibrary_key,
+                first_publish_year, current_page, finished, date_started
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(isbn) DO UPDATE SET
+            {set_clause} "#)
+        } else {
+            r#" INSERT INTO books (
+                title, author, cover_url, cover_path, total_pages, description,
+                first_sentence, language, isbn, openlibrary_key,
+                first_publish_year, current_page, finished, date_started
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "#
+            .to_string()
+        };
+
+        sqlx::query(&sql)
+            .bind(self.title.as_ref())
+            .bind(author_json.as_ref())                    // Option<Json<Vec<String>>>
+            .bind(self.cover_url.as_ref())
+            .bind(self.cover_path.as_ref())
+            .bind(to_i64(self.total_pages))                   // Option<i64>
+            .bind(self.description.as_ref())
+            .bind(self.first_sentence.as_ref())
+            .bind(self.language.as_ref())
+            .bind(self.isbn)                                  // Option<i64>
+            .bind(self.openlibrary_key.as_ref())
+            .bind(to_i64(self.first_publish_year))
+            .bind(to_i64(self.current_page))
+            .bind(self.finished)                              // Option<bool> -> 0/1
+            .bind(to_i64(self.date_started))
+            .execute(pool).await?;
+
+        Ok(())
+    }
+    pub async fn db_add(&self, url: &str) -> Result<(), sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(url)
+            .await?;
+        Self::db_create_table(&pool).await?;
+        self.db_upsert_book(&pool).await?;
+        
+        Ok(())
+    }
+
 }
 
 impl fmt::Debug for Book {
@@ -87,6 +184,7 @@ impl fmt::Debug for Book {
 
         let pages = self.total_pages.map(|n| n.to_string());
         let year = self.first_publish_year.map(|n| n.to_string());
+        let isbn = self.isbn.map(|n| n.to_string());
 
         let author: String = match &self.author {
             Some(v) => v.join(", "),
@@ -102,7 +200,7 @@ impl fmt::Debug for Book {
             .field("First Sentence", &self.first_sentence.as_deref().unwrap_or(none))
             .field("Description", &self.description.as_deref().unwrap_or(none))
             .field("Year", &year.as_deref().unwrap_or(none))
-            .field("ISBN", &self.isbn.as_deref().unwrap_or(none))
+            .field("ISBN", &isbn.as_deref().unwrap_or(none))
             .field("Language", &self.language.as_deref().unwrap_or(none))
             .field("OpenLibrary Key", &self.openlibrary_key.as_deref().unwrap_or(none))
             .finish()

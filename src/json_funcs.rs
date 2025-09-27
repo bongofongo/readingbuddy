@@ -1,6 +1,7 @@
 use url::Url;
 use crate::{ol_api_containers::SearchResp};
 use std::{error::Error, io};
+use reqwest::Client;
 
 pub struct SearchQuery {
     author : Option<String>,
@@ -37,7 +38,7 @@ impl SearchQuery {
             .collect();
 
         let mut url : Url = Url::parse_with_params(
-            "https://openlibrary.org/search.json?",
+            "https://openlibrary.org/search.json?limit=30",
             &params)?;
         url.query_pairs_mut() 
             .append_pair("fields", "key,title,\
@@ -65,13 +66,16 @@ impl SearchQuery {
         let title = SearchQuery::str_to_opt(t);
         let author = SearchQuery::str_to_opt(a);
        
-        SearchQuery { title, author, lang: None, sort: None }
+        SearchQuery { title, author, lang: Some("eng".to_string()), sort: None }
     }
 
-    pub fn get_ol_json(&self) -> Result<SearchResp, Box<dyn Error>> {
-        let url = self.url_of_query()?;
-        let resp = reqwest::blocking::get(url)?
-            .text()?;
+    pub async fn get_ol_json(&self) -> Result<SearchResp, Box<dyn Error>> {
+        let url= self.url_of_query()?;
+        let client = Client::new(); // reuse this (Arc) across calls
+        let resp = client.get(url).send().await?
+            .error_for_status()?.text().await?;
+        // let resp = reqwest::blocking::get(url)?
+        //     .text()?;
         let res: SearchResp = serde_json::from_str(&resp)?;
         Ok(res)
     }

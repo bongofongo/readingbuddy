@@ -5,14 +5,8 @@ use crate::{
 
 #[derive(serde::Deserialize, Debug)]
 pub struct SearchResp {
-    pub num_found : Option<u32>,
-    // start : Option<u32>,
-    // #[serde(alias = "NumFoundExact")]
-    // num_found_exact : Option<bool>,
-    pub q : Option<String>,
+    // pub q : Option<String>,
     pub docs : Option<Vec<Works>>,
-
-
 }
 
 impl SearchResp {
@@ -20,22 +14,6 @@ impl SearchResp {
         match self.docs {
             None => Err(Box::new(MissingInfoError)),
             Some(ref vec) => Ok(vec)
-        }
-    }
-    pub fn get_work(&self, i: usize) -> Result<&Works, Box<dyn Error>> {
-        let work: Option<&Works> = self.get_works()?
-            .get(i);
-        match work {
-            None => Err(Box::new(MissingInfoError)),
-            Some(doc) => Ok(doc)
-        }
-    }
-    pub fn show(&self) -> (){
-        if let Some(ref s) = self.num_found {
-            println!("num_found: {}", s);
-        }
-        if let Some(ref s) = self.q {
-            println!("q: {}", s);
         }
     }
 }
@@ -48,7 +26,7 @@ pub struct Works {
     pub cover_edition_key : Option<String>, 
     pub key : Option<String>,
     pub language : Option<Vec<String>>,
-    pub docs : Option<Vec<SearchResp>>, // if editions work
+    // pub docs : Option<Vec<SearchResp>>, // if editions work
     pub isbn : Option<Vec<String>>,
     pub edition_key : Option<Vec<String>>,
     pub first_sentence : Option<Vec<String>>
@@ -97,19 +75,23 @@ impl Works {
         }
         let first_first_sentence = first_opt(&self.first_sentence);
         let first_language = first_opt(&self.language);
-        let first_isbn = first_opt(&self.isbn);
+        let isbn: Option<i64> = match first_opt(&self.isbn) {
+            Some(s) => Some(s.parse::<i64>()?),
+            None => return Err(Box::new(MissingInfoError))
+        };
+        let cover_url: Option<String> = self.get_cover_image().ok();
 
         let book = Book {
             title: self.title.clone(),
             author: self.author_name.clone(),
-            cover_url: self.cover_edition_key.clone(),
+            cover_url,
             cover_path: None,
             total_pages: None,
             current_page: None,
             description: None,
             first_sentence: first_first_sentence,
             language: first_language,
-            isbn: first_isbn,
+            isbn,
             openlibrary_key: self.key.clone(),
             first_publish_year: self.first_publish_year,
             finished: None,
