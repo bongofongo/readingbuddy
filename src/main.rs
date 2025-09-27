@@ -9,6 +9,7 @@ use epub::doc::EpubDoc;
 use std::{error::Error};
 use std::time::Duration;
 use tokio::time::sleep;
+use sqlx::sqlite::SqlitePoolOptions;
 use crate::gen_lib::create_db;
 use crate:: {
         books::{MissingInfoError, Book}, 
@@ -23,24 +24,38 @@ const IMAGE_PATH: &str = "database/images/";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    create_db(DB_URL).await?;    
+
     while let Err(e) = run().await {
         eprintln!("[error]: {}", e);
         sleep(Duration::from_secs(1)).await;
-    }
+    };
     Ok(())
-    // if let Err(e) = run_epub() {
-    //     eprintln!("[error]: {}", e);
-    // }
 }
 
-fn run_epub() -> Result<(), Box<dyn Error>> {
-    let fp = get_user_input("Enter epub filepath: ")?;
-    let doc = EpubDoc::new(&fp)?;
-    read_epub(&doc)?;
-    Ok(())
-}
 
 async fn run () -> Result<(), Box<dyn Error>> {
+    let q: &str = "\nBookBuddy:\
+    \n\tSearch for books [s]\
+    \n\tRead a .epub [r]\
+    \n\tView database [d]\
+    \n\tExit [e]\nenter: ";
+
+    loop {
+        let input = get_user_input(q)?;
+
+        match input.as_ref() {
+            "s" => { let b = user_search_books().await?; println!("{b:#?}") },
+            "r" => user_print_epub()?,
+            "d" => user_print_db(10, DB_URL).await?,
+            "e" => break,
+            _   => println!("didn't register input.")
+        };
+    }
+    Ok(())
+}
+
+async fn user_search_books() -> Result<Book, Box<dyn Error>> {
     let search: SearchQuery = SearchQuery::poll_user();
     let json: SearchResp = search.get_ol_json().await?;
     let works: &Vec<Works> = json.get_works()?;
@@ -63,10 +78,27 @@ async fn run () -> Result<(), Box<dyn Error>> {
     if let Some(_) = &b.cover_url && 
         let "y" = get_user_input("Download image? y/n: ")?.as_str() {
             b.download_image(IMAGE_PATH).await?;
-            println!("{:#?}", b)
     };
 
-    create_db(DB_URL).await?;
     b.db_add(DB_URL).await?;
+    Ok(b)
+}
+
+fn user_print_epub() -> Result<(), Box<dyn Error>> {
+    let fp = get_user_input("Enter epub filepath: ")?;
+    let doc = EpubDoc::new(&fp)?;
+    read_epub(&doc)?;
+    Ok(())
+}
+
+async fn user_print_db(limit: i32, url: &str) -> Result<(), Box<dyn Error>> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(url)
+        .await?;
+    let books = Book::db_read_to_books(limit, &pool).await?;
+    for b in books {
+        println!("{b:#?}");
+    }
     Ok(())
 }

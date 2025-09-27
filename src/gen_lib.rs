@@ -32,17 +32,14 @@ pub fn select_element(s: &str, len: usize) -> usize {
 
 use sqlx::{migrate::MigrateDatabase, Sqlite};
 
-pub async fn create_db(url: &str) -> Result<(), Box<dyn Error>> {
+pub async fn create_db(url: &str) -> Result<(), sqlx::Error> {
     if !Sqlite::database_exists(url).await.unwrap_or(false) {
         println!("Creating database {}", url);
         match Sqlite::create_database(url).await {
-            Ok(_) => println!("Create db success"),
-            Err(error) => panic!("error: {}", error),
+            Ok(_) => println!("Success"),
+            Err(error) => return Err(error),
         }
-    } else {
-        println!("Database already exists");
-    };
-
+    } 
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use crate::{
     gen_lib::get_user_input,
     };
 use serde::{Serialize, Deserialize};
-use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json};
+use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json, Row};
 
 fn to_i64(opt: Option<u32>) -> Option<i64> {
     opt.map(|v| v as i64)
@@ -176,6 +176,47 @@ impl Book {
         Ok(())
     }
 
+    pub async fn db_read_to_books(limit: i32, pool: &SqlitePool) -> Result<Vec<Book>, Box<dyn Error>> {
+        let rows = sqlx::query(
+            r#" SELECT
+              title, author, cover_url, cover_path, total_pages, description,
+              first_sentence, language, isbn, openlibrary_key, first_publish_year,
+              current_page, finished, date_started
+            FROM books
+            ORDER BY id
+            LIMIT ?; "#
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+
+        let mut books: Vec<Book> = Vec::new();
+        for row in rows {
+            let author: Option<Json<Vec<String>>> = row.try_get("author")?;
+            let total_pages: Option<i64>         = row.try_get("total_pages")?;
+            let first_publish_year: Option<i64>  = row.try_get("first_publish_year")?;
+            let current_page: Option<i64>        = row.try_get("current_page")?;
+            let date_started: Option<i64>        = row.try_get("date_started")?;
+            let b = Book {
+                title:              row.try_get("title")?,
+                author:             author.map(|Json(v)| v),
+                cover_url:          row.try_get("cover_url")?,
+                cover_path:         row.try_get("cover_path")?,
+                total_pages:        total_pages.map(|v| v as u32),
+                description:        row.try_get("description")?,
+                first_sentence:     row.try_get("first_sentence")?,
+                language:           row.try_get("language")?,
+                isbn:               row.try_get("isbn")?,            // Option<i64>
+                openlibrary_key:    row.try_get("openlibrary_key")?,
+                first_publish_year: first_publish_year.map(|v| v as u32),
+                current_page:       current_page.map(|v| v as u32),
+                finished:           row.try_get("finished")?,        // Option<bool> (0/1)
+                date_started:       date_started.map(|v| v as u32),
+            };
+            books.push(b);
+        };
+        Ok(books)
+    }
 }
 
 impl fmt::Debug for Book {
