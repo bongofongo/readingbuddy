@@ -10,13 +10,13 @@ use std::{error::Error};
 use std::time::Duration;
 use tokio::time::sleep;
 use sqlx::sqlite::SqlitePoolOptions;
+use crate::epub_lib::{download_epub_cover, read_epub_to_book};
 use crate::gen_lib::create_db;
 use crate:: {
         books::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
         ol_api_containers::{SearchResp, Works},
         gen_lib::{select_element, get_user_input},
-        epub_lib::read_epub,
     };
 
 const DB_URL: &str = "sqlite://database/app.db";
@@ -39,6 +39,7 @@ async fn run () -> Result<(), Box<dyn Error>> {
     \n\tSearch for books [s]\
     \n\tRead a .epub [r]\
     \n\tView database [d]\
+    \n\tRemove database entry [rd]\
     \n\tExit [e]\nenter: ";
 
     loop {
@@ -46,8 +47,9 @@ async fn run () -> Result<(), Box<dyn Error>> {
 
         match input.as_ref() {
             "s" => { let b = user_search_books().await?; println!("{b:#?}") },
-            "r" => user_print_epub()?,
+            "r" => user_print_epub().await?,
             "d" => user_print_db(10, DB_URL).await?,
+            "rd" => user_remove_db_entry(DB_URL).await?,
             "e" => break,
             _   => println!("didn't register input.")
         };
@@ -55,6 +57,24 @@ async fn run () -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn user_remove_db_entry(url: &str) -> Result<(), Box<dyn Error>> {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(url)
+        .await?;
+
+    let books = Book::db_read_to_books(50, &pool).await?;
+    for (i, book) in books.iter().enumerate() {
+        println!("{i}: {book:#?}");
+    }
+
+    let index: usize = select_element("Please enter a number: ", books.len());
+    let b = books.get(index).ok_or(MissingInfoError)?;
+
+    b.db_remove(&pool).await?;
+
+    Ok(())
+}
 async fn user_search_books() -> Result<Book, Box<dyn Error>> {
     let search: SearchQuery = SearchQuery::poll_user();
     let json: SearchResp = search.get_ol_json().await?;
@@ -67,7 +87,8 @@ async fn user_search_books() -> Result<Book, Box<dyn Error>> {
 
     let index: usize = select_element("Please enter a number: ", works.len());
     let mut b: Book = works.get(index)
-        .map(|w| w.to_book()).transpose()?
+        .map(|w| w.to_book())
+        .transpose()?
         .ok_or(MissingInfoError)?;
 
     b.language = Some("eng".to_string());
@@ -84,10 +105,19 @@ async fn user_search_books() -> Result<Book, Box<dyn Error>> {
     Ok(b)
 }
 
-fn user_print_epub() -> Result<(), Box<dyn Error>> {
+async fn user_print_epub() -> Result<(), Box<dyn Error>> {
     let fp = get_user_input("Enter epub filepath: ")?;
     let doc = EpubDoc::new(&fp)?;
-    read_epub(&doc)?;
+    let mut b = read_epub_to_book(&doc)?;
+
+    println!("{:#?}", b);
+    while let Err(e) = b.poll_user() {
+        println!("[error]: {}", e);
+    };
+    if let "y" = get_user_input("Download image? y/n: ")?.as_str() {
+        b.cover_path = download_epub_cover(&fp, IMAGE_PATH).ok();
+    }
+    b.db_add(DB_URL).await?;
     Ok(())
 }
 

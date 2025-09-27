@@ -31,6 +31,24 @@ pub struct Book {
 }
 
 impl Book {
+    pub fn new() -> Self {
+        Book { 
+            title : None,
+            author : None, 
+            cover_url : None,
+            cover_path : None,
+            total_pages : None,
+            description : None,
+            first_sentence : None,
+            language : None,
+            isbn : None,
+            openlibrary_key : None,
+            first_publish_year : None,
+            current_page : None,
+            finished : None,
+            date_started : None,
+        }
+    }
     pub async fn download_image(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
         match &self.cover_url {
             Some(url) => {
@@ -216,6 +234,18 @@ impl Book {
             books.push(b);
         };
         Ok(books)
+    }
+
+    pub async fn db_remove(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        if let Some(isbn) = self.isbn.as_ref() {
+            sqlx::query("DELETE from books WHERE isbn=?") 
+                .bind(isbn)
+                .execute(pool)
+                .await?;
+            return Ok(())
+        }
+        println!("No such book found in database");
+        Ok(())
     }
 }
 
