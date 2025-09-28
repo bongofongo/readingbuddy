@@ -1,6 +1,6 @@
 mod app;
 
-use crate::app::*;
+use crate::app::{cli::*, gen_lib};
 use anyhow::Result;
 use std::time::Duration;
 use tokio::time::sleep;
