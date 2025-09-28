@@ -4,19 +4,20 @@ mod ol_api_containers;
 mod gen_lib;
 mod epub_lib;
 
+use crate::{
+    books::{MissingInfoError, Book}, 
+    json_funcs::{SearchQuery},
+    ol_api_containers::{SearchResp, Works},
+    gen_lib::{select_element, get_user_input},
+    epub_lib::{download_epub_cover, read_epub_to_book},
+    gen_lib::db_make
+};
+
 use anyhow::{Result};
 use epub::doc::EpubDoc;
 use std::time::Duration;
 use tokio::time::sleep;
 use sqlx::sqlite::SqlitePoolOptions;
-use crate::epub_lib::{download_epub_cover, read_epub_to_book};
-use crate::gen_lib::db_make;
-use crate:: {
-        books::{MissingInfoError, Book}, 
-        json_funcs::{SearchQuery},
-        ol_api_containers::{SearchResp, Works},
-        gen_lib::{select_element, get_user_input},
-    };
 
 const DB_URL: &str = "sqlite://database/app.db";
 const IMAGE_PATH: &str = "database/images/";
