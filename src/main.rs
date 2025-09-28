@@ -1,17 +1,16 @@
 mod books;
 mod json_funcs;
 mod ol_api_containers;
-mod image_lib;
 mod gen_lib;
 mod epub_lib;
 
+use anyhow::{Result};
 use epub::doc::EpubDoc;
-use std::{error::Error};
 use std::time::Duration;
 use tokio::time::sleep;
 use sqlx::sqlite::SqlitePoolOptions;
 use crate::epub_lib::{download_epub_cover, read_epub_to_book};
-use crate::gen_lib::create_db;
+use crate::gen_lib::db_make;
 use crate:: {
         books::{MissingInfoError, Book}, 
         json_funcs::{SearchQuery},
@@ -23,8 +22,8 @@ const DB_URL: &str = "sqlite://database/app.db";
 const IMAGE_PATH: &str = "database/images/";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    create_db(DB_URL).await?;    
+async fn main() -> Result<()> {
+    db_make(DB_URL).await?;    
 
     while let Err(e) = run().await {
         eprintln!("[error]: {}", e);
@@ -34,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 
-async fn run () -> Result<(), Box<dyn Error>> {
+async fn run () -> Result<()> {
     let q: &str = "\nBookBuddy:\
     \n\tSearch for books [s]\
     \n\tRead a .epub [r]\
@@ -57,7 +56,7 @@ async fn run () -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn user_remove_db_entry(url: &str) -> Result<(), Box<dyn Error>> {
+async fn user_remove_db_entry(url: &str) -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(2)
         .connect(url)
@@ -75,7 +74,7 @@ async fn user_remove_db_entry(url: &str) -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-async fn user_search_books(url: &str, path: &str) -> Result<Book, Box<dyn Error>> {
+async fn user_search_books(url: &str, path: &str) -> Result<Book> {
     let search: SearchQuery = SearchQuery::poll_user();
     let json: SearchResp = search.get_ol_json().await?;
     let works: &Vec<Works> = json.get_works()?;
@@ -105,7 +104,7 @@ async fn user_search_books(url: &str, path: &str) -> Result<Book, Box<dyn Error>
     Ok(b)
 }
 
-async fn user_print_epub(url: &str, path: &str) -> Result<(), Box<dyn Error>> {
+async fn user_print_epub(url: &str, path: &str) -> Result<()> {
     let fp = get_user_input("Enter epub filepath: ")?;
     let doc = EpubDoc::new(&fp)?;
     let mut b = read_epub_to_book(&doc)?;
@@ -121,7 +120,7 @@ async fn user_print_epub(url: &str, path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn user_print_db(limit: i32, url: &str) -> Result<(), Box<dyn Error>> {
+async fn user_print_db(limit: i32, url: &str) -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect(url)

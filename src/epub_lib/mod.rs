@@ -1,22 +1,19 @@
 use epub::doc::EpubDoc;
-
-use std::error::Error;
+use anyhow::Result;
 use std::fs::File;
 use std::io::Write;
 use std::io::{Read, Seek};
 
 use crate::books::{MissingInfoError, Book};
 
-pub fn download_epub_cover(fp: &str, image_path: &str) -> Result<String, Box<dyn Error>> {
+pub fn download_epub_cover(fp: &str, image_path: &str) -> Result<String> {
     let mut doc = match EpubDoc::new(fp) {
         Ok(d) => d,
-        Err(e) => {  
-            println!("{}", &fp);
-            return Err(Box::new(e)) },
+        Err(e) => return Err(e.into()),
     };
     let cover_data = match doc.get_cover() {
         Some(c) => c,
-        None => return Err(Box::new(MissingInfoError))
+        None => return Err(MissingInfoError.into())
     };
     let image = doc.mdata("title").ok_or(MissingInfoError)?;
     let name = format!("{}{}.png", &image_path, &image);
@@ -26,7 +23,7 @@ pub fn download_epub_cover(fp: &str, image_path: &str) -> Result<String, Box<dyn
     Ok(name)
 }
 
-pub fn read_epub_to_book<R>(epub: &epub::doc::EpubDoc<R>) -> Result<Book, Box<dyn Error>> 
+pub fn read_epub_to_book<R>(epub: &epub::doc::EpubDoc<R>) -> Result<Book> 
 where 
     R: Read + Seek, 
 {

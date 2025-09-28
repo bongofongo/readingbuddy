@@ -11,6 +11,8 @@ serde_json = "1.0"
 url = { version = "2.5.7", features = ["serde"] }
 epub = "2.1.4"
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls", "json"] }
+sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls", "json", "time"] }
+anyhow = "1.0.100"
+time = { version = "0.3.44", features = ["macros"]}
 
 # xml = "1.0"

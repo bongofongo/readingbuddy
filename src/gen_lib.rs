@@ -1,7 +1,11 @@
-use std::{io::{self, Write}, error::Error};
+use std::{io::{copy, self, Write, Cursor}, fs::File};
+use url::Url;
+use sqlx::{migrate::MigrateDatabase, Sqlite, sqlite::{SqlitePool, SqlitePoolOptions}};
+use anyhow::Result;
 
+use crate::books::MissingInfoError;
 
-pub fn get_user_input(s: &str) -> Result<String, Box<dyn Error>> {
+pub fn get_user_input(s: &str) -> Result<String> {
     print!("{}", s);
     let mut input = String::new();
     io::stdout().flush()?;
@@ -29,10 +33,7 @@ pub fn select_element(s: &str, len: usize) -> usize {
     }
 }
 
-
-use sqlx::{migrate::MigrateDatabase, Sqlite};
-
-pub async fn create_db(url: &str) -> Result<(), sqlx::Error> {
+pub async fn db_make_database(url: &str) -> Result<(), sqlx::Error> {
     if !Sqlite::database_exists(url).await.unwrap_or(false) {
         println!("Creating database {}", url);
         match Sqlite::create_database(url).await {
@@ -43,4 +44,62 @@ pub async fn create_db(url: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+pub async fn db_create_books_table(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS books (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            author TEXT,
+            cover_url TEXT,
+            cover_path TEXT,
+            total_pages INTEGER, 
+            description TEXT,
+            first_sentence TEXT,
+            language TEXT,
+            isbn INTEGER,
+            openlibrary_key TEXT,
+            first_publish_year INTEGER,
+            current_page INTEGER,
+            finished INTEGER,
+            date_started INTEGER,
+            last_modified INTEGER NOT NULL,
+            created_at INTEGER NOT NULL, 
+            UNIQUE(isbn)
+            );
+            ")
+        .execute(pool).await?;
+
+    Ok(())
+}
+
+// Creates db if it doesn't exist, and adds a books table to it.
+pub async fn db_make(url: &str) -> Result<(), sqlx::Error> {
+    db_make_database(url).await?;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(url)
+        .await?;
+    db_create_books_table(&pool).await?;
+    Ok(())
+}
+
+
+pub async fn image_from_url(url_str: &str, path: &str) -> Result<String> {
+    let url = Url::parse(url_str)?;
+    let path_vec = url.path_segments().ok_or(MissingInfoError)?;
+    let mut fname: String = String::from(path);
+
+    let s: &str = match path_vec.last() {
+        Some(olid) => olid, 
+        None => "random_fname.jpg"
+    };
+
+    fname.push_str(s);
+    println!("\tDownloading... {}", fname);
+
+    let response = reqwest::get(url).await?;
+    let mut f = File::create(&fname)?;
+    let mut content =  Cursor::new(response.bytes().await?);
+    copy(&mut content, &mut f)?;
+    Ok(fname.to_string())
+}
 

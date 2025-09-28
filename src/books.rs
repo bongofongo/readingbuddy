@@ -1,10 +1,8 @@
-use std::{error::Error, fmt, fs};
-use crate::{
-    image_lib::image_from_url,
-    gen_lib::get_user_input,
-    };
-use serde::{Serialize, Deserialize};
+use std::{fmt, fs};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use crate::gen_lib::{get_user_input,image_from_url};
 use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json, Row};
+use anyhow::{Result, bail};
 
 fn to_i64(opt: Option<u32>) -> Option<i64> {
     opt.map(|v| v as i64)
@@ -12,7 +10,7 @@ fn to_i64(opt: Option<u32>) -> Option<i64> {
 
 // Everything the user should be interacting with. 
 // Struct, the information of which should be saved persistently.
-#[derive(Deserialize, Serialize, sqlx::FromRow)]
+#[derive(sqlx::FromRow)]
 pub struct Book {
     pub title : Option<String>,
     pub author : Option<Vec<String>>,
@@ -28,6 +26,8 @@ pub struct Book {
     pub current_page : Option<u32>,
     pub finished : Option<bool>,
     pub date_started : Option<u32>,
+    pub last_modified : OffsetDateTime,
+    pub created_at : OffsetDateTime,
 }
 
 impl Book {
@@ -47,23 +47,26 @@ impl Book {
             current_page : None,
             finished : None,
             date_started : None,
+            last_modified : OffsetDateTime::now_utc(),
+            created_at : OffsetDateTime::now_utc(),
         }
     }
-    pub async fn download_image(&mut self, path: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn download_image(&mut self, path: &str) -> Result<()> {
         match &self.cover_url {
             Some(url) => {
                 self.cover_path = image_from_url(url, path).await.ok();
             },
             None => match &self.cover_path {
                 Some(fp) => println!("{}", &fp),
-                _ => println!("[error]: no image found"),
+                _ => bail!("[download_image] path not found")
             },
         };
         Ok(())
     }
 
-    pub fn poll_user(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn poll_user(&mut self) -> Result<()> {
         loop {
+            self.last_modified = OffsetDateTime::now_utc();
             let prompt1: &str = "Is there anything you'd like to change? y/n: ";
             let answer1: String = get_user_input(prompt1)?;
             if answer1.as_str() == "n" { return Ok(()) };
@@ -97,36 +100,11 @@ impl Book {
                     let pages: u32 = decision.parse::<u32>()?;
                     self.total_pages = Some(pages)
                 },
-                _ => return Err(Box::new(InvalidInputError))
+                _ => return Err(InvalidInputError.into())
             };
             println!("{:#?}", self);
         }
     }
-
-    pub async fn db_create_table(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        sqlx::query("CREATE TABLE IF NOT EXISTS books (
-                id INTEGER PRIMARY KEY,
-                title TEXT,
-                author TEXT,
-                cover_url TEXT,
-                cover_path TEXT,
-                total_pages INTEGER, 
-                description TEXT,
-                first_sentence TEXT,
-                language TEXT,
-                isbn INTEGER,
-                openlibrary_key TEXT,
-                first_publish_year INTEGER,
-                current_page INTEGER,
-                finished INTEGER,
-                date_started INTEGER,
-                UNIQUE(isbn)
-                );")
-            .execute(pool).await?;
-
-        Ok(())
-    }
-
 
     pub async fn db_upsert_book(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
         let author_json: Option<Json<&Vec<String>>> = self.author.as_ref().map(Json);
@@ -144,41 +122,44 @@ impl Book {
             first_publish_year = COALESCE(excluded.first_publish_year, books.first_publish_year),
             current_page       = COALESCE(excluded.current_page,       books.current_page),
             finished           = COALESCE(excluded.finished,           books.finished),
-            date_started       = COALESCE(excluded.date_started,       books.date_started)
+            date_started       = COALESCE(excluded.date_started,       books.date_started),
+            last_modified      = ?
             "#;
 
         let sql = if self.isbn.is_some() {
             format!(r#" INSERT INTO books (
                 title, author, cover_url, cover_path, total_pages, description,
                 first_sentence, language, isbn, openlibrary_key,
-                first_publish_year, current_page, finished, date_started
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                first_publish_year, current_page, finished, date_started, last_modified, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(isbn) DO UPDATE SET
             {set_clause} "#)
         } else {
             r#" INSERT INTO books (
                 title, author, cover_url, cover_path, total_pages, description,
                 first_sentence, language, isbn, openlibrary_key,
-                first_publish_year, current_page, finished, date_started
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "#
+                first_publish_year, current_page, finished, date_started, last_modified, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "#
             .to_string()
         };
 
         sqlx::query(&sql)
             .bind(self.title.as_ref())
-            .bind(author_json.as_ref())                    // Option<Json<Vec<String>>>
+            .bind(author_json.as_ref())
             .bind(self.cover_url.as_ref())
             .bind(self.cover_path.as_ref())
-            .bind(to_i64(self.total_pages))                   // Option<i64>
+            .bind(to_i64(self.total_pages))
             .bind(self.description.as_ref())
             .bind(self.first_sentence.as_ref())
             .bind(self.language.as_ref())
-            .bind(self.isbn)                                  // Option<i64>
+            .bind(self.isbn)
             .bind(self.openlibrary_key.as_ref())
             .bind(to_i64(self.first_publish_year))
             .bind(to_i64(self.current_page))
-            .bind(self.finished)                              // Option<bool> -> 0/1
+            .bind(self.finished)
             .bind(to_i64(self.date_started))
+            .bind(self.last_modified.unix_timestamp())
+            .bind(self.created_at.unix_timestamp())
             .execute(pool).await?;
 
         Ok(())
@@ -188,20 +169,18 @@ impl Book {
             .max_connections(5)
             .connect(url)
             .await?;
-        Self::db_create_table(&pool).await?;
         self.db_upsert_book(&pool).await?;
-        
         Ok(())
     }
 
-    pub async fn db_read_to_books(limit: i32, pool: &SqlitePool) -> Result<Vec<Book>, Box<dyn Error>> {
+    pub async fn db_read_to_books(limit: i32, pool: &SqlitePool) -> Result<Vec<Book>> {
         let rows = sqlx::query(
             r#" SELECT
               title, author, cover_url, cover_path, total_pages, description,
               first_sentence, language, isbn, openlibrary_key, first_publish_year,
-              current_page, finished, date_started
+              current_page, finished, date_started, last_modified, created_at
             FROM books
-            ORDER BY id
+            ORDER BY last_modified DESC
             LIMIT ?; "#
         )
         .bind(limit)
@@ -215,6 +194,8 @@ impl Book {
             let first_publish_year: Option<i64>  = row.try_get("first_publish_year")?;
             let current_page: Option<i64>        = row.try_get("current_page")?;
             let date_started: Option<i64>        = row.try_get("date_started")?;
+            let lm_i64: i64 = row.try_get("last_modified")?;
+            let ca_i64: i64 = row.try_get("created_at")?;
             let b = Book {
                 title:              row.try_get("title")?,
                 author:             author.map(|Json(v)| v),
@@ -230,6 +211,8 @@ impl Book {
                 current_page:       current_page.map(|v| v as u32),
                 finished:           row.try_get("finished")?,        // Option<bool> (0/1)
                 date_started:       date_started.map(|v| v as u32),
+                last_modified: OffsetDateTime::from_unix_timestamp(lm_i64)?,
+                created_at: OffsetDateTime::from_unix_timestamp(ca_i64)?,
             };
             books.push(b);
         };
@@ -260,6 +243,9 @@ impl fmt::Debug for Book {
         let year = self.first_publish_year.map(|n| n.to_string());
         let isbn = self.isbn.map(|n| n.to_string());
 
+        let last_modified = self.last_modified.format(&Rfc3339).unwrap_or_default();
+        let created_at = self.created_at.format(&Rfc3339).unwrap_or_default();
+
         let author: String = match &self.author {
             Some(v) => v.join(", "),
             None => none.to_string()
@@ -277,6 +263,8 @@ impl fmt::Debug for Book {
             .field("ISBN", &isbn.as_deref().unwrap_or(none))
             .field("Language", &self.language.as_deref().unwrap_or(none))
             .field("OpenLibrary Key", &self.openlibrary_key.as_deref().unwrap_or(none))
+            .field("Last Modified", &last_modified)
+            .field("Created at", &created_at)
             .finish()
     }
 }
@@ -290,7 +278,7 @@ impl fmt::Display for MissingInfoError {
     }
 }
 
-impl Error for MissingInfoError {}
+impl std::error::Error for MissingInfoError {}
 
 
 #[derive(Debug)]
@@ -302,7 +290,7 @@ impl fmt::Display for InvalidInputError {
     }
 }
 
-impl Error for InvalidInputError {}
+impl std::error::Error for InvalidInputError {}
 
 
 

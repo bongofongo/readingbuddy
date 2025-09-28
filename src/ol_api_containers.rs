@@ -1,4 +1,7 @@
-use std::{error::Error, fmt};
+use anyhow::Result;
+use std::fmt;
+use time::OffsetDateTime;
+
 use crate::{
     books::{MissingInfoError, Book},
 };
@@ -10,9 +13,9 @@ pub struct SearchResp {
 }
 
 impl SearchResp {
-    pub fn get_works(&self) -> Result<&Vec<Works>, Box<dyn Error>> {
+    pub fn get_works(&self) -> Result<&Vec<Works>> {
         match self.docs {
-            None => Err(Box::new(MissingInfoError)),
+            None => Err(MissingInfoError.into()),
             Some(ref vec) => Ok(vec)
         }
     }
@@ -62,14 +65,14 @@ impl fmt::Debug for Works {
     }
 }
 impl Works {
-    pub fn get_cover_image(&self) -> Result<String, Box<dyn Error>> {
+    pub fn get_cover_image(&self) -> Result<String> {
         if let Some(k) = self.cover_edition_key.as_deref() {
             let s = format!("https://covers.openlibrary.org/b/olid/{k}-M.jpg");
             return Ok(s.to_string());
         };
-        Err(Box::new(MissingInfoError))
+        Err(MissingInfoError.into())
     }
-    pub fn to_book(&self) -> Result<Book, Box<dyn Error>> {
+    pub fn to_book(&self) -> Result<Book> {
         fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
             opt.as_ref().and_then(|v| v.first().cloned())
         }
@@ -77,7 +80,7 @@ impl Works {
         let first_language = first_opt(&self.language);
         let isbn: Option<i64> = match first_opt(&self.isbn) {
             Some(s) => Some(s.parse::<i64>()?),
-            None => return Err(Box::new(MissingInfoError))
+            None => return Err(MissingInfoError.into())
         };
         let cover_url: Option<String> = self.get_cover_image().ok();
 
@@ -95,7 +98,9 @@ impl Works {
             openlibrary_key: self.key.clone(),
             first_publish_year: self.first_publish_year,
             finished: None,
-            date_started: None
+            date_started: None,
+            last_modified: OffsetDateTime::now_utc(),
+            created_at: OffsetDateTime::now_utc(),
         }; 
 
         Ok(book)

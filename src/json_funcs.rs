@@ -1,6 +1,6 @@
 use url::Url;
 use crate::{ol_api_containers::SearchResp};
-use std::{error::Error, io};
+use std::{io};
 use reqwest::Client;
 
 pub struct SearchQuery {
@@ -31,7 +31,7 @@ impl SearchQuery {
         vec!["author", "title", "lang", "sort"]
     }
 
-    pub fn url_of_query (&self) -> Result<String, Box<dyn Error>> {
+    pub fn url_of_query (&self) -> anyhow::Result<String> {
         let params: Vec<(&str, &str)> = self.get_keys().into_iter()
             .zip(self.flatten().iter())
             .filter_map(|(k, str_opt)| str_opt.map(|s| (k, s)))
@@ -69,7 +69,7 @@ impl SearchQuery {
         SearchQuery { title, author, lang: Some("eng".to_string()), sort: None }
     }
 
-    pub async fn get_ol_json(&self) -> Result<SearchResp, Box<dyn Error>> {
+    pub async fn get_ol_json(&self) -> anyhow::Result<SearchResp> {
         let url= self.url_of_query()?;
         let client = Client::new(); // reuse this (Arc) across calls
         let resp = client.get(url).send().await?
