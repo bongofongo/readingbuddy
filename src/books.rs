@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, fs};
 use crate::{
     image_lib::image_from_url,
     gen_lib::get_user_input,
@@ -242,6 +242,9 @@ impl Book {
                 .bind(isbn)
                 .execute(pool)
                 .await?;
+            if let Some(path) = self.cover_path.as_ref() {
+                fs::remove_file(path)?;
+            }
             return Ok(())
         }
         println!("No such book found in database");

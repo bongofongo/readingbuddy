@@ -46,8 +46,8 @@ async fn run () -> Result<(), Box<dyn Error>> {
         let input = get_user_input(q)?;
 
         match input.as_ref() {
-            "s" => { let b = user_search_books().await?; println!("{b:#?}") },
-            "r" => user_print_epub().await?,
+            "s" => { let b = user_search_books(DB_URL, IMAGE_PATH).await?; println!("{b:#?}") },
+            "r" => user_print_epub(DB_URL, IMAGE_PATH).await?,
             "d" => user_print_db(10, DB_URL).await?,
             "rd" => user_remove_db_entry(DB_URL).await?,
             "e" => break,
@@ -75,7 +75,7 @@ async fn user_remove_db_entry(url: &str) -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-async fn user_search_books() -> Result<Book, Box<dyn Error>> {
+async fn user_search_books(url: &str, path: &str) -> Result<Book, Box<dyn Error>> {
     let search: SearchQuery = SearchQuery::poll_user();
     let json: SearchResp = search.get_ol_json().await?;
     let works: &Vec<Works> = json.get_works()?;
@@ -98,14 +98,14 @@ async fn user_search_books() -> Result<Book, Box<dyn Error>> {
     };
     if let Some(_) = &b.cover_url && 
         let "y" = get_user_input("Download image? y/n: ")?.as_str() {
-            b.download_image(IMAGE_PATH).await?;
+            b.download_image(path).await?;
     };
 
-    b.db_add(DB_URL).await?;
+    b.db_add(url).await?;
     Ok(b)
 }
 
-async fn user_print_epub() -> Result<(), Box<dyn Error>> {
+async fn user_print_epub(url: &str, path: &str) -> Result<(), Box<dyn Error>> {
     let fp = get_user_input("Enter epub filepath: ")?;
     let doc = EpubDoc::new(&fp)?;
     let mut b = read_epub_to_book(&doc)?;
@@ -115,9 +115,9 @@ async fn user_print_epub() -> Result<(), Box<dyn Error>> {
         println!("[error]: {}", e);
     };
     if let "y" = get_user_input("Download image? y/n: ")?.as_str() {
-        b.cover_path = download_epub_cover(&fp, IMAGE_PATH).ok();
+        b.cover_path = download_epub_cover(&fp, path).ok();
     }
-    b.db_add(DB_URL).await?;
+    b.db_add(url).await?;
     Ok(())
 }
 

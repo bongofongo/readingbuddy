@@ -11,14 +11,14 @@ pub struct SearchQuery {
 }
 
 impl SearchQuery {
-    pub fn new(
-        author : Option<String>,
-        title : Option<String>,
-        lang : Option<String>,
-        sort : Option<String>
-    ) -> Self {
-        SearchQuery { author, title, lang, sort }
-    }
+    // pub fn new(
+    //     author : Option<String>,
+    //     title : Option<String>,
+    //     lang : Option<String>,
+    //     sort : Option<String>
+    // ) -> Self {
+    //     SearchQuery { author, title, lang, sort }
+    // }
 
     fn flatten(&self) -> Vec<Option<&str>> {
         vec![self.author.as_deref(), 
