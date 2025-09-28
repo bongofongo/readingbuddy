@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{Read, Seek};
 
-use crate::books::{MissingInfoError, Book};
+use super::books::{MissingInfoError, Book};
 
 pub fn download_epub_cover(fp: &str, image_path: &str) -> Result<String> {
     let mut doc = match EpubDoc::new(fp) {

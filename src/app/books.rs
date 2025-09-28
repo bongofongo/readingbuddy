@@ -1,6 +1,6 @@
 use std::{fmt, fs};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use crate::gen_lib::{get_user_input,image_from_url};
+use super::gen_lib::{get_user_input,image_from_url};
 use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json, Row};
 use anyhow::{Result, bail};
 

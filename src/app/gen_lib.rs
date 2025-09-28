@@ -3,7 +3,7 @@ use url::Url;
 use sqlx::{migrate::MigrateDatabase, Sqlite, sqlite::{SqlitePool, SqlitePoolOptions}};
 use anyhow::Result;
 
-use crate::books::MissingInfoError;
+use super::books::MissingInfoError;
 
 pub fn get_user_input(s: &str) -> Result<String> {
     print!("{}", s);
