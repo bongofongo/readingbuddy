@@ -4,6 +4,7 @@ mod ol_api_containers;
 pub mod gen_lib;
 mod epub_lib;
 pub mod cli;
+mod edition;
 
 use books::*;
 use gen_lib::*;

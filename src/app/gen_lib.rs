@@ -85,10 +85,10 @@ pub async fn db_make(url: &str) -> Result<(), sqlx::Error> {
 
 pub async fn image_from_url(url_str: &str, path: &str) -> Result<String> {
     let url = Url::parse(url_str)?;
-    let path_vec = url.path_segments().ok_or(anyhow!("[image_from_url] couldn't find url path"))?;
+    let mut path_vec = url.path_segments().ok_or(anyhow!("[image_from_url] couldn't find url path"))?;
     let mut fname: String = String::from(path);
 
-    let s: &str = match path_vec.last() {
+    let s: &str = match path_vec.next_back() {
         Some(olid) => olid, 
         None => "random_fname.jpg"
     };
