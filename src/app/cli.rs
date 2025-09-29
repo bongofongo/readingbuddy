@@ -1,7 +1,6 @@
 use super::*;
-
-use anyhow::Result;
-use epub::doc::EpubDoc;
+use anyhow::{Result, anyhow};
+use::reqwest::Client;
 use sqlx::sqlite::SqlitePoolOptions;
 
 pub async fn user_remove_db_entry(url: &str) -> Result<()> {
@@ -16,7 +15,7 @@ pub async fn user_remove_db_entry(url: &str) -> Result<()> {
     }
 
     let index: usize = select_element("Please enter a number: ", books.len());
-    let b = books.get(index).ok_or(MissingInfoError)?;
+    let b = books.get(index).ok_or(anyhow!("[user_remove_db_entry] index didn't parse"))?;
 
     b.db_remove(&pool).await?;
 
@@ -36,7 +35,7 @@ pub async fn user_search_books(url: &str, path: &str) -> Result<Book> {
     let mut b: Book = works.get(index)
         .map(|w| w.to_book())
         .transpose()?
-        .ok_or(MissingInfoError)?;
+        .ok_or(anyhow!("[user_search_books] index didn't parse!"))?;
 
     b.language = Some("eng".to_string());
     println!("{:#?}", b);
@@ -54,17 +53,14 @@ pub async fn user_search_books(url: &str, path: &str) -> Result<Book> {
 
 pub async fn user_print_epub(url: &str, path: &str) -> Result<()> {
     let fp = get_user_input("Enter epub filepath: ")?;
-    let doc = EpubDoc::new(&fp)?;
-    let mut b = read_epub_to_book(&doc)?;
+    let client = Client::new();
+    let mut book: Book = epub_to_ol_book(&fp, path, &client).await?;
 
-    println!("{:#?}", b);
-    while let Err(e) = b.poll_user() {
+    println!("{:#?}", book);
+    while let Err(e) = book.poll_user() {
         println!("[error]: {}", e);
     };
-    if let "y" = get_user_input("Download image? y/n: ")?.as_str() {
-        b.cover_path = download_epub_cover(&fp, path).ok();
-    }
-    b.db_add(url).await?;
+    book.db_add(url).await?;
     Ok(())
 }
 

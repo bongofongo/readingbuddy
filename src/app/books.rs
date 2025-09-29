@@ -1,5 +1,5 @@
-use std::{fmt, fs};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use std::fs;
+use time::OffsetDateTime;
 use super::gen_lib::{get_user_input,image_from_url};
 use sqlx::{sqlite::{SqlitePoolOptions, SqlitePool}, types::Json, Row};
 use anyhow::{Result, bail};
@@ -10,19 +10,20 @@ fn to_i64(opt: Option<u32>) -> Option<i64> {
 
 // Everything the user should be interacting with. 
 // Struct, the information of which should be saved persistently.
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct Book {
     pub title : Option<String>,
-    pub author : Option<Vec<String>>,
+    pub authors : Option<Vec<String>>,
     pub cover_url : Option<String>,
     pub cover_path : Option<String>,
-    pub total_pages : Option<u32>,
+    pub pagination : Option<u32>,
     pub description : Option<String>,
     pub first_sentence : Option<String>,
     pub language : Option<String>,
-    pub isbn : Option<i64>,
+    pub isbn_10 : Option<i64>,
+    pub isbn_13 : Option<i64>,
     pub openlibrary_key : Option<String>,
-    pub first_publish_year : Option<u32>,
+    pub publish_year : Option<u32>,
     pub current_page : Option<u32>,
     pub finished : Option<bool>,
     pub date_started : Option<u32>,
@@ -31,26 +32,27 @@ pub struct Book {
 }
 
 impl Book {
-    pub fn new() -> Self {
-        Book { 
-            title : None,
-            author : None, 
-            cover_url : None,
-            cover_path : None,
-            total_pages : None,
-            description : None,
-            first_sentence : None,
-            language : None,
-            isbn : None,
-            openlibrary_key : None,
-            first_publish_year : None,
-            current_page : None,
-            finished : None,
-            date_started : None,
-            last_modified : OffsetDateTime::now_utc(),
-            created_at : OffsetDateTime::now_utc(),
-        }
-    }
+    // pub fn new() -> Self {
+    //     Book { 
+    //         title : None,
+    //         authors : Some(Vec::new()), 
+    //         cover_url : None,
+    //         cover_path : None,
+    //         pagination : None,
+    //         description : None,
+    //         first_sentence : None,
+    //         language : None,
+    //         isbn_10 : None,
+    //         isbn_13 : None,
+    //         openlibrary_key : None,
+    //         publish_year : None,
+    //         current_page : None,
+    //         finished : None,
+    //         date_started : None,
+    //         last_modified : OffsetDateTime::now_utc(),
+    //         created_at : OffsetDateTime::now_utc(),
+    //     }
+    // }
     pub async fn download_image(&mut self, path: &str) -> Result<()> {
         match &self.cover_url {
             Some(url) => {
@@ -73,7 +75,7 @@ impl Book {
 
             let prompt2: &str = "Choose from the following options:\n\
             Title\tAuthor\tCoverURL\tCoverPath\tYear\tDescription\n\
-            First Sentence\tLanguage\tISBN\tPage Count\tOpenLibrary Key:\n";
+            First Sentence\tLanguage\tISBN_10\tISBN_13\tPage Count\tOpenLibrary Key:\n";
             let answer2: String = get_user_input(prompt2)?;
 
             let prompt3 = format!("Enter new {}: ", &answer2);
@@ -81,65 +83,78 @@ impl Book {
 
             match answer2.to_lowercase().as_str() {
                 "title" => self.title = Some(decision),
-                "author" => self.author = Some(vec![decision]),
+                "authors" => self.authors =
+                    Some(decision.split(',').map(|v| v.to_string()).collect::<Vec<String>>()),
                 "coverpath" => self.cover_path = Some(decision),
                 "description" => self.description = Some(decision),
                 "first sentence" => self.first_sentence = Some(decision),
                 "language" => self.language = Some(decision),
                 "openlibrary key" => self.openlibrary_key = Some(decision),
                 "coverurl" => self.cover_url = Some(decision),
-                "isbn" => {
-                    let isbn = decision.parse::<i64>()?;
-                    self.isbn = Some(isbn)
+                "isbn_10" => {
+                    let isbn_10 = decision.parse::<i64>()?;
+                    self.isbn_10 = Some(isbn_10)
+                },
+                "isbn_13" => {
+                    let isbn_13 = decision.parse::<i64>()?;
+                    self.isbn_13 = Some(isbn_13)
                 },
                 "year" => {
                     let year: u32 = decision.parse::<u32>()?;
-                    self.first_publish_year = Some(year)
+                    self.publish_year = Some(year)
                 },
                 "page count" => {
                     let pages: u32 = decision.parse::<u32>()?;
-                    self.total_pages = Some(pages)
+                    self.pagination = Some(pages)
                 },
-                _ => return Err(InvalidInputError.into())
+                _ => bail!("[poll_user] input didn't parse")
             };
             println!("{:#?}", self);
         }
     }
 
     pub async fn db_upsert_book(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        let author_json: Option<Json<&Vec<String>>> = self.author.as_ref().map(Json);
+        let author_json: Option<Json<&Vec<String>>> = self.authors.as_ref().map(Json);
         let set_clause = r#"
             title              = COALESCE(excluded.title,              books.title),
-            author             = COALESCE(excluded.author,             books.author),
+            authors            = COALESCE(excluded.authors,            books.authors),
             cover_url          = COALESCE(excluded.cover_url,          books.cover_url),
             cover_path         = COALESCE(excluded.cover_path,         books.cover_path),
-            total_pages        = COALESCE(excluded.total_pages,        books.total_pages),
+            pagination         = COALESCE(excluded.pagination,         books.pagination),
             description        = COALESCE(excluded.description,        books.description),
             first_sentence     = COALESCE(excluded.first_sentence,     books.first_sentence),
             language           = COALESCE(excluded.language,           books.language),
-            isbn               = COALESCE(excluded.isbn,               books.isbn),
+            isbn_10            = COALESCE(excluded.isbn_10,            books.isbn_10),
+            isbn_13            = COALESCE(excluded.isbn_13,            books.isbn_13),
             openlibrary_key    = COALESCE(excluded.openlibrary_key,    books.openlibrary_key),
-            first_publish_year = COALESCE(excluded.first_publish_year, books.first_publish_year),
+            publish_year       = COALESCE(excluded.publish_year,       books.publish_year),
             current_page       = COALESCE(excluded.current_page,       books.current_page),
             finished           = COALESCE(excluded.finished,           books.finished),
             date_started       = COALESCE(excluded.date_started,       books.date_started),
             last_modified      = ?
             "#;
 
-        let sql = if self.isbn.is_some() {
+        let sql = if self.isbn_10.is_some() {
             format!(r#" INSERT INTO books (
-                title, author, cover_url, cover_path, total_pages, description,
-                first_sentence, language, isbn, openlibrary_key,
-                first_publish_year, current_page, finished, date_started, last_modified, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(isbn) DO UPDATE SET
+                title, authors, cover_url, cover_path, pagination, description,
+                first_sentence, language, isbn_10, isbn_13, openlibrary_key,
+                publish_year, current_page, finished, date_started, last_modified, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(isbn_10) DO UPDATE SET
             {set_clause} "#)
+        } else if self.isbn_13.is_some() {
+            format!(r#" INSERT INTO books (
+                title, authors, cover_url, cover_path, pagination, description,
+                first_sentence, language, isbn_10, isbn_13, openlibrary_key,
+                publish_year, current_page, finished, date_started, last_modified, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(isbn_13) DO UPDATE SET {set_clause} "#)
         } else {
             r#" INSERT INTO books (
-                title, author, cover_url, cover_path, total_pages, description,
-                first_sentence, language, isbn, openlibrary_key,
-                first_publish_year, current_page, finished, date_started, last_modified, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "#
+                title, authors, cover_url, cover_path, pagination, description,
+                first_sentence, language, isbn_10, isbn_13, openlibrary_key,
+                publish_year, current_page, finished, date_started, last_modified, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "#
             .to_string()
         };
 
@@ -148,13 +163,14 @@ impl Book {
             .bind(author_json.as_ref())
             .bind(self.cover_url.as_ref())
             .bind(self.cover_path.as_ref())
-            .bind(to_i64(self.total_pages))
+            .bind(to_i64(self.pagination))
             .bind(self.description.as_ref())
             .bind(self.first_sentence.as_ref())
             .bind(self.language.as_ref())
-            .bind(self.isbn)
+            .bind(self.isbn_10)
+            .bind(self.isbn_13)
             .bind(self.openlibrary_key.as_ref())
-            .bind(to_i64(self.first_publish_year))
+            .bind(to_i64(self.publish_year))
             .bind(to_i64(self.current_page))
             .bind(self.finished)
             .bind(to_i64(self.date_started))
@@ -176,8 +192,8 @@ impl Book {
     pub async fn db_read_to_books(limit: i32, pool: &SqlitePool) -> Result<Vec<Book>> {
         let rows = sqlx::query(
             r#" SELECT
-              title, author, cover_url, cover_path, total_pages, description,
-              first_sentence, language, isbn, openlibrary_key, first_publish_year,
+              title, authors, cover_url, cover_path, pagination, description,
+              first_sentence, language, isbn_10, isbn_13, openlibrary_key, publish_year,
               current_page, finished, date_started, last_modified, created_at
             FROM books
             ORDER BY last_modified DESC
@@ -189,25 +205,26 @@ impl Book {
 
         let mut books: Vec<Book> = Vec::new();
         for row in rows {
-            let author: Option<Json<Vec<String>>> = row.try_get("author")?;
-            let total_pages: Option<i64>         = row.try_get("total_pages")?;
-            let first_publish_year: Option<i64>  = row.try_get("first_publish_year")?;
+            let authors: Option<Json<Vec<String>>> = row.try_get("authors")?;
+            let pagination: Option<i64>         = row.try_get("pagination")?;
+            let publish_year: Option<i64>  = row.try_get("publish_year")?;
             let current_page: Option<i64>        = row.try_get("current_page")?;
             let date_started: Option<i64>        = row.try_get("date_started")?;
             let lm_i64: i64 = row.try_get("last_modified")?;
             let ca_i64: i64 = row.try_get("created_at")?;
             let b = Book {
                 title:              row.try_get("title")?,
-                author:             author.map(|Json(v)| v),
+                authors:            authors.map(|Json(v)| v),
                 cover_url:          row.try_get("cover_url")?,
                 cover_path:         row.try_get("cover_path")?,
-                total_pages:        total_pages.map(|v| v as u32),
+                pagination:        pagination.map(|v| v as u32),
                 description:        row.try_get("description")?,
                 first_sentence:     row.try_get("first_sentence")?,
                 language:           row.try_get("language")?,
-                isbn:               row.try_get("isbn")?,            // Option<i64>
+                isbn_10:               row.try_get("isbn_10")?,            // Option<i64>
+                isbn_13:               row.try_get("isbn_13")?,            // Option<i64>
                 openlibrary_key:    row.try_get("openlibrary_key")?,
-                first_publish_year: first_publish_year.map(|v| v as u32),
+                publish_year: publish_year.map(|v| v as u32),
                 current_page:       current_page.map(|v| v as u32),
                 finished:           row.try_get("finished")?,        // Option<bool> (0/1)
                 date_started:       date_started.map(|v| v as u32),
@@ -220,9 +237,18 @@ impl Book {
     }
 
     pub async fn db_remove(&self, pool: &SqlitePool) -> Result<(), sqlx::Error> {
-        if let Some(isbn) = self.isbn.as_ref() {
-            sqlx::query("DELETE from books WHERE isbn=?") 
-                .bind(isbn)
+        if let Some(isbn_10) = self.isbn_10.as_ref() {
+            sqlx::query("DELETE from books WHERE isbn_10=?") 
+                .bind(isbn_10)
+                .execute(pool)
+                .await?;
+            if let Some(path) = self.cover_path.as_ref() {
+                fs::remove_file(path)?;
+            }
+            return Ok(())
+        } else if let Some(isbn_13) = self.isbn_13.as_ref() {
+            sqlx::query("DELETE from books WHERE isbn_13=?") 
+                .bind(isbn_13)
                 .execute(pool)
                 .await?;
             if let Some(path) = self.cover_path.as_ref() {
@@ -234,66 +260,5 @@ impl Book {
         Ok(())
     }
 }
-
-impl fmt::Debug for Book {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let none: &str = "None";
-
-        let pages = self.total_pages.map(|n| n.to_string());
-        let year = self.first_publish_year.map(|n| n.to_string());
-        let isbn = self.isbn.map(|n| n.to_string());
-
-        let last_modified = self.last_modified.format(&Rfc3339).unwrap_or_default();
-        let created_at = self.created_at.format(&Rfc3339).unwrap_or_default();
-
-        let author: String = match &self.author {
-            Some(v) => v.join(", "),
-            None => none.to_string()
-        };
-
-        f.debug_struct("Book")
-            .field("Title", &self.title.as_deref().unwrap_or(none))
-            .field("Author", &author) 
-            .field("Page Count", &pages.as_deref().unwrap_or(none))
-            .field("Cover URL", &self.cover_url.as_deref().unwrap_or(none))
-            .field("Cover Path", &self.cover_path.as_deref().unwrap_or(none))
-            .field("First Sentence", &self.first_sentence.as_deref().unwrap_or(none))
-            .field("Description", &self.description.as_deref().unwrap_or(none))
-            .field("Year", &year.as_deref().unwrap_or(none))
-            .field("ISBN", &isbn.as_deref().unwrap_or(none))
-            .field("Language", &self.language.as_deref().unwrap_or(none))
-            .field("OpenLibrary Key", &self.openlibrary_key.as_deref().unwrap_or(none))
-            .field("Last Modified", &last_modified)
-            .field("Created at", &created_at)
-            .finish()
-    }
-}
-
-#[derive(Debug)]
-pub struct MissingInfoError; 
-
-impl fmt::Display for MissingInfoError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "missing critical book information from openlibrary")
-    }
-}
-
-impl std::error::Error for MissingInfoError {}
-
-
-#[derive(Debug)]
-pub struct InvalidInputError; 
-
-impl fmt::Display for InvalidInputError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "didn't understand your input")
-    }
-}
-
-impl std::error::Error for InvalidInputError {}
-
-
-
-
 
 

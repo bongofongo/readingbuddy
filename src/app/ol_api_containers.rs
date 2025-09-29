@@ -1,10 +1,7 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::fmt;
 use time::OffsetDateTime;
-
-use super::{
-    books::{MissingInfoError, Book},
-};
+use super::books::Book;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct SearchResp {
@@ -15,7 +12,7 @@ pub struct SearchResp {
 impl SearchResp {
     pub fn get_works(&self) -> Result<&Vec<Works>> {
         match self.docs {
-            None => Err(MissingInfoError.into()),
+            None => bail!("[get_works] couldn't find any docs from openlibrary!"),
             Some(ref vec) => Ok(vec)
         }
     }
@@ -25,7 +22,7 @@ impl SearchResp {
 pub struct Works {
     pub title : Option<String>,
     pub author_name : Option<Vec<String>>,
-    pub first_publish_year : Option<u32>,
+    pub publish_year : Option<u32>,
     pub cover_edition_key : Option<String>, 
     pub key : Option<String>,
     pub language : Option<Vec<String>>,
@@ -38,7 +35,7 @@ pub struct Works {
 impl fmt::Debug for Works {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let none: &str = "None";
-        let year = self.first_publish_year.map(|n| n.to_string());
+        let year = self.publish_year.map(|n| n.to_string());
         let author: String = match &self.author_name {
             Some(v) => v.join(", "),
             None => none.to_string()
@@ -70,7 +67,7 @@ impl Works {
             let s = format!("https://covers.openlibrary.org/b/olid/{k}-M.jpg");
             return Ok(s.to_string());
         };
-        Err(MissingInfoError.into())
+        bail!("[get_cover_image] can't find an image!")
     }
     pub fn to_book(&self) -> Result<Book> {
         fn first_opt (opt: &Option<Vec<String>>) -> Option<String> {
@@ -78,25 +75,31 @@ impl Works {
         }
         let first_first_sentence = first_opt(&self.first_sentence);
         let first_language = first_opt(&self.language);
-        let isbn: Option<i64> = match first_opt(&self.isbn) {
-            Some(s) => Some(s.parse::<i64>()?),
-            None => return Err(MissingInfoError.into())
+        let (isbn_10, isbn_13): (Option<i64>, Option<i64>) = match first_opt(&self.isbn) {
+            Some(isbn) => match isbn.len() {
+                10 => (Some(isbn.parse::<i64>()?), None),
+                13 => (None, Some(isbn.parse::<i64>()?)),
+                _ => (None, None)
+            }
+            None => bail!("[to_book] missing ISBN information")
         };
+
         let cover_url: Option<String> = self.get_cover_image().ok();
 
         let book = Book {
             title: self.title.clone(),
-            author: self.author_name.clone(),
+            authors: self.author_name.clone(),
             cover_url,
             cover_path: None,
-            total_pages: None,
+            pagination: None,
             current_page: None,
             description: None,
             first_sentence: first_first_sentence,
             language: first_language,
-            isbn,
+            isbn_10,
+            isbn_13,
             openlibrary_key: self.key.clone(),
-            first_publish_year: self.first_publish_year,
+            publish_year: self.publish_year,
             finished: None,
             date_started: None,
             last_modified: OffsetDateTime::now_utc(),
@@ -104,7 +107,6 @@ impl Works {
         }; 
 
         Ok(book)
-
     }
 }
 
