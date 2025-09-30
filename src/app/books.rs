@@ -32,27 +32,6 @@ pub struct Book {
 }
 
 impl Book {
-    // pub fn new() -> Self {
-    //     Book { 
-    //         title : None,
-    //         authors : Some(Vec::new()), 
-    //         cover_url : None,
-    //         cover_path : None,
-    //         pagination : None,
-    //         description : None,
-    //         first_sentence : None,
-    //         language : None,
-    //         isbn_10 : None,
-    //         isbn_13 : None,
-    //         openlibrary_key : None,
-    //         publish_year : None,
-    //         current_page : None,
-    //         finished : None,
-    //         date_started : None,
-    //         last_modified : OffsetDateTime::now_utc(),
-    //         created_at : OffsetDateTime::now_utc(),
-    //     }
-    // }
     pub async fn download_image(&mut self, path: &str) -> Result<()> {
         match &self.cover_url {
             Some(url) => {

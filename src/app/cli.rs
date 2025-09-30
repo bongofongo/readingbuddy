@@ -3,6 +3,29 @@ use anyhow::{Result, anyhow};
 use::reqwest::Client;
 use sqlx::sqlite::SqlitePoolOptions;
 
+pub async fn run_cli (db_url: &str, image_path: &str) -> Result<()> {
+    let q: &str = "\nBookBuddy:\
+    \n\tSearch for books [s]\
+    \n\tRead a .epub [r]\
+    \n\tView database [d]\
+    \n\tRemove database entry [rd]\
+    \n\tExit [e]\nenter: ";
+
+    loop {
+        let input = gen_lib::get_user_input(q)?;
+
+        match input.as_ref() {
+            "s" => { let b = user_search_books(db_url, image_path).await?; println!("{b:#?}") },
+            "r" => user_print_epub(db_url, image_path).await?,
+            "d" => user_print_db(10, db_url).await?,
+            "rd" => user_remove_db_entry(db_url).await?,
+            "e" => break,
+            _   => println!("didn't register input.")
+        };
+    }
+    Ok(())
+}
+
 pub async fn user_remove_db_entry(url: &str) -> Result<()> {
     let pool = SqlitePoolOptions::new()
         .max_connections(2)

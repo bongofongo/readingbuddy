@@ -5,6 +5,7 @@ pub mod gen_lib;
 mod epub_lib;
 pub mod cli;
 mod edition;
+pub mod gui;
 
 use books::*;
 use gen_lib::*;
