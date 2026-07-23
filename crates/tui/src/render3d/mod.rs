@@ -1,0 +1,263 @@
+//! Software renderer for the book object.
+//!
+//! Pipeline: [`Scene::frame`] → ray-traced cuboid ([`scene`]) → an [`RgbBuf`]
+//! of subpixels → half-block terminal cells ([`blit`]). Nothing here knows
+//! about ratatui except the blit step, so the presentation layer is a swap
+//! point if a pixel protocol ever becomes viable.
+
+pub mod blit;
+pub mod math;
+pub mod scene;
+pub mod texture;
+
+use std::path::{Path, PathBuf};
+
+use readingbuddy::Book;
+
+pub use blit::RgbBuf;
+pub use scene::Pose;
+
+use math::{Vec3, vec3};
+use texture::Cover;
+
+/// Knobs the UI can turn without touching the renderer internals.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderParams {
+    pub pose: Pose,
+    /// Supersampling factor per axis; 2 means 4 rays per subpixel.
+    pub ss: u8,
+}
+
+impl Default for RenderParams {
+    fn default() -> Self {
+        RenderParams {
+            pose: Pose::default(),
+            ss: 2,
+        }
+    }
+}
+
+/// The physical shape of one edition. Deriving it from the book rather than
+/// hard-coding a box is what stops covers being stretched onto the wrong
+/// aspect, and it gives a doorstop a visibly fatter spine than a novella.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Model {
+    pub half: Vec3,
+}
+
+impl Model {
+    /// Width follows the cover's aspect (clamped to shapes books actually
+    /// come in); thickness follows the page count, defaulting to a 320-page
+    /// paperback when the count is unknown.
+    pub fn new(book: &Book, cover: &Cover) -> Model {
+        let h = scene::HALF_HEIGHT;
+        let width = h * cover.aspect.clamp(0.55, 0.85);
+        let pages = book.page_count.unwrap_or(320).clamp(48, 1400) as f32;
+        let depth = (0.045 + pages / 9000.0).clamp(0.05, 0.20);
+        Model {
+            half: vec3(width, h, depth),
+        }
+    }
+}
+
+/// Identifies which cover is loaded, so the cache knows when to rebuild.
+type CoverKey = (Option<i64>, Option<String>, String, u16);
+
+/// Owns the cover texture and the last rendered frame. Both are cached: a
+/// still book costs nothing per tick, and rotating only re-runs the tracer.
+pub struct Scene {
+    /// Cover paths are stored relative to the data root, so they are resolved
+    /// against the engine's images directory before being opened.
+    images_dir: PathBuf,
+    cover: Option<(CoverKey, Cover)>,
+    frame: Option<(CoverKey, i32, i32, u16, u16, RgbBuf)>,
+}
+
+impl Scene {
+    pub fn new(images_dir: impl Into<PathBuf>) -> Scene {
+        Scene {
+            images_dir: images_dir.into(),
+            cover: None,
+            frame: None,
+        }
+    }
+
+    /// `cover_path` as written by the engine, falling back to the images dir
+    /// when the stored (relative) path doesn't resolve from the current cwd.
+    fn resolve_cover(&self, stored: &str) -> Option<PathBuf> {
+        let direct = Path::new(stored);
+        if direct.exists() {
+            return Some(direct.to_path_buf());
+        }
+        let by_name = self.images_dir.join(direct.file_name()?);
+        by_name.exists().then_some(by_name)
+    }
+
+    fn cover_key(book: &Book, fb_width: u16) -> CoverKey {
+        (
+            book.id,
+            book.cover_path.clone(),
+            book.display_title().to_string(),
+            fb_width,
+        )
+    }
+
+    /// Decode (or synthesize) the cover texture for `book` unless the cached
+    /// one already matches. Textures are prescaled per framebuffer width, so
+    /// a resize reloads.
+    fn ensure_cover(&mut self, book: &Book, cols: u16) {
+        let key = Self::cover_key(book, cols);
+        let stale = self.cover.as_ref().map(|(k, _)| k != &key).unwrap_or(true);
+        if stale {
+            // Three subpixels of texture per cell: enough detail for the front
+            // face at any pose without paying for the full-size JPEG.
+            let target = (cols as u32 * 3).max(24);
+            let loaded = book
+                .cover_path
+                .as_deref()
+                .and_then(|p| self.resolve_cover(p))
+                .and_then(|p| texture::load_cover(&p, target))
+                .unwrap_or_else(|| texture::procedural_cover(book.display_title()));
+            self.cover = Some((key, loaded));
+        }
+    }
+
+    /// Render `book` at `pose` for a `cols` x `rows` region of terminal cells.
+    /// The returned buffer is twice that on both axes — four subpixels per
+    /// cell, which [`blit`] quantizes into one block glyph.
+    pub fn frame(&mut self, book: &Book, cols: u16, rows: u16, params: RenderParams) -> &RgbBuf {
+        let key = Self::cover_key(book, cols);
+        // Quantizing the pose keeps sub-degree jitter from forcing redraws.
+        let yq = (params.pose.yaw * 512.0).round() as i32;
+        let pq = (params.pose.pitch * 512.0).round() as i32;
+        let hit = self
+            .frame
+            .as_ref()
+            .map(|(k, y, p, w, h, _)| k == &key && *y == yq && *p == pq && *w == cols && *h == rows)
+            .unwrap_or(false);
+        if !hit {
+            self.ensure_cover(book, cols);
+            // Scoped so the cover borrow ends before `frame` is reassigned.
+            let fb = {
+                let cover = &self.cover.as_ref().expect("just populated").1;
+                render(cols, rows, &Model::new(book, cover), cover, params)
+            };
+            self.frame = Some((key, yq, pq, cols, rows, fb));
+        }
+        &self.frame.as_ref().expect("just populated").5
+    }
+}
+
+/// Trace one frame for a `cols` x `rows` cell region. Public so `--dump-frame`
+/// and tests can call it directly.
+pub fn render(cols: u16, rows: u16, model: &Model, cover: &Cover, params: RenderParams) -> RgbBuf {
+    let (width, height) = (cols * 2, rows * 2);
+    let mut fb = RgbBuf::new(width, height);
+    if cols == 0 || rows == 0 {
+        return fb;
+    }
+    let rot = params.pose.rotation();
+    // A cell is one unit wide and two tall, so the image's physical aspect is
+    // cols : rows*2 even though the sample grid is square in count.
+    let aspect = cols as f32 / (rows as f32 * 2.0);
+    let origin = vec3(
+        0.0,
+        0.0,
+        scene::camera_distance(aspect, params.pose.pitch, model.half, scene::fill_for(rows)),
+    );
+    let ss = params.ss.max(1) as u16;
+    let samples = (ss * ss) as f32;
+    let (fw, fh) = (width as f32, height as f32);
+
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = Vec3::ZERO;
+            let mut hits = 0.0f32;
+            for sy in 0..ss {
+                for sx in 0..ss {
+                    let u = (x as f32 + (sx as f32 + 0.5) / ss as f32) / fw;
+                    let v = (y as f32 + (sy as f32 + 0.5) / ss as f32) / fh;
+                    let dir = scene::primary_ray(u, v, aspect);
+                    if let Some(c) = scene::shade(origin, dir, rot, model.half, cover) {
+                        sum = sum + c;
+                        hits += 1.0;
+                    }
+                }
+            }
+            // The terminal background is unknown, so partial coverage can't be
+            // alpha-blended — a majority of hits claims the subpixel. The
+            // glyph chooser then resolves coverage at quarter-cell precision.
+            if hits * 2.0 >= samples {
+                fb.set(x, y, Some(sum / hits));
+            }
+        }
+    }
+    fb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn filled_subpixels(fb: &RgbBuf) -> usize {
+        (0..fb.height)
+            .flat_map(|y| (0..fb.width).map(move |x| (x, y)))
+            .filter(|(x, y)| fb.get(*x, *y).is_some())
+            .count()
+    }
+
+    fn test_book() -> Book {
+        Book {
+            id: Some(1),
+            title: Some("Station Eleven".into()),
+            ..Book::default()
+        }
+    }
+
+    #[test]
+    fn renders_a_silhouette_with_empty_margins() {
+        let book = test_book();
+        let cover = texture::procedural_cover("Station Eleven");
+        let model = Model::new(&book, &cover);
+        let fb = render(60, 40, &model, &cover, RenderParams::default());
+        assert_eq!((fb.width, fb.height), (120, 80), "four subpixels per cell");
+        assert!(fb.get(60, 40).is_some(), "centre should be the book");
+        assert!(fb.get(0, 0).is_none(), "corner should be empty");
+        let filled = filled_subpixels(&fb);
+        let total = fb.width as usize * fb.height as usize;
+        assert!(
+            filled > total / 25 && filled < total / 2,
+            "silhouette covered {filled}/{total}"
+        );
+    }
+
+    #[test]
+    fn missing_cover_falls_back_without_touching_the_disk() {
+        let mut scene = Scene::new("database/images");
+        let mut book = test_book();
+        book.cover_path = Some("/nonexistent/cover.jpg".into());
+        let fb = scene.frame(&book, 40, 30, RenderParams::default());
+        assert!(filled_subpixels(fb) > 200, "fallback cover rendered nothing");
+    }
+
+    #[test]
+    fn frames_are_cached_until_the_pose_moves() {
+        let mut scene = Scene::new("database/images");
+        let book = test_book();
+        let params = RenderParams::default();
+        scene.frame(&book, 40, 30, params);
+        let first = scene.frame.as_ref().unwrap().1;
+        scene.frame(&book, 40, 30, params);
+        assert_eq!(scene.frame.as_ref().unwrap().1, first);
+
+        let moved = RenderParams {
+            pose: Pose {
+                yaw: params.pose.yaw + 0.5,
+                ..params.pose
+            },
+            ..params
+        };
+        scene.frame(&book, 40, 30, moved);
+        assert_ne!(scene.frame.as_ref().unwrap().1, first);
+    }
+}
