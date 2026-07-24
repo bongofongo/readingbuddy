@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, Padding};
 use readingbuddy::Book;
 
 use crate::app::App;
@@ -11,16 +11,32 @@ use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let selected = app.library_state.selected();
-    let items: Vec<ListItem> = app
+    let rows: Vec<Line> = app
         .library
         .iter()
         .enumerate()
-        .map(|(i, b)| ListItem::new(row(b, Some(i) == selected)))
+        .map(|(i, b)| row(b, Some(i) == selected))
         .collect();
     let title = format!(" library · {} ", app.library.len());
+
+    // Shrink-wrapped and centred: the box is the size of the library, not the
+    // size of the terminal. The title sits in the top border, so it is part of
+    // what the box has to be wide enough for. `Clear` because a `Block` styles
+    // the cells it doesn't draw but never blanks them, so the ambient layer
+    // would otherwise show through between the rows.
+    let widest = rows.iter().map(|l| l.width() as u16).max().unwrap_or(0);
+    let area = super::list_box(
+        area,
+        widest.max(title.chars().count() as u16),
+        rows.len() as u16,
+    );
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim())
+        .padding(Padding::horizontal(1))
         .title(Span::styled(title, theme::accent()));
     // No `highlight_style`: the reverse is scoped to the title span in `row`,
     // like the main menu, so the colored author/year/progress keep their hues.

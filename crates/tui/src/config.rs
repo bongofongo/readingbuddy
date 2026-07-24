@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 pub struct TuiConfig {
     /// Accent color as `#RRGGBB` (None = the built-in default).
     pub accent: Option<String>,
+    /// Ambient background motif by label (None / unknown = off).
+    pub ambient: Option<String>,
 }
 
 /// Mirror of the CLI's `CliConfig` — only the fields we touch. Deserialize

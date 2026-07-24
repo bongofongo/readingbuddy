@@ -24,13 +24,28 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let bar_h = if area.height >= 6 { 1 } else { 0 };
     let [main, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
 
-    match book_layout(main, app.layout.rotation) {
+    let layout = book_layout(main, app.layout.rotation);
+    // The view occupies a width-capped, centred block rather than the whole
+    // pane, so a wide terminal grows the margins instead of the panel.
+    let block = match layout {
+        BookLayout::Split(o) => super::content_block(main, o),
+        BookLayout::Compact => main,
+    };
+    // The key bar follows the block: left flush against a 200-column terminal
+    // it would hang out alone in the margin, disowned by everything above it.
+    let bar = Rect {
+        x: block.x,
+        width: block.width,
+        ..bar
+    };
+
+    match layout {
         BookLayout::Split(orientation) => {
             // Object + section panel split along one divider. The orientation is
             // the aspect default rotated by the user; the divider position is
             // the default (object capped) plus the user's slide. Title +
             // progress float over the object's top rows.
-            let (object, panel, border) = split_rects(main, orientation, app.layout.divider_bias);
+            let (object, panel, border) = split_rects(block, orientation, app.layout.divider_bias);
             present_book(f, app, object);
             draw_header(f, app.view.as_ref().expect("checked above"), object);
             draw_panel(f, app, panel, border);
@@ -44,11 +59,11 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 .as_ref()
                 .map(|v| v.book.display_title().to_string())
                 .unwrap_or_default();
-            let block = Block::default()
+            let frame = Block::default()
                 .title(Span::styled(format!(" {title} "), theme::title()))
                 .title_alignment(Alignment::Center);
-            let inner = block.inner(main);
-            f.render_widget(block, main);
+            let inner = frame.inner(main);
+            f.render_widget(frame, main);
             if inner.width != 0 && inner.height != 0 {
                 if app.in_section {
                     draw_section(f, app, inner);

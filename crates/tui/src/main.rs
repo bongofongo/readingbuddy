@@ -3,6 +3,7 @@
 //! All engine work goes through `readingbuddy::Engine`; this crate owns every
 //! byte that reaches the terminal.
 
+mod ambient;
 mod app;
 mod clipboard;
 mod config;
@@ -223,18 +224,25 @@ async fn main() -> Result<()> {
         return bench_render(engine, which, &cli).await;
     }
 
-    // Apply the persisted accent before the first draw. A bad/missing file is a
-    // warning, never fatal — it must not brick the TUI.
+    // Apply the persisted settings before the first draw. A bad/missing file is
+    // a warning, never fatal — it must not brick the TUI.
+    let mut motif = ambient::Motif::default();
     match config::load() {
         Ok(cfg) => {
             if let Some(rgb) = cfg.accent.as_deref().and_then(theme::parse_hex) {
                 theme::set_accent(rgb);
+            }
+            // An unrecognised motif is simply "off", not an error: the layer is
+            // decoration, and a hand-edited typo should not stop the app.
+            if let Some(m) = cfg.ambient.as_deref().and_then(ambient::Motif::from_label) {
+                motif = m;
             }
         }
         Err(e) => eprintln!("warning: {e:#}"),
     }
 
     let mut app = app::App::new(engine).await?;
+    app.ambient = ambient::Ambient::new(motif);
     app.params.glyphs = cli.glyphs.into();
     if let Some(selector) = &cli.book {
         let book = resolve_book(&app.engine, selector).await?;

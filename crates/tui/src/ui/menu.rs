@@ -49,6 +49,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(20)
         .saturating_add(4);
     let inner = super::centered(area, width, lines.len() as u16 + 2);
+    // A `Block` styles the cells it doesn't draw but never blanks them, so
+    // without this the ambient layer shows through between the menu rows.
+    f.render_widget(ratatui::widgets::Clear, inner);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim());

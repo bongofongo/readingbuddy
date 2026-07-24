@@ -82,6 +82,29 @@ const MIN_SPLIT_HEIGHT: u16 = 8;
 const BOOK_MAX_COLS: u16 = 50;
 /// The info panel never gets narrower than this at the default divider.
 const PANEL_MIN: u16 = 18;
+/// The info panel stops growing here. Past this it is a wall of prose while the
+/// object sits marooned against the edge of a wide terminal — so surplus width
+/// becomes margin instead of panel. Chosen so `BOOK_MAX_COLS + PANEL_MAX_COLS`
+/// is exactly the width at which `split_widths` already hands out `(50, 48)`:
+/// the two caps agree rather than one quietly overriding the other.
+const PANEL_MAX_COLS: u16 = 48;
+/// A stacked layout (horizontal divider) gives the panel the *whole* width, so
+/// its cap is a line-length measure rather than a sum of two panes. Height is
+/// deliberately left uncapped: what hurts on a big terminal is line length, and
+/// `stacked_object_height` already caps the object's band.
+const STACK_MAX_COLS: u16 = 84;
+/// A shrink-wrapped list box never gets narrower/shorter than this — a box that
+/// hugged two short rows would read as a stray tooltip rather than a panel —
+/// and never wider than the max, so long rows truncate instead of sprawling.
+/// The row floor is deliberately modest: it is there to stop the box collapsing,
+/// not to reserve space nothing is using.
+const LIST_MIN_COLS: u16 = 34;
+const LIST_MAX_COLS: u16 = 100;
+const LIST_MIN_ROWS: u16 = 7;
+/// Columns a list row needs around it: two borders, the two-column gutter
+/// `List` reserves for its highlight symbol, and a column of padding each side
+/// so rows are not pressed against the frame.
+const LIST_CHROME: u16 = 6;
 /// The object band stops growing here (rows) by default. (~20% over 22.)
 pub const BOOK_MAX_ROWS: u16 = 26;
 
@@ -136,6 +159,52 @@ pub fn split_widths(width: u16) -> (u16, u16) {
 /// so a very tall pane gives the surplus to the sections, not the book.
 pub fn stacked_object_height(height: u16) -> u16 {
     (height / 2).clamp(1, BOOK_MAX_ROWS)
+}
+
+/// The rect the book view actually occupies inside `area`: capped along the
+/// width and centred, so a wide terminal becomes symmetric margin rather than a
+/// giant panel with the object pinned to the left edge.
+///
+/// Everything downstream — [`split_rects`], [`biased_span`], the divider bias,
+/// `t` rotation — runs against *this* rect rather than the raw pane, so `[`,
+/// `]` and `t` keep exactly the meaning they had; they simply act on a smaller
+/// stage. Composing the cap outside `split_rects` (instead of teaching it to
+/// stop tiling) is what keeps that function's contract, and its tests, intact.
+///
+/// The orientation is decided from the **uncapped** pane by
+/// [`effective_orientation`]: the user's sense of the shape is about the
+/// terminal they actually have, and deriving the cap from the orientation while
+/// deriving the orientation from the cap would be circular.
+pub fn content_block(area: Rect, o: PaneOrientation) -> Rect {
+    let max = if o.is_vertical_divider() {
+        BOOK_MAX_COLS + PANEL_MAX_COLS
+    } else {
+        STACK_MAX_COLS
+    };
+    let width = area.width.min(max);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        width,
+        ..area
+    }
+}
+
+/// A centred box just big enough to hold `rows` list rows of `content` columns.
+///
+/// The list screens shrink-wrap rather than filling the pane: a library of three
+/// books is a small box in the middle of the terminal, not a mostly-empty frame
+/// stretched to the edges. Both axes are clamped — see [`LIST_MIN_COLS`] — and
+/// `centered` clamps again to whatever the pane actually affords, so a long
+/// library still grows to fill the height and scrolls from there.
+///
+/// `content` is the widest row's own width; [`LIST_CHROME`] is what has to fit
+/// around it.
+pub fn list_box(area: Rect, content: u16, rows: u16) -> Rect {
+    let width = content
+        .saturating_add(LIST_CHROME)
+        .clamp(LIST_MIN_COLS, LIST_MAX_COLS);
+    let height = rows.saturating_add(2).max(LIST_MIN_ROWS);
+    centered(area, width, height)
 }
 
 /// Carve `area` into (object, panel, panel-border-side) for an orientation and
@@ -210,6 +279,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let status_h = if status_line.is_some() { 1 } else { 0 };
     let [body, status] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).areas(area);
+
+    // The ambient layer goes down first, under everything. Each screen's
+    // content box `Clear`s itself, so nothing shows through the text — a
+    // `Block` only styles the cells it doesn't draw, it doesn't blank them.
+    if app.ambient_visible() {
+        let glyphs = app.params.glyphs;
+        app.ambient.draw(f.buffer_mut(), body, glyphs);
+    }
 
     match app.screen {
         Screen::Menu => menu::draw(f, app, body),
@@ -370,6 +447,129 @@ mod tests {
         assert!(huge <= 120 - MIN_PANE);
         let tiny = split_rects(a, PaneOrientation::BookLeft, -5.0).0.width;
         assert!(tiny >= MIN_PANE);
+    }
+
+    #[test]
+    fn content_block_caps_and_centres() {
+        // At 200 wide the block is 98 (50 book + 48 panel), centred, so the
+        // gutters are equal and the panel stops swallowing the surplus.
+        let a = Rect::new(0, 0, 200, 40);
+        let block = content_block(a, PaneOrientation::BookLeft);
+        assert_eq!(block.width, BOOK_MAX_COLS + PANEL_MAX_COLS);
+        assert_eq!(block.x, (200 - 98) / 2);
+        assert_eq!(block.height, 40, "height is never capped");
+
+        // And the two caps agree exactly: splitting the capped block hands out
+        // precisely BOOK_MAX_COLS and PANEL_MAX_COLS.
+        let (object, panel, _) = split_rects(block, PaneOrientation::BookLeft, 0.0);
+        assert_eq!(object.width, BOOK_MAX_COLS);
+        assert_eq!(panel.width, PANEL_MAX_COLS);
+    }
+
+    #[test]
+    fn content_block_is_inert_on_a_narrow_pane() {
+        // Below the cap nothing moves — small and medium panes are unchanged.
+        for width in [26u16, 60, 80, 98] {
+            let a = Rect::new(0, 0, width, 30);
+            let block = content_block(a, PaneOrientation::BookLeft);
+            assert_eq!(block, a, "the cap bit at {width} columns");
+        }
+    }
+
+    #[test]
+    fn a_stacked_layout_is_capped_by_line_length() {
+        let a = Rect::new(0, 0, 200, 60);
+        let block = content_block(a, PaneOrientation::BookTop);
+        assert_eq!(block.width, STACK_MAX_COLS);
+        assert_eq!(block.x, (200 - STACK_MAX_COLS) / 2);
+        // Height is deliberately uncapped: the panel wants rows for its lists.
+        assert_eq!(block.height, 60);
+    }
+
+    /// The cap's real guarantee, swept over every width, orientation and slide.
+    ///
+    /// Note what is *not* claimed: that the panel is always within
+    /// `PANEL_MAX_COLS`. On a 61-column pane with the divider slid hard left the
+    /// panel legitimately takes 50 — there is no surplus to give away, and
+    /// capping it would open a gutter inside an already-cramped pane. The cap
+    /// governs surplus width, so it binds at the default divider and the block
+    /// bounds everything else.
+    #[test]
+    fn the_content_block_bounds_both_panes() {
+        for width in (26..=400).step_by(7) {
+            for o in PaneOrientation::CW {
+                let area = Rect::new(0, 0, width, 40);
+                let block = content_block(area, o);
+                assert!(
+                    block.x >= area.x && block.x + block.width <= area.x + area.width,
+                    "the block escaped the pane at {width}/{o:?}"
+                );
+
+                // At the default divider, the cap binds.
+                let (_, panel, _) = split_rects(block, o, 0.0);
+                if o.is_vertical_divider() {
+                    assert!(
+                        panel.width <= PANEL_MAX_COLS,
+                        "panel {} > cap at {width}/{o:?}",
+                        panel.width
+                    );
+                }
+
+                // At any slide, both panes stay inside the block and alive.
+                for bias in [-1.0f32, -0.3, 0.0, 0.3, 1.0] {
+                    let (object, panel, _) = split_rects(block, o, bias);
+                    for pane in [object, panel] {
+                        assert!(pane.width > 0 && pane.height > 0);
+                        assert!(
+                            pane.x >= block.x && pane.x + pane.width <= block.x + block.width,
+                            "a pane escaped the block at {width}/{o:?}/{bias}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_box_shrink_wraps_its_contents() {
+        // Three short rows on a big terminal: a small centred box, not a frame
+        // stretched to the edges.
+        let area = Rect::new(0, 0, 200, 50);
+        let r = list_box(area, 40, 3);
+        assert_eq!(r.width, 40 + LIST_CHROME);
+        assert_eq!(r.height, LIST_MIN_ROWS, "3 rows is under the floor");
+        assert_eq!(r.x, (200 - (40 + LIST_CHROME)) / 2);
+        assert_eq!(r.y, (50 - LIST_MIN_ROWS) / 2);
+
+        // More rows: the box grows with them.
+        let r = list_box(area, 40, 20);
+        assert_eq!(r.height, 22);
+        assert_eq!(r.y, (50 - 22) / 2);
+    }
+
+    #[test]
+    fn a_list_box_stays_between_its_floor_and_its_ceiling() {
+        let area = Rect::new(0, 0, 200, 50);
+        // A tiny library does not produce a tooltip-sized box.
+        assert_eq!(list_box(area, 2, 0).width, LIST_MIN_COLS);
+        // A very long row truncates rather than sprawling across the terminal.
+        assert_eq!(list_box(area, 400, 5).width, LIST_MAX_COLS);
+        // A huge library is clamped by the pane, and still centred.
+        let r = list_box(area, 40, 500);
+        assert_eq!(r.height, 50);
+        assert_eq!(r.y, 0);
+    }
+
+    #[test]
+    fn a_list_box_survives_a_pane_smaller_than_its_floor() {
+        // `every_screen_draws_at_every_size` goes to 1x1; the floors must not
+        // push the box outside the pane.
+        for (w, h) in [(1u16, 1u16), (4, 2), (20, 8), (30, 6)] {
+            let area = Rect::new(0, 0, w, h);
+            let r = list_box(area, 60, 40);
+            assert!(r.width <= w && r.height <= h);
+            assert!(r.x + r.width <= w && r.y + r.height <= h);
+        }
     }
 
     #[test]

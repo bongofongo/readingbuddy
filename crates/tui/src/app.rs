@@ -242,6 +242,9 @@ pub struct App {
     pub rtt_sample: Option<crate::render3d::caps::Rtt>,
     /// The user's book-view layout tweaks (pane rotation + divider slide).
     pub layout: crate::ui::LayoutPrefs,
+    /// The ambient background layer for the non-book screens. Off by default;
+    /// the persisted setting is applied at startup.
+    pub ambient: crate::ambient::Ambient,
     /// Idle spin on/off.
     pub spinning: bool,
     pub show_options: bool,
@@ -289,6 +292,7 @@ impl App {
             perf: crate::perf::Recorder::disabled(crate::perf::Meter::new()),
             rtt_sample: None,
             layout: crate::ui::LayoutPrefs::default(),
+            ambient: crate::ambient::Ambient::default(),
             spinning: true,
             show_options: false,
             status: None,
@@ -453,8 +457,42 @@ impl App {
             && self.api_key.is_none()
     }
 
-    /// Advance the idle animation. Returns true when something moved.
+    /// Whether the ambient layer is on screen right now.
+    ///
+    /// Deliberately **not** folded into [`App::animating`]. That one means "the
+    /// book is moving" and the renderer believes it: widen it and a parked book
+    /// reports `moving = true` forever, so the hybrid never transmits its crisp
+    /// frame. The two are mutually exclusive by construction — ambient never
+    /// runs on `Screen::Book` — but they are kept apart because conflating them
+    /// is precisely the regression that would not show up in a test of either.
+    pub fn ambient_visible(&self) -> bool {
+        self.ambient.motif != crate::ambient::Motif::Off && self.screen != Screen::Book
+    }
+
+    /// Whether the ambient layer is *moving*. Separate from
+    /// [`App::ambient_visible`] on purpose: under a modal the field keeps being
+    /// drawn but stops drifting, so opening a search box calms the background
+    /// instead of making it vanish — and a frozen field asks for no redraws.
+    fn ambient_animating(&self) -> bool {
+        self.ambient_visible()
+            && self.input.is_none()
+            && self.note_editor.is_none()
+            && self.api_key.is_none()
+    }
+
+    /// Advance the idle animations. Returns true when something moved.
     pub fn tick(&mut self) -> bool {
+        // Both arms are evaluated before the `||`. Today the two are mutually
+        // exclusive — ambient never runs on `Screen::Book`, the book only
+        // animates there — so short-circuiting would happen to be harmless;
+        // written this way so it stays harmless if that ever stops being true.
+        let book = self.tick_book();
+        let ambient = self.tick_ambient();
+        book || ambient
+    }
+
+    /// Advance the book's spin + nod.
+    fn tick_book(&mut self) -> bool {
         if !self.animating() {
             return false;
         }
@@ -462,6 +500,15 @@ impl App {
         self.params.pose.yaw = wrap_angle(self.params.pose.yaw + SPIN_SPEED);
         self.params.pose.pitch = self.base_pitch + self.phase.sin() * NOD;
         true
+    }
+
+    /// Advance the ambient clock. Returns true only on the ticks where the
+    /// layer's own (much slower) frame rate actually produces a new frame.
+    fn tick_ambient(&mut self) -> bool {
+        if !self.ambient_animating() {
+            return false;
+        }
+        self.ambient.advance(TICK.as_secs_f32())
     }
 
     // ---- action dispatch ---------------------------------------------------
@@ -517,6 +564,7 @@ impl App {
                 &theme::to_hex(theme::accent_rgb()),
             ),
             (Screen::Settings, Action::EditApiKey) => self.open_api_key(),
+            (Screen::Settings, Action::CycleAmbient) => self.cycle_ambient(),
             (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
 
             (Screen::Book, action) => self.handle_book(action).await?,
@@ -925,7 +973,7 @@ impl App {
         self.accent_idx = (((self.accent_idx as i64 + dir) % n + n) % n) as usize;
         let (name, rgb) = theme::PRESETS[self.accent_idx];
         theme::set_accent(rgb);
-        self.persist_accent();
+        self.persist_config();
         self.status = Some(format!("accent: {name} {}", theme::to_hex(rgb)));
     }
 
@@ -936,18 +984,40 @@ impl App {
             .iter()
             .position(|(_, p)| *p == rgb)
             .unwrap_or(self.accent_idx);
-        self.persist_accent();
+        self.persist_config();
         self.status = Some(format!("accent: {}", theme::to_hex(rgb)));
     }
 
-    /// Write the current accent to the TUI config file. A failure is a status
-    /// warning, never fatal.
-    fn persist_accent(&mut self) {
-        let cfg = TuiConfig {
-            accent: Some(theme::to_hex(theme::accent_rgb())),
-        };
+    /// Cycle the ambient motif, apply it live, persist.
+    fn cycle_ambient(&mut self) {
+        let motif = self.ambient.motif.next();
+        self.ambient = crate::ambient::Ambient::new(motif);
+        self.persist_config();
+        self.status = Some(format!("ambient: {}", motif.label()));
+    }
+
+    /// Write the TUI config file from **live state**, every field of it.
+    ///
+    /// Not a struct literal of the one field being changed: `config::save`
+    /// serializes the whole struct over the file, so a literal silently blanks
+    /// every other setting — change the accent and the ambient motif is gone.
+    /// That is the same overwrite hazard `config.rs` documents between the two
+    /// config *files*, and it is just as easy to reproduce inside one of them.
+    /// A failure is a status warning, never fatal.
+    fn persist_config(&mut self) {
+        let cfg = self.config_snapshot();
         if let Err(e) = config::save(&cfg) {
-            self.status = Some(format!("could not save accent: {e:#}"));
+            self.status = Some(format!("could not save settings: {e:#}"));
+        }
+    }
+
+    /// Every persisted TUI setting, read from live state. Split out from
+    /// [`App::persist_config`] so the "no field gets blanked" invariant is
+    /// testable without writing to the real config file.
+    fn config_snapshot(&self) -> TuiConfig {
+        TuiConfig {
+            accent: Some(theme::to_hex(theme::accent_rgb())),
+            ambient: Some(self.ambient.motif.label().to_string()),
         }
     }
 
@@ -1534,6 +1604,117 @@ mod tests {
         meter.snapshot().since(start).text
     }
 
+    /// Bytes ratatui put on the wire for `ticks` ticks of the ambient layer,
+    /// parked on the menu.
+    ///
+    /// The same harness as [`glyph_spin_bytes`], and for the same reason: this
+    /// repo's stated lesson is that its own numbers did not show the 7.1 MB/s
+    /// disaster, because the cost lived somewhere nothing was counting. A
+    /// background that repaints scattered cells across the *whole* terminal is
+    /// exactly the shape of thing that could repeat it, so it gets measured
+    /// rather than reasoned about.
+    ///
+    /// `Motif::Off` is a meaningful argument here: it never redraws at all, so
+    /// it reads 0 and makes the layer's cost a subtraction.
+    async fn ambient_bytes(motif: crate::ambient::Motif, w: u16, h: u16, ticks: u32) -> u64 {
+        use crate::perf::{ByteClass, CountingWriter, Meter};
+        use ratatui::backend::CrosstermBackend;
+        use ratatui::{TerminalOptions, Viewport};
+
+        let mut app = test_app().await;
+        app.screen = Screen::Menu;
+        app.ambient = crate::ambient::Ambient::new(motif);
+
+        let meter = Meter::new();
+        let backend = CrosstermBackend::new(CountingWriter::new(
+            Vec::new(),
+            meter.clone(),
+            ByteClass::Text,
+        ));
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, w, h)),
+            },
+        )
+        .expect("terminal");
+
+        redraw(&mut terminal, &mut app).expect("first draw");
+        let start = meter.snapshot();
+        for _ in 0..ticks {
+            // Exactly the live loop's rule: only a tick that reports a change
+            // costs a redraw. Measuring an unconditional redraw would measure a
+            // program we do not ship.
+            if app.tick() {
+                redraw(&mut terminal, &mut app).expect("draw");
+            }
+        }
+        meter.snapshot().since(start).text
+    }
+
+    /// What the ambient layer costs on the wire, by motif and terminal size.
+    ///
+    /// `cargo test --release -p readingbuddy-tui -- --ignored --nocapture ambient_wire_rate`
+    #[tokio::test]
+    #[ignore = "timing, not correctness; run on a release build"]
+    async fn ambient_wire_rate() {
+        use crate::ambient::Motif;
+        let ticks = 60;
+        println!(
+            "{:>10} {:>10} {:>10} {:>10}",
+            "motif", "rect", "B/tick", "MB/s"
+        );
+        for motif in Motif::ALL {
+            for (w, h) in [(80u16, 24u16), (120, 40), (200, 50)] {
+                let bytes = ambient_bytes(motif, w, h, ticks).await;
+                println!(
+                    "{:>10} {:>10} {:>10} {:>10.4}",
+                    motif.label(),
+                    format!("{w}x{h}"),
+                    bytes / ticks as u64,
+                    bytes as f64 / (ticks as f64 * TICK.as_secs_f64()) / 1.0e6
+                );
+            }
+        }
+        println!("(off never redraws, so it is the baseline the others subtract from)");
+    }
+
+    #[tokio::test]
+    async fn the_ambient_layer_stays_inside_its_byte_budget() {
+        use crate::ambient::Motif;
+        let ticks = 60; // three seconds at the 20fps tick
+
+        // Off is the baseline: a menu with no motif is completely idle, and
+        // that is the property that makes the layer opt-in rather than a tax.
+        assert_eq!(
+            ambient_bytes(Motif::Off, 120, 40, ticks).await,
+            0,
+            "an idle menu drew something"
+        );
+
+        // Measured at 120x40: motes 0.002 MB/s, contours 0.018 — against 0.131
+        // for a full glyph book spin on the same pane. The ceiling keeps ~3x
+        // headroom over contours on purpose: it exists to catch a change that
+        // makes the layer *categorically* expensive, not to freeze a number
+        // that will drift with tuning.
+        //
+        // It has already earned its keep once. Drawing the contour bands with a
+        // brightness ramp instead of one flat ink cost 0.174 MB/s here — every
+        // lit cell's averaged colour moved a fraction per frame, so ratatui's
+        // diff repainted the whole terminal. Nothing looked wrong on screen.
+        for motif in [Motif::Motes, Motif::Contours] {
+            let bytes = ambient_bytes(motif, 120, 40, ticks).await;
+            let per_second = bytes as f64 / (ticks as f64 * TICK.as_secs_f64());
+            assert!(
+                per_second < 0.05e6,
+                "{} now costs {:.3} MB/s ({bytes} bytes over {ticks} ticks)",
+                motif.label(),
+                per_second / 1.0e6
+            );
+            assert!(bytes > 0, "{} drew nothing at all", motif.label());
+        }
+    }
+
     /// What a glyph spin actually puts on the wire, across rect sizes.
     ///
     /// The reporting counterpart to the pass/fail gate below, and the glyph
@@ -1627,21 +1808,144 @@ mod tests {
         );
     }
 
+    /// The invariant that keeps the kitty hybrid alive.
+    ///
+    /// The ambient layer has to make the event loop redraw, and the obvious way
+    /// to do that — folding it into `animating()` — would be silently fatal: a
+    /// parked book would report `moving = true` forever and never transmit its
+    /// crisp frame. Nothing about the ambient layer would look broken, so this
+    /// is the test that has to notice.
+    #[tokio::test]
+    async fn ambient_dirties_without_claiming_the_book_is_moving() {
+        let mut app = test_app().await;
+        app.screen = Screen::Menu;
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Motes);
+
+        // Somewhere in a second of ticks the ambient clock must ask for a
+        // redraw — otherwise the layer is frozen and the feature does nothing.
+        let asked = (0..20).filter(|_| app.tick()).count();
+        assert!(asked > 0, "the ambient layer never asked for a redraw");
+        assert!(
+            !app.animating(),
+            "ambient motion must never register as the book moving"
+        );
+
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        redraw(&mut terminal, &mut app).expect("draw");
+        assert_eq!(
+            app.params.moving,
+            Some(false),
+            "the renderer was told the book is moving while it sat parked"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_book_screen_has_no_ambient() {
+        // The object owns that pane; a second moving thing beside it is noise.
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.screen = Screen::Book;
+        app.spinning = false;
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Contours);
+
+        assert!(!app.ambient_visible());
+        // A parked book on the book screen is fully idle whatever the motif is.
+        assert!(
+            (0..40).all(|_| !app.tick()),
+            "the book screen redrew for the ambient layer"
+        );
+
+        // And the drawn frame is identical to the one with the layer off.
+        let draw_with = |app: &mut App| {
+            let mut t = ratatui::Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+            t.draw(|f| ui::draw(f, app)).expect("draw");
+            t.backend().buffer().clone()
+        };
+        let with = draw_with(&mut app);
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Off);
+        let without = draw_with(&mut app);
+        assert_eq!(with, without, "ambient leaked onto the book screen");
+    }
+
+    #[tokio::test]
+    async fn an_open_modal_freezes_the_ambient() {
+        // Still drawn — vanishing on keystroke would be worse than drifting —
+        // but no longer moving, and so no longer asking for redraws.
+        let mut app = test_app().await;
+        app.screen = Screen::Search;
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Motes);
+        app.start_input(InputContext::SearchQuery, "search", "");
+
+        assert!(app.ambient_visible(), "the layer should still be drawn");
+        assert!(
+            (0..40).all(|_| !app.tick()),
+            "the ambient layer kept drifting under an open input box"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_motif_setting_does_not_disturb_the_book_spin() {
+        // The book's own path must be untouched by the ambient plumbing.
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.spinning = true;
+        app.screen = Screen::Book;
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Motes);
+
+        let before = app.params.pose.yaw;
+        assert!(app.tick(), "a spinning book must still request its redraw");
+        assert_ne!(app.params.pose.yaw, before, "the book stopped turning");
+    }
+
+    /// `config::save` serializes the whole struct over the file, so persisting
+    /// one setting from a struct literal silently blanks every other one —
+    /// change the accent and the ambient motif is gone. Asserted on
+    /// `config_snapshot`, which is what every persist path writes.
+    ///
+    /// Deliberately does *not* call `persist_config`: that writes to the user's
+    /// real `~/.config/readingbuddy/tui.toml`, and a test has no business
+    /// touching it.
+    #[tokio::test]
+    async fn persisting_carries_every_setting_not_just_the_changed_one() {
+        let mut app = test_app().await;
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Contours);
+        theme::set_accent(0x12_34_56);
+
+        let cfg = app.config_snapshot();
+        assert_eq!(cfg.ambient.as_deref(), Some("contours"));
+        assert_eq!(cfg.accent.as_deref(), Some("#123456"));
+    }
+
     #[tokio::test]
     async fn every_screen_draws_at_every_size() {
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
         app.open_book(book).await.expect("open");
 
-        for (w, h) in [
-            (120, 40),
-            (80, 24),
-            (40, 30),
-            (30, 30),
-            (20, 8),
-            (4, 2),
-            (1, 1),
-        ] {
+        // Every motif, because the ambient layer's sizing arithmetic runs on
+        // every non-book screen and 1x1 is where it is likeliest to go wrong.
+        for motif in crate::ambient::Motif::ALL {
+            app.ambient = crate::ambient::Ambient::new(motif);
+            for (w, h) in [
+                (120, 40),
+                (80, 24),
+                (40, 30),
+                (30, 30),
+                (20, 8),
+                (4, 2),
+                (1, 1),
+            ] {
+                draw_every_screen_once(&mut app, w, h).await;
+            }
+        }
+    }
+
+    /// The body of [`every_screen_draws_at_every_size`], for one terminal size.
+    async fn draw_every_screen_once(app: &mut App, w: u16, h: u16) {
+        {
+            let app = &mut *app;
             let mut terminal = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
             for screen in [
                 Screen::Menu,
@@ -1664,7 +1968,7 @@ mod tests {
                         app.clamp_tab_selection();
                         for options in [false, true] {
                             app.show_options = options;
-                            terminal.draw(|f| ui::draw(f, &mut app)).expect("draw");
+                            terminal.draw(|f| ui::draw(f, app)).expect("draw");
                         }
                     }
                 }
@@ -1672,18 +1976,14 @@ mod tests {
             // With a text input and a confirmation overlaid.
             app.screen = Screen::Search;
             app.start_input(InputContext::SearchQuery, "search", "pachinko");
-            terminal
-                .draw(|f| ui::draw(f, &mut app))
-                .expect("draw input");
+            terminal.draw(|f| ui::draw(f, app)).expect("draw input");
             app.input = None;
             app.screen = Screen::Library;
             app.confirm = Some(Confirm::RemoveBook {
                 id: 1,
                 title: "X".into(),
             });
-            terminal
-                .draw(|f| ui::draw(f, &mut app))
-                .expect("draw confirm");
+            terminal.draw(|f| ui::draw(f, app)).expect("draw confirm");
             app.confirm = None;
             // With the note editor open over the book view.
             app.screen = Screen::Book;
@@ -1696,9 +1996,7 @@ mod tests {
                 },
                 editor: TextEditor::new("a line\nanother line"),
             });
-            terminal
-                .draw(|f| ui::draw(f, &mut app))
-                .expect("draw editor");
+            terminal.draw(|f| ui::draw(f, app)).expect("draw editor");
             app.note_editor = None;
             // With the API-key modal open over the settings screen, at each stage.
             app.screen = Screen::Settings;
@@ -1717,9 +2015,7 @@ mod tests {
                 },
             ] {
                 app.api_key = Some(ApiKeyModal { stage });
-                terminal
-                    .draw(|f| ui::draw(f, &mut app))
-                    .expect("draw api key");
+                terminal.draw(|f| ui::draw(f, app)).expect("draw api key");
             }
             app.api_key = None;
         }
@@ -2180,6 +2476,110 @@ mod tests {
         assert!(app.quit);
     }
 
+    /// Print the list screens: the shrink-wrapped box, and beside each row a
+    /// `#` under every cell carrying `REVERSED`.
+    ///
+    /// The mask is the point. Selection styling is invisible in a symbol dump,
+    /// which is how a highlight that reversed the *whole* line rather than just
+    /// the title went unnoticed — the text is identical either way.
+    ///
+    /// `cargo test -p readingbuddy-tui -- --ignored --nocapture print_lists`
+    #[test]
+    #[ignore = "development aid: prints the list screens"]
+    fn print_lists() {
+        use ratatui::style::Modifier;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = rt.block_on(test_app());
+
+        for extra in ["Piranesi", "The Overstory", "Klara and the Sun"] {
+            app.library.push(Book {
+                title: Some(extra.into()),
+                authors: vec!["Someone".into()],
+                publish_year: Some(2020),
+                ..Book::default()
+            });
+        }
+        app.library_state.select(Some(0));
+        app.search_results = app
+            .library
+            .iter()
+            .map(|b| readingbuddy::RankedResult {
+                book: b.clone(),
+                sources: Vec::new(),
+                score: 1.0,
+            })
+            .collect();
+        app.search_state.select(Some(0));
+
+        let (w, h) = (96u16, 16u16);
+        for screen in [Screen::Library, Screen::Search] {
+            app.screen = screen;
+            let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| ui::draw(f, &mut app)).unwrap();
+            println!("=== {screen:?} {w}x{h} ===");
+            let buf = t.backend().buffer();
+            for y in 0..h {
+                let text: String = (0..w)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect();
+                let mask: String = (0..w)
+                    .map(|x| {
+                        if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                            '#'
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect();
+                if mask.trim().is_empty() {
+                    println!("|{text}|");
+                } else {
+                    println!("|{text}|  reversed: |{}|", mask.trim_end());
+                }
+            }
+        }
+    }
+
+    /// Print the menu under each motif, a few frames apart.
+    ///
+    /// The only honest review of a look is looking at it, and the byte budget
+    /// says nothing about whether the field reads as calm or as noise.
+    ///
+    /// `cargo test -p readingbuddy-tui -- --ignored --nocapture print_ambient`
+    #[test]
+    #[ignore = "development aid: prints the ambient layer"]
+    fn print_ambient() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = rt.block_on(test_app());
+        app.screen = Screen::Menu;
+        let (w, h) = (110u16, 32u16);
+
+        for motif in crate::ambient::Motif::ALL {
+            if motif == crate::ambient::Motif::Off {
+                continue; // its clock never advances — nothing to show, and
+                // waiting for a frame that never arrives hangs.
+            }
+            app.ambient = crate::ambient::Ambient::new(motif);
+            for frame in [0u32, 12, 40] {
+                // Drive the real clock, so this shows the frames the app shows.
+                while app.ambient.frame_index() < frame {
+                    app.tick();
+                }
+                let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+                t.draw(|f| ui::draw(f, &mut app)).unwrap();
+                println!("=== {} · frame {frame} ===", motif.label());
+                let buf = t.backend().buffer();
+                for y in 0..h {
+                    let row: String = (0..w)
+                        .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                        .collect();
+                    println!("|{row}|");
+                }
+            }
+        }
+    }
+
     #[test]
     #[ignore = "development aid: prints the composed layout"]
     fn print_layout() {
@@ -2188,7 +2588,9 @@ mod tests {
         let book = app.library.first().cloned().unwrap();
         rt.block_on(app.open_book(book)).unwrap();
         app.show_options = true;
-        for (w, h) in [(110, 32), (44, 26)] {
+        // A wide case too: the book block is capped and centred above ~98
+        // columns, and that is the only place to see it.
+        for (w, h) in [(110, 32), (44, 26), (180, 44)] {
             let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| ui::draw(f, &mut app)).unwrap();
             println!("=== {w}x{h} ===");

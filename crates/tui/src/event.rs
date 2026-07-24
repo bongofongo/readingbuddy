@@ -43,6 +43,8 @@ pub enum Action {
     Query,
     /// Enter the Google Books API key (settings screen).
     EditApiKey,
+    /// Cycle the ambient background motif (settings screen).
+    CycleAmbient,
 }
 
 pub fn map_key(key: KeyEvent) -> Option<Action> {
@@ -82,6 +84,7 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('d') => Some(Action::Delete),
         KeyCode::Char('/') => Some(Action::Query),
         KeyCode::Char('g') => Some(Action::EditApiKey),
+        KeyCode::Char('a') => Some(Action::CycleAmbient),
         _ => None,
     }
 }
@@ -112,6 +115,14 @@ mod tests {
         assert_eq!(
             map_key(press(KeyCode::Char('b'))),
             map_key(press(KeyCode::Esc))
+        );
+    }
+
+    #[test]
+    fn a_cycles_the_ambient_motif() {
+        assert_eq!(
+            map_key(press(KeyCode::Char('a'))),
+            Some(Action::CycleAmbient)
         );
     }
 

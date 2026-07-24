@@ -25,6 +25,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ("vault", cfg.vault_dir.display().to_string()),
         ("google key", key.to_string()),
         ("glyph set", format!("{:?}", app.params.glyphs)),
+        ("ambient", app.ambient.motif.label().to_string()),
         ("renderer", format!("{:?}", app.render_mode).to_lowercase()),
         ("terminal", describe_caps(&app.caps)),
     ];
@@ -56,6 +57,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(" hex   ", theme::dim()),
         Span::styled("enter", theme::key()),
         Span::styled(" glyphs   ", theme::dim()),
+        Span::styled("a", theme::key()),
+        Span::styled(" ambient   ", theme::dim()),
         Span::styled("g", theme::key()),
         Span::styled(" api key   ", theme::dim()),
         Span::styled("esc", theme::key()),
@@ -69,6 +72,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(20)
         .saturating_add(4);
     let inner = super::centered(area, width, lines.len() as u16 + 2);
+    // See `menu::draw`: the ambient layer would otherwise show through.
+    f.render_widget(ratatui::widgets::Clear, inner);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim());

@@ -273,6 +273,48 @@ pub fn blit(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
     }
 }
 
+/// Draw a framebuffer that is known to be **sparse** into `area`, compositing
+/// over whatever is already in the buffer.
+///
+/// Two differences from [`blit`], and both are the point:
+///
+/// - **Cells with no coverage are left untouched.** `blit` owns its rect and
+///   stamps every cell; this one is a layer, so an empty cell must keep the
+///   symbol and colors already there.
+/// - **The two-color split is dictated by coverage alone**, never by the
+///   `O(2^n)` error search `plan` runs on a fully covered cell. That search is
+///   right for the book — it is what keeps cover detail — but it costs 256
+///   iterations per cell at octant density, and a background spread over a
+///   whole terminal cannot afford it. A sparse single-hue layer has nothing to
+///   find anyway: every lit subpixel in a cell is the same ink, so the coverage
+///   mask *is* the best split.
+///
+/// This is a second path beside [`blit`], never a replacement — the same reason
+/// `raster.rs` sits beside `render`. The book's output stays byte-identical by
+/// construction.
+pub fn blit_sparse(fb: &RgbBuf, area: Rect, buf: &mut Buffer, set: GlyphSet) {
+    for row in 0..area.height {
+        for col in 0..area.width {
+            let (cell, n) = fb.cell(col, row, set);
+            let samples = &cell[..n];
+            let covered: usize = samples
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.is_some())
+                .map(|(i, _)| 1usize << i)
+                .sum();
+            if covered == 0 {
+                continue;
+            }
+            // Background is deliberately not set: the layer tints the glyph and
+            // leaves the terminal's own background showing through around it.
+            buf[(area.x + col, area.y + row)]
+                .set_symbol(set.glyph(covered))
+                .set_fg(to_color(mean(samples, covered)));
+        }
+    }
+}
+
 /// Render the framebuffer to plain text with ANSI truecolor escapes — the
 /// `--dump-frame` path, which needs no terminal setup at all.
 pub fn to_ansi(fb: &RgbBuf, set: GlyphSet) -> String {
@@ -478,6 +520,46 @@ mod tests {
         assert_eq!(buf[(0, 0)].fg, Color::Rgb(255, 0, 0));
         assert_eq!(buf[(0, 0)].bg, Color::Rgb(0, 0, 255));
         assert_eq!(buf[(1, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn blit_sparse_composites_instead_of_clobbering() {
+        // Two cells; only the left one has any coverage.
+        let mut fb = RgbBuf::new(4, 2);
+        fb.set(0, 0, Some(RED));
+
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buf = Buffer::empty(area);
+        // Pre-existing content the layer must not disturb.
+        for x in 0..2 {
+            buf[(x, 0)].set_symbol("X").set_bg(Color::Rgb(9, 9, 9));
+        }
+        blit_sparse(&fb, area, &mut buf, GlyphSet::Quadrant);
+
+        // Covered: the coverage mask picks the glyph, the ink lands in fg, and
+        // the background underneath survives.
+        assert_eq!(buf[(0, 0)].symbol(), "▘");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(255, 0, 0));
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(9, 9, 9));
+        // Uncovered: untouched entirely, where `blit` would have written " ".
+        assert_eq!(buf[(1, 0)].symbol(), "X");
+        assert_eq!(buf[(1, 0)].bg, Color::Rgb(9, 9, 9));
+    }
+
+    #[test]
+    fn blit_sparse_takes_the_coverage_split_on_a_full_cell() {
+        // A fully covered cell must NOT trigger the error search: the glyph is
+        // the solid block and the ink is the mean, whatever the colors were.
+        let mut fb = RgbBuf::new(2, 2);
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            fb.set(x, y, Some(if y == 0 { RED } else { BLUE }));
+        }
+        let area = Rect::new(0, 0, 1, 1);
+        let mut buf = Buffer::empty(area);
+        blit_sparse(&fb, area, &mut buf, GlyphSet::Quadrant);
+
+        assert_eq!(buf[(0, 0)].symbol(), "█");
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(128, 0, 128));
     }
 
     #[test]
