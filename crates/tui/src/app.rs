@@ -130,6 +130,10 @@ pub struct Input {
 #[derive(Debug, Clone)]
 pub enum Confirm {
     RemoveBook { id: i64, title: String },
+    /// Delete the selected note (held whole so we still have its file path).
+    DeleteNote(NoteRecord),
+    /// Discard the in-progress editor draft stashed in `pending_discard`.
+    DiscardDraft,
 }
 
 /// What an open in-house editor will do on save.
@@ -181,6 +185,8 @@ pub struct App {
     pub input: Option<Input>,
     pub note_editor: Option<NoteDraft>,
     pub pending_note: Option<PendingNote>,
+    /// A non-blank draft set aside while its discard is confirmed.
+    pub pending_discard: Option<NoteDraft>,
     pub confirm: Option<Confirm>,
     pub search_results: Vec<RankedResult>,
     pub search_state: ListState,
@@ -214,6 +220,7 @@ impl App {
             input: None,
             note_editor: None,
             pending_note: None,
+            pending_discard: None,
             confirm: None,
             search_results: Vec::new(),
             search_state: ListState::default(),
@@ -383,6 +390,7 @@ impl App {
             }
             Action::ToggleSpin => self.spinning = !self.spinning,
             Action::NewNote => self.new_note(false),
+            Action::Delete => self.ask_delete_selected_note(),
             Action::EditProgress => self.start_input(InputContext::ProgressPage, "page", ""),
             Action::ToggleFinished => self.toggle_finished().await?,
             Action::Export => self.export_cards().await?,
@@ -539,6 +547,23 @@ impl App {
         self.dirty = true;
     }
 
+    /// Ask to delete the highlighted note — only in the open Notes section.
+    fn ask_delete_selected_note(&mut self) {
+        if self.book_tab != BookTab::Notes || !self.in_section {
+            self.dirty = false;
+            return;
+        }
+        let note = self
+            .tab_state
+            .selected()
+            .and_then(|i| self.view.as_ref().and_then(|v| v.notes.get(i)))
+            .cloned();
+        match note {
+            Some(note) => self.confirm = Some(Confirm::DeleteNote(note)),
+            None => self.dirty = false,
+        }
+    }
+
     /// Open the editor on the selected note's body (frontmatter preserved).
     async fn edit_selected_note(&mut self) -> Result<()> {
         let note = self
@@ -568,14 +593,23 @@ impl App {
         let newline_chord = key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => {
-                self.note_editor = None;
-                self.status = Some("note discarded".into());
+                if draft.editor.is_blank() {
+                    // Nothing written yet — no need to ask.
+                    self.note_editor = None;
+                    self.status = Some("note discarded".into());
+                } else {
+                    // Stash the draft and ask before throwing away real text.
+                    self.pending_discard = self.note_editor.take();
+                    self.confirm = Some(Confirm::DiscardDraft);
+                    self.status = Some("discard note?  y / n".into());
+                }
             }
             KeyCode::Enter if newline_chord => draft.editor.newline(),
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 draft.editor.newline()
             }
             KeyCode::Enter => self.save_note_editor().await?,
+            KeyCode::Tab => draft.editor.insert('\t'),
             KeyCode::Backspace => draft.editor.backspace(),
             KeyCode::Left => draft.editor.left(),
             KeyCode::Right => draft.editor.right(),
@@ -765,16 +799,29 @@ impl App {
     async fn resolve_confirm(&mut self, yes: bool) -> Result<()> {
         let confirm = self.confirm.take();
         self.dirty = true;
-        if !yes {
-            self.status = Some("kept.".into());
-            return Ok(());
-        }
         match confirm {
-            Some(Confirm::RemoveBook { id, title }) => {
+            Some(Confirm::RemoveBook { id, title }) if yes => {
                 self.engine.delete_book(id).await?;
                 self.refresh_library().await?;
                 self.status = Some(format!("removed {title}"));
             }
+            Some(Confirm::DeleteNote(note)) if yes => {
+                self.engine.delete_note(&note).await?;
+                self.status = Some(format!("deleted “{}”", note.title));
+                self.reload_view().await?;
+                self.clamp_tab_selection();
+            }
+            Some(Confirm::DiscardDraft) if yes => {
+                self.pending_discard = None;
+                self.status = Some("note discarded".into());
+            }
+            // Declining a discard puts the draft back in the editor.
+            Some(Confirm::DiscardDraft) => {
+                self.note_editor = self.pending_discard.take();
+                self.status = None;
+            }
+            // Any other decline just keeps things as they were.
+            Some(_) => self.status = Some("kept.".into()),
             None => {}
         }
         Ok(())
@@ -1266,6 +1313,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn editor_inserts_tabs_and_shift_enter_newlines() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+
+        app.handle(Action::NewNote).await.expect("open editor");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('a'))).await.expect("type");
+        app.on_editor_key(KeyEvent::from(KeyCode::Tab)).await.expect("tab");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('b'))).await.expect("type");
+        // Shift+Enter adds a line rather than saving.
+        app.on_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .expect("shift-enter");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('c'))).await.expect("type");
+
+        let draft = app.note_editor.as_ref().expect("editor still open");
+        assert_eq!(draft.editor.text(), "a\tb\nc");
+    }
+
+    #[tokio::test]
     async fn empty_page_prompt_saves_without_an_anchor() {
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
@@ -1316,6 +1383,100 @@ mod tests {
         assert!(updated.contains("page: 120"), "frontmatter kept");
         assert!(updated.contains("rewritten body"));
         assert!(!updated.contains("Symphony"), "old body gone");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_note_needs_confirmation() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        // Enter the Notes section with the seeded note selected.
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        let before = app.view.as_ref().unwrap().notes.len();
+        assert_eq!(before, 1);
+        let path = app
+            .engine
+            .config
+            .vault_dir
+            .join(&app.view.as_ref().unwrap().notes[0].file_path);
+        assert!(path.exists());
+
+        // `d` asks; declining keeps the note and its file.
+        app.handle(Action::Delete).await.expect("ask");
+        assert!(matches!(app.confirm, Some(Confirm::DeleteNote(_))));
+        app.resolve_confirm(false).await.expect("keep");
+        assert_eq!(app.view.as_ref().unwrap().notes.len(), before);
+        assert!(path.exists());
+
+        // Asking again and confirming removes the row and the file.
+        app.handle(Action::Delete).await.expect("ask again");
+        app.resolve_confirm(true).await.expect("delete");
+        assert!(app.view.as_ref().unwrap().notes.is_empty());
+        assert!(!path.exists(), "the note file was left behind");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_note_only_works_in_the_open_notes_section() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        // On the section menu (not entered), and on other tabs, `d` is inert.
+        app.book_tab = BookTab::Notes;
+        app.in_section = false;
+        app.handle(Action::Delete).await.expect("menu d");
+        assert!(app.confirm.is_none());
+
+        app.book_tab = BookTab::Highlights;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        app.handle(Action::Delete).await.expect("highlights d");
+        assert!(app.confirm.is_none());
+    }
+
+    #[tokio::test]
+    async fn discarding_a_written_draft_asks_first() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        let before = app.view.as_ref().unwrap().notes.len();
+
+        // Type something, then Esc: the draft is stashed behind a confirm.
+        app.handle(Action::NewNote).await.expect("open editor");
+        for c in "half a thought".chars() {
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c))).await.expect("type");
+        }
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc");
+        assert!(app.note_editor.is_none());
+        assert!(matches!(app.confirm, Some(Confirm::DiscardDraft)));
+
+        // Declining restores the editor with the text intact.
+        app.resolve_confirm(false).await.expect("keep editing");
+        assert!(app.confirm.is_none());
+        let draft = app.note_editor.as_ref().expect("editor restored");
+        assert_eq!(draft.editor.text(), "half a thought");
+
+        // Esc + confirm actually throws it away; nothing is saved.
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc again");
+        app.resolve_confirm(true).await.expect("discard");
+        assert!(app.note_editor.is_none());
+        assert!(app.pending_discard.is_none());
+        assert_eq!(app.view.as_ref().unwrap().notes.len(), before);
+    }
+
+    #[tokio::test]
+    async fn discarding_a_blank_draft_needs_no_confirmation() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+
+        app.handle(Action::NewNote).await.expect("open editor");
+        // Esc on an untouched editor closes it immediately, no prompt.
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc");
+        assert!(app.note_editor.is_none());
+        assert!(app.confirm.is_none());
+        assert!(app.pending_discard.is_none());
     }
 
     #[tokio::test]

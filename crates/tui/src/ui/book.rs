@@ -235,7 +235,8 @@ fn note_line(n: &NoteRecord) -> Line<'static> {
         spans.push(Span::styled(tag, theme::primary()));
         spans.push(Span::styled(" · ", theme::primary()));
     }
-    spans.push(Span::styled(n.title.clone(), theme::primary()));
+    // Expand any tabs: a raw \t in a rendered cell desyncs the terminal.
+    spans.push(Span::styled(n.title.replace('\t', "    "), theme::primary()));
     Line::from(spans)
 }
 
@@ -326,8 +327,9 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
     let expanded: &[(&str, &str)] = &[
         ("↑↓", "move"),
         ("↵/→", "open"),
-        ("esc/←", "back"),
+        ("esc/b/←", "back"),
         ("n", "note"),
+        ("d", "delete"),
         ("p", "page"),
         ("f", "finish"),
         ("x", "export"),
@@ -369,7 +371,7 @@ mod tests {
         // Whether collapsed or expanded, `m` must be reachable from the view.
         for expanded in [false, true] {
             let pairs: Vec<&str> = if expanded {
-                vec!["↑↓", "↵/→", "esc/←", "n", "p", "f", "x", "space", "o", "m", "q"]
+                vec!["↑↓", "↵/→", "esc/b/←", "n", "d", "p", "f", "x", "space", "o", "m", "q"]
             } else {
                 vec!["↑↓", "↵", "n", "o", "m", "q"]
             };

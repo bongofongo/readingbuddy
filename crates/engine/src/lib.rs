@@ -223,6 +223,18 @@ impl Engine {
             .await
     }
 
+    /// Delete a note: remove its markdown file from the vault, then its DB row
+    /// and FTS entry. A missing file is not an error (the DB row still goes).
+    pub async fn delete_note(&self, note: &NoteRecord) -> Result<()> {
+        let file = self.config.vault_dir.join(&note.file_path);
+        match std::fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        self.storage.delete_note(note.id).await
+    }
+
     /// Re-read a note file from disk and refresh its FTS body (e.g. after an
     /// external Obsidian edit).
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {

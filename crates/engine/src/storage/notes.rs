@@ -148,6 +148,23 @@ impl Storage {
         Ok(())
     }
 
+    /// Remove a note: its row (cascading `note_links` from it, nulling links
+    /// pointing at it) and its FTS entry. The FTS table is virtual, so a
+    /// foreign key can't cascade into it — it must be cleared explicitly.
+    pub async fn delete_note(&self, note_id: i64) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM notes WHERE id = ?")
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn list_notes(&self, book_id: Option<i64>) -> Result<Vec<NoteRecord>> {
         let rows = match book_id {
             Some(id) => {

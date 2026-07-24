@@ -50,7 +50,7 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
     match key.code {
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Char('m') => Some(Action::Menu),
-        KeyCode::Esc => Some(Action::Back),
+        KeyCode::Esc | KeyCode::Char('b') => Some(Action::Back),
         KeyCode::Up | KeyCode::Char('k') => Some(Action::Up),
         KeyCode::Down | KeyCode::Char('j') => Some(Action::Down),
         KeyCode::Left | KeyCode::Char('h') => Some(Action::Left),
@@ -84,6 +84,12 @@ mod tests {
     fn vim_keys_and_arrows_agree() {
         assert_eq!(map_key(press(KeyCode::Char('j'))), map_key(press(KeyCode::Down)));
         assert_eq!(map_key(press(KeyCode::Char('l'))), map_key(press(KeyCode::Right)));
+    }
+
+    #[test]
+    fn b_is_an_alias_for_back() {
+        assert_eq!(map_key(press(KeyCode::Char('b'))), Some(Action::Back));
+        assert_eq!(map_key(press(KeyCode::Char('b'))), map_key(press(KeyCode::Esc)));
     }
 
     #[test]

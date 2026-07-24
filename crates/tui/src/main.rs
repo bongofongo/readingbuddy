@@ -15,9 +15,13 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -173,6 +177,15 @@ fn parse_size(spec: &str) -> Result<(u16, u16)> {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
+    // Ask for the Kitty keyboard protocol so modified keys like Shift+Enter
+    // arrive as distinct events (plain terminals report them as bare Enter).
+    // Purely a nicety — terminals that don't support it are left untouched.
+    if supports_keyboard_enhancement().unwrap_or(false) {
+        let _ = execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     // A panic must never leave the pane in raw mode with no cursor.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -186,6 +199,9 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 }
 
 fn restore_terminal() {
+    // Pop the enhancement flags we may have pushed; terminals that never got a
+    // push ignore the pop, so it's safe to send unconditionally.
+    let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     let _ = execute!(stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
 }

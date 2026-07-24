@@ -85,6 +85,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn confirm_prompt(app: &App) -> Option<String> {
     app.confirm.as_ref().map(|c| match c {
         crate::app::Confirm::RemoveBook { title, .. } => format!("remove {title}?  y / n"),
+        crate::app::Confirm::DeleteNote(n) => format!("delete “{}”?  y / n", n.title),
+        crate::app::Confirm::DiscardDraft => "discard note?  y / n".to_string(),
     })
 }
 
