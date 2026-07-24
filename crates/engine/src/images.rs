@@ -26,7 +26,9 @@ pub async fn image_from_url(client: &Client, url_str: &str, images_dir: &Path) -
         .bytes()
         .await?;
     if bytes.is_empty() {
-        return Err(EngineError::Other(format!("empty image response from {url_str}")));
+        return Err(EngineError::Other(format!(
+            "empty image response from {url_str}"
+        )));
     }
     std::fs::write(&path, &bytes)?;
     Ok(path)

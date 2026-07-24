@@ -12,7 +12,10 @@ pub async fn list(engine: &Engine, all: bool) -> Result<()> {
     for c in cards {
         let mark = if c.exported { "✓" } else { " " };
         let ctx = c.context.as_deref().unwrap_or("");
-        println!("{mark} #{:<4} {:<24} {ctx}  [{}]", c.id, c.word, c.book_title);
+        println!(
+            "{mark} #{:<4} {:<24} {ctx}  [{}]",
+            c.id, c.word, c.book_title
+        );
     }
     Ok(())
 }

@@ -89,7 +89,9 @@ fn is_valid_isbn10(s: &str) -> bool {
 fn is_valid_isbn13(s: &str) -> bool {
     let mut sum: u32 = 0;
     for (i, c) in s.chars().enumerate() {
-        let Some(v) = c.to_digit(10) else { return false };
+        let Some(v) = c.to_digit(10) else {
+            return false;
+        };
         sum += if i % 2 == 0 { v } else { 3 * v };
     }
     sum.is_multiple_of(10)
@@ -120,13 +122,19 @@ mod tests {
             normalize_isbn("urn:isbn:978-1-4555-6393-7"),
             Some("9781455563937".to_string())
         );
-        assert_eq!(normalize_isbn(" 0-306-40615-2 "), Some("0306406152".to_string()));
+        assert_eq!(
+            normalize_isbn(" 0-306-40615-2 "),
+            Some("0306406152".to_string())
+        );
     }
 
     #[test]
     fn keeps_leading_zero_and_x_check_digit() {
         // Both impossible under the old i64 representation.
-        assert_eq!(normalize_isbn("0-19-853453-1"), Some("0198534531".to_string()));
+        assert_eq!(
+            normalize_isbn("0-19-853453-1"),
+            Some("0198534531".to_string())
+        );
         assert_eq!(normalize_isbn("080442957x"), Some("080442957X".to_string()));
     }
 
@@ -141,7 +149,13 @@ mod tests {
 
     #[test]
     fn converts_10_to_13() {
-        assert_eq!(isbn10_to_13("0306406152"), Some("9780306406157".to_string()));
-        assert_eq!(isbn10_to_13("155404295X"), Some("9781554042951".to_string()));
+        assert_eq!(
+            isbn10_to_13("0306406152"),
+            Some("9780306406157".to_string())
+        );
+        assert_eq!(
+            isbn10_to_13("155404295X"),
+            Some("9781554042951".to_string())
+        );
     }
 }

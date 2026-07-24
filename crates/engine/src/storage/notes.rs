@@ -212,11 +212,10 @@ impl Storage {
 
     /// Outgoing links of a note: (target_title, resolved note id if any).
     pub async fn note_links(&self, note_id: i64) -> Result<Vec<(String, Option<i64>)>> {
-        let rows =
-            sqlx::query("SELECT target_title, to_note FROM note_links WHERE from_note = ?")
-                .bind(note_id)
-                .fetch_all(self.pool())
-                .await?;
+        let rows = sqlx::query("SELECT target_title, to_note FROM note_links WHERE from_note = ?")
+            .bind(note_id)
+            .fetch_all(self.pool())
+            .await?;
         Ok(rows
             .into_iter()
             .map(|r| (r.get("target_title"), r.get("to_note")))
@@ -279,7 +278,9 @@ mod tests {
         assert!(hits[0].snippet.contains(">>grief<<"));
 
         // Refresh replaces body in the index.
-        s.refresh_note_body(n2, "Han", "Now about resilience.").await.unwrap();
+        s.refresh_note_body(n2, "Han", "Now about resilience.")
+            .await
+            .unwrap();
         assert!(s.search_notes("grief", 10).await.unwrap().is_empty());
         assert_eq!(s.search_notes("resilience", 10).await.unwrap().len(), 1);
     }

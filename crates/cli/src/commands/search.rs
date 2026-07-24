@@ -77,7 +77,11 @@ pub async fn run(engine: &Engine, args: SearchArgs) -> Result<()> {
     }
     let pick = match args.pick {
         Some(n) => {
-            anyhow::ensure!(n < shown.len(), "--pick {n} out of range (0..{})", shown.len());
+            anyhow::ensure!(
+                n < shown.len(),
+                "--pick {n} out of range (0..{})",
+                shown.len()
+            );
             Some(n)
         }
         None => prompt::select_element("\nsave which? (number, Enter to skip): ", shown.len())?,

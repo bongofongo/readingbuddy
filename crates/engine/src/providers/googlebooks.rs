@@ -166,7 +166,11 @@ fn build_query(req: &SearchRequest) -> String {
 }
 
 fn build_url(req: &SearchRequest, api_key: Option<&str>) -> Result<String> {
-    let limit = if req.limit == 0 { 30 } else { req.limit.min(40) };
+    let limit = if req.limit == 0 {
+        30
+    } else {
+        req.limit.min(40)
+    };
     let mut url = Url::parse("https://www.googleapis.com/books/v1/volumes")?;
     {
         let mut qp = url.query_pairs_mut();

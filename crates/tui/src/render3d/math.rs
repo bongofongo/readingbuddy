@@ -142,7 +142,11 @@ impl Mat3 {
     pub fn transpose(self) -> Mat3 {
         let [a, b, c] = self.rows;
         Mat3 {
-            rows: [vec3(a.x, b.x, c.x), vec3(a.y, b.y, c.y), vec3(a.z, b.z, c.z)],
+            rows: [
+                vec3(a.x, b.x, c.x),
+                vec3(a.y, b.y, c.y),
+                vec3(a.z, b.z, c.z),
+            ],
         }
     }
 }
@@ -150,7 +154,11 @@ impl Mat3 {
 impl Mul<Vec3> for Mat3 {
     type Output = Vec3;
     fn mul(self, v: Vec3) -> Vec3 {
-        vec3(self.rows[0].dot(v), self.rows[1].dot(v), self.rows[2].dot(v))
+        vec3(
+            self.rows[0].dot(v),
+            self.rows[1].dot(v),
+            self.rows[2].dot(v),
+        )
     }
 }
 
@@ -160,9 +168,21 @@ impl Mul<Mat3> for Mat3 {
         let ot = o.transpose(); // columns of `o` as rows
         Mat3 {
             rows: [
-                vec3(self.rows[0].dot(ot.rows[0]), self.rows[0].dot(ot.rows[1]), self.rows[0].dot(ot.rows[2])),
-                vec3(self.rows[1].dot(ot.rows[0]), self.rows[1].dot(ot.rows[1]), self.rows[1].dot(ot.rows[2])),
-                vec3(self.rows[2].dot(ot.rows[0]), self.rows[2].dot(ot.rows[1]), self.rows[2].dot(ot.rows[2])),
+                vec3(
+                    self.rows[0].dot(ot.rows[0]),
+                    self.rows[0].dot(ot.rows[1]),
+                    self.rows[0].dot(ot.rows[2]),
+                ),
+                vec3(
+                    self.rows[1].dot(ot.rows[0]),
+                    self.rows[1].dot(ot.rows[1]),
+                    self.rows[1].dot(ot.rows[2]),
+                ),
+                vec3(
+                    self.rows[2].dot(ot.rows[0]),
+                    self.rows[2].dot(ot.rows[1]),
+                    self.rows[2].dot(ot.rows[2]),
+                ),
             ],
         }
     }
@@ -180,7 +200,11 @@ mod tests {
     fn transpose_inverts_rotation() {
         let r = Mat3::rotation_y(0.7) * Mat3::rotation_x(-0.3);
         let id = r * r.transpose();
-        let want = [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)];
+        let want = [
+            vec3(1.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+            vec3(0.0, 0.0, 1.0),
+        ];
         for (got, want) in id.rows.iter().zip(want.iter()) {
             assert!(approx(*got, *want), "{got:?} != {want:?}");
         }

@@ -126,14 +126,20 @@ impl Storage {
 
     pub async fn get_book(&self, id: i64) -> Result<Option<Book>> {
         let sql = format!("SELECT {BOOK_COLUMNS} FROM books WHERE id = ?");
-        let row = sqlx::query(&sql).bind(id).fetch_optional(self.pool()).await?;
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
         row.as_ref().map(row_to_book).transpose()
     }
 
     /// Lookup by a normalized ISBN (either column).
     pub async fn find_book_by_isbn(&self, isbn: &str) -> Result<Option<Book>> {
         let sql = format!("SELECT {BOOK_COLUMNS} FROM books WHERE isbn_10 = ?1 OR isbn_13 = ?1");
-        let row = sqlx::query(&sql).bind(isbn).fetch_optional(self.pool()).await?;
+        let row = sqlx::query(&sql)
+            .bind(isbn)
+            .fetch_optional(self.pool())
+            .await?;
         row.as_ref().map(row_to_book).transpose()
     }
 

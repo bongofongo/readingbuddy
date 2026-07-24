@@ -91,10 +91,11 @@ pub async fn progress(
         .await?;
     println!("{}", render::book_line(&updated));
     if finished {
-        println!("\n🎉 finished {}! congratulations.", updated.display_title());
         println!(
-            "capture your final thoughts:  readingbuddy note --book {id} --kind final"
+            "\n🎉 finished {}! congratulations.",
+            updated.display_title()
         );
+        println!("capture your final thoughts:  readingbuddy note --book {id} --kind final");
     }
     Ok(())
 }
@@ -104,7 +105,10 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
     let id = book.id.expect("stored book has id");
     let hs = engine.storage.list_highlights(id).await?;
     if hs.is_empty() {
-        println!("no highlights for {} — try `readingbuddy ko import`", book.display_title());
+        println!(
+            "no highlights for {} — try `readingbuddy ko import`",
+            book.display_title()
+        );
         return Ok(());
     }
     println!("{} — {} highlights\n", book.display_title(), hs.len());

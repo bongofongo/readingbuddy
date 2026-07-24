@@ -33,9 +33,15 @@ pub enum ConfigCmd {
 /// by `get` to report the effective setting.
 pub async fn run(cmd: ConfigCmd, cli_key: Option<&str>) -> Result<()> {
     match cmd {
-        ConfigCmd::Set { key: ConfigKey::GoogleApiKey, value, verify } => set_google_key(value, verify).await,
+        ConfigCmd::Set {
+            key: ConfigKey::GoogleApiKey,
+            value,
+            verify,
+        } => set_google_key(value, verify).await,
         ConfigCmd::Get => get(cli_key),
-        ConfigCmd::Unset { key: ConfigKey::GoogleApiKey } => unset_google_key(),
+        ConfigCmd::Unset {
+            key: ConfigKey::GoogleApiKey,
+        } => unset_google_key(),
         ConfigCmd::Path => {
             println!("{}", config_file::config_path()?.display());
             Ok(())
@@ -57,14 +63,20 @@ async fn set_google_key(value: Option<String>, verify: bool) -> Result<()> {
         println!("verifying against Google Books...");
         match readingbuddy::verify_google_key(&value).await {
             Ok(()) => println!("ok ✓"),
-            Err(reason) => bail!("key rejected: {reason}\nnothing saved (drop --verify to save anyway)"),
+            Err(reason) => {
+                bail!("key rejected: {reason}\nnothing saved (drop --verify to save anyway)")
+            }
         }
     }
 
     let mut cfg = config_file::load()?;
     cfg.google_api_key = Some(value);
     let path = config_file::save(&cfg)?;
-    println!("saved {} to {} (file mode 600)", mask(cfg.google_api_key.as_deref().unwrap()), path.display());
+    println!(
+        "saved {} to {} (file mode 600)",
+        mask(cfg.google_api_key.as_deref().unwrap()),
+        path.display()
+    );
     if !verify {
         println!("tip: `readingbuddy config set google-api-key --verify` checks the key live");
     }
@@ -88,7 +100,15 @@ fn get(cli_key: Option<&str>) -> Result<()> {
              set one with: readingbuddy config set google-api-key"
         ),
     }
-    println!("config file:    {}{}", path.display(), if path.exists() { "" } else { " (does not exist yet)" });
+    println!(
+        "config file:    {}{}",
+        path.display(),
+        if path.exists() {
+            ""
+        } else {
+            " (does not exist yet)"
+        }
+    );
     Ok(())
 }
 

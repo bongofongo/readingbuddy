@@ -64,7 +64,10 @@ pub fn search_result_line(i: usize, r: &RankedResult) -> String {
         .publish_year
         .map(|y| format!(" ({y})"))
         .unwrap_or_default();
-    let isbn = b.any_isbn().map(|i| format!("  isbn:{i}")).unwrap_or_default();
+    let isbn = b
+        .any_isbn()
+        .map(|i| format!("  isbn:{i}"))
+        .unwrap_or_default();
     let sources = r
         .sources
         .iter()

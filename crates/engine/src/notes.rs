@@ -80,7 +80,11 @@ pub fn slugify(s: &str) -> String {
         }
     }
     let out = out.trim_matches('-').to_string();
-    if out.is_empty() { "untitled".to_string() } else { out }
+    if out.is_empty() {
+        "untitled".to_string()
+    } else {
+        out
+    }
 }
 
 /// Extract [[wikilink]] targets, handling `[[target|alias]]` and
@@ -113,7 +117,10 @@ fn frontmatter(
             .or(b.id.map(|i| i.to_string()))
             .unwrap_or_default();
         fm.push_str(&format!("book: {id}\n"));
-        fm.push_str(&format!("book-title: \"{}\"\n", b.display_title().replace('"', "'")));
+        fm.push_str(&format!(
+            "book-title: \"{}\"\n",
+            b.display_title().replace('"', "'")
+        ));
     }
     if let Some(h) = highlight_id {
         fm.push_str(&format!("highlight: {h}\n"));
@@ -169,7 +176,10 @@ fn derive_title(body: &str) -> String {
     if words.is_empty() {
         "Untitled".to_string()
     } else {
-        words.join(" ").trim_end_matches([',', '.', ';', ':']).to_string()
+        words
+            .join(" ")
+            .trim_end_matches([',', '.', ';', ':'])
+            .to_string()
     }
 }
 
@@ -268,7 +278,11 @@ mod tests {
                     Repeat [[Han]]. Not a link: [single].";
         assert_eq!(
             extract_wikilinks(body),
-            vec!["Han".to_string(), "Zettelkasten".to_string(), "Pachinko".to_string()]
+            vec![
+                "Han".to_string(),
+                "Zettelkasten".to_string(),
+                "Pachinko".to_string()
+            ]
         );
     }
 
@@ -290,7 +304,12 @@ mod tests {
         );
         let content = format!("{fm}The body text with [[Link]].\n");
         let (pairs, body) = parse_frontmatter(&content);
-        let get = |k: &str| pairs.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        let get = |k: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
         assert_eq!(get("book"), Some("9781455563937"));
         assert_eq!(get("book-title"), Some("Pachinko"));
         assert_eq!(get("highlight"), Some("3"));
@@ -308,7 +327,10 @@ mod tests {
         assert_eq!(header, "---\npage: 5\nkind: note\n---\n\n");
         assert_eq!(body, "The body\nspans lines.\n");
         // Reassembling with a new body keeps the header verbatim.
-        assert_eq!(format!("{header}rewritten\n"), "---\npage: 5\nkind: note\n---\n\nrewritten\n");
+        assert_eq!(
+            format!("{header}rewritten\n"),
+            "---\npage: 5\nkind: note\n---\n\nrewritten\n"
+        );
 
         // No frontmatter: empty header, whole content is body.
         let (h2, b2) = frontmatter_and_body("just text\n");
@@ -318,8 +340,10 @@ mod tests {
 
     #[test]
     fn derive_title_takes_leading_words() {
-        assert_eq!(derive_title("Sunja's choice mirrors the whole diaspora, somehow."),
-                   "Sunja's choice mirrors the whole diaspora");
+        assert_eq!(
+            derive_title("Sunja's choice mirrors the whole diaspora, somehow."),
+            "Sunja's choice mirrors the whole diaspora"
+        );
         assert_eq!(derive_title(""), "Untitled");
     }
 

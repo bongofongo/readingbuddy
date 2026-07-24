@@ -51,7 +51,12 @@ pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
             body,
         })
         .await?;
-    println!("note #{} “{}” -> {}", created.id, created.title, created.file.display());
+    println!(
+        "note #{} “{}” -> {}",
+        created.id,
+        created.title,
+        created.file.display()
+    );
     if !created.links.is_empty() {
         println!("links: {}", created.links.join(", "));
     }
@@ -86,8 +91,18 @@ pub async fn list_or_search(
         return Ok(());
     }
     for n in notes {
-        let kind = if n.kind == "note" { String::new() } else { format!(" [{}]", n.kind) };
-        println!("#{:<4} {}{kind}{}  ({})", n.id, n.title, anchor(&n), n.file_path);
+        let kind = if n.kind == "note" {
+            String::new()
+        } else {
+            format!(" [{}]", n.kind)
+        };
+        println!(
+            "#{:<4} {}{kind}{}  ({})",
+            n.id,
+            n.title,
+            anchor(&n),
+            n.file_path
+        );
     }
     Ok(())
 }

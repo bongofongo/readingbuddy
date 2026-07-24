@@ -37,7 +37,11 @@ impl Storage {
     }
 
     pub async fn list_flashcards(&self, include_exported: bool) -> Result<Vec<FlashcardRow>> {
-        let filter = if include_exported { "" } else { "WHERE f.exported = 0" };
+        let filter = if include_exported {
+            ""
+        } else {
+            "WHERE f.exported = 0"
+        };
         let sql = format!(
             r#"SELECT f.id, f.word, f.context, f.exported, b.title AS book_title
                FROM flashcards f JOIN books b ON b.id = f.book_id

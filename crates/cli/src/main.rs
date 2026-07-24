@@ -23,7 +23,12 @@ struct Cli {
 
     /// Google Books API key for this invocation (overrides the stored one;
     /// prefer `readingbuddy config set google-api-key` for persistence)
-    #[arg(long, global = true, env = "GOOGLE_BOOKS_API_KEY", hide_env_values = true)]
+    #[arg(
+        long,
+        global = true,
+        env = "GOOGLE_BOOKS_API_KEY",
+        hide_env_values = true
+    )]
     google_api_key: Option<String>,
 
     #[command(subcommand)]

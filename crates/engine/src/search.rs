@@ -368,7 +368,12 @@ mod tests {
         };
         let b = book("Dune", "Frank Herbert");
         let one = rank(&b, &[ProviderId::OpenLibrary], 0, &req);
-        let both = rank(&b, &[ProviderId::OpenLibrary, ProviderId::GoogleBooks], 0, &req);
+        let both = rank(
+            &b,
+            &[ProviderId::OpenLibrary, ProviderId::GoogleBooks],
+            0,
+            &req,
+        );
         let deep = rank(&b, &[ProviderId::OpenLibrary], 20, &req);
         assert!(both > one);
         assert!(one > deep);

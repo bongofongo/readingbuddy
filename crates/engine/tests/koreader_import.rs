@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use readingbuddy::koreader::{self, parse_sidecar};
 use readingbuddy::{Book, Storage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/koreader")
@@ -30,8 +30,8 @@ fn synthetic_dir() -> PathBuf {
 
 /// The `fixtures` table from `manifest.json`.
 fn manifest() -> Value {
-    let raw = std::fs::read_to_string(fixtures_root().join("manifest.json"))
-        .expect("read manifest.json");
+    let raw =
+        std::fs::read_to_string(fixtures_root().join("manifest.json")).expect("read manifest.json");
     let m: Value = serde_json::from_str(&raw).expect("parse manifest.json");
     m["fixtures"].clone()
 }
@@ -49,7 +49,9 @@ fn synthetic_fixtures() -> Vec<String> {
 }
 
 async fn mem_storage() -> Storage {
-    Storage::connect("sqlite::memory:").await.expect("open in-memory db")
+    Storage::connect("sqlite::memory:")
+        .await
+        .expect("open in-memory db")
 }
 
 /// Seed the library with the books a fixture expects (so title-fuzzy matching
@@ -59,7 +61,11 @@ async fn seed_books(storage: &Storage, books: &Value) {
     for b in arr {
         let authors = b["authors"]
             .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default();
         storage
             .upsert_book(&Book {
@@ -75,7 +81,10 @@ async fn seed_books(storage: &Storage, books: &Value) {
 /// Snapshot every highlight of a book in stored order: the fields that must
 /// stay stable across a re-import.
 async fn highlight_rows(storage: &Storage, book_id: i64) -> Value {
-    let rows = storage.list_highlights(book_id).await.expect("list highlights");
+    let rows = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list highlights");
     Value::Array(
         rows.into_iter()
             .map(|h| {
@@ -110,7 +119,9 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
     let storage = mem_storage().await;
     seed_books(&storage, books).await;
     let dir = synthetic_dir().join(fixture);
-    let report = koreader::import(&storage, &dir, false).await.expect("import");
+    let report = koreader::import(&storage, &dir, false)
+        .await
+        .expect("import");
 
     let mut imported = Vec::new();
     for s in &report.imported {
@@ -140,7 +151,9 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
 fn golden_path(fixture: &str) -> PathBuf {
     // `Pachinko.sdr` -> `expected/Pachinko.json`
     let stem = fixture.strip_suffix(".sdr").unwrap_or(fixture);
-    fixtures_root().join("expected").join(format!("{stem}.json"))
+    fixtures_root()
+        .join("expected")
+        .join(format!("{stem}.json"))
 }
 
 fn pretty(v: &Value) -> String {
@@ -211,7 +224,9 @@ async fn reimport_is_strictly_idempotent() {
         seed_books(&storage, &books).await;
         let dir = synthetic_dir().join(&fixture);
 
-        let first = koreader::import(&storage, &dir, false).await.expect("first import");
+        let first = koreader::import(&storage, &dir, false)
+            .await
+            .expect("first import");
         // Nothing produced (malformed / unmatched) has no rows to guard.
         if first.imported.iter().all(|s| s.inserted == 0) {
             continue;
@@ -227,7 +242,9 @@ async fn reimport_is_strictly_idempotent() {
             ));
         }
 
-        let second = koreader::import(&storage, &dir, false).await.expect("second import");
+        let second = koreader::import(&storage, &dir, false)
+            .await
+            .expect("second import");
         for s in &second.imported {
             assert_eq!(s.inserted, 0, "{fixture}: re-import inserted rows");
         }
@@ -241,8 +258,16 @@ async fn reimport_is_strictly_idempotent() {
 
         // Every row must be byte-for-byte unchanged: no overwrite, reorder, dup.
         for (book_id, hl, cards) in before {
-            assert_eq!(hl, highlight_rows(&storage, book_id).await, "{fixture}: highlights changed");
-            assert_eq!(cards, flashcard_words(&storage, book_id).await, "{fixture}: flashcards changed");
+            assert_eq!(
+                hl,
+                highlight_rows(&storage, book_id).await,
+                "{fixture}: highlights changed"
+            );
+            assert_eq!(
+                cards,
+                flashcard_words(&storage, book_id).await,
+                "{fixture}: flashcards changed"
+            );
         }
     }
 }
@@ -252,10 +277,16 @@ async fn appends_only_new_on_partial_reimport() {
     // Import Pachinko, then import a superset (Pachinko + one extra highlight).
     // Only the new highlight is inserted; the originals are untouched.
     let storage = mem_storage().await;
-    seed_books(&storage, &json!([{ "title": "Pachinko", "authors": ["Min Jin Lee"] }])).await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Pachinko", "authors": ["Min Jin Lee"] }]),
+    )
+    .await;
 
     let base = synthetic_dir().join("Pachinko.sdr");
-    let first = koreader::import(&storage, &base, false).await.expect("base import");
+    let first = koreader::import(&storage, &base, false)
+        .await
+        .expect("base import");
     let book_id = first.imported[0].book_id;
     let base_inserted = first.imported[0].inserted;
     let before = highlight_rows(&storage, book_id).await;
@@ -278,10 +309,15 @@ async fn appends_only_new_on_partial_reimport() {
     // Insert the extra entry just before the annotations table closes.
     let marker = "    },\n    [\"doc_props\"]";
     let superset = original.replacen(marker, &format!("{extra}    }},\n    [\"doc_props\"]"), 1);
-    assert!(superset.contains("A brand new highlight"), "superset injection failed");
+    assert!(
+        superset.contains("A brand new highlight"),
+        "superset injection failed"
+    );
     std::fs::write(sdr.join("metadata.epub.lua"), superset).unwrap();
 
-    let second = koreader::import(&storage, &tmp, false).await.expect("superset import");
+    let second = koreader::import(&storage, &tmp, false)
+        .await
+        .expect("superset import");
     std::fs::remove_dir_all(&tmp).ok();
 
     let s = &second.imported[0];
@@ -294,10 +330,15 @@ async fn appends_only_new_on_partial_reimport() {
     let after_arr = after.as_array().unwrap();
     assert_eq!(after_arr.len(), before_arr.len() + 1);
     for row in before_arr {
-        assert!(after_arr.contains(row), "an original highlight went missing");
+        assert!(
+            after_arr.contains(row),
+            "an original highlight went missing"
+        );
     }
     assert!(
-        after_arr.iter().any(|r| r["text"] == "A brand new highlight added later."),
+        after_arr
+            .iter()
+            .any(|r| r["text"] == "A brand new highlight added later."),
         "new highlight not stored"
     );
 }
@@ -320,15 +361,23 @@ async fn malformed_and_unmatched_are_non_fatal() {
         .expect("import");
     assert!(report.imported.is_empty());
     assert_eq!(report.unmatched.len(), 1);
-    assert_eq!(report.unmatched[0].title.as_deref(), Some("Nonexistent Tome"));
+    assert_eq!(
+        report.unmatched[0].title.as_deref(),
+        Some("Nonexistent Tome")
+    );
 
     // And a whole-directory import over synthetic/ never aborts: it imports the
     // matchable books, reports the rest.
     let storage = mem_storage().await;
     seed_all_synthetic(&storage).await;
-    let report = koreader::import(&storage, &synthetic_dir(), false).await.expect("bulk import");
+    let report = koreader::import(&storage, &synthetic_dir(), false)
+        .await
+        .expect("bulk import");
     assert!(!report.imported.is_empty(), "bulk import found no books");
-    assert!(!report.warnings.is_empty(), "malformed fixture should still warn in bulk");
+    assert!(
+        !report.warnings.is_empty(),
+        "malformed fixture should still warn in bulk"
+    );
 }
 
 /// Seed every book named in the manifest — used for whole-directory imports.
@@ -348,7 +397,10 @@ async fn real_exports_are_idempotent() {
     let real = fixtures_root().join("real");
     let sidecars = koreader::find_sidecars(&real).expect("scan real dir");
     if sidecars.is_empty() {
-        eprintln!("real_exports_are_idempotent: no drop-in exports under {} — skipped", real.display());
+        eprintln!(
+            "real_exports_are_idempotent: no drop-in exports under {} — skipped",
+            real.display()
+        );
         return;
     }
 
@@ -360,25 +412,48 @@ async fn real_exports_are_idempotent() {
             && let Some(title) = sc.title
         {
             storage
-                .upsert_book(&Book { title: Some(title), ..Default::default() })
+                .upsert_book(&Book {
+                    title: Some(title),
+                    ..Default::default()
+                })
                 .await
                 .expect("seed real book");
         }
     }
 
-    let first = koreader::import(&storage, &real, false).await.expect("first real import");
+    let first = koreader::import(&storage, &real, false)
+        .await
+        .expect("first real import");
     let mut before = Vec::new();
     for s in &first.imported {
-        before.push((s.book_id, highlight_rows(&storage, s.book_id).await, flashcard_words(&storage, s.book_id).await));
+        before.push((
+            s.book_id,
+            highlight_rows(&storage, s.book_id).await,
+            flashcard_words(&storage, s.book_id).await,
+        ));
     }
 
-    let second = koreader::import(&storage, &real, false).await.expect("second real import");
+    let second = koreader::import(&storage, &real, false)
+        .await
+        .expect("second real import");
     for s in &second.imported {
-        assert_eq!(s.inserted, 0, "real re-import inserted new rows for {}", s.book_title);
+        assert_eq!(
+            s.inserted, 0,
+            "real re-import inserted new rows for {}",
+            s.book_title
+        );
     }
     for (book_id, hl, cards) in before {
-        assert_eq!(hl, highlight_rows(&storage, book_id).await, "real highlights changed on re-import");
-        assert_eq!(cards, flashcard_words(&storage, book_id).await, "real flashcards changed on re-import");
+        assert_eq!(
+            hl,
+            highlight_rows(&storage, book_id).await,
+            "real highlights changed on re-import"
+        );
+        assert_eq!(
+            cards,
+            flashcard_words(&storage, book_id).await,
+            "real flashcards changed on re-import"
+        );
     }
     eprintln!(
         "real_exports_are_idempotent: verified {} sidecar(s), {} book(s) imported",

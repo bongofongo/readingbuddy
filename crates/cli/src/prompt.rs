@@ -12,7 +12,9 @@ pub fn get_user_input(prompt: &str) -> Result<String> {
 
 pub fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(
-        get_user_input(&format!("{prompt} [y/N]: "))?.to_lowercase().as_str(),
+        get_user_input(&format!("{prompt} [y/N]: "))?
+            .to_lowercase()
+            .as_str(),
         "y" | "yes"
     ))
 }

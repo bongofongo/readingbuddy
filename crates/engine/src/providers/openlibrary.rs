@@ -79,7 +79,10 @@ impl Works {
             openlibrary_key: self.key.clone(),
             publisher: self.publisher.as_ref().and_then(|v| v.first().cloned()),
             page_count: self.number_of_pages_median,
-            first_sentence: self.first_sentence.as_ref().and_then(|v| v.first().cloned()),
+            first_sentence: self
+                .first_sentence
+                .as_ref()
+                .and_then(|v| v.first().cloned()),
             cover_url: self.cover_url(),
             ..Default::default()
         }

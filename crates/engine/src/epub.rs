@@ -17,7 +17,8 @@ pub struct EpubInfo {
 /// Read epub metadata. Scans ALL identifier entries for the first one that
 /// validates as an ISBN (identifiers are often UUIDs or urn:isbn: forms).
 pub fn epub_info(path: &Path) -> Result<EpubInfo> {
-    let doc = EpubDoc::new(path).map_err(|e| EngineError::Epub(format!("{}: {e}", path.display())))?;
+    let doc =
+        EpubDoc::new(path).map_err(|e| EngineError::Epub(format!("{}: {e}", path.display())))?;
     let mut info = EpubInfo::default();
     for (key, values) in doc.metadata.iter() {
         match key.as_str() {

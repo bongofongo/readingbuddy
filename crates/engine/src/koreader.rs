@@ -32,7 +32,9 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
         .eval()
         .map_err(|e| EngineError::Sidecar(format!("lua eval: {e}")))?;
     let Value::Table(root) = value else {
-        return Err(EngineError::Sidecar("sidecar did not return a table".into()));
+        return Err(EngineError::Sidecar(
+            "sidecar did not return a table".into(),
+        ));
     };
 
     let mut sidecar = KoSidecar {
@@ -57,7 +59,10 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
 }
 
 fn get_str(t: &Table, key: &str) -> Option<String> {
-    t.get::<Option<String>>(key).ok().flatten().filter(|s| !s.is_empty())
+    t.get::<Option<String>>(key)
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
 }
 
 fn get_int(t: &Table, key: &str) -> Option<i64> {
@@ -121,9 +126,7 @@ fn parse_legacy(
         }
     }
     // Page-keyed map iteration order is arbitrary; make output deterministic.
-    out.sort_by(|a, b| {
-        (a.page, a.ko_datetime.clone()).cmp(&(b.page, b.ko_datetime.clone()))
-    });
+    out.sort_by(|a, b| (a.page, a.ko_datetime.clone()).cmp(&(b.page, b.ko_datetime.clone())));
     Ok(out)
 }
 
@@ -206,7 +209,11 @@ fn is_sidecar_file(p: &Path) -> bool {
 
 /// Match a sidecar to a library book: (a) sibling ebook file's ISBN,
 /// (b) fuzzy doc_props title (jaro-winkler >= 0.85 on normalized titles).
-async fn match_book(storage: &Storage, sidecar_path: &Path, sc: &KoSidecar) -> Result<Option<Book>> {
+async fn match_book(
+    storage: &Storage,
+    sidecar_path: &Path,
+    sc: &KoSidecar,
+) -> Result<Option<Book>> {
     // Sidecar lives at <Book Name>.sdr/metadata.epub.lua; sibling ebook is
     // <Book Name>.epub next to the .sdr dir.
     if let Some(sdr_dir) = sidecar_path.parent()
@@ -224,13 +231,18 @@ async fn match_book(storage: &Storage, sidecar_path: &Path, sc: &KoSidecar) -> R
         }
     }
 
-    let Some(title) = &sc.title else { return Ok(None) };
+    let Some(title) = &sc.title else {
+        return Ok(None);
+    };
     let want = normalize(title);
     if want.is_empty() {
         return Ok(None);
     }
     let mut best: Option<(f64, Book)> = None;
-    for book in storage.list_books(10_000, crate::storage::BookSort::LastModified).await? {
+    for book in storage
+        .list_books(10_000, crate::storage::BookSort::LastModified)
+        .await?
+    {
         let have = normalize(book.title.as_deref().unwrap_or(""));
         if have.is_empty() {
             continue;
@@ -249,9 +261,10 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
     let mut report = ImportReport::default();
     let sidecars = find_sidecars(path)?;
     if sidecars.is_empty() {
-        report
-            .warnings
-            .push(format!("no KOReader sidecars found under {}", path.display()));
+        report.warnings.push(format!(
+            "no KOReader sidecars found under {}",
+            path.display()
+        ));
         return Ok(report);
     }
 
@@ -401,13 +414,19 @@ return {
         let sc = parse_sidecar(MODERN).unwrap();
         assert_eq!(sc.title.as_deref(), Some("Pachinko"));
         assert_eq!(sc.authors.as_deref(), Some("Min Jin Lee"));
-        assert_eq!(sc.partial_md5.as_deref(), Some("0d6ba6c47caf63b8b3d1a2b3c4d5e6f7"));
+        assert_eq!(
+            sc.partial_md5.as_deref(),
+            Some("0d6ba6c47caf63b8b3d1a2b3c4d5e6f7")
+        );
         // Bookmark entry (no pos0) skipped.
         assert_eq!(sc.highlights.len(), 2);
         let h = &sc.highlights[0];
         assert_eq!(h.text, "History has failed us, but no matter.");
         assert_eq!(h.page, Some(42));
-        assert_eq!(h.note.as_deref(), Some("Opening line - sets the whole register."));
+        assert_eq!(
+            h.note.as_deref(),
+            Some("Opening line - sets the whole register.")
+        );
         assert_eq!(sc.highlights[1].text, "pachinko");
     }
 
@@ -419,7 +438,10 @@ return {
         let first = &sc.highlights[0];
         assert_eq!(first.page, Some(42));
         // Note joined from bookmarks by datetime.
-        assert_eq!(first.note.as_deref(), Some("Famous opening, guilt before act."));
+        assert_eq!(
+            first.note.as_deref(),
+            Some("Famous opening, guilt before act.")
+        );
         assert_eq!(sc.highlights[1].text, "verdict");
         assert_eq!(sc.highlights[1].page, Some(77));
         assert_eq!(sc.highlights[1].note, None);

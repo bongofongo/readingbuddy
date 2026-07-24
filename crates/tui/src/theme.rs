@@ -80,7 +80,9 @@ pub fn selected() -> Style {
 }
 
 pub fn key() -> Style {
-    Style::default().fg(accent_color()).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(accent_color())
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
