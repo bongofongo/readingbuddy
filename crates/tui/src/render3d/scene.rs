@@ -145,6 +145,21 @@ pub fn camera_distance(aspect: f32, pitch: f32, h: Vec3, fill: f32) -> f32 {
     dist
 }
 
+/// Where the camera sits for a trace covering `rows` cell rows.
+///
+/// Extracted so the glyph and pixel rasters set the camera up through the same
+/// arithmetic: [`fill_for`] stays the single authority on the object's absolute
+/// size, so a rich frame and a glyph frame put the book at the same size for the
+/// same `rows`. The pixel path must never grow the book just by having more
+/// pixels — that regression has been fixed twice already.
+pub fn camera_origin(aspect: f32, pitch: f32, half: Vec3, rows: u16) -> Vec3 {
+    vec3(
+        0.0,
+        0.0,
+        camera_distance(aspect, pitch, half, fill_for(rows)),
+    )
+}
+
 /// Ray direction through the point `(u, v)` of the image, both in 0..1 with v
 /// running downward. `aspect` is the image's *physical* width/height — not the
 /// sample grid's, since terminal subpixels aren't square.
@@ -250,9 +265,7 @@ pub fn shade(ro: Vec3, rd: Vec3, rot: Mat3, half: Vec3, cover: &Cover) -> Option
     // cover you can't read at 40 columns. Fill comes from behind and below.
     let key = vec3(-0.38, 0.58, 1.0).normalize();
     let fill = vec3(0.55, -0.30, -0.85).normalize();
-    let level = AMBIENT
-        + KEY * normal.dot(key).max(0.0)
-        + FILL_LIGHT * normal.dot(fill).max(0.0);
+    let level = AMBIENT + KEY * normal.dot(key).max(0.0) + FILL_LIGHT * normal.dot(fill).max(0.0);
     let lit = base * level;
     // A touch of rim light so the silhouette separates from a dark pane.
     let rim = (1.0 - normal.dot(-rd).abs()).powi(3) * 0.09;
@@ -270,7 +283,10 @@ mod tests {
         let hit = intersect_box(ro, rd, DEFAULT_HALF_EXTENTS).expect("should hit");
         assert_eq!(hit.face, Face::Front);
         let dist = (hit.point - ro).length();
-        assert!((dist - (3.0 - DEFAULT_HALF_EXTENTS.z)).abs() < 1e-4, "distance = {dist}");
+        assert!(
+            (dist - (3.0 - DEFAULT_HALF_EXTENTS.z)).abs() < 1e-4,
+            "distance = {dist}"
+        );
         assert!((hit.u - 0.5).abs() < 1e-4 && (hit.v - 0.5).abs() < 1e-4);
     }
 
@@ -290,11 +306,19 @@ mod tests {
 
     #[test]
     fn ray_from_the_left_hits_the_spine() {
-        let hit = intersect_box(vec3(-3.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), DEFAULT_HALF_EXTENTS)
-            .expect("should hit");
+        let hit = intersect_box(
+            vec3(-3.0, 0.0, 0.0),
+            vec3(1.0, 0.0, 0.0),
+            DEFAULT_HALF_EXTENTS,
+        )
+        .expect("should hit");
         assert_eq!(hit.face, Face::Spine);
-        let hit = intersect_box(vec3(0.0, 3.0, 0.0), vec3(0.0, -1.0, 0.0), DEFAULT_HALF_EXTENTS)
-            .expect("should hit");
+        let hit = intersect_box(
+            vec3(0.0, 3.0, 0.0),
+            vec3(0.0, -1.0, 0.0),
+            DEFAULT_HALF_EXTENTS,
+        )
+        .expect("should hit");
         assert_eq!(hit.face, Face::Top);
     }
 
@@ -302,11 +326,19 @@ mod tests {
     fn visible_faces(pose: Pose) -> std::collections::HashSet<Face> {
         let rot = pose.rotation();
         let inv = rot.transpose();
-        let ro = vec3(0.0, 0.0, camera_distance(100.0 / 60.0, pose.pitch, DEFAULT_HALF_EXTENTS, 0.8));
+        let ro = vec3(
+            0.0,
+            0.0,
+            camera_distance(100.0 / 60.0, pose.pitch, DEFAULT_HALF_EXTENTS, 0.8),
+        );
         let mut faces = std::collections::HashSet::new();
         for py in 0..60 {
             for px in 0..100 {
-                let rd = primary_ray((px as f32 + 0.5) / 100.0, (py as f32 + 0.5) / 60.0, 100.0 / 60.0);
+                let rd = primary_ray(
+                    (px as f32 + 0.5) / 100.0,
+                    (py as f32 + 0.5) / 60.0,
+                    100.0 / 60.0,
+                );
                 if let Some(h) = intersect_box(inv * ro, inv * rd, DEFAULT_HALF_EXTENTS) {
                     faces.insert(h.face);
                 }
@@ -326,15 +358,31 @@ mod tests {
 
     #[test]
     fn yaw_sign_decides_spine_or_fore_edge() {
-        let left = visible_faces(Pose { yaw: 0.9, pitch: 0.0 });
-        assert!(left.contains(&Face::Spine) && !left.contains(&Face::ForeEdge), "{left:?}");
-        let right = visible_faces(Pose { yaw: -0.9, pitch: 0.0 });
-        assert!(right.contains(&Face::ForeEdge) && !right.contains(&Face::Spine), "{right:?}");
+        let left = visible_faces(Pose {
+            yaw: 0.9,
+            pitch: 0.0,
+        });
+        assert!(
+            left.contains(&Face::Spine) && !left.contains(&Face::ForeEdge),
+            "{left:?}"
+        );
+        let right = visible_faces(Pose {
+            yaw: -0.9,
+            pitch: 0.0,
+        });
+        assert!(
+            right.contains(&Face::ForeEdge) && !right.contains(&Face::Spine),
+            "{right:?}"
+        );
     }
 
     #[test]
     fn uv_orientation_puts_the_spine_at_u_zero_and_the_top_at_v_zero() {
-        let top_left = vec3(-DEFAULT_HALF_EXTENTS.x, DEFAULT_HALF_EXTENTS.y, DEFAULT_HALF_EXTENTS.z);
+        let top_left = vec3(
+            -DEFAULT_HALF_EXTENTS.x,
+            DEFAULT_HALF_EXTENTS.y,
+            DEFAULT_HALF_EXTENTS.z,
+        );
         let (u, v) = face_uv(Face::Front, top_left, DEFAULT_HALF_EXTENTS);
         assert!(u.abs() < 1e-6 && v.abs() < 1e-6, "({u}, {v})");
     }
@@ -351,10 +399,22 @@ mod tests {
 
     #[test]
     fn pitch_sign_decides_which_way_the_cover_looks() {
-        let up = visible_faces(Pose { yaw: 0.0, pitch: -0.6 });
-        assert!(up.contains(&Face::Bottom) && !up.contains(&Face::Top), "{up:?}");
-        let down = visible_faces(Pose { yaw: 0.0, pitch: 0.6 });
-        assert!(down.contains(&Face::Top) && !down.contains(&Face::Bottom), "{down:?}");
+        let up = visible_faces(Pose {
+            yaw: 0.0,
+            pitch: -0.6,
+        });
+        assert!(
+            up.contains(&Face::Bottom) && !up.contains(&Face::Top),
+            "{up:?}"
+        );
+        let down = visible_faces(Pose {
+            yaw: 0.0,
+            pitch: 0.6,
+        });
+        assert!(
+            down.contains(&Face::Top) && !down.contains(&Face::Bottom),
+            "{down:?}"
+        );
     }
 
     #[test]

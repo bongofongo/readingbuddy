@@ -15,7 +15,18 @@ ratatui.workspace = true
 crossterm.workspace = true
 arboard.workspace = true
 image.workspace = true
+flate2.workspace = true
+base64.workspace = true
 futures.workspace = true
 serde.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+# The capability probe polls the tty directly for terminal query replies.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+# Only to assert that a kitty placeholder cell measures one column wide — if it
+# ever measured two, ratatui's buffer diff would skip every second cell.
+unicode-width = "0.2"

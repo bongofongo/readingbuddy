@@ -72,9 +72,11 @@ fn present_book(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let params = app.params;
     let mode = app.render_mode;
-    // Disjoint field borrows: the presenter takes the scene, the view supplies
-    // the book. Both are direct fields of `app`, so this splits cleanly.
-    let mut presenter = crate::render3d::presenter_for(mode, &mut app.scene);
+    // Disjoint field borrows: the presenter takes the scene and the rich state,
+    // the view supplies the book. All three are *direct* fields of `app`, which
+    // is the only reason this splits cleanly — route any of them through a
+    // `&mut App` method and the borrow checker rejects the whole function.
+    let mut presenter = crate::render3d::presenter_for(mode, &mut app.scene, &mut app.rich);
     let book = &app.view.as_ref().expect("caller checked").book;
     presenter.draw_book(f, area, book, params);
 }
@@ -340,6 +342,15 @@ fn facts(b: &Book) -> Vec<(&'static str, String)> {
 /// The key bar. Collapsed it advertises the way out and the way to more;
 /// expanded it lists everything the view responds to. Pairs are dropped from
 /// the right when the pane is too narrow, so it never wraps.
+/// What `v` would switch *to*, so the bar advertises the action rather than
+/// the current state (matching how `space` reads "stop" while spinning).
+fn render_label(app: &App) -> &'static str {
+    match app.render_mode {
+        crate::render3d::RenderMode::Rich => "glyphs",
+        crate::render3d::RenderMode::Glyph => "pixels",
+    }
+}
+
 fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
     let spin = if app.spinning { "stop" } else { "spin" };
     let expanded: &[(&str, &str)] = &[
@@ -352,6 +363,7 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("space", spin),
         ("t", "rotate"),
         ("[ ]", "panes"),
+        ("v", render_label(app)),
         ("o", "less"),
         ("m", "menu"),
         ("q", "quit"),
@@ -392,7 +404,18 @@ mod tests {
         for expanded in [false, true] {
             let pairs: Vec<&str> = if expanded {
                 vec![
-                    "esc/b/←", "n", "d", "p", "f", "x", "space", "t", "[ ]", "o", "m", "q",
+                    "esc/b/←",
+                    "n",
+                    "d",
+                    "p",
+                    "f",
+                    "x",
+                    "space",
+                    "t",
+                    "[ ]",
+                    "o",
+                    "m",
+                    "q",
                 ]
             } else {
                 vec!["n", "o", "m", "q"]

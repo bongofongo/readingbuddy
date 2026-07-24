@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::App;
+use crate::render3d::Caps;
+use crate::render3d::caps::Passthrough;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -23,6 +25,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ("vault", cfg.vault_dir.display().to_string()),
         ("google key", key.to_string()),
         ("glyph set", format!("{:?}", app.params.glyphs)),
+        ("renderer", format!("{:?}", app.render_mode).to_lowercase()),
+        ("terminal", describe_caps(&app.caps)),
     ];
 
     let mut lines = vec![
@@ -69,6 +73,38 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(theme::dim());
     f.render_widget(Paragraph::new(lines).block(block), inner);
+}
+
+/// One line summarising what the startup probe found, so a surprising renderer
+/// choice can be diagnosed from inside the app rather than by guesswork:
+/// `kitty graphics, 19x39px cells, tmux passthrough on (ours)`.
+fn describe_caps(caps: &Caps) -> String {
+    let mut parts = vec![if caps.kitty_graphics {
+        "kitty graphics".to_string()
+    } else {
+        "no pixel protocol".to_string()
+    }];
+    let (w, h) = caps.cell_px;
+    parts.push(format!(
+        "{w}x{h}px cells{}",
+        if caps.cell_px_measured {
+            ""
+        } else {
+            " (assumed)"
+        }
+    ));
+    if caps.in_tmux {
+        parts.push(
+            match caps.passthrough {
+                Passthrough::EnabledByUs => "tmux passthrough on (ours)",
+                Passthrough::Already => "tmux passthrough on",
+                Passthrough::Unavailable => "tmux passthrough blocked",
+                Passthrough::NotTmux => "tmux",
+            }
+            .to_string(),
+        );
+    }
+    parts.join(", ")
 }
 
 /// Show a secret without revealing it: `AIza…f3Qk` (first/last 4 chars),

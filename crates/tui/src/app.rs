@@ -18,7 +18,7 @@ use crossterm::event::KeyModifiers;
 
 use crate::config::{self, TuiConfig};
 use crate::event::Action;
-use crate::render3d::{GlyphSet, Pose, RenderMode, RenderParams, Scene};
+use crate::render3d::{Caps, GlyphSet, Pose, RenderMode, RenderParams, Scene};
 use crate::theme;
 use crate::ui;
 use crate::ui::input::InputState;
@@ -224,9 +224,15 @@ pub struct App {
     pub tab_state: ListState,
     pub scene: Scene,
     pub params: RenderParams,
-    /// Which presentation path the book view uses. Rich currently falls back to
-    /// the glyph path (see [`RenderMode`]), so this is safe to set to anything.
+    /// Which presentation path the book view uses, resolved at startup from
+    /// [`Caps`] and `--render`.
     pub render_mode: RenderMode,
+    /// What the terminal told us it can do. `Copy`, because `present_book`
+    /// reads it out of `App` before taking the `&mut app.scene` borrow.
+    pub caps: Caps,
+    /// Pixel-path state. A direct field, not behind a method: `present_book`
+    /// borrows it disjointly alongside `scene` and `view`.
+    pub rich: crate::render3d::present::RichState,
     /// The user's book-view layout tweaks (pane rotation + divider slide).
     pub layout: crate::ui::LayoutPrefs,
     /// Idle spin on/off.
@@ -271,6 +277,8 @@ impl App {
             scene,
             params: RenderParams::default(),
             render_mode: RenderMode::default(),
+            caps: Caps::default(),
+            rich: crate::render3d::present::RichState::default(),
             layout: crate::ui::LayoutPrefs::default(),
             spinning: true,
             show_options: false,
@@ -299,9 +307,17 @@ impl App {
     }
 
     /// Choose the book-view presentation path (glyph vs rich). Set once at
-    /// startup from `$TMUX`/`--render`.
+    /// startup from the probed [`Caps`] and `--render`.
     pub fn set_render_mode(&mut self, mode: RenderMode) {
         self.render_mode = mode;
+        self.dirty = true;
+    }
+
+    /// Record what the terminal reported. Tests and `--dump-frame` never call
+    /// this, so they keep [`Caps::default`] and can never emit graphics.
+    pub fn set_caps(&mut self, caps: Caps) {
+        self.caps = caps;
+        self.rich.set_caps(caps);
         self.dirty = true;
     }
 
@@ -366,6 +382,29 @@ impl App {
             self.clamp_tab_selection();
         }
         Ok(())
+    }
+
+    /// Swap between the pixel and glyph renderers.
+    ///
+    /// Leaving rich mode must delete the image explicitly: the placeholder
+    /// cells stop being written, but the image the terminal is holding would
+    /// otherwise stay composited underneath the block glyphs.
+    fn toggle_renderer(&mut self) {
+        match self.render_mode {
+            RenderMode::Rich => {
+                self.rich.drop_image();
+                self.render_mode = RenderMode::Glyph;
+                self.status = Some("renderer: glyphs".into());
+            }
+            RenderMode::Glyph if self.caps.supports_pixels() => {
+                self.render_mode = RenderMode::Rich;
+                self.status = Some("renderer: pixels".into());
+            }
+            RenderMode::Glyph => {
+                self.status = Some("this terminal has no pixel protocol".into());
+            }
+        }
+        self.dirty = true;
     }
 
     fn reset_pose(&mut self) {
@@ -481,6 +520,7 @@ impl App {
             }
             Action::ToggleSpin => self.spinning = !self.spinning,
             Action::RotateLayout => self.rotate_layout(),
+            Action::ToggleRenderer => self.toggle_renderer(),
             Action::GrowBook => self.slide_divider(crate::ui::DIVIDER_STEP),
             Action::ShrinkBook => self.slide_divider(-crate::ui::DIVIDER_STEP),
             Action::NewNote => self.new_note(false),

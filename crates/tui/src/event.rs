@@ -21,6 +21,8 @@ pub enum Action {
     Refresh,
     /// Rotate the book-view panes clockwise.
     RotateLayout,
+    /// Swap the book renderer between true pixels and block glyphs.
+    ToggleRenderer,
     /// Slide the pane divider to grow / shrink the object's share.
     GrowBook,
     ShrinkBook,
@@ -67,6 +69,7 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('o') | KeyCode::Char('?') => Some(Action::ToggleOptions),
         KeyCode::Char('r') => Some(Action::Reset),
         KeyCode::Char('t') => Some(Action::RotateLayout),
+        KeyCode::Char('v') => Some(Action::ToggleRenderer),
         KeyCode::Char(']') => Some(Action::GrowBook),
         KeyCode::Char('[') => Some(Action::ShrinkBook),
         KeyCode::F(5) => Some(Action::Refresh),

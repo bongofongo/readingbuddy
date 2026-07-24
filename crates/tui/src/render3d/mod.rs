@@ -6,8 +6,11 @@
 //! point if a pixel protocol ever becomes viable.
 
 pub mod blit;
+pub mod caps;
+pub mod kitty;
 pub mod math;
 pub mod present;
+pub mod raster;
 pub mod scene;
 pub mod texture;
 
@@ -16,15 +19,17 @@ use std::path::{Path, PathBuf};
 use readingbuddy::Book;
 
 pub use blit::{GlyphSet, RgbBuf};
+pub use caps::Caps;
 pub use present::presenter_for;
 pub use scene::Pose;
 
 /// Which presentation path the single-book view uses.
 ///
-/// `Glyph` is the block-glyph raytrace — the only path that survives tmux, and
-/// the default there. `Rich` is the higher-quality out-of-tmux renderer; it is
-/// scaffolded (see [`present::RichPresenter`]) but currently falls back to the
-/// glyph path, so selecting it is always safe.
+/// `Glyph` is the block-glyph raytrace: it works anywhere truecolor does, tmux
+/// included, and is the fallback for every situation the probe can't improve
+/// on. `Rich` is the true-pixel path (kitty graphics), chosen when
+/// [`Caps::supports_pixels`] says the terminal can actually take it — which,
+/// contrary to the original design, includes tmux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RenderMode {
     #[default]
@@ -80,8 +85,17 @@ impl Model {
     }
 }
 
-/// Identifies which cover is loaded, so the cache knows when to rebuild.
-type CoverKey = (Option<i64>, Option<String>, String, u16);
+/// Identifies which cover is loaded, so the cache knows when to rebuild. The
+/// last field is the texture's target width in texels — the pixel path wants a
+/// much larger texture than the glyph path for the same cell rect.
+type CoverKey = (Option<i64>, Option<String>, String, u32);
+
+/// Texture width the glyph path asks for: four subpixels of texture per cell,
+/// enough detail for the front face at any pose without paying for the full
+/// JPEG. Kept as a function so the key stays a pure function of `cols`.
+fn glyph_texels(cols: u16) -> u32 {
+    (cols as u32 * 4).max(24)
+}
 
 /// Owns the cover texture and the last rendered frame. Both are cached: a
 /// still book costs nothing per tick, and rotating only re-runs the tracer.
@@ -90,7 +104,23 @@ pub struct Scene {
     /// against the engine's images directory before being opened.
     images_dir: PathBuf,
     cover: Option<(CoverKey, Cover)>,
-    frame: Option<(CoverKey, i32, i32, u16, u16, RgbBuf)>,
+    frame: Option<(FrameKey, RgbBuf)>,
+}
+
+/// Everything a cached glyph frame depends on. `ss` and `glyphs` belong here as
+/// much as the pose does: `glyphs` fixes the framebuffer's height, so without it
+/// the runtime glyph toggle can serve a frame of the wrong cell height for one
+/// draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrameKey {
+    cover: CoverKey,
+    /// Pose quantized to 1/512 rad, so sub-degree jitter can't force redraws.
+    yaw_q: i32,
+    pitch_q: i32,
+    cols: u16,
+    rows: u16,
+    ss: u8,
+    glyphs: GlyphSet,
 }
 
 impl Scene {
@@ -113,58 +143,60 @@ impl Scene {
         by_name.exists().then_some(by_name)
     }
 
-    fn cover_key(book: &Book, fb_width: u16) -> CoverKey {
+    fn cover_key(book: &Book, texels: u32) -> CoverKey {
         (
             book.id,
             book.cover_path.clone(),
             book.display_title().to_string(),
-            fb_width,
+            texels,
         )
     }
 
-    /// Decode (or synthesize) the cover texture for `book` unless the cached
-    /// one already matches. Textures are prescaled per framebuffer width, so
-    /// a resize reloads.
-    fn ensure_cover(&mut self, book: &Book, cols: u16) {
-        let key = Self::cover_key(book, cols);
+    /// The cover texture for `book`, decoded (or synthesized) at roughly
+    /// `texels` wide unless the cached one already matches.
+    ///
+    /// Public so the pixel path can ask for a bigger texture than the glyph
+    /// path does: a 1000px-wide render wants far more than four texels per
+    /// cell. Both paths share the one cache slot, so switching renderers
+    /// reloads the cover — cheap, and it keeps `Scene` to a single texture.
+    pub fn cover(&mut self, book: &Book, texels: u32) -> &Cover {
+        let key = Self::cover_key(book, texels);
         let stale = self.cover.as_ref().map(|(k, _)| k != &key).unwrap_or(true);
         if stale {
-            // Four subpixels of texture per cell: enough detail for the front
-            // face at any pose without paying for the full-size JPEG.
-            let target = (cols as u32 * 4).max(24);
             let loaded = book
                 .cover_path
                 .as_deref()
                 .and_then(|p| self.resolve_cover(p))
-                .and_then(|p| texture::load_cover(&p, target))
+                .and_then(|p| texture::load_cover(&p, texels))
                 .unwrap_or_else(|| texture::procedural_cover(book.display_title()));
             self.cover = Some((key, loaded));
         }
+        &self.cover.as_ref().expect("just populated").1
     }
 
     /// Render `book` at `pose` for a `cols` x `rows` region of terminal cells.
     /// The returned buffer is twice that on both axes — four subpixels per
     /// cell, which [`blit`] quantizes into one block glyph.
     pub fn frame(&mut self, book: &Book, cols: u16, rows: u16, params: RenderParams) -> &RgbBuf {
-        let key = Self::cover_key(book, cols);
-        // Quantizing the pose keeps sub-degree jitter from forcing redraws.
-        let yq = (params.pose.yaw * 512.0).round() as i32;
-        let pq = (params.pose.pitch * 512.0).round() as i32;
-        let hit = self
-            .frame
-            .as_ref()
-            .map(|(k, y, p, w, h, _)| k == &key && *y == yq && *p == pq && *w == cols && *h == rows)
-            .unwrap_or(false);
+        let key = FrameKey {
+            cover: Self::cover_key(book, glyph_texels(cols)),
+            yaw_q: (params.pose.yaw * 512.0).round() as i32,
+            pitch_q: (params.pose.pitch * 512.0).round() as i32,
+            cols,
+            rows,
+            ss: params.ss,
+            glyphs: params.glyphs,
+        };
+        let hit = self.frame.as_ref().map(|(k, _)| k == &key).unwrap_or(false);
         if !hit {
-            self.ensure_cover(book, cols);
             // Scoped so the cover borrow ends before `frame` is reassigned.
             let fb = {
-                let cover = &self.cover.as_ref().expect("just populated").1;
+                let cover = self.cover(book, glyph_texels(cols));
                 render(cols, rows, &Model::new(book, cover), cover, params)
             };
-            self.frame = Some((key, yq, pq, cols, rows, fb));
+            self.frame = Some((key, fb));
         }
-        &self.frame.as_ref().expect("just populated").5
+        &self.frame.as_ref().expect("just populated").1
     }
 }
 
@@ -183,11 +215,7 @@ pub fn render(cols: u16, rows: u16, model: &Model, cover: &Cover, params: Render
     // A cell is one unit wide and two tall, so the image's physical aspect is
     // cols : rows*2 even though the sample grid is square in count.
     let aspect = cols as f32 / (rows as f32 * 2.0);
-    let origin = vec3(
-        0.0,
-        0.0,
-        scene::camera_distance(aspect, params.pose.pitch, model.half, scene::fill_for(rows)),
-    );
+    let origin = scene::camera_origin(aspect, params.pose.pitch, model.half, rows);
     let ss = params.ss.max(1) as u16;
     let samples = (ss * ss) as f32;
     let (fw, fh) = (width as f32, height as f32);
@@ -244,7 +272,11 @@ mod tests {
         let model = Model::new(&book, &cover);
         let fb = render(60, 40, &model, &cover, RenderParams::default());
         // Octant default: 2 subpixels wide, 4 tall per cell.
-        assert_eq!((fb.width, fb.height), (120, 160), "eight subpixels per cell");
+        assert_eq!(
+            (fb.width, fb.height),
+            (120, 160),
+            "eight subpixels per cell"
+        );
         assert!(fb.get(60, 80).is_some(), "centre should be the book");
         assert!(fb.get(0, 0).is_none(), "corner should be empty");
         let filled = filled_subpixels(&fb);
@@ -261,7 +293,10 @@ mod tests {
         let mut book = test_book();
         book.cover_path = Some("/nonexistent/cover.jpg".into());
         let fb = scene.frame(&book, 40, 30, RenderParams::default());
-        assert!(filled_subpixels(fb) > 200, "fallback cover rendered nothing");
+        assert!(
+            filled_subpixels(fb) > 200,
+            "fallback cover rendered nothing"
+        );
     }
 
     #[test]
@@ -270,9 +305,9 @@ mod tests {
         let book = test_book();
         let params = RenderParams::default();
         scene.frame(&book, 40, 30, params);
-        let first = scene.frame.as_ref().unwrap().1;
+        let first = scene.frame.as_ref().unwrap().0.yaw_q;
         scene.frame(&book, 40, 30, params);
-        assert_eq!(scene.frame.as_ref().unwrap().1, first);
+        assert_eq!(scene.frame.as_ref().unwrap().0.yaw_q, first);
 
         let moved = RenderParams {
             pose: Pose {
@@ -282,6 +317,27 @@ mod tests {
             ..params
         };
         scene.frame(&book, 40, 30, moved);
-        assert_ne!(scene.frame.as_ref().unwrap().1, first);
+        assert_ne!(scene.frame.as_ref().unwrap().0.yaw_q, first);
+    }
+
+    #[test]
+    fn switching_glyph_family_invalidates_the_cached_frame() {
+        // The framebuffer's height is `rows * glyphs.cell_h()`, so a cached
+        // octant frame is the wrong shape for a quadrant blit. Before `glyphs`
+        // joined the key, toggling families served one frame at the old height.
+        let mut scene = Scene::new("database/images");
+        let book = test_book();
+        let octant = RenderParams {
+            glyphs: GlyphSet::Octant,
+            ..RenderParams::default()
+        };
+        let tall = scene.frame(&book, 40, 30, octant).height;
+        let quadrant = RenderParams {
+            glyphs: GlyphSet::Quadrant,
+            ..octant
+        };
+        let short = scene.frame(&book, 40, 30, quadrant).height;
+        assert_eq!(tall, 30 * 4);
+        assert_eq!(short, 30 * 2, "cache served a frame of the wrong height");
     }
 }

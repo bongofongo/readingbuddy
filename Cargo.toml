@@ -30,3 +30,8 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# Already in the lock tree via `image`; promoted to direct deps for the kitty
+# graphics path (zlib-compressed, base64-armoured image payloads).
+flate2 = "1.1"
+base64 = "0.22"
+libc = "0.2"
