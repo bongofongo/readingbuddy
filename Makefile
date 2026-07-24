@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-import golden lint fmt fmt-check check clean bench bench-trend perf
+.PHONY: help test test-import golden lint fmt fmt-check check clean bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -74,6 +74,16 @@ bench: ## Compare renderers end-to-end (REAL, ACTIVE pane; BENCH_REPS=3 to avera
 	@echo "per-frame log : $(PERF_LOG)"
 	@echo "summary       : $(PERF_SUMMARY)"
 	@echo "trend         : $(PERF_HISTORY)"
+
+bench-box: ## Same comparison, but in a disposable terminal (no pane hijack)
+	@# A throwaway kitty + its own tmux server, so the run needs no terminal of
+	@# yours, cannot touch your panes or your library, and comes back with a
+	@# pinned window size and font. Rows land in the same history.tsv tagged
+	@# env=box — trend those against each other, never against env=live.
+	@# Its own reps default (3, because rep 1 warms the fresh terminal) is left
+	@# alone unless BENCH_BOX_REPS is set — passing BENCH_REPS's 1 through here
+	@# would silently reinstate the cold-terminal reading.
+	$(if $(BENCH_BOX_REPS),BENCH_REPS=$(BENCH_BOX_REPS) ,)scripts/bench-sandbox.sh $(BENCH_ARGS)
 
 bench-trend: ## Show every recorded bench run, oldest first
 	@test -f $(PERF_HISTORY) || { echo "no history yet — run 'make bench'"; exit 1; }

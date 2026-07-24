@@ -99,6 +99,17 @@ struct Cli {
     #[arg(long, requires = "bench_render")]
     bench_free_run: bool,
 
+    /// Name the environment this run was measured in, recorded in the history
+    /// TSV (default `live`). `scripts/bench-sandbox.sh` passes `box`.
+    ///
+    /// Rows from different environments are *not* comparable — a disposable
+    /// kitty window with a pinned font and a private tmux server has a
+    /// different cell size, window size and neighbour set from the pane you
+    /// work in. This column is what stops the trend line from silently mixing
+    /// them, the same failure `cover_px` was added to prevent.
+    #[arg(long, value_name = "NAME", requires = "bench_render")]
+    bench_env: Option<String>,
+
     /// Append a JSON record per frame to this file. Off by default; the
     /// recording calls cost one relaxed atomic load when it is absent.
     #[arg(long, value_name = "PATH", env = "READINGBUDDY_PERF_LOG")]
@@ -537,7 +548,8 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     restore_terminal();
     report_bench(&summaries, cover_px, caps, cli.bench_free_run);
     if let Some(path) = &cli.perf_history {
-        match append_history(path, &summaries, cover_px, caps) {
+        let env = cli.bench_env.as_deref().unwrap_or("live");
+        match append_history(path, &summaries, cover_px, caps, env) {
             Ok(()) => eprintln!("history     : {}", path.display()),
             // The measurement already happened; failing to file it is not a
             // reason to fail the command.
@@ -563,13 +575,34 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
 /// and three runs' rows landed under the old name.
 const HISTORY_HEADER: &str = "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
      trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
-     rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px";
+     rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px\tenv\tload1";
+
+/// The 1-minute load average, or 0 where the OS will not say.
+///
+/// Recorded per row because the latency columns are the ones that move under
+/// contention, and after the fact there is no other way to tell a real
+/// regression from "a release build was still linking". A row measured at load
+/// 4 on an 8-core machine is evidence about the machine, not the renderer.
+fn load1() -> f64 {
+    #[cfg(unix)]
+    {
+        let mut avg = [0.0f64; 3];
+        // SAFETY: getloadavg writes at most `nelem` doubles into the buffer.
+        let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 1) };
+        if n >= 1 { avg[0] } else { 0.0 }
+    }
+    #[cfg(not(unix))]
+    {
+        0.0
+    }
+}
 
 fn append_history(
     path: &std::path::Path,
     summaries: &[BenchSummary],
     cover_px: u32,
     caps: render3d::Caps,
+    env: &str,
 ) -> std::io::Result<()> {
     use std::io::Write as _;
 
@@ -603,11 +636,15 @@ fn append_history(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    // Sampled once, after the run: the load the machine carried *through* the
+    // measurement is what the reader wants, and the 1-minute average at the end
+    // covers roughly that window for a run of this length.
+    let load = load1();
     for s in summaries {
         let secs = s.wall.as_secs_f64().max(1e-9);
         writeln!(
             f,
-            "{epoch}\t{}\t{}\t{:.1}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{epoch}\t{}\t{}\t{:.1}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}",
             s.mode,
             s.frames,
             s.frames as f64 / secs,
@@ -625,6 +662,8 @@ fn append_history(
             s.rect.1,
             caps.in_tmux,
             cover_px,
+            env,
+            load,
         )?;
     }
     Ok(())
@@ -1015,8 +1054,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let caps = render3d::Caps::default();
-        append_history(&path, &[summary("glyph", 0), summary("rich", 0)], 525, caps).unwrap();
-        append_history(&path, &[summary("glyph", 4_096)], 0, caps).unwrap();
+        append_history(
+            &path,
+            &[summary("glyph", 0), summary("rich", 0)],
+            525,
+            caps,
+            "live",
+        )
+        .unwrap();
+        append_history(&path, &[summary("glyph", 4_096)], 0, caps, "box").unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
@@ -1040,6 +1086,10 @@ mod tests {
             lines[1]
         );
         assert!(lines[3].contains("\t4\t"), "moving_KB wrong: {}", lines[3]);
+        // Rows must carry the environment they were measured in, or a sandbox
+        // run and a live-pane run trend against each other.
+        assert!(lines[1].contains("\tlive\t"), "env missing: {}", lines[1]);
+        assert!(lines[3].contains("\tbox\t"), "env missing: {}", lines[3]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1059,6 +1109,7 @@ mod tests {
             &[summary("glyph", 0)],
             525,
             render3d::Caps::default(),
+            "live",
         )
         .unwrap();
 
