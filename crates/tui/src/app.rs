@@ -30,7 +30,7 @@ pub const SPIN_SPEED: f32 = 0.01164;
 /// The pitch nods gently while the book turns, on its own slower cycle.
 const NOD: f32 = 0.06;
 const NOD_SPEED: f32 = 0.011;
-const TICK: Duration = Duration::from_millis(50);
+pub const TICK: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {

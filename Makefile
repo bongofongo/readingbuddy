@@ -48,7 +48,8 @@ golden: ## Regenerate the golden import snapshots
 	UPDATE_GOLDEN=1 cargo test -p readingbuddy --test koreader_import import_matches_golden
 
 bench: ## Compare renderers end-to-end (needs a REAL, ACTIVE pane)
-	@echo "This takes over the terminal for ~30s. It must run in a real pane,"
+	@echo "This takes over the terminal for ~40s (240 frames x 3 modes, paced to"
+	@echo "the app's 20fps tick). It must run in a real pane,"
 	@echo "and inside tmux that pane must be the ACTIVE one — tmux routes input"
 	@echo "to the focused pane only, so a background pane gets no replies and"
 	@echo "the terminal-latency columns come back empty."

@@ -279,6 +279,15 @@ Drives the **real presenter through a real `Terminal::draw`**, so the retransmit
 throttle, the placeholder cells and ratatui's diff are all inside the
 measurement. Fixed script (spin 100 → park 20 → spin 60 → slide the divider →
 spin 40 → park 20), identical for every mode, `--bench-reps` to repeat it.
+
+**Paced to the app's 20 fps tick**, and that is load-bearing rather than
+cosmetic. The first version free-ran, which looked like the more rigorous choice
+and was not: the retransmit throttle keys off *pose*, so at 1100 fps consecutive
+frames land in different `MOTION_Q` buckets far more often than at 20 fps, and
+`rich-always` sent **~50x** more than a real session would. Every MB/s figure was
+inflated, and the three modes ran at three different frame rates, so the columns
+were not even comparable to each other. `--bench-free-run` keeps the old
+behaviour for throughput questions, and says so in the output.
 Reports bytes/s by class, sends, mean trace and draw, and RTT p50/p90/max per
 layer. `make bench` wraps it.
 
@@ -293,8 +302,9 @@ other two; if they do not, the instrument is broken, not the renderer.
 
 Two conditions the harness warns about rather than silently tolerating: a book
 with **no real cover** (the procedural plate compresses several times better and
-flatters every image number), and a **background tmux pane** (tmux routes input
-to the focused pane only, so no replies come back).
+flatters every image number — the bench now *prefers* a book whose cover exists
+on disk rather than taking whichever was touched last), and a **background tmux
+pane** (tmux routes input to the focused pane only, so no replies come back).
 
 ### 4. What gets kept
 

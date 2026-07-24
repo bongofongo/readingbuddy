@@ -92,6 +92,13 @@ struct Cli {
     #[arg(long, value_name = "N", requires = "bench_render")]
     bench_reps: Option<u32>,
 
+    /// Draw as fast as the machine allows instead of pacing to the app's 20fps
+    /// tick. Answers "how much throughput is there", *not* "what does the app
+    /// cost" — the retransmit throttle keys off pose, so free-running inflates
+    /// the send rate far above anything a real session produces.
+    #[arg(long, requires = "bench_render")]
+    bench_free_run: bool,
+
     /// Append a JSON record per frame to this file. Off by default; the
     /// recording calls cost one relaxed atomic load when it is absent.
     #[arg(long, value_name = "PATH", env = "READINGBUDDY_PERF_LOG")]
@@ -306,9 +313,13 @@ const SCRIPT: &[Phase] = &[
     Phase::Park(20),
 ];
 
-/// Sample the terminal's own latency this often (in frames). Often enough to
-/// see a stall build, rare enough that the measurement is not the load.
-const RTT_EVERY: u32 = 20;
+/// Sample the terminal's own latency this often (in frames).
+///
+/// 8 gives ~30 samples over the script, which is the floor for a p90 that means
+/// anything — at 12 samples the "p90" is just the second-worst value. Each probe
+/// returns as soon as both replies land (a few ms), so it fits inside a tick
+/// without becoming the load itself.
+const RTT_EVERY: u32 = 8;
 
 /// What one mode's run cost.
 struct BenchSummary {
@@ -362,24 +373,33 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
         ],
     };
 
-    let book = match &cli.book {
-        Some(sel) => resolve_book(&engine, sel).await?,
-        None => engine
-            .storage
-            .list_books(1, BookSort::LastModified)
-            .await?
-            .into_iter()
-            .next()
-            .context("no books in the library to bench with")?,
-    };
     // A procedural plate compresses several times better than a photograph, so
     // benching without a real cover produces numbers that are wrong in the
-    // flattering direction. Say so loudly rather than quietly.
-    let real_cover = book
-        .cover_path
-        .as_deref()
-        .map(|p| engine.config.images_dir.join(p))
-        .is_some_and(|p| p.exists());
+    // flattering direction. Pick a book that has one rather than whichever was
+    // touched last — an explicit `--book` still wins, and the warning still
+    // fires if nothing in the library qualifies.
+    let has_cover = |b: &Book| {
+        b.cover_path
+            .as_deref()
+            .map(|p| engine.config.images_dir.join(p))
+            .is_some_and(|p| p.exists())
+    };
+    let book = match &cli.book {
+        Some(sel) => resolve_book(&engine, sel).await?,
+        None => {
+            let library = engine
+                .storage
+                .list_books(200, BookSort::LastModified)
+                .await?;
+            library
+                .iter()
+                .find(|b| has_cover(b))
+                .or_else(|| library.first())
+                .cloned()
+                .context("no books in the library to bench with")?
+        }
+    };
+    let real_cover = has_cover(&book);
 
     let meter = perf::Meter::new();
     let mut app = app::App::new(engine).await?;
@@ -406,6 +426,16 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
             app.params.pose = render3d::Pose::default();
             let _ = app.perf.drain_frames();
 
+            // Pace to the app's own tick unless asked not to. Free-running
+            // measures throughput, which is the wrong question: the retransmit
+            // throttle keys off *pose*, so at 1000fps consecutive frames land in
+            // different coarse buckets far more often and the send rate inflates
+            // by ~50x over anything a real session produces. Same interval and
+            // the same missed-tick behaviour as `app::run`, so a bench frame is
+            // a real frame.
+            let mut ticker = tokio::time::interval(app::TICK);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
             let wall = std::time::Instant::now();
             let mut frame = 0u32;
             for phase in SCRIPT {
@@ -417,6 +447,9 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
                     Phase::Spin(n) | Phase::Park(n) => {
                         app.spinning = matches!(phase, Phase::Spin(_));
                         for _ in 0..n {
+                            if !cli.bench_free_run {
+                                ticker.tick().await;
+                            }
                             app.tick();
                             if frame.is_multiple_of(RTT_EVERY) {
                                 // Sampled *under* load, between draws: a
@@ -444,7 +477,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     app.rich.drop_image();
     app.perf.flush();
     restore_terminal();
-    report_bench(&summaries, real_cover, caps);
+    report_bench(&summaries, real_cover, caps, cli.bench_free_run);
     if let Some(path) = &cli.perf_history {
         match append_history(path, &summaries, real_cover, caps) {
             Ok(()) => eprintln!("history     : {}", path.display()),
@@ -557,7 +590,12 @@ fn sorted(it: impl Iterator<Item = u64>) -> Vec<u64> {
     v
 }
 
-fn report_bench(summaries: &[BenchSummary], real_cover: bool, caps: render3d::Caps) {
+fn report_bench(
+    summaries: &[BenchSummary],
+    real_cover: bool,
+    caps: render3d::Caps,
+    free_run: bool,
+) {
     if !real_cover {
         eprintln!(
             "WARNING: this book has no cover image on disk, so the render used the\n\
@@ -571,9 +609,18 @@ fn report_bench(summaries: &[BenchSummary], real_cover: bool, caps: render3d::Ca
              fell back to glyphs and the comparison is meaningless."
         );
     }
+    if free_run {
+        eprintln!(
+            "WARNING: --bench-free-run. These rates are throughput, NOT what the app\n\
+             costs: the retransmit throttle keys off pose, so drawing faster than the\n\
+             20fps tick inflates the send rate well above any real session."
+        );
+    }
     eprintln!(
-        "in tmux     : {}   cell px: {:?}",
-        caps.in_tmux, caps.cell_px
+        "in tmux     : {}   cell px: {:?}   paced: {}",
+        caps.in_tmux,
+        caps.cell_px,
+        if free_run { "no (free-run)" } else { "20fps" }
     );
     eprintln!();
     eprintln!(
