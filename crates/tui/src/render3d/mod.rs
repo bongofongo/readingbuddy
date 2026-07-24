@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use readingbuddy::Book;
 
-pub use blit::RgbBuf;
+pub use blit::{GlyphSet, RgbBuf};
 pub use scene::Pose;
 
 use math::{Vec3, vec3};
@@ -24,15 +24,20 @@ use texture::Cover;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderParams {
     pub pose: Pose,
-    /// Supersampling factor per axis; 2 means 4 rays per subpixel.
+    /// Supersampling factor per axis; 3 means 9 rays per subpixel.
     pub ss: u8,
+    /// Block-glyph family, which fixes the subpixel resolution of a cell.
+    pub glyphs: GlyphSet,
 }
 
 impl Default for RenderParams {
     fn default() -> Self {
         RenderParams {
             pose: Pose::default(),
-            ss: 2,
+            // Octants double the vertical subpixel density; a slightly higher
+            // supersample keeps the finer edges from aliasing.
+            ss: 3,
+            glyphs: GlyphSet::Octant,
         }
     }
 }
@@ -109,9 +114,9 @@ impl Scene {
         let key = Self::cover_key(book, cols);
         let stale = self.cover.as_ref().map(|(k, _)| k != &key).unwrap_or(true);
         if stale {
-            // Three subpixels of texture per cell: enough detail for the front
+            // Four subpixels of texture per cell: enough detail for the front
             // face at any pose without paying for the full-size JPEG.
-            let target = (cols as u32 * 3).max(24);
+            let target = (cols as u32 * 4).max(24);
             let loaded = book
                 .cover_path
                 .as_deref()
@@ -151,7 +156,10 @@ impl Scene {
 /// Trace one frame for a `cols` x `rows` cell region. Public so `--dump-frame`
 /// and tests can call it directly.
 pub fn render(cols: u16, rows: u16, model: &Model, cover: &Cover, params: RenderParams) -> RgbBuf {
-    let (width, height) = (cols * 2, rows * 2);
+    // Two subpixel columns per cell; the row count follows the glyph family
+    // (octants pack twice as many, which is where the extra resolution comes
+    // from). The physical aspect below stays cols : rows*2 either way.
+    let (width, height) = (cols * 2, rows * params.glyphs.cell_h());
     let mut fb = RgbBuf::new(width, height);
     if cols == 0 || rows == 0 {
         return fb;
@@ -220,8 +228,9 @@ mod tests {
         let cover = texture::procedural_cover("Station Eleven");
         let model = Model::new(&book, &cover);
         let fb = render(60, 40, &model, &cover, RenderParams::default());
-        assert_eq!((fb.width, fb.height), (120, 80), "four subpixels per cell");
-        assert!(fb.get(60, 40).is_some(), "centre should be the book");
+        // Octant default: 2 subpixels wide, 4 tall per cell.
+        assert_eq!((fb.width, fb.height), (120, 160), "eight subpixels per cell");
+        assert!(fb.get(60, 80).is_some(), "centre should be the book");
         assert!(fb.get(0, 0).is_none(), "corner should be empty");
         let filled = filled_subpixels(&fb);
         let total = fb.width as usize * fb.height as usize;

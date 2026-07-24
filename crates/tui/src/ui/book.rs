@@ -58,8 +58,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Trace the book into the area. The renderer works in cells; it returns four
-/// subpixels per cell for [`blit`] to quantize.
+/// Trace the book into the area. The renderer works in cells; it returns the
+/// glyph family's subpixels per cell (octant: 2x4) for [`blit`] to quantize.
 fn draw_object(f: &mut Frame, app: &mut App, area: Rect, title: Option<String>) {
     let area = match &title {
         Some(t) => {
@@ -79,7 +79,7 @@ fn draw_object(f: &mut Frame, app: &mut App, area: Rect, title: Option<String>) 
     // Disjoint field borrows: the scene renders, the view supplies the book.
     let view = app.view.as_ref().expect("caller checked");
     let fb = app.scene.frame(&view.book, area.width, area.height, params);
-    blit::blit(fb, area, f.buffer_mut());
+    blit::blit(fb, area, f.buffer_mut(), params.glyphs);
 }
 
 /// Wide layout: full metadata beside the object.

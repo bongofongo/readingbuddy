@@ -47,9 +47,29 @@ struct Cli {
     #[arg(long, value_name = "YAW,PITCH", requires = "dump_frame")]
     pose: Option<String>,
 
-    /// Also write the raw framebuffer to a PNG (one subpixel per pixel)
+    /// Also write a PNG of the quantized cells (what the terminal would show)
     #[arg(long, value_name = "PATH", requires = "dump_frame")]
     dump_png: Option<PathBuf>,
+
+    /// Block-glyph family: octant (default, 2x4, needs a Unicode-16 font) or
+    /// quadrant (2x2, works on any truecolor terminal)
+    #[arg(long, value_enum, default_value_t = GlyphArg::Octant)]
+    glyphs: GlyphArg,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum GlyphArg {
+    Octant,
+    Quadrant,
+}
+
+impl From<GlyphArg> for render3d::GlyphSet {
+    fn from(g: GlyphArg) -> Self {
+        match g {
+            GlyphArg::Octant => render3d::GlyphSet::Octant,
+            GlyphArg::Quadrant => render3d::GlyphSet::Quadrant,
+        }
+    }
 }
 
 #[tokio::main]
@@ -68,6 +88,7 @@ async fn main() -> Result<()> {
     }
 
     let mut app = app::App::new(engine).await?;
+    app.params.glyphs = cli.glyphs.into();
     if let Some(selector) = &cli.book {
         let book = resolve_book(&app.engine, selector).await?;
         app.open_book(book).await?;
@@ -106,7 +127,10 @@ async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
             }),
     };
 
-    let mut params = RenderParams::default();
+    let mut params = RenderParams {
+        glyphs: cli.glyphs.into(),
+        ..RenderParams::default()
+    };
     if let Some(spec) = cli.pose.as_deref() {
         let (yaw, pitch) = spec
             .split_once(',')
@@ -118,12 +142,12 @@ async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
     let mut scene = Scene::new(engine.config.images_dir.clone());
     let fb = scene.frame(&book, w, h, params);
     if let Some(path) = &cli.dump_png {
-        render3d::blit::to_png(fb, path)?;
+        render3d::blit::to_png(fb, params.glyphs, path)?;
         eprintln!("wrote {}", path.display());
     }
     let mut out = stdout().lock();
     writeln!(out, "{}", book.display_title())?;
-    write!(out, "{}", render3d::blit::to_ansi(fb))?;
+    write!(out, "{}", render3d::blit::to_ansi(fb, params.glyphs))?;
     Ok(())
 }
 

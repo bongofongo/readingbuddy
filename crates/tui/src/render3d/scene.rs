@@ -29,7 +29,9 @@ pub fn fill_for(rows: u16) -> f32 {
     const SMALL: f32 = 18.0;
     const LARGE: f32 = 44.0;
     let t = ((rows as f32 - SMALL) / (LARGE - SMALL)).clamp(0.0, 1.0);
-    0.88 + t * (0.60 - 0.88)
+    // Scaled 20% down from the old 0.88→0.60: on a full terminal the book was
+    // still reading as too large for a centrepiece object.
+    0.70 + t * (0.48 - 0.70)
 }
 
 /// Two-point rig plus ambient. Without the fill, faces turned away from the
