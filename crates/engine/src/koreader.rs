@@ -126,7 +126,7 @@ fn parse_legacy(
         }
     }
     // Page-keyed map iteration order is arbitrary; make output deterministic.
-    out.sort_by(|a, b| (a.page, a.ko_datetime.clone()).cmp(&(b.page, b.ko_datetime.clone())));
+    out.sort_by_key(|h| (h.page, h.ko_datetime.clone()));
     Ok(out)
 }
 
