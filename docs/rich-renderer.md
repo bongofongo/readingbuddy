@@ -289,7 +289,17 @@ inflated, and the three modes ran at three different frame rates, so the columns
 were not even comparable to each other. `--bench-free-run` keeps the old
 behaviour for throughput questions, and says so in the output.
 Reports bytes/s by class, sends, mean trace and draw, and RTT p50/p90/max per
-layer. `make bench` wraps it.
+layer. `make bench` wraps it; `make bench BENCH_REPS=3` repeats the script, and
+`BENCH_ARGS="--book x"` passes anything else through.
+
+Each mode draws 25 warm-up frames that are discarded, and reps loop *outside*
+modes so they interleave. Both are there because the first real comparison put
+glyph first, straight after a release build: its opening 20 frames ran 40% slower
+than the rest of its own run and it came out worst on every timing metric, which
+is not believable for a path that draws the identical frame `rich` does while
+moving. The byte columns are deterministic and need one rep; the latency columns
+are not, and a surprising one should be re-run with `BENCH_REPS=3` before it is
+believed.
 
 The column that matters is **moving-KB**: image bytes emitted while the book was
 animating. For the hybrid it is 0.

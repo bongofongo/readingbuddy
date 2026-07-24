@@ -30,6 +30,12 @@ PERF_LOG ?= $(PERF_DIR)/$(PERF_STAMP)-bench.jsonl
 PERF_SUMMARY ?= $(PERF_DIR)/$(PERF_STAMP)-bench.txt
 PERF_HISTORY ?= $(PERF_DIR)/history.tsv
 
+# Repeats of the bench script, e.g. `make bench BENCH_REPS=3`. Modes interleave
+# across reps, so a transient cannot land entirely on one of them. Pass anything
+# else through with BENCH_ARGS, e.g. BENCH_ARGS="--book pachinko".
+BENCH_REPS ?= 1
+BENCH_ARGS ?=
+
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -47,20 +53,22 @@ endif
 golden: ## Regenerate the golden import snapshots
 	UPDATE_GOLDEN=1 cargo test -p readingbuddy --test koreader_import import_matches_golden
 
-bench: ## Compare renderers end-to-end (needs a REAL, ACTIVE pane)
-	@echo "This takes over the terminal for ~40s (240 frames x 3 modes, paced to"
-	@echo "the app's 20fps tick). It must run in a real pane,"
-	@echo "and inside tmux that pane must be the ACTIVE one — tmux routes input"
-	@echo "to the focused pane only, so a background pane gets no replies and"
-	@echo "the terminal-latency columns come back empty."
-	@echo "Bench a book that has a real cover: the procedural plate compresses"
-	@echo "several times better and flatters every image number."
+bench: ## Compare renderers end-to-end (REAL, ACTIVE pane; BENCH_REPS=3 to average)
+	@echo "~$$(( ($(BENCH_REPS) * 3 * 265) / 20 ))s, taking over the terminal."
+	@echo "It must run in a real pane, and inside tmux that pane must be the"
+	@echo "ACTIVE one — tmux routes input to the focused pane only, so a"
+	@echo "background pane gets no replies and the latency columns come back empty."
+	@echo
+	@echo "One rep is enough for the byte columns, which are deterministic."
+	@echo "The latency columns are not: they pick up whatever else the machine is"
+	@echo "doing, so use BENCH_REPS=3 before believing a surprising one."
 	@echo
 	@mkdir -p $(PERF_DIR)
 	@# The summary is printed only after the terminal is restored, so capturing
 	@# stderr and replaying it afterwards loses nothing and keeps a copy.
 	cargo run --release -p readingbuddy-tui -- \
-	  --bench-render all --perf-log $(PERF_LOG) --perf-history $(PERF_HISTORY) \
+	  --bench-render all --bench-reps $(BENCH_REPS) $(BENCH_ARGS) \
+	  --perf-log $(PERF_LOG) --perf-history $(PERF_HISTORY) \
 	  2> $(PERF_SUMMARY); st=$$?; cat $(PERF_SUMMARY); exit $$st
 	@echo
 	@echo "per-frame log : $(PERF_LOG)"
