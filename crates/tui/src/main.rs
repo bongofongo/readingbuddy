@@ -324,6 +324,18 @@ const RTT_EVERY: u32 = 8;
 /// Frames drawn and thrown away before each mode's measured run.
 const WARMUP: u32 = 25;
 
+/// How long to wait for the terminal to answer a latency probe.
+///
+/// Deliberately **shorter than a tick**. A probe that outlives the frame budget
+/// has stopped measuring the workload and started changing it: at a 250ms
+/// deadline, a run where the terminal never answered stalled 30 times per mode
+/// and dragged a paced 20fps bench down to 13fps — the numbers then described a
+/// workload that does not exist.
+const RTT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Consecutive silent probes before sampling gives up for the rest of the run.
+const RTT_GIVE_UP: u32 = 2;
+
 /// What one mode's run cost.
 struct BenchSummary {
     mode: &'static str,
@@ -432,6 +444,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     // being slow. Interleaving spreads it, so `--bench-reps 3` is the answer to
     // a result that looks surprising.
     let mut summaries = Vec::new();
+    let mut rtt_silent = 0u32;
     for _ in 0..reps {
         for &mode in modes {
             app.set_render_mode(mode);
@@ -493,11 +506,17 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
                             // measures nothing about load. The sample lands on
                             // the next frame's record — immaterial at this
                             // sampling rate, and honest about when it was taken.
-                            if frame.is_multiple_of(RTT_EVERY) {
-                                app.rtt_sample = Some(render3d::caps::rtt_probe(
-                                    caps.in_tmux,
-                                    std::time::Duration::from_millis(250),
-                                ));
+                            if frame.is_multiple_of(RTT_EVERY) && rtt_silent < RTT_GIVE_UP {
+                                let rtt = render3d::caps::rtt_probe(caps.in_tmux, RTT_DEADLINE);
+                                // A terminal that is not answering will not
+                                // start; keep waiting on it and the stalls
+                                // become the workload.
+                                rtt_silent = if rtt.kitty.is_none() {
+                                    rtt_silent + 1
+                                } else {
+                                    0
+                                };
+                                app.rtt_sample = Some(rtt);
                             }
                             frame += 1;
                         }
@@ -735,9 +754,28 @@ fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps,
     }
     if summaries.iter().all(|s| s.rtt_kitty.is_empty()) {
         eprintln!(
-            "\nNo graphics round-trips came back. Inside tmux that usually means this\n\
-             pane was not the active one — tmux routes input to the focused pane only."
+            "\nNo graphics round-trips came back, so the latency columns are empty and\n\
+             every mode almost certainly fell back to glyphs. Inside tmux this usually\n\
+             means the pane was not the active one — tmux routes input to the focused\n\
+             pane only. Check with `--probe` from the same pane."
         );
+    }
+    // A paced run that missed its pacing measured a different workload than the
+    // one it reports, so say so rather than let the columns look ordinary.
+    if !free_run {
+        let target = 1.0 / app::TICK.as_secs_f64();
+        if let Some(worst) = summaries
+            .iter()
+            .map(|s| s.frames as f64 / s.wall.as_secs_f64().max(1e-9))
+            .min_by(|a, b| a.partial_cmp(b).expect("finite"))
+            && worst < target * 0.9
+        {
+            eprintln!(
+                "\nWARNING: a run managed only {worst:.1} fps against the {target:.0} fps tick.\n\
+                 The frame budget was missed, so these columns describe a slower\n\
+                 workload than the app's. Re-run on an idle machine."
+            );
+        }
     }
 }
 
