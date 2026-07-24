@@ -4,19 +4,34 @@ use readingbuddy::{Engine, NewNoteInput, NoteKind};
 use super::resolve_one;
 use crate::prompt;
 
-pub async fn create(
-    engine: &Engine,
-    book_selector: Option<&str>,
-    text: Option<String>,
-    kind: &str,
-    title: Option<String>,
-) -> Result<()> {
-    let kind: NoteKind = kind.parse()?;
-    let book = match book_selector {
+pub struct NoteOpts<'a> {
+    pub book_selector: Option<&'a str>,
+    pub text: Option<String>,
+    pub kind: &'a str,
+    pub title: Option<String>,
+    pub page: Option<i64>,
+    pub no_page: bool,
+    pub location: Option<String>,
+    pub highlight: Option<i64>,
+}
+
+pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
+    let kind: NoteKind = opts.kind.parse()?;
+    let book = match opts.book_selector {
         Some(sel) => Some(resolve_one(engine, sel).await?),
         None => None,
     };
-    let body = match text {
+
+    // Auto-anchor to where the reader is: when a book is named and no explicit
+    // --page is given (and the user hasn't opted out), fall back to its current
+    // reading page. Explicit --page always wins.
+    let page = match (opts.page, opts.no_page) {
+        (Some(p), _) => Some(p),
+        (None, true) => None,
+        (None, false) => book.as_ref().and_then(|b| b.current_page),
+    };
+
+    let body = match opts.text {
         Some(t) if !t.trim().is_empty() => t,
         _ => prompt::edit_in_editor("")?,
     };
@@ -28,9 +43,11 @@ pub async fn create(
     let created = engine
         .create_note(NewNoteInput {
             book_id: book.as_ref().and_then(|b| b.id),
-            highlight_id: None,
+            highlight_id: opts.highlight,
+            page,
+            location: opts.location,
             kind,
-            title,
+            title: opts.title,
             body,
         })
         .await?;
@@ -70,7 +87,26 @@ pub async fn list_or_search(
     }
     for n in notes {
         let kind = if n.kind == "note" { String::new() } else { format!(" [{}]", n.kind) };
-        println!("#{:<4} {}{kind}  ({})", n.id, n.title, n.file_path);
+        println!("#{:<4} {}{kind}{}  ({})", n.id, n.title, anchor(&n), n.file_path);
     }
     Ok(())
+}
+
+/// Compact anchor tag for a note line: page, location, and/or highlight.
+fn anchor(n: &readingbuddy::NoteRecord) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = n.page {
+        parts.push(format!("p.{p}"));
+    }
+    if let Some(l) = &n.location {
+        parts.push(l.clone());
+    }
+    if let Some(h) = n.highlight_id {
+        parts.push(format!("↳hl#{h}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" @{}", parts.join(", "))
+    }
 }

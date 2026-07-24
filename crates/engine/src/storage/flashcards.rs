@@ -56,6 +56,29 @@ impl Storage {
             .collect())
     }
 
+    /// All flashcards for one book (both pending and exported), for the
+    /// per-book Cards tab.
+    pub async fn list_flashcards_for_book(&self, book_id: i64) -> Result<Vec<FlashcardRow>> {
+        let rows = sqlx::query(
+            r#"SELECT f.id, f.word, f.context, f.exported, b.title AS book_title
+               FROM flashcards f JOIN books b ON b.id = f.book_id
+               WHERE f.book_id = ? ORDER BY f.created_at ASC"#,
+        )
+        .bind(book_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FlashcardRow {
+                id: r.get("id"),
+                word: r.get("word"),
+                context: r.get("context"),
+                book_title: r.get("book_title"),
+                exported: r.get::<i64, _>("exported") != 0,
+            })
+            .collect())
+    }
+
     pub async fn mark_flashcards_exported(&self, ids: &[i64]) -> Result<()> {
         for id in ids {
             sqlx::query("UPDATE flashcards SET exported = 1 WHERE id = ?")

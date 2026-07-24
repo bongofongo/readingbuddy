@@ -73,7 +73,20 @@ async fn epub(engine: &Engine) -> Result<()> {
 async fn note(engine: &Engine) -> Result<()> {
     let book = opt(get_user_input("book (id/isbn/title, empty for none): ")?);
     let text = get_user_input("note: ")?;
-    commands::note::create(engine, book.as_deref(), opt(text), "note", None).await
+    commands::note::create(
+        engine,
+        commands::note::NoteOpts {
+            book_selector: book.as_deref(),
+            text: opt(text),
+            kind: "note",
+            title: None,
+            page: None,
+            no_page: false,
+            location: None,
+            highlight: None,
+        },
+    )
+    .await
 }
 
 async fn koreader(engine: &Engine) -> Result<()> {

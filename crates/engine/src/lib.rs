@@ -203,8 +203,28 @@ impl Engine {
         self.storage.search_notes(query, limit).await
     }
 
+    /// The body text of a note (its markdown minus the frontmatter header).
+    pub fn note_body(&self, note: &NoteRecord) -> Result<String> {
+        let file = self.config.vault_dir.join(&note.file_path);
+        let content = std::fs::read_to_string(&file)?;
+        let (_, body) = notes::frontmatter_and_body(&content);
+        Ok(body.trim_end().to_string())
+    }
+
+    /// Replace a note's body, preserving its frontmatter header, and reindex
+    /// it in FTS. Used by the in-house editor.
+    pub async fn update_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
+        let file = self.config.vault_dir.join(&note.file_path);
+        let content = std::fs::read_to_string(&file)?;
+        let (header, _) = notes::frontmatter_and_body(&content);
+        std::fs::write(&file, format!("{header}{}\n", body.trim_end()))?;
+        self.storage
+            .refresh_note_body(note.id, &note.title, body)
+            .await
+    }
+
     /// Re-read a note file from disk and refresh its FTS body (e.g. after an
-    /// external Obsidian/$EDITOR edit).
+    /// external Obsidian edit).
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {
         let file = self.config.vault_dir.join(&note.file_path);
         let content = std::fs::read_to_string(&file)?;
@@ -218,6 +238,10 @@ impl Engine {
 
     pub async fn list_flashcards(&self, include_exported: bool) -> Result<Vec<FlashcardRow>> {
         self.storage.list_flashcards(include_exported).await
+    }
+
+    pub async fn list_flashcards_for_book(&self, book_id: i64) -> Result<Vec<FlashcardRow>> {
+        self.storage.list_flashcards_for_book(book_id).await
     }
 
     /// Build the Anki TSV and mark the exported cards. Returns (tsv, count).

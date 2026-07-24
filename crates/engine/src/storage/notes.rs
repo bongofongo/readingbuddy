@@ -10,6 +10,8 @@ use crate::error::Result;
 pub struct NewNoteMeta<'a> {
     pub book_id: Option<i64>,
     pub highlight_id: Option<i64>,
+    pub page: Option<i64>,
+    pub location: Option<&'a str>,
     pub file_path: &'a str,
     pub title: &'a str,
     pub kind: &'a str,
@@ -20,6 +22,8 @@ pub struct NoteRecord {
     pub id: i64,
     pub book_id: Option<i64>,
     pub highlight_id: Option<i64>,
+    pub page: Option<i64>,
+    pub location: Option<String>,
     pub file_path: String,
     pub title: String,
     pub kind: String,
@@ -37,6 +41,8 @@ fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> NoteRecord {
         id: r.get("id"),
         book_id: r.get("book_id"),
         highlight_id: r.get("highlight_id"),
+        page: r.get("page"),
+        location: r.get("location"),
         file_path: r.get("file_path"),
         title: r.get("title"),
         kind: r.get("kind"),
@@ -59,6 +65,8 @@ impl Storage {
         let NewNoteMeta {
             book_id,
             highlight_id,
+            page,
+            location,
             file_path,
             title,
             kind,
@@ -66,11 +74,13 @@ impl Storage {
         let mut tx = self.pool().begin().await?;
         let now = now_unix();
         let note_id: i64 = sqlx::query_scalar(
-            r#"INSERT INTO notes (book_id, highlight_id, file_path, title, kind, created_at, last_modified)
-               VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"#,
+            r#"INSERT INTO notes (book_id, highlight_id, page, location, file_path, title, kind, created_at, last_modified)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"#,
         )
         .bind(book_id)
         .bind(highlight_id)
+        .bind(page)
+        .bind(location)
         .bind(file_path)
         .bind(title)
         .bind(kind)
@@ -142,7 +152,7 @@ impl Storage {
         let rows = match book_id {
             Some(id) => {
                 sqlx::query(
-                    r#"SELECT id, book_id, highlight_id, file_path, title, kind, created_at
+                    r#"SELECT id, book_id, highlight_id, page, location, file_path, title, kind, created_at
                        FROM notes WHERE book_id = ? ORDER BY created_at DESC"#,
                 )
                 .bind(id)
@@ -151,7 +161,7 @@ impl Storage {
             }
             None => {
                 sqlx::query(
-                    r#"SELECT id, book_id, highlight_id, file_path, title, kind, created_at
+                    r#"SELECT id, book_id, highlight_id, page, location, file_path, title, kind, created_at
                        FROM notes ORDER BY created_at DESC"#,
                 )
                 .fetch_all(self.pool())
@@ -163,7 +173,7 @@ impl Storage {
 
     pub async fn search_notes(&self, query: &str, limit: i64) -> Result<Vec<NoteSearchHit>> {
         let rows = sqlx::query(
-            r#"SELECT n.id, n.book_id, n.highlight_id, n.file_path, n.title, n.kind, n.created_at,
+            r#"SELECT n.id, n.book_id, n.highlight_id, n.page, n.location, n.file_path, n.title, n.kind, n.created_at,
                       snippet(notes_fts, 1, '>>', '<<', '…', 12) AS snip
                FROM notes_fts
                JOIN notes n ON n.id = notes_fts.rowid
@@ -211,6 +221,8 @@ mod tests {
                 NewNoteMeta {
                     book_id: None,
                     highlight_id: None,
+                    page: None,
+                    location: None,
                     file_path: "unsorted/a.md",
                     title: "First thought",
                     kind: "note",
@@ -229,6 +241,8 @@ mod tests {
                 NewNoteMeta {
                     book_id: None,
                     highlight_id: None,
+                    page: None,
+                    location: None,
                     file_path: "unsorted/han.md",
                     title: "Han",
                     kind: "note",

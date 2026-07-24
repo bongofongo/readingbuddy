@@ -1,20 +1,17 @@
-//! The single-book viewing mode: metadata, the 3D object, and a key bar that
-//! is always present — collapsed to the few keys worth advertising, expanded
-//! to the full set with `o`.
+//! The single-book viewing mode: a tab strip (Info / Notes / Highlights /
+//! Cards), the 3D object, and a key bar that is always present — collapsed to
+//! the few keys worth advertising, expanded to the full set with `o`.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
-use readingbuddy::Book;
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
 
-use super::{BookLayout, book_layout};
-use crate::app::{App, BookView};
+use super::{BookLayout, book_layout, panel_width};
+use crate::app::{App, BOOK_TABS, BookTab, BookView};
 use crate::render3d::blit;
 use crate::theme;
-
-/// Width of the metadata column in the wide layout.
-const PANEL_WIDTH: u16 = 34;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     if app.view.is_none() {
@@ -30,20 +27,22 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
 
     match book_layout(main) {
-        BookLayout::Wide => {
-            let [panel, object] =
-                Layout::horizontal([Constraint::Length(PANEL_WIDTH), Constraint::Min(0)])
-                    .areas(main);
-            draw_object(f, app, object, None);
-            draw_panel(f, app.view.as_ref().expect("checked above"), panel);
-        }
-        BookLayout::Compact => {
-            let [header, object] =
-                Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).areas(main);
+        BookLayout::Split => {
+            // Title + progress on top; object on the left, section pane on the
+            // right. The header stays put whether the menu or a section shows.
+            let [header, body] =
+                Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(main);
+            let [object, panel] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(panel_width(main.width)),
+            ])
+            .areas(body);
             draw_object(f, app, object, None);
             draw_header(f, app.view.as_ref().expect("checked above"), header);
+            draw_panel(f, app, panel);
         }
         BookLayout::Bare => {
+            // Too short for tabs; show the object with the title in the border.
             let title = app
                 .view
                 .as_ref()
@@ -82,36 +81,179 @@ fn draw_object(f: &mut Frame, app: &mut App, area: Rect, title: Option<String>) 
     blit::blit(fb, area, f.buffer_mut(), params.glyphs);
 }
 
-/// Wide layout: full metadata beside the object.
-fn draw_panel(f: &mut Frame, view: &BookView, area: Rect) {
+/// The title + progress header that sits above the object.
+fn draw_header(f: &mut Frame, view: &BookView, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let [title, gauge] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    let b = &view.book;
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(b.display_title().to_string(), theme::title()),
+            Span::styled(format!("  {}", b.display_authors()), theme::dim()),
+        ])),
+        title,
+    );
+    draw_progress(f, b, gauge);
+}
+
+/// The right pane: the section menu, or an open section's content. Separated
+/// from the object by a left rule.
+fn draw_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
-        .borders(Borders::RIGHT)
+        .borders(Borders::LEFT)
         .border_style(theme::dim());
     let inner = block.inner(area);
     f.render_widget(block, area);
+    let inner = inner.inner(Margin::new(1, 0));
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
 
-    // Title, author, progress, then the details — progress sits with the two
-    // things it belongs to rather than being stranded at the bottom.
-    let inner = inner.inner(ratatui::layout::Margin::new(1, 0));
-    let [head, gauge, text] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas(inner);
+    if app.in_section {
+        draw_section(f, app, inner);
+    } else {
+        draw_section_menu(f, app.book_tab, inner);
+    }
+}
 
-    let b = &view.book;
-    let head_lines = vec![
-        Line::from(Span::styled(b.display_title().to_string(), theme::title())),
-        Line::from(Span::styled(b.display_authors(), theme::dim())),
-    ];
+/// The single-column section menu (Info / Notes / Highlights / Cards).
+fn draw_section_menu(f: &mut Frame, active: BookTab, area: Rect) {
+    let mut lines = Vec::new();
+    for (tab, label) in BOOK_TABS {
+        if tab == active {
+            lines.push(Line::from(Span::styled(format!("› {label}"), theme::selected())));
+        } else {
+            lines.push(Line::from(Span::styled(format!("  {label}"), theme::primary())));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("enter ›", theme::dim())));
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// An open section: a header line naming it (with the way back), then content.
+fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
+    let label = BOOK_TABS
+        .iter()
+        .find(|(t, _)| *t == app.book_tab)
+        .map(|(_, l)| *l)
+        .unwrap_or("");
+    let [head, content] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     f.render_widget(
-        Paragraph::new(head_lines).wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(vec![
+            Span::styled("‹ ", theme::dim()),
+            Span::styled(label, theme::key()),
+        ])),
         head,
     );
-    draw_progress(f, b, gauge);
 
-    let mut lines = vec![Line::from("")];
+    match app.book_tab {
+        BookTab::Info => {
+            let view = app.view.as_ref().expect("checked");
+            draw_info(f, view, content);
+        }
+        BookTab::Notes => {
+            let items: Vec<ListItem> = app
+                .view
+                .as_ref()
+                .expect("checked")
+                .notes
+                .iter()
+                .map(|n| ListItem::new(note_line(n)))
+                .collect();
+            draw_list(f, app, content, items, "no notes yet — n to write one");
+        }
+        BookTab::Highlights => {
+            let items: Vec<ListItem> = app
+                .view
+                .as_ref()
+                .expect("checked")
+                .highlights
+                .iter()
+                .map(|h| ListItem::new(highlight_line(h)))
+                .collect();
+            draw_list(f, app, content, items, "no highlights — import from KOReader");
+        }
+        BookTab::Cards => {
+            let items: Vec<ListItem> = app
+                .view
+                .as_ref()
+                .expect("checked")
+                .cards
+                .iter()
+                .map(|c| ListItem::new(card_line(c)))
+                .collect();
+            draw_list(f, app, content, items, "no flashcards for this book");
+        }
+    }
+}
+
+fn draw_list(f: &mut Frame, app: &mut App, area: Rect, items: Vec<ListItem>, empty: &str) {
+    if items.is_empty() {
+        f.render_widget(Paragraph::new(empty).style(theme::dim()), area);
+        return;
+    }
+    let list = List::new(items)
+        .highlight_style(theme::selected())
+        .highlight_symbol("› ");
+    f.render_stateful_widget(list, area, &mut app.tab_state);
+}
+
+/// A note row: anchor tag (page / location / highlight) + title.
+fn note_line(n: &NoteRecord) -> Line<'static> {
+    let mut spans = Vec::new();
+    let tag = anchor_tag(n);
+    if !tag.is_empty() {
+        spans.push(Span::styled(format!("{tag} "), theme::accent()));
+    }
+    spans.push(Span::styled(n.title.clone(), theme::primary()));
+    Line::from(spans)
+}
+
+fn anchor_tag(n: &NoteRecord) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = n.page {
+        parts.push(format!("p.{p}"));
+    }
+    if let Some(l) = &n.location {
+        parts.push(l.clone());
+    }
+    if n.page.is_none() && n.location.is_none() && n.highlight_id.is_some() {
+        parts.push("↳hl".to_string());
+    }
+    parts.join(" ")
+}
+
+fn highlight_line(h: &Highlight) -> Line<'static> {
+    let mut spans = Vec::new();
+    if let Some(p) = h.page {
+        spans.push(Span::styled(format!("p.{p} "), theme::accent()));
+    }
+    spans.push(Span::styled(h.text.clone(), theme::primary()));
+    Line::from(spans)
+}
+
+fn card_line(c: &FlashcardRow) -> Line<'static> {
+    let mark = if c.exported { "✓ " } else { "  " };
+    let mut spans = vec![
+        Span::styled(mark, theme::dim()),
+        Span::styled(c.word.clone(), theme::primary()),
+    ];
+    if let Some(ctx) = &c.context {
+        spans.push(Span::styled(format!("  {ctx}"), theme::dim()));
+    }
+    Line::from(spans)
+}
+
+/// The Info section: the facts (title/author/progress live in the header now),
+/// then the highlight/note counts.
+fn draw_info(f: &mut Frame, view: &BookView, area: Rect) {
+    let b = &view.book;
+    let mut lines = Vec::new();
     for (label, value) in facts(b) {
         lines.push(Line::from(vec![
             Span::styled(format!("{label:<10}"), theme::dim()),
@@ -120,54 +262,12 @@ fn draw_panel(f: &mut Frame, view: &BookView, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(view.highlights.to_string(), theme::accent()),
+        Span::styled(view.highlights.len().to_string(), theme::accent()),
         Span::styled(" highlights   ", theme::dim()),
-        Span::styled(view.notes.to_string(), theme::accent()),
+        Span::styled(view.notes.len().to_string(), theme::accent()),
         Span::styled(" notes", theme::dim()),
     ]));
-
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), text);
-}
-
-/// Compact layout: title, author, a one-line summary, then progress.
-fn draw_header(f: &mut Frame, view: &BookView, area: Rect) {
-    let [text, gauge] =
-        Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).areas(area);
-    let b = &view.book;
-    let lines = vec![
-        Line::from(Span::styled(b.display_title().to_string(), theme::title())),
-        Line::from(Span::styled(b.display_authors(), theme::dim())),
-        Line::from(Span::styled(summary(view), theme::dim())),
-    ];
-    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), text);
-
-    let width = area.width.min(46);
-    let centered = Rect {
-        x: area.x + (area.width - width) / 2,
-        y: gauge.y,
-        width,
-        height: 1,
-    };
-    draw_progress(f, b, centered);
-}
-
-/// The facts that fit on one line, for the layouts without room for a panel.
-fn summary(view: &BookView) -> String {
-    let b = &view.book;
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(y) = b.publish_year {
-        parts.push(y.to_string());
-    }
-    if let Some(p) = b.page_count {
-        parts.push(format!("{p}pp"));
-    }
-    if view.highlights > 0 {
-        parts.push(format!("{} highlights", view.highlights));
-    }
-    if view.notes > 0 {
-        parts.push(format!("{} notes", view.notes));
-    }
-    parts.join("  ·  ")
+    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 fn draw_progress(f: &mut Frame, b: &Book, area: Rect) {
@@ -217,19 +317,24 @@ fn facts(b: &Book) -> Vec<(&'static str, String)> {
 fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
     let spin = if app.spinning { "stop" } else { "spin" };
     let expanded: &[(&str, &str)] = &[
-        ("←→/hl", "turn"),
-        ("↑↓/kj", "tilt"),
+        ("↑↓", "move"),
+        ("↵/→", "open"),
+        ("esc/←", "back"),
+        ("n", "note"),
+        ("p", "page"),
+        ("f", "finish"),
+        ("x", "export"),
         ("space", spin),
-        ("r", "reset"),
         ("o", "less"),
-        ("esc", "library"),
         ("m", "menu"),
         ("q", "quit"),
     ];
     let collapsed: &[(&str, &str)] = &[
+        ("↑↓", "move"),
+        ("↵", "open"),
+        ("n", "note"),
         ("o", "options"),
         ("m", "menu"),
-        ("esc", "library"),
         ("q", "quit"),
     ];
     let pairs = if app.show_options { expanded } else { collapsed };
@@ -257,33 +362,34 @@ mod tests {
         // Whether collapsed or expanded, `m` must be reachable from the view.
         for expanded in [false, true] {
             let pairs: Vec<&str> = if expanded {
-                vec!["←→/hl", "↑↓/kj", "space", "r", "o", "esc", "m", "q"]
+                vec!["↑↓", "↵/→", "esc/←", "n", "p", "f", "x", "space", "o", "m", "q"]
             } else {
-                vec!["o", "m", "esc", "q"]
+                vec!["↑↓", "↵", "n", "o", "m", "q"]
             };
             assert!(pairs.contains(&"m"), "no menu key when expanded={expanded}");
         }
     }
 
     #[test]
-    fn the_summary_line_skips_what_the_book_lacks() {
-        let view = BookView {
-            book: Book {
-                publish_year: Some(2014),
-                page_count: Some(333),
-                ..Book::default()
-            },
-            highlights: 4,
-            notes: 0,
+    fn anchor_tag_prefers_page_then_location() {
+        let mut n = NoteRecord {
+            id: 1,
+            book_id: Some(1),
+            highlight_id: None,
+            page: Some(42),
+            location: None,
+            file_path: "x.md".into(),
+            title: "t".into(),
+            kind: "note".into(),
+            created_at: None,
         };
-        assert_eq!(summary(&view), "2014  ·  333pp  ·  4 highlights");
-
-        let empty = BookView {
-            book: Book::default(),
-            highlights: 0,
-            notes: 0,
-        };
-        assert_eq!(summary(&empty), "");
+        assert_eq!(anchor_tag(&n), "p.42");
+        n.location = Some("Ch 3".into());
+        assert_eq!(anchor_tag(&n), "p.42 Ch 3");
+        n.page = None;
+        n.location = None;
+        n.highlight_id = Some(9);
+        assert_eq!(anchor_tag(&n), "↳hl");
     }
 
     #[test]

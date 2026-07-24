@@ -19,6 +19,21 @@ pub enum Action {
     ToggleOptions,
     Reset,
     Refresh,
+    /// Cycle book-view tabs.
+    NextTab,
+    PrevTab,
+    /// Compose a new note.
+    NewNote,
+    /// Update the reading page.
+    EditProgress,
+    /// Toggle the finished flag.
+    ToggleFinished,
+    /// Export flashcards.
+    Export,
+    /// Remove the selected library book.
+    Delete,
+    /// Open / reopen a search query.
+    Query,
 }
 
 pub fn map_key(key: KeyEvent) -> Option<Action> {
@@ -45,6 +60,14 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('o') | KeyCode::Char('?') => Some(Action::ToggleOptions),
         KeyCode::Char('r') => Some(Action::Reset),
         KeyCode::F(5) => Some(Action::Refresh),
+        KeyCode::Tab => Some(Action::NextTab),
+        KeyCode::BackTab => Some(Action::PrevTab),
+        KeyCode::Char('n') => Some(Action::NewNote),
+        KeyCode::Char('p') => Some(Action::EditProgress),
+        KeyCode::Char('f') => Some(Action::ToggleFinished),
+        KeyCode::Char('x') => Some(Action::Export),
+        KeyCode::Char('d') => Some(Action::Delete),
+        KeyCode::Char('/') => Some(Action::Query),
         _ => None,
     }
 }

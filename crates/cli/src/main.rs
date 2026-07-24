@@ -81,6 +81,19 @@ enum Cmd {
         kind: String,
         #[arg(long)]
         title: Option<String>,
+        /// Anchor to a page; with --book and no --page, defaults to the book's
+        /// current reading page
+        #[arg(long)]
+        page: Option<i64>,
+        /// Don't auto-anchor to the book's current page
+        #[arg(long)]
+        no_page: bool,
+        /// Free-form location anchor (chapter, "loc 1234", %, ...)
+        #[arg(long)]
+        location: Option<String>,
+        /// Anchor to an existing highlight by id
+        #[arg(long)]
+        highlight: Option<i64>,
     },
     /// List notes, or full-text search them
     Notes {
@@ -180,7 +193,26 @@ async fn main() -> Result<()> {
             book,
             kind,
             title,
-        } => commands::note::create(&engine, book.as_deref(), text, &kind, title).await?,
+            page,
+            no_page,
+            location,
+            highlight,
+        } => {
+            commands::note::create(
+                &engine,
+                commands::note::NoteOpts {
+                    book_selector: book.as_deref(),
+                    text,
+                    kind: &kind,
+                    title,
+                    page,
+                    no_page,
+                    location,
+                    highlight,
+                },
+            )
+            .await?
+        }
         Cmd::Notes { book, search } => {
             commands::note::list_or_search(&engine, book.as_deref(), search.as_deref()).await?
         }
