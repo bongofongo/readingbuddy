@@ -133,6 +133,24 @@ impl Model {
 /// much larger texture than the glyph path for the same cell rect.
 type CoverKey = (Option<i64>, Option<String>, String, u32);
 
+/// `cover_path` as written by the engine, falling back to the images dir when
+/// the stored (relative) path doesn't resolve from the current cwd.
+///
+/// A free function, and the **single authority** on whether a book has a real
+/// cover. The bench used to answer that question with its own
+/// `images_dir.join(stored)` and got it wrong: the engine stores paths relative
+/// to the *data root* (`./database/images/x.jpg`), so joining them onto the
+/// images dir yields `database/images/./database/images/x.jpg`. The bench then
+/// warned "no cover image on disk" for books the renderer was loading fine.
+pub fn resolve_cover(images_dir: &Path, stored: &str) -> Option<PathBuf> {
+    let direct = Path::new(stored);
+    if direct.exists() {
+        return Some(direct.to_path_buf());
+    }
+    let by_name = images_dir.join(direct.file_name()?);
+    by_name.exists().then_some(by_name)
+}
+
 /// Texture width the glyph path asks for: four subpixels of texture per cell,
 /// enough detail for the front face at any pose without paying for the full
 /// JPEG. Kept as a function so the key stays a pure function of `cols`.
@@ -175,15 +193,8 @@ impl Scene {
         }
     }
 
-    /// `cover_path` as written by the engine, falling back to the images dir
-    /// when the stored (relative) path doesn't resolve from the current cwd.
     fn resolve_cover(&self, stored: &str) -> Option<PathBuf> {
-        let direct = Path::new(stored);
-        if direct.exists() {
-            return Some(direct.to_path_buf());
-        }
-        let by_name = self.images_dir.join(direct.file_name()?);
-        by_name.exists().then_some(by_name)
+        resolve_cover(&self.images_dir, stored)
     }
 
     fn cover_key(book: &Book, texels: u32) -> CoverKey {

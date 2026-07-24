@@ -378,11 +378,18 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     // flattering direction. Pick a book that has one rather than whichever was
     // touched last — an explicit `--book` still wins, and the warning still
     // fires if nothing in the library qualifies.
-    let has_cover = |b: &Book| {
+    // Ask the renderer's own resolver, not a second guess at the same rule —
+    // and rank by the decoded width, because a 180px OpenLibrary thumbnail
+    // upscaled into a 358px render is smooth, compresses far better than a real
+    // photograph, and flatters the image numbers almost as much as the
+    // procedural plate does.
+    let cover_width = |b: &Book| -> u32 {
         b.cover_path
             .as_deref()
-            .map(|p| engine.config.images_dir.join(p))
-            .is_some_and(|p| p.exists())
+            .and_then(|p| render3d::resolve_cover(&engine.config.images_dir, p))
+            .and_then(|p| image::image_dimensions(p).ok())
+            .map(|(w, _)| w)
+            .unwrap_or(0)
     };
     let book = match &cli.book {
         Some(sel) => resolve_book(&engine, sel).await?,
@@ -393,13 +400,12 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
                 .await?;
             library
                 .iter()
-                .find(|b| has_cover(b))
-                .or_else(|| library.first())
+                .max_by_key(|b| cover_width(b))
                 .cloned()
                 .context("no books in the library to bench with")?
         }
     };
-    let real_cover = has_cover(&book);
+    let cover_px = cover_width(&book);
 
     let meter = perf::Meter::new();
     let mut app = app::App::new(engine).await?;
@@ -451,15 +457,23 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
                                 ticker.tick().await;
                             }
                             app.tick();
+                            app::redraw(&mut terminal, &mut app)?;
+                            // Sample **immediately after handing the terminal a
+                            // frame**, and before waiting out the rest of the
+                            // tick. Probing before the draw instead put every
+                            // sample in the idle gap, where the terminal has
+                            // already caught up: paced runs then showed all
+                            // three modes at an identical ~3.6 ms, which is the
+                            // quiescent round-trip through tmux passthrough and
+                            // measures nothing about load. The sample lands on
+                            // the next frame's record — immaterial at this
+                            // sampling rate, and honest about when it was taken.
                             if frame.is_multiple_of(RTT_EVERY) {
-                                // Sampled *under* load, between draws: a
-                                // terminal that is behind answers late.
                                 app.rtt_sample = Some(render3d::caps::rtt_probe(
                                     caps.in_tmux,
                                     std::time::Duration::from_millis(250),
                                 ));
                             }
-                            app::redraw(&mut terminal, &mut app)?;
                             frame += 1;
                         }
                     }
@@ -477,9 +491,9 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     app.rich.drop_image();
     app.perf.flush();
     restore_terminal();
-    report_bench(&summaries, real_cover, caps, cli.bench_free_run);
+    report_bench(&summaries, cover_px, caps, cli.bench_free_run);
     if let Some(path) = &cli.perf_history {
-        match append_history(path, &summaries, real_cover, caps) {
+        match append_history(path, &summaries, cover_px, caps) {
             Ok(()) => eprintln!("history     : {}", path.display()),
             // The measurement already happened; failing to file it is not a
             // reason to fail the command.
@@ -500,7 +514,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
 fn append_history(
     path: &std::path::Path,
     summaries: &[BenchSummary],
-    real_cover: bool,
+    cover_px: u32,
     caps: render3d::Caps,
 ) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -518,7 +532,7 @@ fn append_history(
             f,
             "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
              trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
-             rtt_tmux_p90_us\tcols\trows\tin_tmux\treal_cover"
+             rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px"
         )?;
     }
     let epoch = std::time::SystemTime::now()
@@ -546,7 +560,7 @@ fn append_history(
             s.rect.0,
             s.rect.1,
             caps.in_tmux,
-            real_cover,
+            cover_px,
         )?;
     }
     Ok(())
@@ -590,17 +604,22 @@ fn sorted(it: impl Iterator<Item = u64>) -> Vec<u64> {
     v
 }
 
-fn report_bench(
-    summaries: &[BenchSummary],
-    real_cover: bool,
-    caps: render3d::Caps,
-    free_run: bool,
-) {
-    if !real_cover {
+fn report_bench(summaries: &[BenchSummary], cover_px: u32, caps: render3d::Caps, free_run: bool) {
+    // Smoothness is what compresses, so both "no cover" and "a thumbnail
+    // upscaled into the render" understate the image bytes — the second is the
+    // sneakier one, because the book visibly has a cover.
+    if cover_px == 0 {
         eprintln!(
             "WARNING: this book has no cover image on disk, so the render used the\n\
              procedural plate. It compresses several times better than a photograph —\n\
              the image byte rates below are optimistic. Bench a book with a real cover."
+        );
+    } else if cover_px < 400 {
+        eprintln!(
+            "WARNING: the best cover in the library is only {cover_px}px wide (an\n\
+             OpenLibrary '-M' thumbnail is 180px). Upscaled into the render it is\n\
+             smooth, so it compresses far better than a real cover and the image\n\
+             byte rates below are optimistic."
         );
     }
     if !caps.supports_pixels() {
@@ -913,14 +932,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let caps = render3d::Caps::default();
-        append_history(
-            &path,
-            &[summary("glyph", 0), summary("rich", 0)],
-            true,
-            caps,
-        )
-        .unwrap();
-        append_history(&path, &[summary("glyph", 4_096)], false, caps).unwrap();
+        append_history(&path, &[summary("glyph", 0), summary("rich", 0)], 525, caps).unwrap();
+        append_history(&path, &[summary("glyph", 4_096)], 0, caps).unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
