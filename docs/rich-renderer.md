@@ -1,28 +1,51 @@
 # The rich (pixel) book renderer
 
-Status: **implemented, and opt-in.** The pixel path works and looks good, but an
-*animated* one is too expensive for a TUI whose whole point is being lightweight
-in a tmux pane. So `--render auto` picks glyph; rich is reached with
-`--render rich` or `v` in the book view.
+Status: **the default, as a hybrid.** `Rich` means *block glyphs while the book
+turns, true pixels the moment it parks*, and `--render auto` now picks it
+wherever the terminal can take pixels. `v` still toggles, and `--render glyph`
+still forces the old behaviour everywhere.
 
-## Why auto is glyph
+## Why the spin is glyphs
 
-Two rounds of tuning did not fix the spin. The numbers say why:
+Two rounds of tuning did not fix an animated pixel book. The numbers say why:
 
 | | bytes/s | what the terminal does with them |
 |---|---|---|
-| glyph spin | ~0.45 MB/s (upper bound, full repaint) | writes cells into a grid it already maintains |
+| glyph spin | 0.09 MB/s measured (50x26), 0.13 MB/s on a full 120x40 pane | writes cells into a grid it already maintains |
 | pixel spin, after tuning | ~0.78 MB/s | zlib-decompress, re-upload a whole texture, recomposite |
 
-Only ~1.7x the bytes — and still unusable. **Byte rate is the wrong metric.** A
-byte of image payload costs a terminal far more than a byte of text, so tuning
-the pixel budget cannot converge on "as light as glyphs": we would have to drop
-to absurd resolution and it would *still* cost more. The only way to be
-lightweight while animating is to send no images while animating.
+**Byte rate is the wrong metric.** A byte of image payload costs a terminal far
+more than a byte of text, so tuning the pixel budget cannot converge on "as
+light as glyphs": we would have to drop to absurd resolution and it would
+*still* cost more. The only way to be lightweight while animating is to send no
+images while animating.
 
-That conclusion is what the next round should build on — see "Middle ground"
-below. Everything else in this note describes machinery that works and should be
-kept.
+That is now the rule rather than a conclusion looking for an implementation.
+`RichPresenter` hands every moving frame to `GlyphPresenter` and deletes the
+image first; only a parked pose transmits, once, at the full 1.2 MP budget.
+`a_moving_book_sends_no_image_bytes_at_all` guards it — a zero, not a budget.
+
+**Not viable, and please do not retry:** further tuning of `MOTION_MAX_PX` or
+the retransmit throttle. That road was walked twice.
+
+## How motion is known
+
+`RichPresenter` used to *infer* motion by comparing the pose to the previous
+draw's, which was elegant — no plumbing from the event loop — and is wrong for
+the hybrid in exactly the case that matters. **A parked book stops redrawing at
+all** (`App::tick` returns false, `dirty` is never set), so there is no second
+draw in which to notice it parked, and the crisp frame would never be sent.
+
+So `RenderParams::moving` is now set by `App` from `App::animating()`, the same
+condition `tick` guards on — one source of truth, deterministic transitions in
+both directions. The pose inference survives as the fallback when `moving` is
+`None`, which is what `--dump-frame` and the presenter's own unit tests use.
+
+The one subtlety: hiding the image on a motion frame must **not** clear
+`last_pose` or the placeholder table, or the settle detection goes blind and the
+image never comes back. Hence `hide_image` (cheap, per-transition) beside
+`drop_image` (full reset, for leaving rich mode). `a_park_after_motion_still_transmits`
+is the guard.
 
 ## Why this replaced the original design
 
@@ -183,7 +206,9 @@ Tracing is split across scoped threads (no new dependency), which took a
 
 `--bench-rich N` pushes N frames at the terminal and reports the trace / encode
 / write split and the achieved rate. Run it in a real pane — it measures the pty
-and the compositor, not just us.
+and the compositor, not just us. It deliberately bypasses `present.rs`, so it
+measures the raster in isolation; for what a *mode* costs, use `--bench-render`
+below.
 
 **If the spin ever needs to be both smooth and full-resolution**, the answer is
 a progressive turntable: quantize yaw to N steps, transmit each pose once under
@@ -214,54 +239,160 @@ wire until it flushes afterwards, so the image always lands before the cells
 that reference it. The writer is a `RichState` field so tests capture escapes
 instead of spraying control bytes through the harness.
 
-## Middle ground — the next round
+## Measuring it — and why the old instruments could not
 
-The goal is a book that stays as cheap as glyphs while moving, and becomes
-high-resolution when it isn't. Options, best first:
+The first rich renderer shipped at 7.1 MB/s and made terminals unusable while
+**every number we had said it was fine**: trace and encode were a few ms,
+`write`/`flush` never blocked, and `--bench-rich` sustained 270 fps at 27 MB/s
+without complaint. Everything we measured was on *our* side of the pty. The cost
+is paid inside the terminal.
 
-### 1. Glyph in motion, pixels at rest (recommended)
+Three instruments now close that gap.
 
-Route `Quality::Motion` to the **glyph** presenter and `Quality::Settle` to the
-pixel one. The spin then costs exactly what it costs today — the path already
-proven lightweight — and the pixel image is transmitted **once**, when the book
-parks, at the full 1.2 MP budget.
+### 1. Bytes, split by class (`perf::CountingWriter`)
 
-Why this is the cheap one to build: both backends already sit behind
-`BookPresenter`, and `RichPresenter` already distinguishes motion from rest with
-no event-loop plumbing (`FINE_Q` pose comparison). It is mostly a routing change
-plus deleting the image when motion resumes.
+Wraps both the ratatui backend (text) and the graphics writer (image), so the
+two are counted apart — a single total would hide the only thing worth knowing.
+Wrapping the backend is also the only way the **glyph** path can be measured at
+all: its bytes are produced by ratatui's diff, which the app never sees. That is
+where the 0.09 / 0.13 MB/s figures at the top of this note come from, replacing
+a number that had never been measured.
 
-Open questions: the glyph→pixel transition is a visible "pop" (possibly good —
-it reads as focusing); and `space`/`r`/layout changes must reliably drop the
-image.
+### 2. Terminal round-trip under load (`caps::rtt_probe`)
 
-### 2. Progressive turntable
+A terminal that is drowning answers slowly. So ask it, while loading it:
 
-Quantize yaw to N steps, transmit each pose once under its own image id, animate
-by rewriting only the placeholder foreground colour — pure text, zero bytes,
-free after one revolution. Full resolution *and* smooth.
+- **wrapped `_Ga=q`** is answered by the outer terminal → that terminal's queue;
+- **bare `CSI c`** is answered by tmux locally → tmux's queue.
 
-Costs: terminal memory (a buttery 27 s revolution wants ~540 poses; ~130 MB at
-low res), a first revolution that is as expensive as today, and the pitch nod
-must be dropped or made commensurate with the yaw period so the loop closes.
+Two layers, read apart, which turns "it feels laggy" into "kitty is 200 ms
+behind and tmux is fine". It reuses `maybe_wrap` / `parse_replies` /
+the poll loop that the startup probe already had.
 
-### 3. Give up the idle spin in rich mode
+**Bench-mode only**, and not negotiable: it consumes stdin, which a live session
+hands to `EventStream`. Sampling it from `app::run` would race the event reader
+for the reply and eat keystrokes.
 
-Rich mode renders one crisp still book; `space` starts a spin that falls back to
-glyphs. Effectively option 1 with a simpler rule.
+### 3. `--bench-render <glyph|rich|rich-always|all>`
 
-**Not viable:** further tuning of `MOTION_MAX_PX` or the retransmit throttle.
-That road was walked twice; see "Why auto is glyph".
+Drives the **real presenter through a real `Terminal::draw`**, so the retransmit
+throttle, the placeholder cells and ratatui's diff are all inside the
+measurement. Fixed script (spin 100 → park 20 → spin 60 → slide the divider →
+spin 40 → park 20), identical for every mode, `--bench-reps` to repeat it.
+Reports bytes/s by class, sends, mean trace and draw, and RTT p50/p90/max per
+layer. `make bench` wraps it.
 
-## Also still to do
+The column that matters is **moving-KB**: image bytes emitted while the book was
+animating. For the hybrid it is 0.
 
-**Art direction.** The pixel path currently uses the existing shader. The
-intended look is a stylized soft-shade "product render": smooth non-physical
-gradients, exaggerated fresnel rim so the silhouette pops, a gentle sheen across
-the cover, and a soft contact shadow grounding the book. Clean and high-res, not
-photoreal, and keeping the existing key/fill/cream palette and its luma-clamped
-accent discipline. Worth doing *after* the middle ground lands, since a
-still-frame renderer can afford much more shading than an animated one.
+`rich-always` exists precisely so this is calibrated: it is the known-bad
+configuration, kept and reachable only by flag, because an instrument that has
+never seen the failure it exists to catch is not evidence of anything. Run
+`--bench-render all` and the RTT columns should separate `rich-always` from the
+other two; if they do not, the instrument is broken, not the renderer.
+
+Two conditions the harness warns about rather than silently tolerating: a book
+with **no real cover** (the procedural plate compresses several times better and
+flatters every image number), and a **background tmux pane** (tmux routes input
+to the focused pane only, so no replies come back).
+
+### 4. What gets kept
+
+Two shapes, because they answer different questions and would spoil each other
+if merged.
+
+**Per run** — `--perf-log PATH` (or `READINGBUDDY_PERF_LOG`) writes one JSON
+object per frame: mode, quality, moving, rect, pixel dims, per-stage µs, the
+whole draw, bytes by class, and any RTT sample. This is where a single bad frame
+is findable. It is written fresh per run and describes one session, so
+concatenating two of them means nothing. Off by default — the recording calls
+cost one relaxed atomic load. The ignored `wire_rate` sweep emits the same shape,
+so one set of tools reads both.
+
+**Across runs** — `--perf-history PATH` appends one TSV row per benched mode:
+epoch, mode, fps, text and image MB/s, `moving_KB`, sends, trace, draw, RTT
+percentiles, rect, tmux, whether the cover was real. Deliberately not JSON — this
+file exists to be sorted, `cut`, plotted, or pasted into a spreadsheet, and the
+header is written exactly once.
+
+`make bench` wires both up under a gitignored `perf/`:
+
+```
+perf/20260724-210018-bench.jsonl   per-frame detail for this run
+perf/20260724-210018-bench.txt     the summary tables, as printed
+perf/history.tsv                   one row per mode per run, appended forever
+```
+
+`make bench-trend` prints the history as an aligned table. Nothing is committed:
+the numbers are specific to your machine, terminal and font, so a checked-in
+figure would be misleading — the trend only means something against your own
+baseline.
+
+One thing to know if you write a log path by hand: `cargo test` runs a test
+binary from the **package** root, so a relative `--perf-log` under `make perf`
+would land in `crates/tui/`. The Makefile passes absolute paths for that reason,
+and `Recorder::open` creates missing parent directories rather than silently
+writing nothing.
+
+### 5. The cost sweeps (`make perf`)
+
+Five ignored, release-only tests that report rather than assert. Run serially
+(`--test-threads 1`) so they are not timing each other's contention — measured
+in parallel, the pixel traces come out 20-30% slower than they really are.
+
+| test | reports |
+|---|---|
+| `glyph_cost` | glyph trace per rect / glyph set / supersample |
+| `glyph_wire_rate` | glyph bytes on the wire per rect |
+| `raster_cost` | pixel trace per rect / quality tier |
+| `frame_budget` | pixel trace + encode + payload split |
+| `wire_rate` | payload against pixel budget, **real cover** |
+
+The glyph pair exists so the two renderers can be compared without writing
+throwaway instrumentation, and because they are *not* comparable line for line:
+the glyph raster is still single-threaded where `raster.rs` splits across scoped
+threads. That gap is the headroom any future glyph quality work would spend.
+
+### 6. Offline gates
+
+Deterministic, terminal-free, run by `cargo test`. They are what let the
+expensive instruments stay manual:
+
+| test | what it pins |
+|---|---|
+| `a_moving_book_sends_no_image_bytes_at_all` | the rule, as a zero |
+| `a_moving_book_draws_glyphs_instead` | declining pixels still draws something |
+| `parking_transmits_exactly_one_image` | one send, then silence |
+| `resuming_motion_deletes_the_image_before_the_glyphs_land` | no ghost under the glyphs |
+| `a_park_after_motion_still_transmits` | `hide_image` did not blind the settle detection |
+| `the_hybrid_costs_no_more_than_glyphs_while_moving` | byte-for-byte equality with the glyph path |
+| `a_glyph_spin_stays_inside_its_byte_budget` | the glyph baseline itself |
+| `a_spinning_book_retransmits_well_below_the_tick_rate` | `rich-always` stays bad-but-survivable, so the calibration holds |
+
+## Still open
+
+**A progressive turntable**, if the spin ever needs to be smooth *and*
+full-resolution: quantize yaw to N steps, transmit each pose once under its own
+image id, animate by rewriting only the placeholder foreground colour — pure
+text, zero bytes, free after one revolution. Costs terminal memory (a buttery
+27 s revolution wants ~540 poses, ~130 MB at low res), a first revolution as
+expensive as today, and the pitch nod must be dropped or made commensurate with
+the yaw period so the loop closes. The RTT instrument is now the right way to
+find out whether a terminal tolerates N resident images.
+
+**Glyph-path polish**, deferred deliberately. `render()` in `mod.rs` is still
+single-threaded while `raster.rs` uses scoped threads, so there is 4–8x of
+headroom sitting there to spend on a higher supersample, the edge-refine trick,
+a perceptual (luma-weighted) glyph fit, and richer shading. The spin is what the
+eye sees most of the time now, so this is where the next visual win is.
+
+**Art direction.** The pixel path still uses the existing shader. The intended
+look is a stylized soft-shade "product render": smooth non-physical gradients,
+exaggerated fresnel rim so the silhouette pops, a gentle sheen across the cover,
+and a soft contact shadow grounding the book. Clean and high-res, not photoreal,
+keeping the existing key/fill/cream palette and its luma-clamped accent
+discipline. The hybrid is what unlocks this: the settle frame is now transmitted
+exactly once, so it can afford shading an animated frame never could.
 
 Sixel is deliberately not implemented (kitty has no sixel, so it would be
 untested dead code). `Caps` leaves room for it.
