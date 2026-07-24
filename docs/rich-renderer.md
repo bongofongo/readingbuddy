@@ -354,6 +354,84 @@ different workload than the one it reports.
   where the terminal has already drained; all three modes then report the same
   ~3.6 ms, which is just the quiescent round trip.
 
+### The sandbox (`make bench-box`)
+
+`make bench` needs your terminal: a real tty, a terminal that answers kitty
+graphics queries, and — inside tmux — the *active* pane. `scripts/bench-sandbox.sh`
+builds a throwaway one instead:
+
+```
+kitty (own process, pinned font + size, minimised)
+  └── tmux (own server, own socket, -f /dev/null)
+        └── readingbuddy-tui --bench-render all --bench-env box
+```
+
+What each layer is for:
+
+- **Own tmux server** (`-L rbbench -f /dev/null`). The probe sets
+  `allow-passthrough` on its pane; here that pane belongs to a server that lives
+  for the length of the run and is then killed, so your `tmux.conf` is never read
+  and your panes are never written. It also makes the pane the active one *by
+  construction*, which retires the most common way to get a meaningless run.
+- **Copied data root.** `database/` is a couple of hundred KB, so the bench opens
+  a throwaway SQLite file — with the real covers, because a procedural or
+  thumbnail cover compresses several times better and flatters every image column.
+- **Pinned window and font** (`initial_window_*`, `font_family`). Rect and cell
+  pixel size stop drifting between runs; two existing history rows differ by
+  70x37 vs 78x47, which moves every byte column on its own.
+- **A load gate.** `sysctl -n vm.loadavg`, refusing above `LOAD_MAX=2.0`.
+  Contention does not surface as an error, it surfaces as a plausible latency
+  column — the same run has shown `trace_us` swinging 1158 → 3530 within itself.
+- **`taskpolicy -c user-interactive`**, so the work stays on an Apple Silicon
+  machine's P-cores instead of being scheduled onto the efficiency cores.
+
+Three things that look optional and are not, each a verified failure:
+
+1. **`env -u TMUX -u TMUX_PANE`.** Inherited, they make the app wrap its queries
+   in tmux DCS passthrough, which the fresh kitty — not being tmux — swallows
+   whole. The probe then reports no graphics at all and the entire run is a
+   glyph-only fiction that looks perfectly normal.
+2. **stdout must stay a tty.** `probe_verbose` self-skips when it is not one, and
+   a skipped probe silently downgrades every mode to glyphs. The summary goes to
+   stderr precisely so it can be captured without redirecting stdout.
+3. **The sandbox is not a live pane.** Different font, different size, no
+   neighbours. Rows are tagged `env=box` for that reason; trend box against box.
+
+Because it needs no terminal of yours, this is also the form the bench takes when
+something other than a person at a keyboard runs it.
+
+**Calibrated, same as the live harness** — the acceptance test for the sandbox is
+that the known-bad mode still separates inside it. Measured, 3 reps, 80x38 object
+rect, cell 15x28:
+
+| mode | kitty p50 (rep 1 / 2 / 3) | kitty p90 |
+|---|---|---|
+| glyph | 3.1 / 3.1 / 3.3 ms | 3.6 / 3.5 / 3.6 |
+| rich | 3.1 / 3.2 / 3.3 | 3.4 / 3.7 / 3.6 |
+| **rich-always** | **3.7 / 7.8 / 10.6** | **4.0 / 11.8 / 11.4** |
+
+`moving_KB` stays 0 for `glyph` and `rich` and lands at ~1.7 MB for
+`rich-always`, matching the live pane. The invariant survives the move.
+
+**The first rep is the terminal's warm-up, and it is not optional.** Look at
+rep 1: `rich-always` reads 3.7 ms, barely apart from the hybrid, and the
+instrument appears to have failed. It has not — a freshly launched kitty has
+never been sent an image, and its cost climbs as its image store fills. Reps 2
+and 3 then separate 2.4-3.2x with no overlap, and the byte columns are identical
+across all three, which is what identifies this as a terminal-state effect rather
+than a measurement fault. The in-process 25-frame warm-up cannot reach it; it is
+not our state. A live pane never shows it because that terminal has been running
+for hours. Hence `bench-sandbox.sh` defaults to **3 reps** where `make bench`
+defaults to one, and says in its own output to read from rep 2.
+
+Reproduced with the window both minimised and visible, so it is not occlusion
+throttling — which was the standing worry about running the bench in a window
+nobody is looking at, and is now answered.
+
+A sandbox in which `rich-always` does *not* separate from `glyph` **by rep 2** is
+lying about latency, and its latency columns are void — the byte columns survive
+either way.
+
 ### 4. What gets kept
 
 Two shapes, because they answer different questions and would spoil each other
