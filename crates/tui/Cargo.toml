@@ -13,6 +13,7 @@ anyhow.workspace = true
 clap.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+arboard.workspace = true
 image.workspace = true
 futures.workspace = true
 serde.workspace = true

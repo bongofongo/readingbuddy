@@ -1,7 +1,7 @@
-//! The settings screen: a read-only view of where data lives and which glyph
-//! set the object uses. The Google Books API key is set via the CLI
-//! (`readingbuddy config set google-api-key`, mode-600 file); here we only show
-//! whether one is present.
+//! The settings screen: where data lives, the accent, the glyph set, and the
+//! Google Books API key. The key can be entered here (`g`, a paste box) or via
+//! the CLI (`readingbuddy config set google-api-key`); both write the same
+//! mode-600 file. Only a masked form of the key is ever shown.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,10 +13,9 @@ use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     let cfg = &app.engine.config;
-    let key = if cfg.google_api_key.is_some() {
-        "set"
-    } else {
-        "not set (keyless, lower quota)"
+    let key = match cfg.google_api_key.as_deref() {
+        Some(k) => format!("set  {}", mask(k)),
+        None => "not set (keyless, lower quota)".to_string(),
     };
     let rows = [
         ("database", cfg.db_url.clone()),
@@ -40,13 +39,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(format!("{:<12}", "accent"), theme::dim()),
         Span::styled("███", theme::accent()),
-        Span::styled(format!(" {}", theme::to_hex(theme::accent_rgb())), theme::primary()),
+        Span::styled(
+            format!(" {}", theme::to_hex(theme::accent_rgb())),
+            theme::primary(),
+        ),
     ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "set the API key with:  readingbuddy config set google-api-key",
-        theme::dim(),
-    )));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("← →", theme::key()),
@@ -55,12 +52,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(" hex   ", theme::dim()),
         Span::styled("enter", theme::key()),
         Span::styled(" glyphs   ", theme::dim()),
+        Span::styled("g", theme::key()),
+        Span::styled(" api key   ", theme::dim()),
         Span::styled("esc", theme::key()),
         Span::styled(" menu", theme::dim()),
     ]));
 
-    let width = lines.iter().map(|l| l.width() as u16).max().unwrap_or(20).saturating_add(4);
+    let width = lines
+        .iter()
+        .map(|l| l.width() as u16)
+        .max()
+        .unwrap_or(20)
+        .saturating_add(4);
     let inner = super::centered(area, width, lines.len() as u16 + 2);
-    let block = Block::default().borders(Borders::ALL).border_style(theme::dim());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim());
     f.render_widget(Paragraph::new(lines).block(block), inner);
+}
+
+/// Show a secret without revealing it: `AIza…f3Qk` (first/last 4 chars),
+/// mirroring the CLI's `config_file::mask`.
+fn mask(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 8 {
+        "*".repeat(chars.len().max(4))
+    } else {
+        format!(
+            "{}…{}",
+            chars[..4].iter().collect::<String>(),
+            chars[chars.len() - 4..].iter().collect::<String>()
+        )
+    }
 }

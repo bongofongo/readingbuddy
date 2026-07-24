@@ -4,6 +4,7 @@
 //! byte that reaches the terminal.
 
 mod app;
+mod clipboard;
 mod config;
 mod event;
 mod render3d;
@@ -86,7 +87,13 @@ async fn main() -> Result<()> {
         .clone()
         .or_else(|| std::env::var_os("READINGBUDDY_DATA_DIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    let engine = Engine::open(EngineConfig::rooted_at(data_root)).await?;
+    let mut engine_config = EngineConfig::rooted_at(data_root);
+    // Env wins (matching the CLI's precedence); otherwise fall back to the
+    // shared config file, so a key set in either frontend is picked up here.
+    if engine_config.google_api_key.is_none() {
+        engine_config.google_api_key = config::load_google_key();
+    }
+    let engine = Engine::open(engine_config).await?;
 
     if let Some(spec) = &cli.dump_frame {
         return dump_frame(&engine, spec, &cli).await;

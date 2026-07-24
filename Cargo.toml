@@ -28,4 +28,5 @@ toml = "0.8"
 rpassword = "7"
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
+arboard = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }

@@ -34,6 +34,8 @@ pub enum Action {
     Delete,
     /// Open / reopen a search query.
     Query,
+    /// Enter the Google Books API key (settings screen).
+    EditApiKey,
 }
 
 pub fn map_key(key: KeyEvent) -> Option<Action> {
@@ -68,6 +70,7 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('x') => Some(Action::Export),
         KeyCode::Char('d') => Some(Action::Delete),
         KeyCode::Char('/') => Some(Action::Query),
+        KeyCode::Char('g') => Some(Action::EditApiKey),
         _ => None,
     }
 }
@@ -82,14 +85,23 @@ mod tests {
 
     #[test]
     fn vim_keys_and_arrows_agree() {
-        assert_eq!(map_key(press(KeyCode::Char('j'))), map_key(press(KeyCode::Down)));
-        assert_eq!(map_key(press(KeyCode::Char('l'))), map_key(press(KeyCode::Right)));
+        assert_eq!(
+            map_key(press(KeyCode::Char('j'))),
+            map_key(press(KeyCode::Down))
+        );
+        assert_eq!(
+            map_key(press(KeyCode::Char('l'))),
+            map_key(press(KeyCode::Right))
+        );
     }
 
     #[test]
     fn b_is_an_alias_for_back() {
         assert_eq!(map_key(press(KeyCode::Char('b'))), Some(Action::Back));
-        assert_eq!(map_key(press(KeyCode::Char('b'))), map_key(press(KeyCode::Esc)));
+        assert_eq!(
+            map_key(press(KeyCode::Char('b'))),
+            map_key(press(KeyCode::Esc))
+        );
     }
 
     #[test]

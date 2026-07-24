@@ -22,7 +22,14 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled(format!("{marker}{label}"), style),
-            Span::styled(if hint.is_empty() { String::new() } else { format!("  {hint}") }, theme::dim()),
+            Span::styled(
+                if hint.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {hint}")
+                },
+                theme::dim(),
+            ),
         ]));
     }
     lines.push(Line::from(""));
@@ -42,6 +49,8 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(20)
         .saturating_add(4);
     let inner = super::centered(area, width, lines.len() as u16 + 2);
-    let block = Block::default().borders(Borders::ALL).border_style(theme::dim());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim());
     f.render_widget(Paragraph::new(lines).block(block), inner);
 }

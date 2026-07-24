@@ -29,7 +29,11 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = app.search_results.iter().map(|r| ListItem::new(row(r))).collect();
+    let items: Vec<ListItem> = app
+        .search_results
+        .iter()
+        .map(|r| ListItem::new(row(r)))
+        .collect();
     let list = List::new(items)
         .block(block)
         .highlight_style(theme::selected())

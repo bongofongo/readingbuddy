@@ -37,7 +37,10 @@ fn row(b: &Book, selected: bool) -> Line<'static> {
         theme::title()
     };
     let mut spans = vec![Span::styled(b.display_title().to_string(), title_style)];
-    spans.push(Span::styled(format!("  {}", b.display_authors()), theme::dim()));
+    spans.push(Span::styled(
+        format!("  {}", b.display_authors()),
+        theme::dim(),
+    ));
     if let Some(year) = b.publish_year {
         spans.push(Span::styled(format!("  {year}"), theme::dim()));
     }

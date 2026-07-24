@@ -263,7 +263,10 @@ mod tests {
         line.spans
             .iter()
             .map(|s| {
-                if s.style.add_modifier.contains(ratatui::style::Modifier::REVERSED) {
+                if s.style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+                {
                     "#".repeat(s.content.chars().count())
                 } else {
                     s.content.to_string()
@@ -284,8 +287,14 @@ mod tests {
         // ...but the rendered line must not carry one, or the terminal desyncs.
         let rows = wrapped_lines(&ed, 40, 6);
         let rendered = row_text(&rows[0]);
-        assert!(!rendered.contains('\t'), "raw tab leaked into a rendered line");
-        assert!(rendered.starts_with("a    b"), "tab did not expand: {rendered:?}");
+        assert!(
+            !rendered.contains('\t'),
+            "raw tab leaked into a rendered line"
+        );
+        assert!(
+            rendered.starts_with("a    b"),
+            "tab did not expand: {rendered:?}"
+        );
     }
 
     #[test]

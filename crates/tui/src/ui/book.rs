@@ -23,8 +23,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     // The key bar is never hidden outright: without a visible way back to the
     // menu the view is a dead end. `o` only decides how much of it shows.
     let bar_h = if area.height >= 6 { 1 } else { 0 };
-    let [main, bar] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
+    let [main, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
 
     match book_layout(main) {
         BookLayout::Split => {
@@ -147,9 +146,15 @@ fn draw_section_menu(f: &mut Frame, active: BookTab, area: Rect) {
     let mut lines = Vec::new();
     for (tab, label) in BOOK_TABS {
         if tab == active {
-            lines.push(Line::from(Span::styled(format!("› {label}"), theme::selected())));
+            lines.push(Line::from(Span::styled(
+                format!("› {label}"),
+                theme::selected(),
+            )));
         } else {
-            lines.push(Line::from(Span::styled(format!("  {label}"), theme::primary())));
+            lines.push(Line::from(Span::styled(
+                format!("  {label}"),
+                theme::primary(),
+            )));
         }
     }
     lines.push(Line::from(""));
@@ -164,8 +169,7 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
         .find(|(t, _)| *t == app.book_tab)
         .map(|(_, l)| *l)
         .unwrap_or("");
-    let [head, content] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    let [head, content] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("‹ ", theme::dim()),
@@ -199,7 +203,13 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .map(|h| ListItem::new(highlight_line(h)))
                 .collect();
-            draw_list(f, app, content, items, "no highlights — import from KOReader");
+            draw_list(
+                f,
+                app,
+                content,
+                items,
+                "no highlights — import from KOReader",
+            );
         }
         BookTab::Cards => {
             let items: Vec<ListItem> = app
@@ -236,7 +246,10 @@ fn note_line(n: &NoteRecord) -> Line<'static> {
         spans.push(Span::styled(" · ", theme::primary()));
     }
     // Expand any tabs: a raw \t in a rendered cell desyncs the terminal.
-    spans.push(Span::styled(n.title.replace('\t', "    "), theme::primary()));
+    spans.push(Span::styled(
+        n.title.replace('\t', "    "),
+        theme::primary(),
+    ));
     Line::from(spans)
 }
 
@@ -346,7 +359,11 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("m", "menu"),
         ("q", "quit"),
     ];
-    let pairs = if app.show_options { expanded } else { collapsed };
+    let pairs = if app.show_options {
+        expanded
+    } else {
+        collapsed
+    };
 
     let mut spans = Vec::new();
     let mut used = 0u16;
@@ -371,7 +388,20 @@ mod tests {
         // Whether collapsed or expanded, `m` must be reachable from the view.
         for expanded in [false, true] {
             let pairs: Vec<&str> = if expanded {
-                vec!["↑↓", "↵/→", "esc/b/←", "n", "d", "p", "f", "x", "space", "o", "m", "q"]
+                vec![
+                    "↑↓",
+                    "↵/→",
+                    "esc/b/←",
+                    "n",
+                    "d",
+                    "p",
+                    "f",
+                    "x",
+                    "space",
+                    "o",
+                    "m",
+                    "q",
+                ]
             } else {
                 vec!["↑↓", "↵", "n", "o", "m", "q"]
             };

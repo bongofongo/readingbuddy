@@ -24,8 +24,8 @@ pub use config::EngineConfig;
 pub use error::{EngineError, Result};
 pub use koreader::ImportReport;
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
-pub use providers::{ProviderId, SearchRequest};
 pub use providers::googlebooks::verify_key as verify_google_key;
+pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{BookSort, FlashcardRow, Highlight, NoteRecord, NoteSearchHit, Storage};
 
@@ -70,23 +70,32 @@ impl Engine {
         })
     }
 
+    /// Swap in a new Google Books API key (or clear it) and rebuild the
+    /// provider list so the change is live for the next search — frontends set
+    /// this when the user enters a key at runtime.
+    pub fn set_google_api_key(&mut self, key: Option<String>) {
+        self.config.google_api_key = key.clone();
+        self.providers = vec![
+            Box::new(OpenLibraryProvider::new(self.client.clone())),
+            Box::new(GoogleBooksProvider::new(self.client.clone(), key)),
+        ];
+    }
+
     // ---- metadata search ---------------------------------------------------
 
     /// Federated fielded search: fan out to all providers, dedup, rank.
     pub async fn search(&self, req: &SearchRequest) -> Result<SearchOutcome> {
         let mut req = req.clone();
         if let Some(raw) = &req.isbn {
-            req.isbn = Some(
-                normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.clone()))?,
-            );
+            req.isbn =
+                Some(normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.clone()))?);
         }
         search::federated_search(&self.providers, &req).await
     }
 
     /// Direct edition lookup by ISBN, merging fields across providers.
     pub async fn lookup_isbn(&self, raw: &str) -> Result<Option<Book>> {
-        let isbn =
-            normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
+        let isbn = normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
         let mut found: Vec<ProviderBook> = Vec::new();
         for p in &self.providers {
             match p.by_isbn(&isbn).await {
@@ -116,7 +125,12 @@ impl Engine {
             return Ok(self.storage.get_book(id).await?.into_iter().collect());
         }
         if let Some(isbn) = normalize_isbn(selector) {
-            return Ok(self.storage.find_book_by_isbn(&isbn).await?.into_iter().collect());
+            return Ok(self
+                .storage
+                .find_book_by_isbn(&isbn)
+                .await?
+                .into_iter()
+                .collect());
         }
         self.storage.find_books_by_title(selector).await
     }
@@ -162,7 +176,8 @@ impl Engine {
         if book.language.is_none() {
             book.language = info.language.clone();
         }
-        if book.isbn_10.is_none() && book.isbn_13.is_none()
+        if book.isbn_10.is_none()
+            && book.isbn_13.is_none()
             && let Some(isbn) = &info.isbn
         {
             match isbn.len() {

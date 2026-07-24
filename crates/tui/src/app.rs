@@ -54,13 +54,41 @@ pub enum MenuItem {
 }
 
 pub const MENU: [(MenuItem, &str, &str); 8] = [
-    (MenuItem::Library, "Library", "browse everything you've saved"),
-    (MenuItem::Continue, "Continue reading", "jump to the most recent book"),
-    (MenuItem::Search, "Search books", "find and add from OpenLibrary + Google Books"),
-    (MenuItem::AddIsbn, "Add by ISBN", "look up a single edition and save it"),
-    (MenuItem::ImportKo, "Import KOReader", "pull highlights from a .sdr / library path"),
-    (MenuItem::Cards, "Flashcards", "count the cards waiting for export"),
-    (MenuItem::Settings, "Settings", "data locations, API key, glyph set"),
+    (
+        MenuItem::Library,
+        "Library",
+        "browse everything you've saved",
+    ),
+    (
+        MenuItem::Continue,
+        "Continue reading",
+        "jump to the most recent book",
+    ),
+    (
+        MenuItem::Search,
+        "Search books",
+        "find and add from OpenLibrary + Google Books",
+    ),
+    (
+        MenuItem::AddIsbn,
+        "Add by ISBN",
+        "look up a single edition and save it",
+    ),
+    (
+        MenuItem::ImportKo,
+        "Import KOReader",
+        "pull highlights from a .sdr / library path",
+    ),
+    (
+        MenuItem::Cards,
+        "Flashcards",
+        "count the cards waiting for export",
+    ),
+    (
+        MenuItem::Settings,
+        "Settings",
+        "data locations, API key, glyph set",
+    ),
     (MenuItem::Quit, "Quit", ""),
 ];
 
@@ -126,10 +154,28 @@ pub struct Input {
     pub prompt: &'static str,
 }
 
+/// The stage of the Google Books API-key modal.
+pub enum ApiKeyStage {
+    /// Typing/pasting the key (held raw; rendered as asterisks).
+    Entry { value: String },
+    /// The key is being live-checked against Google.
+    Verifying,
+    /// The outcome page: `ok` picks the success/failure copy.
+    Result { ok: bool, message: String },
+}
+
+/// The API-key modal, opened from the settings screen.
+pub struct ApiKeyModal {
+    pub stage: ApiKeyStage,
+}
+
 /// A pending yes/no confirmation.
 #[derive(Debug, Clone)]
 pub enum Confirm {
-    RemoveBook { id: i64, title: String },
+    RemoveBook {
+        id: i64,
+        title: String,
+    },
     /// Delete the selected note (held whole so we still have its file path).
     DeleteNote(NoteRecord),
     /// Discard the in-progress editor draft stashed in `pending_discard`.
@@ -187,6 +233,11 @@ pub struct App {
     pub pending_note: Option<PendingNote>,
     /// A non-blank draft set aside while its discard is confirmed.
     pub pending_discard: Option<NoteDraft>,
+    /// The Google Books API-key modal, when open.
+    pub api_key: Option<ApiKeyModal>,
+    /// A submitted key awaiting its (async) live-check; the event loop drains
+    /// this after drawing the "verifying" frame.
+    pub pending_verify: Option<String>,
     pub confirm: Option<Confirm>,
     pub search_results: Vec<RankedResult>,
     pub search_state: ListState,
@@ -221,6 +272,8 @@ impl App {
             note_editor: None,
             pending_note: None,
             pending_discard: None,
+            api_key: None,
+            pending_verify: None,
             confirm: None,
             search_results: Vec::new(),
             search_state: ListState::default(),
@@ -247,7 +300,11 @@ impl App {
         if !self.library.is_empty() && self.library_state.selected().is_none() {
             self.library_state.select(Some(0));
         }
-        if self.library_state.selected().is_some_and(|i| i >= self.library.len()) {
+        if self
+            .library_state
+            .selected()
+            .is_some_and(|i| i >= self.library.len())
+        {
             self.library_state
                 .select((!self.library.is_empty()).then(|| self.library.len() - 1));
         }
@@ -308,7 +365,8 @@ impl App {
         if !(self.spinning
             && self.screen == Screen::Book
             && self.input.is_none()
-            && self.note_editor.is_none())
+            && self.note_editor.is_none()
+            && self.api_key.is_none())
         {
             return false;
         }
@@ -365,9 +423,12 @@ impl App {
             (Screen::Settings, Action::Select | Action::ToggleSpin) => self.toggle_glyphs(),
             (Screen::Settings, Action::Left) => self.cycle_accent(-1),
             (Screen::Settings, Action::Right) => self.cycle_accent(1),
-            (Screen::Settings, Action::Query) => {
-                self.start_input(InputContext::AccentHex, "accent #RRGGBB", &theme::to_hex(theme::accent_rgb()))
-            }
+            (Screen::Settings, Action::Query) => self.start_input(
+                InputContext::AccentHex,
+                "accent #RRGGBB",
+                &theme::to_hex(theme::accent_rgb()),
+            ),
+            (Screen::Settings, Action::EditApiKey) => self.open_api_key(),
             (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
 
             (Screen::Book, action) => self.handle_book(action).await?,
@@ -469,7 +530,9 @@ impl App {
             MenuItem::ImportKo => self.start_input(InputContext::KoPath, "koreader path", ""),
             MenuItem::Cards => {
                 let n = self.engine.list_flashcards(false).await?.len();
-                self.status = Some(format!("{n} flashcard candidate(s) pending — open a book's Cards tab to export"));
+                self.status = Some(format!(
+                    "{n} flashcard candidate(s) pending — open a book's Cards tab to export"
+                ));
             }
             MenuItem::Settings => self.screen = Screen::Settings,
             MenuItem::Quit => self.quit = true,
@@ -480,7 +543,10 @@ impl App {
     // ---- book-view sub-actions --------------------------------------------
 
     fn cycle_tab(&mut self, delta: isize) {
-        let cur = BOOK_TABS.iter().position(|(t, _)| *t == self.book_tab).unwrap_or(0);
+        let cur = BOOK_TABS
+            .iter()
+            .position(|(t, _)| *t == self.book_tab)
+            .unwrap_or(0);
         let next = (cur as isize + delta).rem_euclid(BOOK_TABS.len() as isize) as usize;
         self.book_tab = BOOK_TABS[next].0;
         self.tab_state.select(None);
@@ -503,7 +569,8 @@ impl App {
             return;
         }
         let cur = self.tab_state.selected().unwrap_or(0) as isize;
-        self.tab_state.select(Some((cur + delta).rem_euclid(len as isize) as usize));
+        self.tab_state
+            .select(Some((cur + delta).rem_euclid(len as isize) as usize));
     }
 
     /// Enter on a list row: edit a note, or anchor a new note to a highlight.
@@ -522,7 +589,11 @@ impl App {
     fn new_note(&mut self, from_highlight: bool) {
         let Some(view) = &self.view else { return };
         let target = if from_highlight {
-            let Some(h) = self.tab_state.selected().and_then(|i| view.highlights.get(i)) else {
+            let Some(h) = self
+                .tab_state
+                .selected()
+                .and_then(|i| view.highlights.get(i))
+            else {
                 self.status = Some("no highlight selected".into());
                 return;
             };
@@ -590,7 +661,9 @@ impl App {
         let Some(draft) = self.note_editor.as_mut() else {
             return Ok(());
         };
-        let newline_chord = key.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+        let newline_chord = key
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => {
                 if draft.editor.is_blank() {
@@ -780,6 +853,111 @@ impl App {
         }
     }
 
+    // ---- google api key ----------------------------------------------------
+
+    /// Open the API-key modal onto a blank entry field.
+    fn open_api_key(&mut self) {
+        self.api_key = Some(ApiKeyModal {
+            stage: ApiKeyStage::Entry {
+                value: String::new(),
+            },
+        });
+        self.status = None;
+        self.dirty = true;
+    }
+
+    /// Route a key to the open API-key modal. Verification itself is deferred:
+    /// on submit we stash the key in `pending_verify` and let the event loop run
+    /// the network check after it has drawn the "verifying" frame.
+    fn on_api_key_key(&mut self, key: KeyEvent) {
+        self.dirty = true;
+        let Some(mut modal) = self.api_key.take() else {
+            return;
+        };
+        let mut closed = false;
+        let mut next_stage = None;
+        match &mut modal.stage {
+            ApiKeyStage::Entry { value } => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => closed = true,
+                    KeyCode::Enter => {
+                        let submitted = value.trim().to_string();
+                        if submitted.is_empty() {
+                            self.status = Some("paste a key first — Ctrl+V".into());
+                        } else {
+                            self.pending_verify = Some(submitted);
+                            next_stage = Some(ApiKeyStage::Verifying);
+                        }
+                    }
+                    KeyCode::Char('v') if ctrl => match crate::clipboard::read() {
+                        Ok(text) => value.push_str(&text),
+                        Err(e) => self.status = Some(format!("clipboard unavailable: {e:#}")),
+                    },
+                    KeyCode::Backspace => {
+                        value.pop();
+                    }
+                    // Typing is allowed too; only bare characters (no Ctrl).
+                    KeyCode::Char(c) if !ctrl => value.push(c),
+                    _ => {}
+                }
+            }
+            // Keys are inert while the network check is in flight.
+            ApiKeyStage::Verifying => {}
+            ApiKeyStage::Result { ok, .. } => {
+                if *ok {
+                    // Success: any key dismisses.
+                    closed = true;
+                } else {
+                    match key.code {
+                        KeyCode::Esc => closed = true,
+                        KeyCode::Enter | KeyCode::Char('r') => {
+                            next_stage = Some(ApiKeyStage::Entry {
+                                value: String::new(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if let Some(stage) = next_stage {
+            modal.stage = stage;
+        }
+        if !closed {
+            self.api_key = Some(modal);
+        }
+    }
+
+    /// Run the deferred live-check, persist + apply a good key, and move the
+    /// modal to its result page. Called by the event loop, not a key handler.
+    async fn finish_verify(&mut self, key: String) {
+        self.dirty = true;
+        let stage = match readingbuddy::verify_google_key(&key).await {
+            Ok(()) => {
+                self.engine.set_google_api_key(Some(key.clone()));
+                match config::save_google_key(&key) {
+                    Ok(_) => ApiKeyStage::Result {
+                        ok: true,
+                        message: "verified and saved.".into(),
+                    },
+                    // Live but not persisted: honest about it, key still active.
+                    Err(e) => ApiKeyStage::Result {
+                        ok: true,
+                        message: format!("verified, but couldn't save it: {e:#}"),
+                    },
+                }
+            }
+            Err(reason) => ApiKeyStage::Result {
+                ok: false,
+                message: reason,
+            },
+        };
+        if let Some(modal) = self.api_key.as_mut() {
+            modal.stage = stage;
+        }
+    }
+
     // ---- library remove ----------------------------------------------------
 
     fn ask_remove_selected(&mut self) {
@@ -901,7 +1079,10 @@ impl App {
         };
         match text.parse::<i64>() {
             Ok(page) => {
-                self.engine.storage.update_progress(id, Some(page), None).await?;
+                self.engine
+                    .storage
+                    .update_progress(id, Some(page), None)
+                    .await?;
                 self.reload_view().await?;
                 self.status = Some(format!("progress → page {page}"));
             }
@@ -927,7 +1108,10 @@ impl App {
                 self.status = Some(if self.search_results.is_empty() {
                     "nothing found".into()
                 } else {
-                    format!("{} results — enter to add, / to search again", self.search_results.len())
+                    format!(
+                        "{} results — enter to add, / to search again",
+                        self.search_results.len()
+                    )
                 });
             }
             Err(e) => self.status = Some(format!("search failed: {e}")),
@@ -1008,7 +1192,6 @@ impl App {
         self.search_state
             .select(Some(((cur + delta).rem_euclid(len)) as usize));
     }
-
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -1059,6 +1242,14 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             park_cursor(terminal)?;
             app.dirty = false;
         }
+        // A submitted key: the frame above showed "verifying", so run the
+        // (blocking-ish) network check now and redraw its result immediately.
+        if let Some(key) = app.pending_verify.take() {
+            app.finish_verify(key).await;
+            terminal.draw(|f| ui::draw(f, app))?;
+            park_cursor(terminal)?;
+            app.dirty = false;
+        }
     }
     Ok(())
 }
@@ -1086,6 +1277,8 @@ async fn dispatch_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
     if app.note_editor.is_some() {
         app.on_editor_key(key).await?;
+    } else if app.api_key.is_some() {
+        app.on_api_key_key(key);
     } else if app.input.is_some() {
         app.on_input_key(key).await?;
     } else if app.confirm.is_some() {
@@ -1113,8 +1306,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = std::env::temp_dir()
-            .join(format!("readingbuddy-tui-tests-{}-{n}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("readingbuddy-tui-tests-{}-{n}", std::process::id()));
         std::fs::remove_dir_all(&tmp).ok();
         let config = EngineConfig {
             db_url: "sqlite::memory:".into(),
@@ -1180,9 +1373,16 @@ mod tests {
         let book = app.library.first().cloned().expect("seeded book");
         app.open_book(book).await.expect("open");
 
-        for (w, h) in [(120, 40), (80, 24), (40, 30), (30, 30), (20, 8), (4, 2), (1, 1)] {
-            let mut terminal =
-                ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
+        for (w, h) in [
+            (120, 40),
+            (80, 24),
+            (40, 30),
+            (30, 30),
+            (20, 8),
+            (4, 2),
+            (1, 1),
+        ] {
+            let mut terminal = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
             for screen in [
                 Screen::Menu,
                 Screen::Library,
@@ -1191,7 +1391,12 @@ mod tests {
                 Screen::Settings,
             ] {
                 app.screen = screen;
-                for tab in [BookTab::Info, BookTab::Notes, BookTab::Highlights, BookTab::Cards] {
+                for tab in [
+                    BookTab::Info,
+                    BookTab::Notes,
+                    BookTab::Highlights,
+                    BookTab::Cards,
+                ] {
                     app.book_tab = tab;
                     // Draw both the section menu and the entered section.
                     for in_section in [false, true] {
@@ -1207,11 +1412,18 @@ mod tests {
             // With a text input and a confirmation overlaid.
             app.screen = Screen::Search;
             app.start_input(InputContext::SearchQuery, "search", "pachinko");
-            terminal.draw(|f| ui::draw(f, &mut app)).expect("draw input");
+            terminal
+                .draw(|f| ui::draw(f, &mut app))
+                .expect("draw input");
             app.input = None;
             app.screen = Screen::Library;
-            app.confirm = Some(Confirm::RemoveBook { id: 1, title: "X".into() });
-            terminal.draw(|f| ui::draw(f, &mut app)).expect("draw confirm");
+            app.confirm = Some(Confirm::RemoveBook {
+                id: 1,
+                title: "X".into(),
+            });
+            terminal
+                .draw(|f| ui::draw(f, &mut app))
+                .expect("draw confirm");
             app.confirm = None;
             // With the note editor open over the book view.
             app.screen = Screen::Book;
@@ -1224,8 +1436,32 @@ mod tests {
                 },
                 editor: TextEditor::new("a line\nanother line"),
             });
-            terminal.draw(|f| ui::draw(f, &mut app)).expect("draw editor");
+            terminal
+                .draw(|f| ui::draw(f, &mut app))
+                .expect("draw editor");
             app.note_editor = None;
+            // With the API-key modal open over the settings screen, at each stage.
+            app.screen = Screen::Settings;
+            for stage in [
+                ApiKeyStage::Entry {
+                    value: "AIzaSyDummyKey".into(),
+                },
+                ApiKeyStage::Verifying,
+                ApiKeyStage::Result {
+                    ok: true,
+                    message: "verified and saved.".into(),
+                },
+                ApiKeyStage::Result {
+                    ok: false,
+                    message: "API key not valid".into(),
+                },
+            ] {
+                app.api_key = Some(ApiKeyModal { stage });
+                terminal
+                    .draw(|f| ui::draw(f, &mut app))
+                    .expect("draw api key");
+            }
+            app.api_key = None;
         }
     }
 
@@ -1292,16 +1528,24 @@ mod tests {
         app.handle(Action::NewNote).await.expect("open editor");
         assert!(app.note_editor.is_some());
         for c in "fresh thought".chars() {
-            app.on_editor_key(KeyEvent::from(KeyCode::Char(c))).await.expect("type");
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
         }
-        app.on_editor_key(KeyEvent::from(KeyCode::Enter)).await.expect("finish body");
+        app.on_editor_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("finish body");
         assert!(app.note_editor.is_none());
         assert!(app.input.is_some(), "asks for a page");
 
         for c in "58".chars() {
-            app.on_input_key(KeyEvent::from(KeyCode::Char(c))).await.expect("type page");
+            app.on_input_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type page");
         }
-        app.on_input_key(KeyEvent::from(KeyCode::Enter)).await.expect("commit page");
+        app.on_input_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("commit page");
 
         let notes = &app.view.as_ref().unwrap().notes;
         assert_eq!(notes.len(), before + 1);
@@ -1319,14 +1563,22 @@ mod tests {
         app.open_book(book).await.expect("open");
 
         app.handle(Action::NewNote).await.expect("open editor");
-        app.on_editor_key(KeyEvent::from(KeyCode::Char('a'))).await.expect("type");
-        app.on_editor_key(KeyEvent::from(KeyCode::Tab)).await.expect("tab");
-        app.on_editor_key(KeyEvent::from(KeyCode::Char('b'))).await.expect("type");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('a')))
+            .await
+            .expect("type");
+        app.on_editor_key(KeyEvent::from(KeyCode::Tab))
+            .await
+            .expect("tab");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('b')))
+            .await
+            .expect("type");
         // Shift+Enter adds a line rather than saving.
         app.on_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
             .await
             .expect("shift-enter");
-        app.on_editor_key(KeyEvent::from(KeyCode::Char('c'))).await.expect("type");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('c')))
+            .await
+            .expect("type");
 
         let draft = app.note_editor.as_ref().expect("editor still open");
         assert_eq!(draft.editor.text(), "a\tb\nc");
@@ -1339,14 +1591,25 @@ mod tests {
         app.open_book(book).await.expect("open");
 
         app.handle(Action::NewNote).await.expect("open editor");
-        app.on_editor_key(KeyEvent::from(KeyCode::Char('x'))).await.expect("type");
-        app.on_editor_key(KeyEvent::from(KeyCode::Enter)).await.expect("finish body");
+        app.on_editor_key(KeyEvent::from(KeyCode::Char('x')))
+            .await
+            .expect("type");
+        app.on_editor_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("finish body");
         // Empty page + Enter → saved with no page.
-        app.on_input_key(KeyEvent::from(KeyCode::Enter)).await.expect("skip page");
+        app.on_input_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("skip page");
 
         assert!(app.input.is_none());
         assert!(
-            app.view.as_ref().unwrap().notes.iter().any(|n| n.page.is_none()),
+            app.view
+                .as_ref()
+                .unwrap()
+                .notes
+                .iter()
+                .any(|n| n.page.is_none()),
             "the new note saved without a page"
         );
     }
@@ -1375,9 +1638,13 @@ mod tests {
             }
         }
         for c in "rewritten body".chars() {
-            app.on_editor_key(KeyEvent::from(KeyCode::Char(c))).await.expect("type");
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
         }
-        app.on_editor_key(KeyEvent::from(KeyCode::Enter)).await.expect("save");
+        app.on_editor_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("save");
 
         let updated = std::fs::read_to_string(&path).unwrap();
         assert!(updated.contains("page: 120"), "frontmatter kept");
@@ -1445,9 +1712,13 @@ mod tests {
         // Type something, then Esc: the draft is stashed behind a confirm.
         app.handle(Action::NewNote).await.expect("open editor");
         for c in "half a thought".chars() {
-            app.on_editor_key(KeyEvent::from(KeyCode::Char(c))).await.expect("type");
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
         }
-        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc");
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc))
+            .await
+            .expect("esc");
         assert!(app.note_editor.is_none());
         assert!(matches!(app.confirm, Some(Confirm::DiscardDraft)));
 
@@ -1458,7 +1729,9 @@ mod tests {
         assert_eq!(draft.editor.text(), "half a thought");
 
         // Esc + confirm actually throws it away; nothing is saved.
-        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc again");
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc))
+            .await
+            .expect("esc again");
         app.resolve_confirm(true).await.expect("discard");
         assert!(app.note_editor.is_none());
         assert!(app.pending_discard.is_none());
@@ -1473,7 +1746,9 @@ mod tests {
 
         app.handle(Action::NewNote).await.expect("open editor");
         // Esc on an untouched editor closes it immediately, no prompt.
-        app.on_editor_key(KeyEvent::from(KeyCode::Esc)).await.expect("esc");
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc))
+            .await
+            .expect("esc");
         assert!(app.note_editor.is_none());
         assert!(app.confirm.is_none());
         assert!(app.pending_discard.is_none());
@@ -1512,7 +1787,10 @@ mod tests {
         app.handle(Action::ToggleSpin).await.expect("resume");
         assert!(app.spinning);
         assert!(app.tick(), "a resumed book moves");
-        assert!((app.params.pose.yaw - held).abs() < 0.05, "resumes smoothly");
+        assert!(
+            (app.params.pose.yaw - held).abs() < 0.05,
+            "resumes smoothly"
+        );
     }
 
     #[tokio::test]
@@ -1564,13 +1842,104 @@ mod tests {
             println!("=== {w}x{h} ===");
             let buf = t.backend().buffer();
             for y in 0..h {
-                let row: String = (0..w).map(|x| {
-                    let s = buf[(x, y)].symbol();
-                    match s { "▀" | "▄" => '#', " " => ' ', _ => s.chars().next().unwrap_or(' ') }
-                }).collect();
+                let row: String = (0..w)
+                    .map(|x| {
+                        let s = buf[(x, y)].symbol();
+                        match s {
+                            "▀" | "▄" => '#',
+                            " " => ' ',
+                            _ => s.chars().next().unwrap_or(' '),
+                        }
+                    })
+                    .collect();
                 println!("|{row}|");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn api_key_box_collects_a_key_and_defers_verification() {
+        let mut app = test_app().await;
+        app.screen = Screen::Settings;
+
+        // `g` opens the paste box onto a blank field.
+        app.handle(Action::EditApiKey).await.expect("open");
+        assert!(matches!(
+            app.api_key.as_ref().map(|m| &m.stage),
+            Some(ApiKeyStage::Entry { .. })
+        ));
+
+        // Typed characters accumulate (paste follows the same path).
+        for c in "AIzaKEY".chars() {
+            app.on_api_key_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.on_api_key_key(KeyEvent::from(KeyCode::Backspace));
+        match app.api_key.as_ref().map(|m| &m.stage) {
+            Some(ApiKeyStage::Entry { value }) => assert_eq!(value, "AIzaKE"),
+            _ => panic!("still in entry"),
+        }
+
+        // Enter defers the live-check: stage → Verifying, key queued, box kept.
+        app.on_api_key_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.pending_verify.as_deref(), Some("AIzaKE"));
+        assert!(matches!(
+            app.api_key.as_ref().map(|m| &m.stage),
+            Some(ApiKeyStage::Verifying)
+        ));
+    }
+
+    #[tokio::test]
+    async fn api_key_box_cancels_and_empty_submit_is_inert() {
+        let mut app = test_app().await;
+        app.open_api_key();
+
+        // Enter on an empty field submits nothing.
+        app.on_api_key_key(KeyEvent::from(KeyCode::Enter));
+        assert!(app.pending_verify.is_none());
+        assert!(app.api_key.is_some(), "box stays open");
+
+        // Esc closes the box without queuing a verification.
+        app.on_api_key_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.api_key.is_none());
+        assert!(app.pending_verify.is_none());
+    }
+
+    #[tokio::test]
+    async fn api_key_failure_page_retries_or_cancels() {
+        let mut app = test_app().await;
+
+        // A failure page: Enter goes back to a fresh entry field.
+        app.api_key = Some(ApiKeyModal {
+            stage: ApiKeyStage::Result {
+                ok: false,
+                message: "bad key".into(),
+            },
+        });
+        app.on_api_key_key(KeyEvent::from(KeyCode::Enter));
+        match app.api_key.as_ref().map(|m| &m.stage) {
+            Some(ApiKeyStage::Entry { value }) => assert!(value.is_empty()),
+            _ => panic!("retry reopens the entry field"),
+        }
+
+        // From a failure page, Esc closes.
+        app.api_key = Some(ApiKeyModal {
+            stage: ApiKeyStage::Result {
+                ok: false,
+                message: "bad key".into(),
+            },
+        });
+        app.on_api_key_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.api_key.is_none());
+
+        // A success page dismisses on any key.
+        app.api_key = Some(ApiKeyModal {
+            stage: ApiKeyStage::Result {
+                ok: true,
+                message: "ok".into(),
+            },
+        });
+        app.on_api_key_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert!(app.api_key.is_none());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Screen drawing and the responsive breakpoints.
 
+pub mod apikey;
 pub mod book;
 pub mod input;
 pub mod library;
@@ -62,7 +63,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if let Some(msg) = &status_line {
-        let style = if app.confirm.is_some() { theme::accent() } else { theme::dim() };
+        let style = if app.confirm.is_some() {
+            theme::accent()
+        } else {
+            theme::dim()
+        };
         f.render_widget(Paragraph::new(msg.as_str()).style(style), status);
     }
 
@@ -79,6 +84,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         let h = 10.min(body.height).max(3);
         let box_area = centered(body, w, h);
         textedit::render(f, box_area, draft.title(), &draft.editor);
+    }
+
+    // The API-key modal floats over the settings screen.
+    if let Some(modal) = &app.api_key {
+        apikey::render(f, body, modal);
     }
 }
 
