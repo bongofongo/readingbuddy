@@ -7,6 +7,7 @@ mod app;
 mod clipboard;
 mod config;
 mod event;
+mod perf;
 mod render3d;
 mod theme;
 mod ui;
@@ -62,8 +63,9 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = GlyphArg::Octant)]
     glyphs: GlyphArg,
 
-    /// Book-view renderer: auto (true pixels wherever the terminal supports
-    /// them, block glyphs otherwise), or force one.
+    /// Book-view renderer. `rich` is the hybrid — glyphs while the book turns,
+    /// pixels when it parks — which is also what `auto` picks wherever the
+    /// terminal can take pixels.
     #[arg(long, value_enum, default_value_t = RenderArg::Auto)]
     render: RenderArg,
 
@@ -77,32 +79,77 @@ struct Cli {
     /// in a real pane, since it measures the pty and the compositor too.
     #[arg(long, value_name = "N")]
     bench_rich: Option<u32>,
+
+    /// Run a scripted spin/park/resize workload through the real presenter and
+    /// report what it cost — including how long the terminal itself took to
+    /// answer while under load. Run it in a real, *active* pane.
+    #[arg(long, value_enum, value_name = "MODE")]
+    bench_render: Option<BenchArg>,
+
+    /// Repeat the --bench-render script N times (default 1). The rect the
+    /// object gets is whatever the real pane gives it, and is reported — it
+    /// cannot be forced without lying about what is being measured.
+    #[arg(long, value_name = "N", requires = "bench_render")]
+    bench_reps: Option<u32>,
+
+    /// Append a JSON record per frame to this file. Off by default; the
+    /// recording calls cost one relaxed atomic load when it is absent.
+    #[arg(long, value_name = "PATH", env = "READINGBUDDY_PERF_LOG")]
+    perf_log: Option<PathBuf>,
+
+    /// Append one summary row per benched mode to this TSV, so runs can be
+    /// compared over time. The per-frame log is the detail for one run; this is
+    /// the trend line across many.
+    #[arg(long, value_name = "PATH", env = "READINGBUDDY_PERF_HISTORY")]
+    perf_history: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum BenchArg {
+    Glyph,
+    Rich,
+    /// The known-bad configuration — pixels even while moving. Kept so the
+    /// latency numbers have something pathological to be calibrated against.
+    RichAlways,
+    /// All three, one after another, on identical work.
+    All,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum RenderArg {
+    /// Pixels wherever the terminal can take them, block glyphs otherwise.
     Auto,
+    /// Block glyphs always. Works anywhere truecolor does.
     Glyph,
+    /// The hybrid: block glyphs while the book turns, true pixels the moment it
+    /// parks. Falls back to glyphs on a terminal with no pixel protocol.
     Rich,
+    /// Pixels even while the book is moving. **Known bad** — kept as a
+    /// diagnostic so the terminal-latency measurement has something
+    /// pathological to be calibrated against, not as a usable setting.
+    RichAlways,
 }
 
 impl RenderArg {
     /// Resolve to a concrete mode against what the terminal actually reported.
     ///
-    /// **`Auto` picks glyph even where pixels are available**, deliberately. The
-    /// pixel path is correct and looks good, but an animated one costs the
-    /// terminal far more than the block-glyph path and undercuts the whole
-    /// point of a lightweight tmux-native TUI (see `docs/rich-renderer.md` —
-    /// "Why auto is glyph"). Until the spin stops sending images, rich is
-    /// opt-in: `--render rich`, or `v` in the book view.
+    /// `Auto` takes pixels wherever the terminal can hold them. That is a
+    /// reversal: it used to pick glyphs unconditionally, because an animated
+    /// pixel book cost the terminal far more than block glyphs and undercut the
+    /// point of a lightweight tmux-native TUI. What changed is that `Rich` no
+    /// longer animates in pixels — it is the hybrid, glyphs in motion and pixels
+    /// at rest — so the spin now costs exactly what it always did, and the one
+    /// thing standing against `auto` is gone.
     ///
-    /// `Rich` forced on a terminal that can't take pixels still degrades to
+    /// A mode forced on a terminal that can't take pixels still degrades to
     /// glyph rather than spraying escapes at it — the flag is a preference, not
     /// a promise the terminal has to keep.
     fn resolve(self, caps: render3d::Caps) -> render3d::RenderMode {
         use render3d::RenderMode;
         match self {
-            RenderArg::Rich if caps.supports_pixels() => RenderMode::Rich,
+            RenderArg::Glyph => RenderMode::Glyph,
+            RenderArg::RichAlways if caps.supports_pixels() => RenderMode::RichAlways,
+            _ if caps.supports_pixels() => RenderMode::Rich,
             _ => RenderMode::Glyph,
         }
     }
@@ -154,6 +201,10 @@ async fn main() -> Result<()> {
         return bench_rich(&engine, frames, &cli).await;
     }
 
+    if let Some(which) = cli.bench_render {
+        return bench_render(engine, which, &cli).await;
+    }
+
     // Apply the persisted accent before the first draw. A bad/missing file is a
     // warning, never fatal — it must not brick the TUI.
     match config::load() {
@@ -172,11 +223,24 @@ async fn main() -> Result<()> {
         app.open_book(book).await?;
     }
 
+    // One meter for both classes of byte: it is handed to the ratatui backend
+    // (text) and to the graphics writer (image), so the two are counted apart.
+    let meter = perf::Meter::new();
+    if let Some(path) = &cli.perf_log {
+        match perf::Recorder::open(path, meter.clone()) {
+            Ok(rec) => app.perf = rec,
+            // A diagnostic that refuses to start is not a reason to refuse to
+            // run: warn before the alternate screen swallows it, and carry on.
+            Err(e) => eprintln!("warning: perf log {}: {e}", path.display()),
+        }
+    }
+
     // The probe has to run with raw mode on and before ratatui reads any input,
     // so the mode can only be settled once the terminal is up.
-    let (mut terminal, caps) = setup_terminal()?;
+    let (mut terminal, caps) = setup_terminal(meter.clone())?;
     app.set_caps(caps);
     app.set_render_mode(cli.render.resolve(caps));
+    app.rich.count_bytes(meter);
     let result = app::run(&mut terminal, &mut app).await;
     restore_terminal();
     result
@@ -218,6 +282,352 @@ fn report_caps(cli: &Cli) -> Result<()> {
         String::from_utf8_lossy(&raw).escape_debug()
     );
     Ok(())
+}
+
+/// One phase of the bench script.
+#[derive(Debug, Clone, Copy)]
+enum Phase {
+    /// The book turns, one draw per simulated tick.
+    Spin(u32),
+    /// The book is parked and redrawn anyway, which is what a settle costs.
+    Park(u32),
+    /// Slide the divider, changing the object's rect exactly as `[`/`]` do.
+    Slide(f32),
+}
+
+/// The workload every mode is measured on. Fixed, so two runs are comparable
+/// and so no mode gets an easier ride than another.
+const SCRIPT: &[Phase] = &[
+    Phase::Spin(100),
+    Phase::Park(20),
+    Phase::Spin(60),
+    Phase::Slide(0.3),
+    Phase::Spin(40),
+    Phase::Park(20),
+];
+
+/// Sample the terminal's own latency this often (in frames). Often enough to
+/// see a stall build, rare enough that the measurement is not the load.
+const RTT_EVERY: u32 = 20;
+
+/// What one mode's run cost.
+struct BenchSummary {
+    mode: &'static str,
+    frames: u32,
+    wall: std::time::Duration,
+    bytes_text: u64,
+    bytes_image: u64,
+    transmits: u32,
+    rect: (u16, u16),
+    trace_us: u64,
+    draw_us: u64,
+    /// Image bytes emitted on frames where the book was moving. **The number
+    /// this whole exercise is about**: for the hybrid it must be zero.
+    moving_image_bytes: u64,
+    rtt_kitty: Vec<u64>,
+    rtt_tmux: Vec<u64>,
+}
+
+/// `--bench-render`: what a mode actually costs, terminal included.
+///
+/// The difference from [`bench_rich`] is that this drives the **real presenter
+/// through a real `Terminal::draw`**, so the retransmit throttle, the
+/// placeholder cells and ratatui's diff are all in the measurement — and so the
+/// glyph path can be measured at all, which nothing could do before.
+///
+/// It also samples `caps::rtt_probe` under load. That is the honest number: our
+/// own timings all looked healthy while the first rich renderer was making
+/// terminals unusable, because the cost is paid inside the terminal. A terminal
+/// that is drowning answers slowly, so ask it.
+///
+/// Run it in a real, **active** pane: tmux routes input to the focused pane
+/// only, so a background pane sees no replies and the RTT column comes back
+/// empty.
+async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> {
+    // Fail with a reason rather than the raw `Device not configured` that
+    // enabling raw mode on a pipe produces. Piping this measures nothing anyway:
+    // the point is the terminal's own behaviour.
+    if !std::io::IsTerminal::is_terminal(&stdout()) {
+        bail!("--bench-render needs a real terminal — it measures the terminal, not us");
+    }
+    let reps = cli.bench_reps.unwrap_or(1).max(1);
+    let modes: &[render3d::RenderMode] = match which {
+        BenchArg::Glyph => &[render3d::RenderMode::Glyph],
+        BenchArg::Rich => &[render3d::RenderMode::Rich],
+        BenchArg::RichAlways => &[render3d::RenderMode::RichAlways],
+        BenchArg::All => &[
+            render3d::RenderMode::Glyph,
+            render3d::RenderMode::Rich,
+            render3d::RenderMode::RichAlways,
+        ],
+    };
+
+    let book = match &cli.book {
+        Some(sel) => resolve_book(&engine, sel).await?,
+        None => engine
+            .storage
+            .list_books(1, BookSort::LastModified)
+            .await?
+            .into_iter()
+            .next()
+            .context("no books in the library to bench with")?,
+    };
+    // A procedural plate compresses several times better than a photograph, so
+    // benching without a real cover produces numbers that are wrong in the
+    // flattering direction. Say so loudly rather than quietly.
+    let real_cover = book
+        .cover_path
+        .as_deref()
+        .map(|p| engine.config.images_dir.join(p))
+        .is_some_and(|p| p.exists());
+
+    let meter = perf::Meter::new();
+    let mut app = app::App::new(engine).await?;
+    app.params.glyphs = cli.glyphs.into();
+    app.open_book(book.clone()).await?;
+    if let Some(path) = &cli.perf_log {
+        match perf::Recorder::open(path, meter.clone()) {
+            Ok(rec) => app.perf = rec,
+            Err(e) => eprintln!("warning: perf log {}: {e}", path.display()),
+        }
+    }
+    app.perf.enable_in_memory();
+
+    let (mut terminal, caps) = setup_terminal(meter.clone())?;
+    app.set_caps(caps);
+    app.rich.count_bytes(meter);
+
+    let mut summaries = Vec::new();
+    for &mode in modes {
+        for _ in 0..reps {
+            app.set_render_mode(mode);
+            app.rich.drop_image();
+            app.layout.divider_bias = 0.0;
+            app.params.pose = render3d::Pose::default();
+            let _ = app.perf.drain_frames();
+
+            let wall = std::time::Instant::now();
+            let mut frame = 0u32;
+            for phase in SCRIPT {
+                match *phase {
+                    Phase::Slide(delta) => {
+                        app.layout.divider_bias =
+                            (app.layout.divider_bias + delta).clamp(-1.0, 1.0);
+                    }
+                    Phase::Spin(n) | Phase::Park(n) => {
+                        app.spinning = matches!(phase, Phase::Spin(_));
+                        for _ in 0..n {
+                            app.tick();
+                            if frame.is_multiple_of(RTT_EVERY) {
+                                // Sampled *under* load, between draws: a
+                                // terminal that is behind answers late.
+                                app.rtt_sample = Some(render3d::caps::rtt_probe(
+                                    caps.in_tmux,
+                                    std::time::Duration::from_millis(250),
+                                ));
+                            }
+                            app::redraw(&mut terminal, &mut app)?;
+                            frame += 1;
+                        }
+                    }
+                }
+            }
+            summaries.push(summarize(
+                mode.label(),
+                frame,
+                wall.elapsed(),
+                &mut app.perf,
+            ));
+        }
+    }
+
+    app.rich.drop_image();
+    app.perf.flush();
+    restore_terminal();
+    report_bench(&summaries, real_cover, caps);
+    if let Some(path) = &cli.perf_history {
+        match append_history(path, &summaries, real_cover, caps) {
+            Ok(()) => eprintln!("history     : {}", path.display()),
+            // The measurement already happened; failing to file it is not a
+            // reason to fail the command.
+            Err(e) => eprintln!("warning: perf history {}: {e}", path.display()),
+        }
+    }
+    Ok(())
+}
+
+/// Append one row per mode to a TSV, creating it with a header.
+///
+/// Deliberately not JSON: this file is meant to be `sort`ed, `cut`, pasted into
+/// a spreadsheet, or plotted, and it accumulates across runs — whereas the
+/// per-frame JSONL is written fresh per run and describes a single session.
+///
+/// The timestamp is epoch seconds. No date formatting crate is worth adding for
+/// one column, and epoch sorts correctly without one.
+fn append_history(
+    path: &std::path::Path,
+    summaries: &[BenchSummary],
+    real_cover: bool,
+    caps: render3d::Caps,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let fresh = !path.exists();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    if fresh {
+        writeln!(
+            f,
+            "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
+             trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
+             rtt_tmux_p90_us\tcols\trows\tin_tmux\treal_cover"
+        )?;
+    }
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for s in summaries {
+        let secs = s.wall.as_secs_f64().max(1e-9);
+        writeln!(
+            f,
+            "{epoch}\t{}\t{}\t{:.1}\t{:.3}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            s.mode,
+            s.frames,
+            s.frames as f64 / secs,
+            s.bytes_text as f64 / secs / 1.0e6,
+            s.bytes_image as f64 / secs / 1.0e6,
+            s.moving_image_bytes / 1024,
+            s.transmits,
+            s.trace_us,
+            s.draw_us,
+            perf::percentile(&s.rtt_kitty, 50.0),
+            perf::percentile(&s.rtt_kitty, 90.0),
+            perf::percentile(&s.rtt_tmux, 50.0),
+            perf::percentile(&s.rtt_tmux, 90.0),
+            s.rect.0,
+            s.rect.1,
+            caps.in_tmux,
+            real_cover,
+        )?;
+    }
+    Ok(())
+}
+
+fn summarize(
+    mode: &'static str,
+    frames: u32,
+    wall: std::time::Duration,
+    rec: &mut perf::Recorder,
+) -> BenchSummary {
+    let recs = rec.drain_frames();
+    let n = recs.len().max(1) as u64;
+    BenchSummary {
+        mode,
+        frames,
+        wall,
+        bytes_text: recs.iter().map(|r| r.bytes_text).sum(),
+        bytes_image: recs.iter().map(|r| r.bytes_image).sum(),
+        transmits: recs.iter().filter(|r| r.transmitted).count() as u32,
+        rect: recs
+            .iter()
+            .map(|r| (r.cols, r.rows))
+            .max()
+            .unwrap_or((0, 0)),
+        trace_us: recs.iter().map(|r| r.trace_us).sum::<u64>() / n,
+        draw_us: recs.iter().map(|r| r.draw_us).sum::<u64>() / n,
+        moving_image_bytes: recs
+            .iter()
+            .filter(|r| r.moving)
+            .map(|r| r.bytes_image)
+            .sum(),
+        rtt_kitty: sorted(recs.iter().filter_map(|r| r.rtt_kitty_us)),
+        rtt_tmux: sorted(recs.iter().filter_map(|r| r.rtt_tmux_us)),
+    }
+}
+
+fn sorted(it: impl Iterator<Item = u64>) -> Vec<u64> {
+    let mut v: Vec<u64> = it.collect();
+    v.sort_unstable();
+    v
+}
+
+fn report_bench(summaries: &[BenchSummary], real_cover: bool, caps: render3d::Caps) {
+    if !real_cover {
+        eprintln!(
+            "WARNING: this book has no cover image on disk, so the render used the\n\
+             procedural plate. It compresses several times better than a photograph —\n\
+             the image byte rates below are optimistic. Bench a book with a real cover."
+        );
+    }
+    if !caps.supports_pixels() {
+        eprintln!(
+            "WARNING: this terminal reports no usable pixel protocol, so every mode\n\
+             fell back to glyphs and the comparison is meaningless."
+        );
+    }
+    eprintln!(
+        "in tmux     : {}   cell px: {:?}",
+        caps.in_tmux, caps.cell_px
+    );
+    eprintln!();
+    eprintln!(
+        "{:<12} {:>6} {:>6} {:>9} {:>10} {:>9} {:>7} {:>8} {:>8}",
+        "mode", "frames", "fps", "text MB/s", "image MB/s", "moving-KB", "sends", "trace", "draw"
+    );
+    for s in summaries {
+        let secs = s.wall.as_secs_f64().max(1e-9);
+        eprintln!(
+            "{:<12} {:>6} {:>6.1} {:>9.2} {:>10.2} {:>9} {:>7} {:>7}µs {:>7}µs",
+            s.mode,
+            s.frames,
+            s.frames as f64 / secs,
+            s.bytes_text as f64 / secs / 1.0e6,
+            s.bytes_image as f64 / secs / 1.0e6,
+            s.moving_image_bytes / 1024,
+            s.transmits,
+            s.trace_us,
+            s.draw_us,
+        );
+    }
+    eprintln!();
+    eprintln!("object rect : {:?}", summaries.first().map(|s| s.rect));
+    eprintln!(
+        "'moving-KB' is image bytes sent while the book was animating. For the\n\
+         hybrid this must be 0 — that is the invariant, not a budget."
+    );
+    eprintln!();
+    // The honest number: how long the terminal took to answer while we loaded
+    // it. Every timing on our side of the pty looked healthy during the version
+    // that made terminals unusable.
+    eprintln!(
+        "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "mode", "kitty p50", "kitty p90", "kitty max", "tmux p50", "tmux p90", "tmux max"
+    );
+    for s in summaries {
+        let ms = |v: &[u64], p: f64| perf::percentile(v, p) as f64 / 1000.0;
+        eprintln!(
+            "{:<12} {:>9.1}m {:>9.1}m {:>9.1}m {:>9.1}m {:>9.1}m {:>9.1}m",
+            s.mode,
+            ms(&s.rtt_kitty, 50.0),
+            ms(&s.rtt_kitty, 90.0),
+            ms(&s.rtt_kitty, 100.0),
+            ms(&s.rtt_tmux, 50.0),
+            ms(&s.rtt_tmux, 90.0),
+            ms(&s.rtt_tmux, 100.0),
+        );
+    }
+    if summaries.iter().all(|s| s.rtt_kitty.is_empty()) {
+        eprintln!(
+            "\nNo graphics round-trips came back. Inside tmux that usually means this\n\
+             pane was not the active one — tmux routes input to the focused pane only."
+        );
+    }
 }
 
 /// `--bench-rich N`: the decisive measurement for "why is the spin slow".
@@ -371,7 +781,15 @@ fn parse_size(spec: &str) -> Result<(u16, u16)> {
     Ok((w.trim().parse()?, h.trim().parse()?))
 }
 
-fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, render3d::Caps)> {
+/// The terminal, with every byte on its way out counted.
+///
+/// Wrapping the backend's writer is the only way to measure the *glyph* path at
+/// all: its bytes are produced by ratatui's diff, which the app never sees. Once
+/// that number exists, "glyphs are cheap" stops being a claim and becomes a
+/// measurement.
+type CountedTerminal = Terminal<CrosstermBackend<perf::CountingWriter<Stdout>>>;
+
+fn setup_terminal(meter: perf::Meter) -> Result<(CountedTerminal, render3d::Caps)> {
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
     // Probe here and nowhere else: raw mode is on (so replies aren't echoed or
@@ -395,7 +813,8 @@ fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, render3d::Cap
         restore_terminal();
         previous(info);
     }));
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    let counted = perf::CountingWriter::new(stdout(), meter, perf::ByteClass::Text);
+    let mut terminal = Terminal::new(CrosstermBackend::new(counted))?;
     terminal.hide_cursor()?;
     terminal.clear()?;
     Ok((terminal, caps))
@@ -418,6 +837,68 @@ fn restore_terminal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary(mode: &'static str, image_bytes: u64) -> BenchSummary {
+        BenchSummary {
+            mode,
+            frames: 240,
+            wall: std::time::Duration::from_secs(12),
+            bytes_text: 1_000_000,
+            bytes_image: image_bytes,
+            transmits: 3,
+            rect: (50, 26),
+            trace_us: 2_100,
+            draw_us: 3_400,
+            moving_image_bytes: image_bytes,
+            rtt_kitty: vec![900, 1_200, 4_000],
+            rtt_tmux: vec![300, 400],
+        }
+    }
+
+    #[test]
+    fn the_history_file_gets_a_header_once_and_a_row_per_run() {
+        // The point of this file is comparison across runs, so appending (not
+        // truncating) and writing the header exactly once are the behaviours
+        // that matter — a second header line in the middle breaks every tool
+        // that would read it.
+        let dir = std::env::temp_dir().join(format!("readingbuddy-history-{}", std::process::id()));
+        let path = dir.join("history.tsv");
+        let _ = std::fs::remove_file(&path);
+
+        let caps = render3d::Caps::default();
+        append_history(
+            &path,
+            &[summary("glyph", 0), summary("rich", 0)],
+            true,
+            caps,
+        )
+        .unwrap();
+        append_history(&path, &[summary("glyph", 4_096)], false, caps).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4, "expected header + 3 rows:\n{text}");
+        assert!(lines[0].starts_with("epoch_s\tmode\t"), "{}", lines[0]);
+        assert_eq!(
+            lines.iter().filter(|l| l.starts_with("epoch_s")).count(),
+            1,
+            "the header was written more than once"
+        );
+        // Every row must have as many fields as the header, or `cut`/`column`
+        // silently misalign the columns instead of failing.
+        let cols = lines[0].split('\t').count();
+        for row in &lines[1..] {
+            assert_eq!(row.split('\t').count(), cols, "ragged row: {row}");
+        }
+        // The column the whole exercise is about.
+        assert!(
+            lines[1].contains("\t0\t"),
+            "moving_KB missing: {}",
+            lines[1]
+        );
+        assert!(lines[3].contains("\t4\t"), "moving_KB wrong: {}", lines[3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parses_frame_sizes() {

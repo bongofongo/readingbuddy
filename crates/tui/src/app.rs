@@ -1,6 +1,6 @@
 //! Application state and the async event loop.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
@@ -26,7 +26,7 @@ use crate::ui::textedit::TextEditor;
 
 /// Idle spin: a full turn about the bottom of the spine, so the book sweeps
 /// round like a slow top. Radians per tick at 20fps — about 27s for 360°.
-const SPIN_SPEED: f32 = 0.01164;
+pub const SPIN_SPEED: f32 = 0.01164;
 /// The pitch nods gently while the book turns, on its own slower cycle.
 const NOD: f32 = 0.06;
 const NOD_SPEED: f32 = 0.011;
@@ -233,6 +233,13 @@ pub struct App {
     /// Pixel-path state. A direct field, not behind a method: `present_book`
     /// borrows it disjointly alongside `scene` and `view`.
     pub rich: crate::render3d::present::RichState,
+    /// Frame cost accounting. Inert unless `--perf-log` gave it somewhere to
+    /// write, so the normal session pays a relaxed atomic load per frame.
+    pub perf: crate::perf::Recorder,
+    /// A terminal round-trip measured out of band, attached to the next frame
+    /// record. **Only the bench sets this** — sampling it needs exclusive stdin,
+    /// which the live loop's `EventStream` owns.
+    pub rtt_sample: Option<crate::render3d::caps::Rtt>,
     /// The user's book-view layout tweaks (pane rotation + divider slide).
     pub layout: crate::ui::LayoutPrefs,
     /// Idle spin on/off.
@@ -279,6 +286,8 @@ impl App {
             render_mode: RenderMode::default(),
             caps: Caps::default(),
             rich: crate::render3d::present::RichState::default(),
+            perf: crate::perf::Recorder::disabled(crate::perf::Meter::new()),
+            rtt_sample: None,
             layout: crate::ui::LayoutPrefs::default(),
             spinning: true,
             show_options: false,
@@ -390,19 +399,17 @@ impl App {
     /// cells stop being written, but the image the terminal is holding would
     /// otherwise stay composited underneath the block glyphs.
     fn toggle_renderer(&mut self) {
-        match self.render_mode {
-            RenderMode::Rich => {
-                self.rich.drop_image();
-                self.render_mode = RenderMode::Glyph;
-                self.status = Some("renderer: glyphs".into());
-            }
-            RenderMode::Glyph if self.caps.supports_pixels() => {
-                self.render_mode = RenderMode::Rich;
-                self.status = Some("renderer: pixels".into());
-            }
-            RenderMode::Glyph => {
-                self.status = Some("this terminal has no pixel protocol".into());
-            }
+        if self.render_mode.is_rich() {
+            self.rich.drop_image();
+            self.render_mode = RenderMode::Glyph;
+            self.status = Some("renderer: glyphs".into());
+        } else if self.caps.supports_pixels() {
+            // Always the hybrid: `RichAlways` is a diagnostic reached by flag,
+            // never something a keypress can land the user in.
+            self.render_mode = RenderMode::Rich;
+            self.status = Some("renderer: pixels when still".into());
+        } else {
+            self.status = Some("this terminal has no pixel protocol".into());
         }
         self.dirty = true;
     }
@@ -429,14 +436,26 @@ impl App {
         self.status = Some("panes resized".into());
     }
 
-    /// Advance the idle animation. Returns true when something moved.
-    fn tick(&mut self) -> bool {
-        if !(self.spinning
+    /// Whether the book is animating right now.
+    ///
+    /// The single source of truth for "moving": [`App::tick`] uses it to decide
+    /// whether to advance the pose, and the draw path hands it to the renderer,
+    /// which is what lets the hybrid switch to pixels the instant the book
+    /// parks. The pixel path can also *infer* motion by comparing consecutive
+    /// poses, but that inference is blind to exactly this case — a parked book
+    /// stops redrawing at all, so there is no next draw to compare against, and
+    /// the crisp frame would never be transmitted.
+    pub fn animating(&self) -> bool {
+        self.spinning
             && self.screen == Screen::Book
             && self.input.is_none()
             && self.note_editor.is_none()
-            && self.api_key.is_none())
-        {
+            && self.api_key.is_none()
+    }
+
+    /// Advance the idle animation. Returns true when something moved.
+    pub fn tick(&mut self) -> bool {
+        if !self.animating() {
             return false;
         }
         self.phase += NOD_SPEED;
@@ -1291,9 +1310,7 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    terminal.draw(|f| ui::draw(f, app))?;
-    park_cursor(terminal)?;
-    app.dirty = false;
+    redraw(terminal, app)?;
 
     loop {
         tokio::select! {
@@ -1317,19 +1334,47 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             break;
         }
         if app.dirty {
-            terminal.draw(|f| ui::draw(f, app))?;
-            park_cursor(terminal)?;
-            app.dirty = false;
+            redraw(terminal, app)?;
         }
         // A submitted key: the frame above showed "verifying", so run the
         // (blocking-ish) network check now and redraw its result immediately.
         if let Some(key) = app.pending_verify.take() {
             app.finish_verify(key).await;
-            terminal.draw(|f| ui::draw(f, app))?;
-            park_cursor(terminal)?;
-            app.dirty = false;
+            redraw(terminal, app)?;
         }
     }
+    Ok(())
+}
+
+/// Draw one frame, and account for what it cost.
+///
+/// Every draw goes through here, which is what makes `params.moving`
+/// authoritative: the renderer is told whether the book is animating rather than
+/// having to guess from pose history, and the guess is wrong in exactly the case
+/// the hybrid depends on (a parked book stops redrawing, so there is no next
+/// frame to infer from).
+pub fn redraw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+    app.params.moving = Some(app.animating());
+    let rtt = app.rtt_sample.take();
+    let term = terminal.size()?;
+    app.perf.frame_begin();
+    let started = Instant::now();
+    terminal.draw(|f| ui::draw(f, app))?;
+    let draw = started.elapsed();
+    park_cursor(terminal)?;
+    app.perf.frame_end(crate::perf::FrameCtx {
+        mode: app.render_mode.label(),
+        moving: app.animating(),
+        term_cols: term.width,
+        term_rows: term.height,
+        draw,
+        // The terminal round-trip needs exclusive stdin, which `EventStream`
+        // owns in a live session — so this is always `None` there, and only the
+        // bench (which owns stdin) ever leaves a sample here.
+        rtt_kitty: rtt.and_then(|r| r.kitty),
+        rtt_tmux: rtt.and_then(|r| r.tmux),
+    });
+    app.dirty = false;
     Ok(())
 }
 
@@ -1446,6 +1491,142 @@ mod tests {
     /// Draw every screen and every book tab at sizes from a full terminal down
     /// to a pane too small to hold anything. Layout arithmetic is the likeliest
     /// place to panic, and a panic here would wreck the user's tmux pane.
+    /// Bytes ratatui actually put on the wire for one glyph spin.
+    ///
+    /// The claim "block glyphs are cheap" had no harness behind it until now —
+    /// every measurement we had was of the *pixel* path, because the glyph
+    /// path's bytes are produced by ratatui's diff, which the app never sees.
+    /// Counting at the backend's writer is what makes it measurable, and this is
+    /// the baseline the hybrid's motion frames have to match.
+    async fn glyph_spin_bytes(w: u16, h: u16, ticks: u32) -> u64 {
+        use crate::perf::{ByteClass, CountingWriter, Meter};
+        use ratatui::backend::CrosstermBackend;
+        use ratatui::{TerminalOptions, Viewport};
+
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.render_mode = RenderMode::Glyph;
+        app.spinning = true;
+
+        let meter = Meter::new();
+        let backend = CrosstermBackend::new(CountingWriter::new(
+            Vec::new(),
+            meter.clone(),
+            ByteClass::Text,
+        ));
+        // A fixed viewport, so the terminal never asks the OS for a window size
+        // it does not have in a test process.
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, w, h)),
+            },
+        )
+        .expect("terminal");
+
+        redraw(&mut terminal, &mut app).expect("first draw");
+        let start = meter.snapshot();
+        for _ in 0..ticks {
+            app.tick();
+            redraw(&mut terminal, &mut app).expect("draw");
+        }
+        meter.snapshot().since(start).text
+    }
+
+    /// What a glyph spin actually puts on the wire, across rect sizes.
+    ///
+    /// The reporting counterpart to the pass/fail gate below, and the glyph
+    /// analogue of `raster::wire_rate`. Reported rather than asserted because
+    /// the interesting part is the *shape*: the rate plateaus once the object
+    /// hits `BOOK_MAX_COLS`/`BOOK_MAX_ROWS`, since a bigger pane then grows the
+    /// panel rather than the book, and only changed cells are sent.
+    ///
+    /// `cargo test --release -p readingbuddy-tui -- --ignored --nocapture glyph_wire_rate`
+    #[tokio::test]
+    #[ignore = "timing, not correctness; run on a release build"]
+    async fn glyph_wire_rate() {
+        let ticks = 60;
+        println!("{:>10} {:>10} {:>10}", "rect", "B/frame", "MB/s");
+        for (w, h) in [(30u16, 16u16), (50, 26), (80, 30), (120, 40)] {
+            let bytes = glyph_spin_bytes(w, h, ticks).await;
+            println!(
+                "{:>10} {:>10} {:>10.3}",
+                format!("{w}x{h}"),
+                bytes / ticks as u64,
+                bytes as f64 / (ticks as f64 * TICK.as_secs_f64()) / 1.0e6
+            );
+        }
+        println!("(the whole terminal, not the object rect — the object is capped inside it)");
+    }
+
+    #[tokio::test]
+    async fn a_glyph_spin_stays_inside_its_byte_budget() {
+        // 60 ticks is three seconds at the 20fps tick. Measured: 0.088 MB/s on
+        // this 50x26 rect, 0.131 MB/s on a full 120x40 pane — well under the
+        // design note's 0.45 MB/s, which was an upper bound assuming a full
+        // repaint, where ratatui only sends the cells that changed.
+        //
+        // The ceiling keeps ~5x headroom on purpose: this is here to catch a
+        // change that makes the spin *categorically* more expensive, not to
+        // freeze a number that will drift with font, layout and pose.
+        let ticks = 60;
+        let bytes = glyph_spin_bytes(50, 26, ticks).await;
+        let per_second = bytes as f64 / (ticks as f64 * TICK.as_secs_f64());
+        assert!(
+            per_second < 0.5e6,
+            "the glyph spin now costs {:.2} MB/s ({bytes} bytes over {ticks} ticks)",
+            per_second / 1.0e6
+        );
+        assert!(bytes > 0, "the spin drew nothing at all");
+    }
+
+    #[tokio::test]
+    async fn the_hybrid_costs_no_more_than_glyphs_while_moving() {
+        // The whole point of the hybrid, stated as a comparison rather than a
+        // constant: a moving book in rich mode must be indistinguishable from a
+        // moving book in glyph mode. `caps` is left at its safe floor here, so
+        // this also proves the fallback never leaks escapes.
+        let ticks = 60;
+        let glyph = glyph_spin_bytes(50, 26, ticks).await;
+
+        use crate::perf::{ByteClass, CountingWriter, Meter};
+        use ratatui::backend::CrosstermBackend;
+        use ratatui::{TerminalOptions, Viewport};
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.render_mode = RenderMode::Rich;
+        app.spinning = true;
+
+        let meter = Meter::new();
+        let backend = CrosstermBackend::new(CountingWriter::new(
+            Vec::new(),
+            meter.clone(),
+            ByteClass::Text,
+        ));
+        let mut terminal = ratatui::Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 50, 26)),
+            },
+        )
+        .expect("terminal");
+        redraw(&mut terminal, &mut app).expect("first draw");
+        let start = meter.snapshot();
+        for _ in 0..ticks {
+            app.tick();
+            redraw(&mut terminal, &mut app).expect("draw");
+        }
+        let hybrid = meter.snapshot().since(start);
+
+        assert_eq!(hybrid.image, 0, "the hybrid sent image bytes while moving");
+        assert_eq!(
+            hybrid.text, glyph,
+            "a moving book in rich mode drew something other than the glyph frame"
+        );
+    }
+
     #[tokio::test]
     async fn every_screen_draws_at_every_size() {
         let mut app = test_app().await;

@@ -345,9 +345,10 @@ fn facts(b: &Book) -> Vec<(&'static str, String)> {
 /// What `v` would switch *to*, so the bar advertises the action rather than
 /// the current state (matching how `space` reads "stop" while spinning).
 fn render_label(app: &App) -> &'static str {
-    match app.render_mode {
-        crate::render3d::RenderMode::Rich => "glyphs",
-        crate::render3d::RenderMode::Glyph => "pixels",
+    if app.render_mode.is_rich() {
+        "glyphs"
+    } else {
+        "pixels"
     }
 }
 

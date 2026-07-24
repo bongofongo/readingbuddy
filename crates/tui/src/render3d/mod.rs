@@ -27,14 +27,44 @@ pub use scene::Pose;
 ///
 /// `Glyph` is the block-glyph raytrace: it works anywhere truecolor does, tmux
 /// included, and is the fallback for every situation the probe can't improve
-/// on. `Rich` is the true-pixel path (kitty graphics), chosen when
-/// [`Caps::supports_pixels`] says the terminal can actually take it — which,
-/// contrary to the original design, includes tmux.
+/// on. `Rich` is the **hybrid**: block glyphs while the book animates, true
+/// pixels (kitty graphics) the moment it parks — chosen when
+/// [`Caps::supports_pixels`] says the terminal can take them, which, contrary to
+/// the original design, includes tmux.
+///
+/// The hybrid is not a compromise, it is the finding: a byte of image costs a
+/// terminal far more than a byte of text (decompress, re-upload the whole
+/// texture, recomposite), so no resolution or throttle setting makes an animated
+/// pixel book as cheap as glyphs. The only way to be light while animating is to
+/// send no images while animating. See `docs/rich-renderer.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RenderMode {
     #[default]
     Glyph,
     Rich,
+    /// Pixels even while the book is moving — **the known-bad configuration**.
+    ///
+    /// Kept deliberately, and reachable only by an explicit flag, because the
+    /// terminal-latency instrument needs something that is definitely pathological
+    /// to be calibrated against. An instrument that has never seen the failure it
+    /// exists to catch is not evidence of anything.
+    RichAlways,
+}
+
+impl RenderMode {
+    /// Whether this mode may put pixels on screen at all.
+    pub fn is_rich(self) -> bool {
+        matches!(self, RenderMode::Rich | RenderMode::RichAlways)
+    }
+
+    /// Short name for the perf log and the bench table.
+    pub fn label(self) -> &'static str {
+        match self {
+            RenderMode::Glyph => "glyph",
+            RenderMode::Rich => "rich",
+            RenderMode::RichAlways => "rich-always",
+        }
+    }
 }
 
 use math::{Vec3, vec3};
@@ -48,6 +78,18 @@ pub struct RenderParams {
     pub ss: u8,
     /// Block-glyph family, which fixes the subpixel resolution of a cell.
     pub glyphs: GlyphSet,
+    /// Whether the book is animating right now.
+    ///
+    /// The pixel path can *infer* this by comparing poses between draws, and did
+    /// so originally to avoid any plumbing from the event loop. That inference
+    /// cannot see the case the hybrid renderer depends on: when the book parks,
+    /// the app stops redrawing entirely (`App::tick` returns false, `dirty` is
+    /// never set), so there is no second draw in which to notice it parked — and
+    /// the crisp frame would never be transmitted.
+    ///
+    /// `None` keeps the old inference, which is what `--dump-frame`, the bench
+    /// and the unit tests use.
+    pub moving: Option<bool>,
 }
 
 impl Default for RenderParams {
@@ -58,6 +100,7 @@ impl Default for RenderParams {
             // supersample keeps the finer edges from aliasing.
             ss: 3,
             glyphs: GlyphSet::Octant,
+            moving: None,
         }
     }
 }
@@ -339,5 +382,58 @@ mod tests {
         let short = scene.frame(&book, 40, 30, quadrant).height;
         assert_eq!(tall, 30 * 4);
         assert_eq!(short, 30 * 2, "cache served a frame of the wrong height");
+    }
+
+    /// What the block-glyph raster costs to trace, the counterpart to
+    /// `raster::raster_cost`.
+    ///
+    /// Worth having next to it because the two are *not* comparable line for
+    /// line: this path is still single-threaded, where the pixel raster splits
+    /// across scoped threads. That gap is the headroom any future glyph quality
+    /// work (higher supersample, edge refine) would spend, so it is the number
+    /// to look at before starting.
+    ///
+    /// Only meaningful on a **release** build — debug is ~30x slower.
+    ///
+    /// `cargo test --release -p readingbuddy-tui -- --ignored --nocapture glyph_cost`
+    #[test]
+    #[ignore = "timing, not correctness; run on a release build"]
+    fn glyph_cost() {
+        let cover = texture::procedural_cover("Station Eleven");
+        let model = Model::new(&test_book(), &cover);
+        println!(
+            "{:<22} {:>9} {:>12} {:>10}",
+            "case", "cells", "framebuffer", "trace"
+        );
+        for (label, cols, rows, set, ss) in [
+            ("book rect, octant", 50u16, 26u16, GlyphSet::Octant, 3u8),
+            ("book rect, quadrant", 50, 26, GlyphSet::Quadrant, 3),
+            ("book rect, octant ss4", 50, 26, GlyphSet::Octant, 4),
+            ("full pane, octant", 120, 40, GlyphSet::Octant, 3),
+        ] {
+            let params = RenderParams {
+                glyphs: set,
+                ss,
+                ..RenderParams::default()
+            };
+            // Best of N, not the mean: this competes with everything else on the
+            // machine, and the floor is the honest figure for "what does this
+            // cost when it gets the CPU".
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..5 {
+                let start = std::time::Instant::now();
+                let fb = render(cols, rows, &model, &cover, params);
+                let each = start.elapsed();
+                std::hint::black_box(&fb);
+                best = best.min(each);
+            }
+            println!(
+                "{label:<22} {:>9} {:>12} {:>10?}",
+                format!("{cols}x{rows}"),
+                format!("{}x{}", cols as u32 * 2, rows as u32 * set.cell_h() as u32),
+                best
+            );
+        }
+        println!("(budget is 50ms/frame at the 20fps tick)");
     }
 }

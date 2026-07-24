@@ -12,6 +12,11 @@ plan.md
 
 anki.tsv
 
+# Perf runs: per-run JSONL + summary, and the accumulated history.tsv. Machine-
+# and terminal-specific, so a committed number would be misleading rather than
+# useful — the trend only means anything against your own baseline.
+/perf
+
 .DS_Store
 
 # Drop-in dir for the user's own real KOReader exports (never commit highlights).

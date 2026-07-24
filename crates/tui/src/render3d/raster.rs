@@ -473,10 +473,15 @@ mod tests {
     /// worse than the procedural plate, and the wire rate is what a terminal
     /// actually chokes on.
     ///
+    /// Set `READINGBUDDY_PERF_LOG` to also append each row to the frame log, in
+    /// the same JSONL shape `--bench-render` writes — these *are* frames, just
+    /// synthetic ones, so keeping one format means one set of tools reads both.
+    ///
     /// `cargo test --release -p readingbuddy-tui -- --ignored --nocapture wire_rate`
     #[test]
     #[ignore = "timing, not correctness; run on a release build"]
     fn wire_rate() {
+        use crate::perf;
         use crate::render3d::{kitty, texture};
         // Tests run from the crate dir, so try the workspace root too.
         let real = ["database/images", "../../database/images"]
@@ -493,6 +498,19 @@ mod tests {
             }
         };
         let params = RenderParams::default();
+        let meter = perf::Meter::new();
+        // Note the cwd: cargo runs a test binary from the *package* root, so a
+        // relative path here lands under `crates/tui/`, not the workspace root.
+        // The Makefile passes an absolute path for that reason.
+        let mut log = std::env::var_os("READINGBUDDY_PERF_LOG")
+            .map(std::path::PathBuf::from)
+            .and_then(|p| match perf::Recorder::open(&p, meter.clone()) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    println!("perf log {}: {e} (continuing without it)", p.display());
+                    None
+                }
+            });
         println!(
             "{:>10} {:>12} {:>9} {:>10} {:>12}",
             "budget", "pixels", "trace", "KB/frame", "MB/s @20fps"
@@ -511,6 +529,37 @@ mod tests {
             let img = render_rgba(t, &model, &cover, params);
             let trace = t0.elapsed();
             let esc = kitty::transmit(&img, 1, 50, 26, true);
+            if let Some(rec) = log.as_mut() {
+                rec.frame_begin();
+                perf::record(perf::Stage::Trace, trace);
+                perf::note(perf::FrameNote {
+                    quality: perf::Quality::Motion,
+                    cols: 50,
+                    rows: 26,
+                    px_w: t.width,
+                    px_h: t.height,
+                    transmitted: true,
+                    fell_back: false,
+                });
+                // Count the escape without writing it anywhere: the sweep is
+                // about how many bytes a budget *would* put on the wire.
+                use std::io::Write;
+                let _ = perf::CountingWriter::new(
+                    std::io::sink(),
+                    meter.clone(),
+                    perf::ByteClass::Image,
+                )
+                .write_all(esc.as_bytes());
+                rec.frame_end(perf::FrameCtx {
+                    mode: "sweep",
+                    moving: true,
+                    term_cols: 50,
+                    term_rows: 26,
+                    draw: trace,
+                    rtt_kitty: None,
+                    rtt_tmux: None,
+                });
+            }
             println!(
                 "{:>9}K {:>12} {:>9.2?} {:>9}K {:>11.1}",
                 budget / 1000,

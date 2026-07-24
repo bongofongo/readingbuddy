@@ -19,6 +19,7 @@ use readingbuddy::Book;
 
 use super::raster::{Quality, Target};
 use super::{Caps, Model, RenderMode, RenderParams, Scene, blit, kitty, raster};
+use crate::perf;
 
 /// Paints the book into a cell rect. `area` is the final inner region — any
 /// border has already been drawn by the caller.
@@ -41,7 +42,14 @@ impl<'a> GlyphPresenter<'a> {
 
 impl BookPresenter for GlyphPresenter<'_> {
     fn draw_book(&mut self, f: &mut Frame, area: Rect, book: &Book, params: RenderParams) {
-        let fb = self.scene.frame(book, area.width, area.height, params);
+        let fb = {
+            // `Scene::frame` caches, so this is the trace cost *or* a cache hit —
+            // which is exactly the distinction the log needs to show.
+            let _t = perf::scope(perf::Stage::Trace);
+            self.scene.frame(book, area.width, area.height, params)
+        };
+        perf::note_rect(area.width, area.height);
+        let _t = perf::scope(perf::Stage::Blit);
         blit::blit(fb, area, f.buffer_mut(), params.glyphs);
     }
 }
@@ -128,6 +136,18 @@ impl RichState {
         self.caps = caps;
     }
 
+    /// Route graphics escapes through a counter, so image bytes are tallied
+    /// separately from the cells ratatui writes. The split is the point: a byte
+    /// of image costs a terminal far more than a byte of text, so a single total
+    /// would hide the only thing worth knowing.
+    pub fn count_bytes(&mut self, meter: perf::Meter) {
+        self.out = Box::new(perf::CountingWriter::new(
+            std::io::stdout(),
+            meter,
+            perf::ByteClass::Image,
+        ));
+    }
+
     /// Route escapes somewhere other than stdout (tests).
     #[cfg(test)]
     pub fn with_writer(caps: Caps, out: Box<dyn Write + Send>) -> Self {
@@ -138,11 +158,13 @@ impl RichState {
         }
     }
 
-    /// Take the image off the screen right now.
+    /// Take the image off the screen, keeping everything else.
     ///
-    /// Needed when leaving rich mode: the placeholder cells stop being written
-    /// but the image itself would otherwise stay composited under the glyphs.
-    pub fn drop_image(&mut self) {
+    /// The hybrid does this every time the book starts moving again, so it has
+    /// to be cheap and — crucially — must not clear `last_pose` or the
+    /// placeholder table: the first is what the settle detection reads, and
+    /// rebuilding the second allocates a `String` per cell.
+    fn hide_image(&mut self) {
         if self.sent.is_some() {
             let esc = kitty::delete(self.id, self.caps.in_tmux);
             let _ = self.out.write_all(esc.as_bytes());
@@ -150,6 +172,14 @@ impl RichState {
             kitty::forget_live();
         }
         self.sent = None;
+    }
+
+    /// Take the image off the screen and forget everything about it.
+    ///
+    /// Needed when leaving rich mode: the placeholder cells stop being written
+    /// but the image itself would otherwise stay composited under the glyphs.
+    pub fn drop_image(&mut self) {
+        self.hide_image();
         self.last_pose = None;
         self.span = (0, 0);
         self.placeholders.clear();
@@ -189,11 +219,31 @@ impl RichState {
 pub struct RichPresenter<'a> {
     scene: &'a mut Scene,
     state: &'a mut RichState,
+    /// Hand a moving book to the glyph path instead of transmitting pixels.
+    ///
+    /// True for [`RenderMode::Rich`], which is what everyone should use. False
+    /// only for [`RenderMode::RichAlways`], the deliberately-kept bad
+    /// configuration the latency instrument is calibrated against.
+    hybrid: bool,
 }
 
 impl<'a> RichPresenter<'a> {
+    /// The hybrid: glyphs in motion, pixels at rest.
     pub fn new(scene: &'a mut Scene, state: &'a mut RichState) -> Self {
-        RichPresenter { scene, state }
+        RichPresenter {
+            scene,
+            state,
+            hybrid: true,
+        }
+    }
+
+    /// Pixels even while moving. Diagnostic only — see [`RenderMode::RichAlways`].
+    pub fn always(scene: &'a mut Scene, state: &'a mut RichState) -> Self {
+        RichPresenter {
+            scene,
+            state,
+            hybrid: false,
+        }
     }
 
     /// Trace, transmit and place — or do nothing but repaint the placeholder
@@ -209,26 +259,50 @@ impl<'a> RichPresenter<'a> {
         if !self.state.caps.supports_pixels() {
             return false;
         }
+
+        // The *fine* pose quantum decides whether the book is still moving:
+        // while the spin runs, a tick advances yaw by ~6 fine quanta, so an
+        // unchanged fine pose means the animation has genuinely stopped. It is
+        // only the fallback now — `params.moving` is authoritative when the app
+        // supplies it, because a parked book stops redrawing altogether and so
+        // never produces the second draw this comparison needs.
+        let fine = (
+            (params.pose.yaw * FINE_Q).round() as i32,
+            (params.pose.pitch * FINE_Q).round() as i32,
+        );
+        let moving = params
+            .moving
+            .unwrap_or_else(|| self.state.last_pose != Some(fine));
+        self.state.last_pose = Some(fine);
+        let quality = if moving {
+            Quality::Motion
+        } else {
+            Quality::Settle
+        };
+
+        // **The hybrid rule: no images while animating.** Not a budget, a zero.
+        // Tuning the resolution and the retransmit rate was tried twice and got
+        // nowhere, because a byte of image is not a byte of text — the terminal
+        // re-uploads a whole texture for each one. So the spin is handed to the
+        // path already proven light, and the image comes off screen first, while
+        // ratatui is still only mutating its buffer.
+        if self.hybrid && quality == Quality::Motion {
+            self.state.hide_image();
+            perf::note(perf::FrameNote {
+                quality: perf::Quality::Motion,
+                cols: area.width,
+                rows: area.height,
+                fell_back: true,
+                ..perf::FrameNote::default()
+            });
+            return false;
+        }
+
         if !self.state.ensure_placeholders(area.width, area.height) {
             // Rect is larger than the placeholder scheme can address; glyphs
             // handle any size, so fall back rather than clip the image.
             return false;
         }
-
-        // Two quantizations of the same pose, for two different jobs.
-        //
-        // The *fine* one decides whether the book is still moving: while the
-        // spin runs, a tick advances yaw by ~6 fine quanta, so an unchanged
-        // fine pose means the animation has genuinely stopped.
-        let fine = (
-            (params.pose.yaw * FINE_Q).round() as i32,
-            (params.pose.pitch * FINE_Q).round() as i32,
-        );
-        let quality = match self.state.last_pose {
-            Some(p) if p == fine => Quality::Settle,
-            _ => Quality::Motion,
-        };
-        self.state.last_pose = Some(fine);
 
         // The *coarse* one goes in the cache key while moving, which is how the
         // retransmit rate is throttled below the 20fps tick: consecutive ticks
@@ -257,12 +331,26 @@ impl<'a> RichPresenter<'a> {
             quality,
         };
 
+        let mut transmitted = false;
         if self.state.sent != Some(key) {
             if !self.transmit(book, target, params, area) {
                 return false;
             }
             self.state.sent = Some(key);
+            transmitted = true;
         }
+        perf::note(perf::FrameNote {
+            quality: match quality {
+                Quality::Motion => perf::Quality::Motion,
+                Quality::Settle => perf::Quality::Settle,
+            },
+            cols: area.width,
+            rows: area.height,
+            px_w: target.width,
+            px_h: target.height,
+            transmitted,
+            fell_back: false,
+        });
 
         self.place(f, area);
         true
@@ -273,20 +361,25 @@ impl<'a> RichPresenter<'a> {
         // huge cover is slow to decode and rescale.
         let texels = target.width.clamp(24, 2048);
         let img = {
+            let _t = perf::scope(perf::Stage::Trace);
             let cover = self.scene.cover(book, texels);
             let model = Model::new(book, cover);
             raster::render_rgba(target, &model, cover, params)
         };
-        let esc = kitty::transmit(
-            &img,
-            self.state.id,
-            area.width,
-            area.height,
-            self.state.caps.in_tmux,
-        );
+        let esc = {
+            let _t = perf::scope(perf::Stage::Encode);
+            kitty::transmit(
+                &img,
+                self.state.id,
+                area.width,
+                area.height,
+                self.state.caps.in_tmux,
+            )
+        };
         if esc.is_empty() {
             return false;
         }
+        let _t = perf::scope(perf::Stage::Transmit);
         if self.state.out.write_all(esc.as_bytes()).is_err() || self.state.out.flush().is_err() {
             return false;
         }
@@ -322,8 +415,9 @@ impl BookPresenter for RichPresenter<'_> {
         if self.draw_pixels(f, area, book, params) {
             return;
         }
-        // Any refusal above lands here: an incapable terminal, an oversized
-        // rect, or a write that failed. Glyphs always work.
+        // Everything that declines above lands here: the hybrid's motion frames,
+        // an incapable terminal, an oversized rect, or a write that failed.
+        // Glyphs always work.
         GlyphPresenter::new(self.scene).draw_book(f, area, book, params);
     }
 }
@@ -337,12 +431,16 @@ pub fn presenter_for<'a>(
     match mode {
         RenderMode::Glyph => Box::new(GlyphPresenter::new(scene)),
         RenderMode::Rich => Box::new(RichPresenter::new(scene, rich)),
+        RenderMode::RichAlways => Box::new(RichPresenter::always(scene, rich)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The real spin speed, not a copy of it: a test that quietly drifts from
+    // the app's animation rate stops guarding anything.
+    use crate::app::SPIN_SPEED;
     use crate::render3d::caps::Passthrough;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -393,30 +491,63 @@ mod tests {
         Scene::new(std::path::PathBuf::from("images"))
     }
 
-    /// Draw the book once into a `w`x`h` terminal, returning the sink and the
-    /// resulting buffer.
-    fn draw_once(
+    /// Draw once at an explicit motion state, returning the resulting buffer.
+    ///
+    /// `moving` is passed the way the app passes it — explicitly. The pose
+    /// inference is only a fallback now, and testing through it would test the
+    /// fallback rather than the behaviour the app actually gets.
+    fn draw_at(
         state: &mut RichState,
         scene: &mut Scene,
         w: u16,
         h: u16,
+        moving: bool,
+    ) -> ratatui::buffer::Buffer {
+        draw_with(state, scene, w, h, params(moving), true)
+    }
+
+    fn params(moving: bool) -> RenderParams {
+        RenderParams {
+            moving: Some(moving),
+            ..RenderParams::default()
+        }
+    }
+
+    fn draw_with(
+        state: &mut RichState,
+        scene: &mut Scene,
+        w: u16,
+        h: u16,
+        params: RenderParams,
+        hybrid: bool,
     ) -> ratatui::buffer::Buffer {
         let mut term = Terminal::new(TestBackend::new(w, h)).expect("backend");
         let area = Rect::new(0, 0, w, h);
         term.draw(|f| {
-            let mut p = RichPresenter::new(scene, state);
-            p.draw_book(f, area, &book(), RenderParams::default());
+            let mut p = if hybrid {
+                RichPresenter::new(scene, state)
+            } else {
+                RichPresenter::always(scene, state)
+            };
+            p.draw_book(f, area, &book(), params);
         })
         .expect("draw");
         term.backend().buffer().clone()
     }
 
+    fn placeholder_count(buf: &ratatui::buffer::Buffer, w: u16, h: u16) -> usize {
+        (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol().starts_with(kitty::PLACEHOLDER))
+            .count()
+    }
+
     #[test]
-    fn a_capable_terminal_gets_an_image_and_placeholder_cells() {
+    fn a_parked_book_gets_an_image_and_placeholder_cells() {
         let sink = Sink::default();
         let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
         let mut sc = scene();
-        let buf = draw_once(&mut state, &mut sc, 20, 10);
+        let buf = draw_at(&mut state, &mut sc, 20, 10, false);
 
         let esc = sink.text();
         assert!(esc.contains("a=T"), "no image was transmitted");
@@ -439,80 +570,124 @@ mod tests {
     }
 
     #[test]
+    fn a_moving_book_sends_no_image_bytes_at_all() {
+        // **The invariant this renderer exists to hold.** Not a budget — a zero.
+        //
+        // Two rounds of tuning the resolution and the retransmit rate could not
+        // make an animated pixel book as cheap as glyphs, because a byte of
+        // image is not a byte of text: the terminal decompresses and re-uploads
+        // a whole texture for each frame. The only setting that works is none.
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+        let mut p = params(true);
+
+        for _ in 0..60 {
+            p.pose.yaw += SPIN_SPEED;
+            draw_with(&mut state, &mut sc, 20, 10, p, true);
+        }
+        assert_eq!(
+            sink.len(),
+            0,
+            "the spin put {} bytes of image on the wire",
+            sink.len()
+        );
+    }
+
+    #[test]
+    fn a_moving_book_draws_glyphs_instead() {
+        // The other half of the same rule: declining to send pixels is only
+        // correct if something still draws the book.
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+        let buf = draw_at(&mut state, &mut sc, 20, 10, true);
+
+        assert_eq!(placeholder_count(&buf, 20, 10), 0, "placed a phantom image");
+        let painted = (0..10)
+            .flat_map(|y| (0..20).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf[(x, y)].symbol() != " ")
+            .count();
+        assert!(painted > 0, "the moving book was not drawn at all");
+    }
+
+    #[test]
+    fn parking_transmits_exactly_one_image() {
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+
+        draw_at(&mut state, &mut sc, 20, 10, true);
+        assert_eq!(sink.len(), 0, "moving frame was not free");
+
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        let after_park = sink.len();
+        assert!(after_park > 0, "parking never produced the crisp frame");
+
+        // And every further draw at that pose is free — a still book must not
+        // retransmit per tick.
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        assert_eq!(sink.len(), after_park, "a still book kept retransmitting");
+    }
+
+    #[test]
+    fn resuming_motion_deletes_the_image_before_the_glyphs_land() {
+        // Placeholder cells simply stop being written when the glyph path takes
+        // over, but the image the terminal is holding stays composited
+        // underneath them unless it is explicitly deleted.
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        let before = sink.len();
+        draw_at(&mut state, &mut sc, 20, 10, true);
+
+        let tail = &sink.text()[before..];
+        assert!(
+            tail.contains(&format!("a=d,d=I,i={}", state.id)),
+            "resuming the spin left the image on screen: {tail:?}"
+        );
+    }
+
+    #[test]
+    fn a_park_after_motion_still_transmits() {
+        // Regression guard for the cheap way of hiding the image: clearing
+        // `last_pose` along with it would make the settle detection blind, and
+        // the crisp frame would never come back.
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+
+        for cycle in 0..3 {
+            draw_at(&mut state, &mut sc, 20, 10, true);
+            let before = sink.len();
+            draw_at(&mut state, &mut sc, 20, 10, false);
+            assert!(
+                sink.len() > before,
+                "cycle {cycle}: parking produced no image"
+            );
+        }
+    }
+
+    #[test]
     fn an_incapable_terminal_emits_nothing_and_falls_back_to_glyphs() {
         let sink = Sink::default();
         let mut state = RichState::with_writer(Caps::default(), Box::new(sink.clone()));
         let mut sc = scene();
-        let buf = draw_once(&mut state, &mut sc, 20, 10);
+        let buf = draw_at(&mut state, &mut sc, 20, 10, false);
 
         assert_eq!(
             sink.len(),
             0,
             "escapes leaked to a terminal that can't take them"
         );
-        let placeholders = (0..10)
-            .flat_map(|y| (0..20).map(move |x| (x, y)))
-            .filter(|&(x, y)| buf[(x, y)].symbol().starts_with(kitty::PLACEHOLDER))
-            .count();
-        assert_eq!(placeholders, 0, "placed an image with no protocol for it");
-    }
-
-    #[test]
-    fn a_settled_pose_retransmits_once_then_goes_quiet() {
-        let sink = Sink::default();
-        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
-        let mut sc = scene();
-
-        draw_once(&mut state, &mut sc, 20, 10);
-        let after_first = sink.len();
-        // Second draw at the same pose upgrades Motion -> Settle, so it costs
-        // one more transmit...
-        draw_once(&mut state, &mut sc, 20, 10);
-        let after_settle = sink.len();
-        assert!(after_settle > after_first, "settle frame never rendered");
-        // ...and every draw after that is free.
-        draw_once(&mut state, &mut sc, 20, 10);
         assert_eq!(
-            sink.len(),
-            after_settle,
-            "a still book must not retransmit every tick"
+            placeholder_count(&buf, 20, 10),
+            0,
+            "placed an image with no protocol for it"
         );
-    }
-
-    #[test]
-    fn a_spinning_book_retransmits_well_below_the_tick_rate() {
-        // The regression guard for "rich mode makes the terminal unusable":
-        // every motion frame replaces the whole texture, so retransmitting on
-        // every 20fps tick floods the terminal even though nothing blocks on
-        // our side. Consecutive ticks must mostly reuse the frame on screen.
-        const SPIN_SPEED: f32 = 0.01164; // must track app::SPIN_SPEED
-        let sink = Sink::default();
-        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
-        let mut sc = scene();
-        let mut params = RenderParams::default();
-
-        let ticks = 60;
-        let mut transmits = 0;
-        for _ in 0..ticks {
-            params.pose.yaw += SPIN_SPEED;
-            let before = sink.len();
-            let mut term = Terminal::new(TestBackend::new(20, 10)).expect("backend");
-            term.draw(|f| {
-                let mut p = RichPresenter::new(&mut sc, &mut state);
-                p.draw_book(f, Rect::new(0, 0, 20, 10), &book(), params);
-            })
-            .expect("draw");
-            if sink.len() > before {
-                transmits += 1;
-            }
-        }
-        // ~1 transmit per 2.7 ticks. Allow slack, but fail loudly if it ever
-        // creeps back toward one-per-tick.
-        assert!(
-            transmits <= ticks / 2,
-            "{transmits} transmits in {ticks} ticks — the spin throttle is gone"
-        );
-        assert!(transmits > 0, "the spin stopped transmitting entirely");
     }
 
     #[test]
@@ -520,11 +695,60 @@ mod tests {
         let sink = Sink::default();
         let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
         let mut sc = scene();
-        draw_once(&mut state, &mut sc, 20, 10);
-        draw_once(&mut state, &mut sc, 30, 12);
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        draw_at(&mut state, &mut sc, 30, 12, false);
         let esc = sink.text();
         assert!(esc.contains("c=20,r=10"), "first span missing");
         assert!(esc.contains("c=30,r=12"), "resize did not re-place");
+    }
+
+    #[test]
+    fn the_pose_inference_still_works_without_an_explicit_motion_flag() {
+        // `--dump-frame`, the bench and anything else driving the presenter
+        // directly leave `moving` unset, and must still get a settle.
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+        let p = RenderParams::default();
+        assert!(p.moving.is_none());
+
+        draw_with(&mut state, &mut sc, 20, 10, p, true);
+        let after_first = sink.len();
+        // The second draw at an unchanged pose is what the inference reads as
+        // "parked".
+        draw_with(&mut state, &mut sc, 20, 10, p, true);
+        assert!(sink.len() > after_first, "inference never settled");
+    }
+
+    #[test]
+    fn a_spinning_book_retransmits_well_below_the_tick_rate() {
+        // Guards the throttle in `RichAlways` — the deliberately-kept bad
+        // configuration the latency instrument is calibrated against. It has to
+        // stay *bad but survivable*: if it retransmitted on every tick it would
+        // be unusable enough to be useless as a calibration, and if the throttle
+        // silently disappeared the calibration would drift without anyone
+        // noticing.
+        const SPIN: f32 = SPIN_SPEED;
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
+        let mut sc = scene();
+        let mut p = params(true);
+
+        let ticks = 60;
+        let mut transmits = 0;
+        for _ in 0..ticks {
+            p.pose.yaw += SPIN;
+            let before = sink.len();
+            draw_with(&mut state, &mut sc, 20, 10, p, false);
+            if sink.len() > before {
+                transmits += 1;
+            }
+        }
+        assert!(
+            transmits <= ticks / 2,
+            "{transmits} transmits in {ticks} ticks — the spin throttle is gone"
+        );
+        assert!(transmits > 0, "the spin stopped transmitting entirely");
     }
 
     #[test]
@@ -542,7 +766,7 @@ mod tests {
         let sink = Sink::default();
         let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
         let mut sc = scene();
-        draw_once(&mut state, &mut sc, 20, 10);
+        draw_at(&mut state, &mut sc, 20, 10, false);
         state.drop_image();
         assert!(
             sink.text().contains(&format!("a=d,d=I,i={}", state.id)),
@@ -562,7 +786,9 @@ mod tests {
         let mut state = RichState::with_writer(capable(), Box::new(sink.clone()));
         let mut sc = scene();
         for (w, h) in [(1u16, 1u16), (1, 20), (20, 1), (3, 2), (40, 20)] {
-            draw_once(&mut state, &mut sc, w, h);
+            for moving in [true, false] {
+                draw_at(&mut state, &mut sc, w, h, moving);
+            }
         }
     }
 }

@@ -337,6 +337,117 @@ fn read_replies() -> Vec<u8> {
     Vec::new()
 }
 
+/// How long the terminal took to answer a trivial question.
+///
+/// Two layers, deliberately kept apart — see [`rtt_probe`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rtt {
+    /// Round trip to the outer terminal (kitty). Rises when its own parse /
+    /// texture-upload / composite queue is backed up.
+    pub kitty: Option<Duration>,
+    /// Round trip for the bare DA1. Inside tmux that is answered by tmux
+    /// locally, so it isolates *tmux's* backlog from the terminal's; outside
+    /// tmux the same terminal answers both, and the pair then reads as "how much
+    /// slower is the graphics path than the plain-escape path".
+    pub tmux: Option<Duration>,
+}
+
+/// Id for the latency query. Distinct from [`PROBE_ID`] so a late startup reply
+/// can never be timed as an RTT sample.
+const RTT_ID: u32 = 37;
+
+/// **Measure the terminal's own backlog.**
+///
+/// This is the instrument that was missing when the first rich renderer shipped
+/// at 7.1 MB/s and made the terminal unusable: every number we had was on our
+/// side of the pty (trace, encode, `write`, `flush`) and all of them looked
+/// healthy, because the cost is paid *inside* the terminal decompressing and
+/// re-uploading a whole texture per frame, with tmux re-parsing it on the way.
+///
+/// A terminal that is drowning answers slowly. So: ask it two trivial questions
+/// under load and time the answers.
+///
+/// - The **wrapped `_Ga=q`** is answered by the outer terminal itself, so its
+///   latency is that terminal's queue.
+/// - The **bare `CSI c`** is answered by tmux locally (which is the same
+///   property that makes it a sentinel in [`probe_verbose`]), so its latency is
+///   tmux's queue.
+///
+/// Reading them apart is what turns "it feels laggy" into "kitty is 200 ms
+/// behind and tmux is fine".
+///
+/// **Bench-mode only.** This consumes bytes from stdin, and the running app's
+/// `EventStream` owns stdin — sampling from inside `app::run` would race it for
+/// the reply and eat keystrokes. It also needs raw mode already on, exactly as
+/// [`probe`] does.
+pub fn rtt_probe(in_tmux: bool, deadline: Duration) -> Rtt {
+    if !stdin().is_terminal() || !stdout().is_terminal() {
+        return Rtt::default();
+    }
+    let query = format!("\x1b_Gi={RTT_ID},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\");
+    let mut out = String::new();
+    out.push_str(&maybe_wrap(&query, in_tmux));
+    out.push_str("\x1b[c");
+
+    let mut stdout = stdout();
+    let start = Instant::now();
+    if stdout.write_all(out.as_bytes()).is_err() || stdout.flush().is_err() {
+        return Rtt::default();
+    }
+    read_rtt(start, deadline)
+}
+
+/// Poll the tty, timestamping each reply the first time it parses.
+#[cfg(unix)]
+fn read_rtt(start: Instant, deadline: Duration) -> Rtt {
+    use std::os::fd::AsRawFd;
+
+    let fd = stdin().as_raw_fd();
+    let mut buf = Vec::with_capacity(128);
+    let mut chunk = [0u8; 256];
+    let mut rtt = Rtt::default();
+
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= deadline || (rtt.kitty.is_some() && rtt.tmux.is_some()) {
+            break;
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: a single valid pollfd for a fd we own, count matches.
+        let ready = unsafe { libc::poll(&mut pfd, 1, (deadline - elapsed).as_millis() as i32) };
+        if ready <= 0 {
+            break;
+        }
+        // SAFETY: reading into a stack buffer we own, length matches.
+        let n = unsafe { libc::read(fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) };
+        if n <= 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n as usize]);
+
+        // Timestamp on first sight only: a later chunk must not overwrite the
+        // moment the answer actually arrived.
+        let replies = parse_replies(&buf, RTT_ID);
+        let now = start.elapsed();
+        if replies.kitty_ok && rtt.kitty.is_none() {
+            rtt.kitty = Some(now);
+        }
+        if replies.da1 && rtt.tmux.is_none() {
+            rtt.tmux = Some(now);
+        }
+    }
+    rtt
+}
+
+#[cfg(not(unix))]
+fn read_rtt(_start: Instant, _deadline: Duration) -> Rtt {
+    Rtt::default()
+}
+
 /// Derive cell pixels from the kernel's window size, which reports the window
 /// in both cells and pixels. Usually zero inside tmux (tmux is not a real
 /// window), hence the escape query first.
