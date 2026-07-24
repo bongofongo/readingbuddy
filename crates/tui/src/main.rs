@@ -321,6 +321,9 @@ const SCRIPT: &[Phase] = &[
 /// without becoming the load itself.
 const RTT_EVERY: u32 = 8;
 
+/// Frames drawn and thrown away before each mode's measured run.
+const WARMUP: u32 = 25;
+
 /// What one mode's run cost.
 struct BenchSummary {
     mode: &'static str,
@@ -423,9 +426,14 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     app.set_caps(caps);
     app.rich.count_bytes(meter);
 
+    // Reps outer, modes inner: whichever mode runs first absorbs whatever the
+    // machine was still doing (a release build's IO tail, a cold cache), and a
+    // transient that lands entirely inside one mode's block reads as that mode
+    // being slow. Interleaving spreads it, so `--bench-reps 3` is the answer to
+    // a result that looks surprising.
     let mut summaries = Vec::new();
-    for &mode in modes {
-        for _ in 0..reps {
+    for _ in 0..reps {
+        for &mode in modes {
             app.set_render_mode(mode);
             app.rich.drop_image();
             app.layout.divider_bias = 0.0;
@@ -441,6 +449,23 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
             // a real frame.
             let mut ticker = tokio::time::interval(app::TICK);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+            // Warm-up, discarded. The first frames of a mode pay for a cold
+            // cover decode, a cold frame cache and whatever the OS was still
+            // finishing. Measured: the first 20 frames ran 40% slower than the
+            // rest of the same run, which is enough to swamp the difference the
+            // bench exists to show.
+            // Spinning, so the warm-up exercises the motion path — and
+            // deterministic, so every mode starts the script from the same pose.
+            app.spinning = true;
+            for _ in 0..WARMUP {
+                if !cli.bench_free_run {
+                    ticker.tick().await;
+                }
+                app.tick();
+                app::redraw(&mut terminal, &mut app)?;
+            }
+            let _ = app.perf.drain_frames();
 
             let wall = std::time::Instant::now();
             let mut frame = 0u32;
@@ -511,6 +536,16 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
 ///
 /// The timestamp is epoch seconds. No date formatting crate is worth adding for
 /// one column, and epoch sorts correctly without one.
+///
+/// A file whose header does not match the current columns is **rotated aside**
+/// rather than appended to. Appending under a stale header is silent corruption
+/// of the one artefact whose entire purpose is being compared over time — it
+/// already happened once, when `real_cover` (a bool) became `cover_px` (a width)
+/// and three runs' rows landed under the old name.
+const HISTORY_HEADER: &str = "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
+     trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
+     rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px";
+
 fn append_history(
     path: &std::path::Path,
     summaries: &[BenchSummary],
@@ -522,18 +557,28 @@ fn append_history(
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
+    if path.exists() {
+        let stale = std::fs::read_to_string(path)
+            .map(|t| t.lines().next().map(str::to_owned))
+            .ok()
+            .flatten()
+            .is_none_or(|h| h != HISTORY_HEADER);
+        if stale {
+            let aside = path.with_extension("tsv.old");
+            std::fs::rename(path, &aside)?;
+            eprintln!(
+                "note: history columns changed; previous file kept at {}",
+                aside.display()
+            );
+        }
+    }
     let fresh = !path.exists();
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
     if fresh {
-        writeln!(
-            f,
-            "epoch_s\tmode\tframes\tfps\ttext_MBps\timage_MBps\tmoving_KB\tsends\t\
-             trace_us\tdraw_us\trtt_kitty_p50_us\trtt_kitty_p90_us\trtt_tmux_p50_us\t\
-             rtt_tmux_p90_us\tcols\trows\tin_tmux\tcover_px"
-        )?;
+        writeln!(f, "{HISTORY_HEADER}")?;
     }
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -957,6 +1002,39 @@ mod tests {
             lines[1]
         );
         assert!(lines[3].contains("\t4\t"), "moving_KB wrong: {}", lines[3]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_history_file_with_stale_columns_is_rotated_not_appended_to() {
+        // This is the bug that already happened: `real_cover` (a bool) became
+        // `cover_px` (a width), and three runs' rows went on landing under the
+        // old column name. Rows that mean different things must not share a
+        // header, and the old ones must not be destroyed either.
+        let dir = std::env::temp_dir().join(format!("readingbuddy-rotate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.tsv");
+        std::fs::write(&path, "epoch_s\tmode\told_column\n1\tglyph\ttrue\n").unwrap();
+
+        append_history(
+            &path,
+            &[summary("glyph", 0)],
+            525,
+            render3d::Caps::default(),
+        )
+        .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with(HISTORY_HEADER),
+            "the new file did not get the current header"
+        );
+        assert_eq!(text.lines().count(), 2, "old rows leaked into the new file");
+        let kept = std::fs::read_to_string(dir.join("history.tsv.old")).unwrap();
+        assert!(
+            kept.contains("old_column"),
+            "the old run data was destroyed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
