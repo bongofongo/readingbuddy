@@ -1,0 +1,31 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "The Trial",
+      "flashcard_words": [
+        "verdict"
+      ],
+      "flashcards": 1,
+      "highlights": [
+        {
+          "chapter": "I",
+          "ko_datetime": "2024-03-01 10:00:00",
+          "note": "Famous opening, guilt before act.",
+          "page": 42,
+          "text": "Someone must have been telling lies about Josef K."
+        },
+        {
+          "chapter": "III",
+          "ko_datetime": "2024-03-02 22:30:00",
+          "note": null,
+          "page": 77,
+          "text": "verdict"
+        }
+      ],
+      "inserted": 2,
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

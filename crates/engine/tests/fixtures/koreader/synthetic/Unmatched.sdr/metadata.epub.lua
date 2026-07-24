@@ -1,0 +1,21 @@
+-- Synthetic KOReader sidecar: valid highlights whose title matches NO book
+-- in the seeded library. Import must report it as unmatched, not abort.
+return {
+    ["annotations"] = {
+        [1] = {
+            ["chapter"] = "Prologue",
+            ["datetime"] = "2026-04-01 18:00:00",
+            ["drawer"] = "lighten",
+            ["pageno"] = 1,
+            ["pos0"] = "/body/DocFragment[1]/body/p[1]/text().0",
+            ["pos1"] = "/body/DocFragment[1]/body/p[1]/text().20",
+            ["text"] = "A passage from a book nobody added.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Ghost Writer",
+        ["title"] = "Nonexistent Tome",
+        ["language"] = "en",
+    },
+    ["partial_md5_checksum"] = "deadbeefdeadbeefdeadbeefdeadbeef",
+}

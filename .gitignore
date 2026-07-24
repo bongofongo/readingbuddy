@@ -13,3 +13,8 @@ plan.md
 anki.tsv
 
 .DS_Store
+
+# Drop-in dir for the user's own real KOReader exports (never commit highlights).
+/crates/engine/tests/fixtures/koreader/real/*
+!/crates/engine/tests/fixtures/koreader/real/README.md
+!/crates/engine/tests/fixtures/koreader/real/.gitkeep

@@ -1,0 +1,31 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "こころ",
+      "flashcard_words": [
+        "私はその人を常に先生と呼んでいた"
+      ],
+      "flashcards": 1,
+      "highlights": [
+        {
+          "chapter": "上",
+          "ko_datetime": "2026-03-01 12:00:00",
+          "note": "語り手と先生の距離感 — café ☕ で読了",
+          "page": 12,
+          "text": "私はその人を常に先生と呼んでいた。"
+        },
+        {
+          "chapter": "中",
+          "ko_datetime": "2026-03-02 12:00:00",
+          "note": null,
+          "page": 88,
+          "text": "naïveté, résumé, and a café façade — déjà vu 🌊"
+        }
+      ],
+      "inserted": 2,
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

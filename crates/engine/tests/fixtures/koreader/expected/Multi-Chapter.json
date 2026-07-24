@@ -1,0 +1,43 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "The Odyssey",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": "Book I",
+          "ko_datetime": "2026-02-01 07:00:00",
+          "note": null,
+          "page": 3,
+          "text": "Sing to me of the man, Muse, the man of twists and turns."
+        },
+        {
+          "chapter": "Book V",
+          "ko_datetime": "2026-02-02 07:00:00",
+          "note": null,
+          "page": 88,
+          "text": "Of all creatures that breathe and move upon the earth."
+        },
+        {
+          "chapter": "Book IX",
+          "ko_datetime": "2026-02-03 07:00:00",
+          "note": null,
+          "page": 152,
+          "text": "I am Odysseus, son of Laertes, known before all men."
+        },
+        {
+          "chapter": "Book XXIII",
+          "ko_datetime": "2026-02-04 07:00:00",
+          "note": null,
+          "page": 340,
+          "text": "Their bed was rooted in a living olive tree."
+        }
+      ],
+      "inserted": 4,
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

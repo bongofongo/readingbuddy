@@ -1,0 +1,31 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "Pachinko",
+      "flashcard_words": [
+        "pachinko"
+      ],
+      "flashcards": 1,
+      "highlights": [
+        {
+          "chapter": "Chapter One",
+          "ko_datetime": "2026-01-05 21:14:08",
+          "note": "Opening line - sets the whole register.",
+          "page": 42,
+          "text": "History has failed us, but no matter."
+        },
+        {
+          "chapter": "Chapter Two",
+          "ko_datetime": "2026-01-06 08:02:11",
+          "note": null,
+          "page": 55,
+          "text": "pachinko"
+        }
+      ],
+      "inserted": 2,
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

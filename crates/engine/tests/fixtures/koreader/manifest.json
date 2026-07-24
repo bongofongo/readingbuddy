@@ -1,0 +1,26 @@
+{
+  "_comment": "Books to seed (Storage::upsert_book) before importing each synthetic fixture. Sidecars without a sibling .epub match the library by fuzzy title, so the title here must match the fixture's doc_props.title. Fixtures with an empty books list are expected to stay unmatched.",
+  "fixtures": {
+    "Pachinko.sdr": {
+      "books": [{ "title": "Pachinko", "authors": ["Min Jin Lee"] }]
+    },
+    "The-Trial.sdr": {
+      "books": [{ "title": "The Trial", "authors": ["Franz Kafka"] }]
+    },
+    "Multi-Chapter.sdr": {
+      "books": [{ "title": "The Odyssey", "authors": ["Homer"] }]
+    },
+    "Unicode.sdr": {
+      "books": [{ "title": "こころ", "authors": ["夏目 漱石"] }]
+    },
+    "Empty.sdr": {
+      "books": [{ "title": "Blank Book", "authors": ["Anonymous"] }]
+    },
+    "Malformed.sdr": {
+      "books": []
+    },
+    "Unmatched.sdr": {
+      "books": []
+    }
+  }
+}
