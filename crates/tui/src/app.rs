@@ -25,8 +25,8 @@ use crate::ui::input::InputState;
 use crate::ui::textedit::TextEditor;
 
 /// Idle spin: a full turn about the bottom of the spine, so the book sweeps
-/// round like a slow top. Radians per tick at 20fps — about 35s for 360°.
-const SPIN_SPEED: f32 = 0.009;
+/// round like a slow top. Radians per tick at 20fps — about 27s for 360°.
+const SPIN_SPEED: f32 = 0.01164;
 /// The pitch nods gently while the book turns, on its own slower cycle.
 const NOD: f32 = 0.06;
 const NOD_SPEED: f32 = 0.011;
