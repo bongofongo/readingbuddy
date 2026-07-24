@@ -8,9 +8,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
 
-use super::{BookLayout, book_layout, panel_width};
+use super::{BookLayout, book_layout, split_rects};
 use crate::app::{App, BOOK_TABS, BookTab, BookView};
-use crate::render3d::blit;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
@@ -25,28 +24,38 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let bar_h = if area.height >= 6 { 1 } else { 0 };
     let [main, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
 
-    match book_layout(main) {
-        BookLayout::Split => {
-            // Object on the left (full height), section pane on the right. The
-            // title + progress float over the top rows of the object rather than
-            // taking a reserved pane, so the book gets the whole height.
-            let [object, panel] = Layout::horizontal([
-                Constraint::Min(0),
-                Constraint::Length(panel_width(main.width)),
-            ])
-            .areas(main);
-            draw_object(f, app, object, None);
+    match book_layout(main, app.layout.rotation) {
+        BookLayout::Split(orientation) => {
+            // Object + section panel split along one divider. The orientation is
+            // the aspect default rotated by the user; the divider position is
+            // the default (object capped) plus the user's slide. Title +
+            // progress float over the object's top rows.
+            let (object, panel, border) = split_rects(main, orientation, app.layout.divider_bias);
+            present_book(f, app, object);
             draw_header(f, app.view.as_ref().expect("checked above"), object);
-            draw_panel(f, app, panel);
+            draw_panel(f, app, panel, border);
         }
-        BookLayout::Bare => {
-            // Too short for tabs; show the object with the title in the border.
+        BookLayout::Compact => {
+            // Small: the title lives in the border. The object fills the pane by
+            // default; opening a section swaps its content in where the book was
+            // so tiny notes/highlights stay legible.
             let title = app
                 .view
                 .as_ref()
                 .map(|v| v.book.display_title().to_string())
                 .unwrap_or_default();
-            draw_object(f, app, main, Some(title));
+            let block = Block::default()
+                .title(Span::styled(format!(" {title} "), theme::title()))
+                .title_alignment(Alignment::Center);
+            let inner = block.inner(main);
+            f.render_widget(block, main);
+            if inner.width != 0 && inner.height != 0 {
+                if app.in_section {
+                    draw_section(f, app, inner);
+                } else {
+                    present_book(f, app, inner);
+                }
+            }
         }
     }
 
@@ -55,28 +64,19 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Trace the book into the area. The renderer works in cells; it returns the
-/// glyph family's subpixels per cell (octant: 2x4) for [`blit`] to quantize.
-fn draw_object(f: &mut Frame, app: &mut App, area: Rect, title: Option<String>) {
-    let area = match &title {
-        Some(t) => {
-            let block = Block::default()
-                .title(Span::styled(format!(" {t} "), theme::title()))
-                .title_alignment(Alignment::Center);
-            let inner = block.inner(area);
-            f.render_widget(block, area);
-            inner
-        }
-        None => area,
-    };
+/// Trace the book into `area` via the mode's presenter (glyph today, rich when
+/// out of tmux). `area` is the final inner region — no border is drawn here.
+fn present_book(f: &mut Frame, app: &mut App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let params = app.params;
-    // Disjoint field borrows: the scene renders, the view supplies the book.
-    let view = app.view.as_ref().expect("caller checked");
-    let fb = app.scene.frame(&view.book, area.width, area.height, params);
-    blit::blit(fb, area, f.buffer_mut(), params.glyphs);
+    let mode = app.render_mode;
+    // Disjoint field borrows: the presenter takes the scene, the view supplies
+    // the book. Both are direct fields of `app`, so this splits cleanly.
+    let mut presenter = crate::render3d::presenter_for(mode, &mut app.scene);
+    let book = &app.view.as_ref().expect("caller checked").book;
+    presenter.draw_book(f, area, book, params);
 }
 
 /// The title + progress header, floated over the top two rows of the object.
@@ -121,15 +121,20 @@ fn progress_text(b: &Book) -> String {
     }
 }
 
-/// The right pane: the section menu, or an open section's content. Separated
-/// from the object by a left rule.
-fn draw_panel(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(theme::dim());
+/// The section pane: the section menu, or an open section's content. Separated
+/// from the object by a rule — on the left in Split, on top in Stacked.
+fn draw_panel(f: &mut Frame, app: &mut App, area: Rect, border: Borders) {
+    let block = Block::default().borders(border).border_style(theme::dim());
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let inner = inner.inner(Margin::new(1, 0));
+    // Inset off a vertical rule (left/right) horizontally; a horizontal rule
+    // (top/bottom) needs no extra inset.
+    let margin = if border.intersects(Borders::LEFT | Borders::RIGHT) {
+        Margin::new(1, 0)
+    } else {
+        Margin::new(0, 0)
+    };
+    let inner = inner.inner(margin);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -338,8 +343,6 @@ fn facts(b: &Book) -> Vec<(&'static str, String)> {
 fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
     let spin = if app.spinning { "stop" } else { "spin" };
     let expanded: &[(&str, &str)] = &[
-        ("↑↓", "move"),
-        ("↵/→", "open"),
         ("esc/b/←", "back"),
         ("n", "note"),
         ("d", "delete"),
@@ -347,13 +350,13 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("f", "finish"),
         ("x", "export"),
         ("space", spin),
+        ("t", "rotate"),
+        ("[ ]", "panes"),
         ("o", "less"),
         ("m", "menu"),
         ("q", "quit"),
     ];
     let collapsed: &[(&str, &str)] = &[
-        ("↑↓", "move"),
-        ("↵", "open"),
         ("n", "note"),
         ("o", "options"),
         ("m", "menu"),
@@ -389,21 +392,10 @@ mod tests {
         for expanded in [false, true] {
             let pairs: Vec<&str> = if expanded {
                 vec![
-                    "↑↓",
-                    "↵/→",
-                    "esc/b/←",
-                    "n",
-                    "d",
-                    "p",
-                    "f",
-                    "x",
-                    "space",
-                    "o",
-                    "m",
-                    "q",
+                    "esc/b/←", "n", "d", "p", "f", "x", "space", "t", "[ ]", "o", "m", "q",
                 ]
             } else {
-                vec!["↑↓", "↵", "n", "o", "m", "q"]
+                vec!["n", "o", "m", "q"]
             };
             assert!(pairs.contains(&"m"), "no menu key when expanded={expanded}");
         }

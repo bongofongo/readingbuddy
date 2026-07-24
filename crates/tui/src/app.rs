@@ -18,7 +18,7 @@ use crossterm::event::KeyModifiers;
 
 use crate::config::{self, TuiConfig};
 use crate::event::Action;
-use crate::render3d::{GlyphSet, Pose, RenderParams, Scene};
+use crate::render3d::{GlyphSet, Pose, RenderMode, RenderParams, Scene};
 use crate::theme;
 use crate::ui;
 use crate::ui::input::InputState;
@@ -224,6 +224,11 @@ pub struct App {
     pub tab_state: ListState,
     pub scene: Scene,
     pub params: RenderParams,
+    /// Which presentation path the book view uses. Rich currently falls back to
+    /// the glyph path (see [`RenderMode`]), so this is safe to set to anything.
+    pub render_mode: RenderMode,
+    /// The user's book-view layout tweaks (pane rotation + divider slide).
+    pub layout: crate::ui::LayoutPrefs,
     /// Idle spin on/off.
     pub spinning: bool,
     pub show_options: bool,
@@ -265,6 +270,8 @@ impl App {
             tab_state: ListState::default(),
             scene,
             params: RenderParams::default(),
+            render_mode: RenderMode::default(),
+            layout: crate::ui::LayoutPrefs::default(),
             spinning: true,
             show_options: false,
             status: None,
@@ -289,6 +296,13 @@ impl App {
         };
         app.refresh_library().await?;
         Ok(app)
+    }
+
+    /// Choose the book-view presentation path (glyph vs rich). Set once at
+    /// startup from `$TMUX`/`--render`.
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        self.render_mode = mode;
+        self.dirty = true;
     }
 
     pub async fn refresh_library(&mut self) -> Result<()> {
@@ -358,6 +372,22 @@ impl App {
         self.params.pose = Pose::default();
         self.base_pitch = self.params.pose.pitch;
         self.phase = 0.0;
+    }
+
+    /// Rotate the book-view panes one quarter-turn clockwise. With two panes
+    /// this walks the single divider around; a fourth turn returns to the
+    /// aspect default.
+    fn rotate_layout(&mut self) {
+        self.layout.rotation = (self.layout.rotation + 1) % 4;
+        self.status = Some("panes rotated ↻".into());
+    }
+
+    /// Slide the pane divider, growing (positive) or shrinking the object's
+    /// share. The bias is stored as an offset from the default; rendering
+    /// clamps it so neither pane can vanish.
+    fn slide_divider(&mut self, delta: f32) {
+        self.layout.divider_bias = (self.layout.divider_bias + delta).clamp(-1.0, 1.0);
+        self.status = Some("panes resized".into());
     }
 
     /// Advance the idle animation. Returns true when something moved.
@@ -450,6 +480,9 @@ impl App {
                 self.spinning = true;
             }
             Action::ToggleSpin => self.spinning = !self.spinning,
+            Action::RotateLayout => self.rotate_layout(),
+            Action::GrowBook => self.slide_divider(crate::ui::DIVIDER_STEP),
+            Action::ShrinkBook => self.slide_divider(-crate::ui::DIVIDER_STEP),
             Action::NewNote => self.new_note(false),
             Action::Delete => self.ask_delete_selected_note(),
             Action::EditProgress => self.start_input(InputContext::ProgressPage, "page", ""),
@@ -666,12 +699,18 @@ impl App {
             .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => {
-                if draft.editor.is_blank() {
-                    // Nothing written yet — no need to ask.
+                let editing_saved = matches!(draft.target, NoteTarget::Edit(_));
+                if editing_saved {
+                    // Esc on an existing note just closes the editor — the saved
+                    // note is left as-is. Deletion is only ever via `d`.
+                    self.note_editor = None;
+                    self.status = Some("edit cancelled".into());
+                } else if draft.editor.is_blank() {
+                    // A brand-new note with nothing written — no need to ask.
                     self.note_editor = None;
                     self.status = Some("note discarded".into());
                 } else {
-                    // Stash the draft and ask before throwing away real text.
+                    // A new note with real text: ask before throwing it away.
                     self.pending_discard = self.note_editor.take();
                     self.confirm = Some(Confirm::DiscardDraft);
                     self.status = Some("discard note?  y / n".into());
@@ -1466,6 +1505,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rich_mode_draws_the_book_view_without_panicking() {
+        // Rich falls back to the glyph presenter today; drawing it at every
+        // layout (Stacked/Split/Compact) must never panic.
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.set_render_mode(RenderMode::Rich);
+        app.screen = Screen::Book;
+        // Portrait (Stacked), landscape (Split), tiny (Compact).
+        for (w, h) in [(40, 60), (120, 40), (20, 8)] {
+            let mut terminal = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
+            for in_section in [false, true] {
+                app.in_section = in_section;
+                terminal.draw(|f| ui::draw(f, &mut app)).expect("draw rich");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn rotate_and_resize_adjust_layout_and_redraw() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        assert_eq!(app.layout.rotation, 0);
+        assert_eq!(app.layout.divider_bias, 0.0);
+
+        // Rotating cycles clockwise and wraps after four turns.
+        for expected in [1, 2, 3, 0] {
+            app.handle(Action::RotateLayout).await.expect("rotate");
+            assert_eq!(app.layout.rotation, expected);
+        }
+
+        // Grow / shrink move the divider bias and clamp.
+        app.handle(Action::GrowBook).await.expect("grow");
+        assert!(app.layout.divider_bias > 0.0);
+        app.handle(Action::ShrinkBook).await.expect("shrink");
+        app.handle(Action::ShrinkBook).await.expect("shrink");
+        assert!(app.layout.divider_bias < 0.0);
+        for _ in 0..100 {
+            app.handle(Action::GrowBook).await.expect("grow");
+        }
+        assert!(app.layout.divider_bias <= 1.0, "bias stays clamped");
+
+        // Every orientation + an extreme bias must still draw at various sizes.
+        app.screen = Screen::Book;
+        for rotation in 0..4 {
+            app.layout.rotation = rotation;
+            for bias in [-1.0, 0.0, 1.0] {
+                app.layout.divider_bias = bias;
+                for (w, h) in [(120, 40), (40, 60), (26, 8)] {
+                    let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).expect("term");
+                    t.draw(|f| ui::draw(f, &mut app)).expect("draw");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn menu_selects_a_section_then_the_section_navigates() {
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
@@ -1650,6 +1747,40 @@ mod tests {
         assert!(updated.contains("page: 120"), "frontmatter kept");
         assert!(updated.contains("rewritten body"));
         assert!(!updated.contains("Symphony"), "old body gone");
+    }
+
+    #[tokio::test]
+    async fn esc_on_an_existing_note_cancels_without_prompting() {
+        // Opening a saved note to edit, then Esc, must just close the editor —
+        // no discard confirmation (that's only for brand-new notes), no
+        // deletion (that's only ever `d`).
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        app.clamp_tab_selection();
+
+        let note = app.view.as_ref().unwrap().notes[0].clone();
+        let path = app.engine.config.vault_dir.join(&note.file_path);
+        let original = std::fs::read_to_string(&path).unwrap();
+
+        // Open the editor (loads the saved body), then Esc immediately.
+        app.handle(Action::Select).await.expect("open editor");
+        assert!(app.note_editor.is_some());
+        app.on_editor_key(KeyEvent::from(KeyCode::Esc))
+            .await
+            .expect("esc");
+
+        assert!(app.note_editor.is_none(), "editor closed");
+        assert!(app.confirm.is_none(), "no discard prompt for a saved note");
+        assert!(app.pending_discard.is_none());
+        assert_eq!(app.view.as_ref().unwrap().notes.len(), 1, "note kept");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "saved note file untouched"
+        );
     }
 
     #[tokio::test]

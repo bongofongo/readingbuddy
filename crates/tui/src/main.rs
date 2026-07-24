@@ -61,6 +61,32 @@ struct Cli {
     /// quadrant (2x2, works on any truecolor terminal)
     #[arg(long, value_enum, default_value_t = GlyphArg::Octant)]
     glyphs: GlyphArg,
+
+    /// Book-view renderer: auto (glyph in tmux, rich outside), or force one.
+    /// Rich currently falls back to glyph until the graphics path lands.
+    #[arg(long, value_enum, default_value_t = RenderArg::Auto)]
+    render: RenderArg,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum RenderArg {
+    Auto,
+    Glyph,
+    Rich,
+}
+
+impl RenderArg {
+    /// Resolve to a concrete mode: `Auto` picks glyph inside tmux (where pixel
+    /// protocols die) and rich outside.
+    fn resolve(self, in_tmux: bool) -> render3d::RenderMode {
+        use render3d::RenderMode;
+        match self {
+            RenderArg::Auto if in_tmux => RenderMode::Glyph,
+            RenderArg::Auto => RenderMode::Rich,
+            RenderArg::Glyph => RenderMode::Glyph,
+            RenderArg::Rich => RenderMode::Rich,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -112,6 +138,7 @@ async fn main() -> Result<()> {
 
     let mut app = app::App::new(engine).await?;
     app.params.glyphs = cli.glyphs.into();
+    app.set_render_mode(cli.render.resolve(std::env::var_os("TMUX").is_some()));
     if let Some(selector) = &cli.book {
         let book = resolve_book(&app.engine, selector).await?;
         app.open_book(book).await?;

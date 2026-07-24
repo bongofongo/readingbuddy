@@ -7,6 +7,7 @@
 
 pub mod blit;
 pub mod math;
+pub mod present;
 pub mod scene;
 pub mod texture;
 
@@ -15,7 +16,21 @@ use std::path::{Path, PathBuf};
 use readingbuddy::Book;
 
 pub use blit::{GlyphSet, RgbBuf};
+pub use present::presenter_for;
 pub use scene::Pose;
+
+/// Which presentation path the single-book view uses.
+///
+/// `Glyph` is the block-glyph raytrace — the only path that survives tmux, and
+/// the default there. `Rich` is the higher-quality out-of-tmux renderer; it is
+/// scaffolded (see [`present::RichPresenter`]) but currently falls back to the
+/// glyph path, so selecting it is always safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderMode {
+    #[default]
+    Glyph,
+    Rich,
+}
 
 use math::{Vec3, vec3};
 use texture::Cover;

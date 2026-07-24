@@ -19,6 +19,11 @@ pub enum Action {
     ToggleOptions,
     Reset,
     Refresh,
+    /// Rotate the book-view panes clockwise.
+    RotateLayout,
+    /// Slide the pane divider to grow / shrink the object's share.
+    GrowBook,
+    ShrinkBook,
     /// Cycle book-view tabs.
     NextTab,
     PrevTab,
@@ -61,6 +66,9 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(' ') => Some(Action::ToggleSpin),
         KeyCode::Char('o') | KeyCode::Char('?') => Some(Action::ToggleOptions),
         KeyCode::Char('r') => Some(Action::Reset),
+        KeyCode::Char('t') => Some(Action::RotateLayout),
+        KeyCode::Char(']') => Some(Action::GrowBook),
+        KeyCode::Char('[') => Some(Action::ShrinkBook),
         KeyCode::F(5) => Some(Action::Refresh),
         KeyCode::Tab => Some(Action::NextTab),
         KeyCode::BackTab => Some(Action::PrevTab),
