@@ -306,15 +306,53 @@ animating. For the hybrid it is 0.
 
 `rich-always` exists precisely so this is calibrated: it is the known-bad
 configuration, kept and reachable only by flag, because an instrument that has
-never seen the failure it exists to catch is not evidence of anything. Run
-`--bench-render all` and the RTT columns should separate `rich-always` from the
-other two; if they do not, the instrument is broken, not the renderer.
+never seen the failure it exists to catch is not evidence of anything.
 
-Two conditions the harness warns about rather than silently tolerating: a book
-with **no real cover** (the procedural plate compresses several times better and
-flatters every image number — the bench now *prefers* a book whose cover exists
-on disk rather than taking whichever was touched last), and a **background tmux
-pane** (tmux routes input to the focused pane only, so no replies come back).
+**It has now seen it.** Measured in kitty + tmux, 3 reps, paced and warmed up:
+
+| mode | kitty p50 (3 reps) | kitty p90 (3 reps) |
+|---|---|---|
+| glyph | 3.3 / 3.3 / 3.3 ms | 3.7 / 3.6 / 3.5 |
+| rich | 3.3 / 3.4 / 3.5 | 3.5 / 3.7 / 4.3 |
+| **rich-always** | **8.3 / 7.2 / 8.3** | **9.1 / 9.1 / 10.6** |
+
+A reproducible 2.2-2.5x separation with no overlap, while `glyph` and `rich` stay
+indistinguishable from each other — which is what they should be, since they draw
+identical frames in motion. tmux stays at 0.0-0.1 ms throughout, so the load lands
+on the terminal, not on tmux. That is the two-layer split paying for itself.
+
+If a future run does not reproduce that separation, suspect the harness before
+the renderer, and read the sorted samples out of the JSONL — see the measurement
+traps below.
+
+Three conditions the harness warns about rather than silently tolerating: a
+**cover that is missing or tiny** (the bench picks the *widest* cover in the
+library and warns under 400px — a 180px OpenLibrary `-M` thumbnail upscaled into
+the render compresses nearly as well as the procedural plate, at 27 KB/send
+against ~105 KB), a **background tmux pane** (tmux routes input to the focused
+pane only, so no replies come back and every mode quietly falls back to glyphs),
+and a **paced run that missed its pacing** by more than 10%, which measured a
+different workload than the one it reports.
+
+### Measurement traps, all learned the hard way
+
+- **Warm up.** The first 20 frames of a mode ran 40% slower than the rest of its
+  own run. 25 frames per mode are drawn and discarded.
+- **Interleave.** Modes used to run in blocks, so whichever went first absorbed
+  the release build's IO tail; `glyph` came out worst on every timing metric,
+  which is not believable for a path drawing the same frames `rich` does. Reps
+  loop outside modes.
+- **Read the distribution, not the percentiles.** `rich-always`'s samples are
+  bimodal — a tight quiet floor plus a distinct loaded cluster. A p50/p90 pair
+  flattens that into two numbers and invites comparison against noise. When a
+  latency result looks null, sort the raw samples from the JSONL first.
+- **Never let the probe outlive a tick.** At a 250 ms deadline, a run where the
+  terminal never answered stalled 30 times per mode and dragged a paced 20 fps
+  bench to 13 fps — while the byte columns looked entirely ordinary. The deadline
+  is 40 ms and sampling gives up after two silent probes.
+- **Probe after the draw.** Sampling before it puts every reading in the idle gap
+  where the terminal has already drained; all three modes then report the same
+  ~3.6 ms, which is just the quiescent round trip.
 
 ### 4. What gets kept
 
