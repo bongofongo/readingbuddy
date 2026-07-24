@@ -5,7 +5,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
 
 use super::{BookLayout, book_layout, panel_width};
@@ -28,17 +28,16 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     match book_layout(main) {
         BookLayout::Split => {
-            // Title + progress on top; object on the left, section pane on the
-            // right. The header stays put whether the menu or a section shows.
-            let [header, body] =
-                Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(main);
+            // Object on the left (full height), section pane on the right. The
+            // title + progress float over the top rows of the object rather than
+            // taking a reserved pane, so the book gets the whole height.
             let [object, panel] = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(panel_width(main.width)),
             ])
-            .areas(body);
+            .areas(main);
             draw_object(f, app, object, None);
-            draw_header(f, app.view.as_ref().expect("checked above"), header);
+            draw_header(f, app.view.as_ref().expect("checked above"), object);
             draw_panel(f, app, panel);
         }
         BookLayout::Bare => {
@@ -81,22 +80,46 @@ fn draw_object(f: &mut Frame, app: &mut App, area: Rect, title: Option<String>) 
     blit::blit(fb, area, f.buffer_mut(), params.glyphs);
 }
 
-/// The title + progress header that sits above the object.
-fn draw_header(f: &mut Frame, view: &BookView, area: Rect) {
-    if area.height == 0 {
+/// The title + progress header, floated over the top two rows of the object.
+/// Text spans carry a `Color::Reset` background, so they read cleanly over the
+/// block-glyph render beneath them.
+fn draw_header(f: &mut Frame, view: &BookView, object: Rect) {
+    // Leave a row of book showing above nothing — only float when there's room.
+    if object.height < 3 || object.width < 4 {
         return;
     }
-    let [title, gauge] =
+    let area = Rect {
+        height: 2,
+        ..object
+    };
+    let [title, prog] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
     let b = &view.book;
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(b.display_title().to_string(), theme::title()),
-            Span::styled(format!("  {}", b.display_authors()), theme::dim()),
+            Span::styled("  ·  ", theme::dim()),
+            Span::styled(b.display_authors().to_string(), theme::dim()),
         ])),
         title,
     );
-    draw_progress(f, b, gauge);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(progress_text(b), theme::accent()))),
+        prog,
+    );
+}
+
+/// Progress as a compact one-liner for the floating header.
+fn progress_text(b: &Book) -> String {
+    match (b.finished, b.current_page, b.page_count) {
+        (true, _, _) => "finished".to_string(),
+        (_, Some(p), Some(t)) if t > 0 => {
+            let pct = (p * 100 / t).min(100);
+            format!("{p} / {t} · {pct}%")
+        }
+        (_, Some(p), _) => format!("page {p}"),
+        _ => "not started".to_string(),
+    }
 }
 
 /// The right pane: the section menu, or an open section's content. Separated
@@ -203,12 +226,14 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect, items: Vec<ListItem>, emp
     f.render_stateful_widget(list, area, &mut app.tab_state);
 }
 
-/// A note row: anchor tag (page / location / highlight) + title.
+/// A note row: anchor tag (page / location / highlight) + title. Homogeneous
+/// color + `·` separator so a REVERSED selection inverts uniformly.
 fn note_line(n: &NoteRecord) -> Line<'static> {
     let mut spans = Vec::new();
     let tag = anchor_tag(n);
     if !tag.is_empty() {
-        spans.push(Span::styled(format!("{tag} "), theme::accent()));
+        spans.push(Span::styled(tag, theme::primary()));
+        spans.push(Span::styled(" · ", theme::primary()));
     }
     spans.push(Span::styled(n.title.clone(), theme::primary()));
     Line::from(spans)
@@ -231,7 +256,8 @@ fn anchor_tag(n: &NoteRecord) -> String {
 fn highlight_line(h: &Highlight) -> Line<'static> {
     let mut spans = Vec::new();
     if let Some(p) = h.page {
-        spans.push(Span::styled(format!("p.{p} "), theme::accent()));
+        spans.push(Span::styled(format!("p.{p}"), theme::primary()));
+        spans.push(Span::styled(" · ", theme::primary()));
     }
     spans.push(Span::styled(h.text.clone(), theme::primary()));
     Line::from(spans)
@@ -240,11 +266,12 @@ fn highlight_line(h: &Highlight) -> Line<'static> {
 fn card_line(c: &FlashcardRow) -> Line<'static> {
     let mark = if c.exported { "✓ " } else { "  " };
     let mut spans = vec![
-        Span::styled(mark, theme::dim()),
+        Span::styled(mark, theme::primary()),
         Span::styled(c.word.clone(), theme::primary()),
     ];
     if let Some(ctx) = &c.context {
-        spans.push(Span::styled(format!("  {ctx}"), theme::dim()));
+        spans.push(Span::styled(" · ", theme::primary()));
+        spans.push(Span::styled(ctx.clone(), theme::primary()));
     }
     Line::from(spans)
 }
@@ -268,26 +295,6 @@ fn draw_info(f: &mut Frame, view: &BookView, area: Rect) {
         Span::styled(" notes", theme::dim()),
     ]));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
-}
-
-fn draw_progress(f: &mut Frame, b: &Book, area: Rect) {
-    if area.width == 0 {
-        return;
-    }
-    let (ratio, label) = match (b.finished, b.current_page, b.page_count) {
-        (true, _, _) => (1.0, "finished".to_string()),
-        (_, Some(p), Some(t)) if t > 0 => {
-            (((p as f64) / (t as f64)).clamp(0.0, 1.0), format!("{p} / {t}"))
-        }
-        (_, Some(p), _) => (0.0, format!("page {p}")),
-        _ => (0.0, "not started".to_string()),
-    };
-    let gauge = Gauge::default()
-        .ratio(ratio)
-        .label(Span::styled(label, theme::dim()))
-        .gauge_style(theme::accent())
-        .use_unicode(true);
-    f.render_widget(gauge, area);
 }
 
 /// The metadata rows, skipping anything the book doesn't have.

@@ -10,28 +10,41 @@ use crate::app::App;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app.library.iter().map(|b| ListItem::new(row(b))).collect();
+    let selected = app.library_state.selected();
+    let items: Vec<ListItem> = app
+        .library
+        .iter()
+        .enumerate()
+        .map(|(i, b)| ListItem::new(row(b, Some(i) == selected)))
+        .collect();
     let title = format!(" library · {} ", app.library.len());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::dim())
         .title(Span::styled(title, theme::accent()));
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(theme::selected())
-        .highlight_symbol("› ");
+    // No `highlight_style`: the reverse is scoped to the title span in `row`,
+    // like the main menu, so the colored author/year/progress keep their hues.
+    let list = List::new(items).block(block).highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut app.library_state);
 }
 
-fn row(b: &Book) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(b.display_title().to_string(), theme::primary()),
-        Span::styled(format!("  {}", b.display_authors()), theme::dim()),
-    ];
+/// A library row: colors differentiate the fields, but the selection reverse is
+/// kept on the title alone (matching the main menu), so the other colors read.
+fn row(b: &Book, selected: bool) -> Line<'static> {
+    let title_style = if selected {
+        theme::title().patch(theme::selected())
+    } else {
+        theme::title()
+    };
+    let mut spans = vec![Span::styled(b.display_title().to_string(), title_style)];
+    spans.push(Span::styled(format!("  {}", b.display_authors()), theme::dim()));
     if let Some(year) = b.publish_year {
         spans.push(Span::styled(format!("  {year}"), theme::dim()));
     }
-    spans.push(Span::styled(format!("  {}", progress_tag(b)), theme::accent()));
+    let tag = progress_tag(b);
+    if !tag.is_empty() {
+        spans.push(Span::styled(format!("  {tag}"), theme::accent()));
+    }
     Line::from(spans)
 }
 

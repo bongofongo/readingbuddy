@@ -4,6 +4,7 @@
 //! byte that reaches the terminal.
 
 mod app;
+mod config;
 mod event;
 mod render3d;
 mod theme;
@@ -85,6 +86,17 @@ async fn main() -> Result<()> {
 
     if let Some(spec) = &cli.dump_frame {
         return dump_frame(&engine, spec, &cli).await;
+    }
+
+    // Apply the persisted accent before the first draw. A bad/missing file is a
+    // warning, never fatal — it must not brick the TUI.
+    match config::load() {
+        Ok(cfg) => {
+            if let Some(rgb) = cfg.accent.as_deref().and_then(theme::parse_hex) {
+                theme::set_accent(rgb);
+            }
+        }
+        Err(e) => eprintln!("warning: {e:#}"),
     }
 
     let mut app = app::App::new(engine).await?;

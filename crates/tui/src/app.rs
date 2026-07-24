@@ -7,6 +7,7 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
 use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
     Book, BookSort, Engine, FlashcardRow, Highlight, NewNoteInput, NoteKind, NoteRecord,
@@ -15,15 +16,17 @@ use readingbuddy::{
 
 use crossterm::event::KeyModifiers;
 
+use crate::config::{self, TuiConfig};
 use crate::event::Action;
 use crate::render3d::{GlyphSet, Pose, RenderParams, Scene};
+use crate::theme;
 use crate::ui;
 use crate::ui::input::InputState;
 use crate::ui::textedit::TextEditor;
 
 /// Idle spin: a full turn about the bottom of the spine, so the book sweeps
-/// round like a slow top. Radians per tick at 20fps — about 63s for 360°.
-const SPIN_SPEED: f32 = 0.005;
+/// round like a slow top. Radians per tick at 20fps — about 35s for 360°.
+const SPIN_SPEED: f32 = 0.009;
 /// The pitch nods gently while the book turns, on its own slower cycle.
 const NOD: f32 = 0.06;
 const NOD_SPEED: f32 = 0.011;
@@ -106,6 +109,8 @@ pub enum InputContext {
     KoPath,
     /// Optional page anchor asked for after composing a new note.
     NotePage,
+    /// A `#RRGGBB` accent color typed on the settings screen.
+    AccentHex,
 }
 
 /// A composed-but-unsaved note, held while its optional page anchor is asked.
@@ -184,6 +189,8 @@ pub struct App {
     /// Pitch the nod oscillates around; the yaw just keeps turning.
     base_pitch: f32,
     phase: f32,
+    /// Index into `theme::PRESETS` the settings ←/→ cycle last landed on.
+    pub accent_idx: usize,
 }
 
 impl App {
@@ -214,6 +221,11 @@ impl App {
             quit: false,
             base_pitch: Pose::default().pitch,
             phase: 0.0,
+            // Land the cycle on whichever preset matches the loaded accent.
+            accent_idx: theme::PRESETS
+                .iter()
+                .position(|(_, rgb)| *rgb == theme::accent_rgb())
+                .unwrap_or(0),
         };
         app.refresh_library().await?;
         Ok(app)
@@ -344,6 +356,11 @@ impl App {
             (Screen::Search, Action::Back) => self.screen = Screen::Menu,
 
             (Screen::Settings, Action::Select | Action::ToggleSpin) => self.toggle_glyphs(),
+            (Screen::Settings, Action::Left) => self.cycle_accent(-1),
+            (Screen::Settings, Action::Right) => self.cycle_accent(1),
+            (Screen::Settings, Action::Query) => {
+                self.start_input(InputContext::AccentHex, "accent #RRGGBB", &theme::to_hex(theme::accent_rgb()))
+            }
             (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
 
             (Screen::Book, action) => self.handle_book(action).await?,
@@ -697,6 +714,38 @@ impl App {
         self.status = Some(format!("glyph set: {:?}", self.params.glyphs));
     }
 
+    /// Step through the preset palette (`dir` = +1 / -1), apply live, persist.
+    fn cycle_accent(&mut self, dir: i64) {
+        let n = theme::PRESETS.len() as i64;
+        self.accent_idx = (((self.accent_idx as i64 + dir) % n + n) % n) as usize;
+        let (name, rgb) = theme::PRESETS[self.accent_idx];
+        theme::set_accent(rgb);
+        self.persist_accent();
+        self.status = Some(format!("accent: {name} {}", theme::to_hex(rgb)));
+    }
+
+    /// Apply an arbitrary accent (from the hex box) and persist it.
+    fn set_accent_rgb(&mut self, rgb: u32) {
+        theme::set_accent(rgb);
+        self.accent_idx = theme::PRESETS
+            .iter()
+            .position(|(_, p)| *p == rgb)
+            .unwrap_or(self.accent_idx);
+        self.persist_accent();
+        self.status = Some(format!("accent: {}", theme::to_hex(rgb)));
+    }
+
+    /// Write the current accent to the TUI config file. A failure is a status
+    /// warning, never fatal.
+    fn persist_accent(&mut self) {
+        let cfg = TuiConfig {
+            accent: Some(theme::to_hex(theme::accent_rgb())),
+        };
+        if let Err(e) = config::save(&cfg) {
+            self.status = Some(format!("could not save accent: {e:#}"));
+        }
+    }
+
     // ---- library remove ----------------------------------------------------
 
     fn ask_remove_selected(&mut self) {
@@ -790,6 +839,10 @@ impl App {
             InputContext::IsbnAdd => self.add_isbn(text).await?,
             InputContext::KoPath => self.import_ko(text).await?,
             InputContext::ProgressPage => self.commit_progress(text).await?,
+            InputContext::AccentHex => match theme::parse_hex(&text) {
+                Some(rgb) => self.set_accent_rgb(rgb),
+                None => self.status = Some(format!("not a #RRGGBB color: {text}")),
+            },
             InputContext::NotePage => unreachable!("handled above"),
         }
         Ok(())
@@ -930,6 +983,7 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     terminal.draw(|f| ui::draw(f, app))?;
+    park_cursor(terminal)?;
     app.dirty = false;
 
     loop {
@@ -955,9 +1009,25 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
         }
         if app.dirty {
             terminal.draw(|f| ui::draw(f, app))?;
+            park_cursor(terminal)?;
             app.dirty = false;
         }
     }
+    Ok(())
+}
+
+/// Park the (hidden) cursor at a fixed cell after every draw. ratatui leaves it
+/// on the last-written diff cell, which moves every animation frame; some
+/// terminals (kitty's `cursor_trail`) then streak a trail chasing the book.
+/// Pinning it to the bottom-right corner gives the trail nowhere to wander.
+fn park_cursor<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+    let area = terminal.get_frame().area();
+    if area.width == 0 || area.height == 0 {
+        return Ok(());
+    }
+    let backend = terminal.backend_mut();
+    backend.set_cursor_position(Position::new(area.width - 1, area.height - 1))?;
+    backend.flush()?;
     Ok(())
 }
 

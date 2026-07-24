@@ -36,6 +36,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(value, theme::primary()),
         ]));
     }
+    // Accent gets a live swatch beside its hex.
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<12}", "accent"), theme::dim()),
+        Span::styled("███", theme::accent()),
+        Span::styled(format!(" {}", theme::to_hex(theme::accent_rgb())), theme::primary()),
+    ]));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "set the API key with:  readingbuddy config set google-api-key",
@@ -43,8 +49,12 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
+        Span::styled("← →", theme::key()),
+        Span::styled(" accent   ", theme::dim()),
+        Span::styled("/", theme::key()),
+        Span::styled(" hex   ", theme::dim()),
         Span::styled("enter", theme::key()),
-        Span::styled(" toggle glyphs   ", theme::dim()),
+        Span::styled(" glyphs   ", theme::dim()),
         Span::styled("esc", theme::key()),
         Span::styled(" menu", theme::dim()),
     ]));
