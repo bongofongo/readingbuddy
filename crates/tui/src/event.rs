@@ -21,13 +21,14 @@ pub enum Action {
     Refresh,
     /// Rotate the book-view panes clockwise.
     RotateLayout,
+    /// Show or hide the book view's section pane.
+    TogglePanel,
     /// Swap the book renderer between true pixels and block glyphs.
     ToggleRenderer,
     /// Slide the pane divider to grow / shrink the object's share.
     GrowBook,
     ShrinkBook,
-    /// Cycle book-view tabs.
-    NextTab,
+    /// Step back through the book view's sections (shift-tab; ↑ does it too).
     PrevTab,
     /// Compose a new note.
     NewNote,
@@ -75,7 +76,9 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(']') => Some(Action::GrowBook),
         KeyCode::Char('[') => Some(Action::ShrinkBook),
         KeyCode::F(5) => Some(Action::Refresh),
-        KeyCode::Tab => Some(Action::NextTab),
+        // Tab is the section pane's own key: it brings the menu up and takes it
+        // away. Stepping through the sections is what ↑ / ↓ are for.
+        KeyCode::Tab => Some(Action::TogglePanel),
         KeyCode::BackTab => Some(Action::PrevTab),
         KeyCode::Char('n') => Some(Action::NewNote),
         KeyCode::Char('p') => Some(Action::EditProgress),

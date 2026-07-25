@@ -81,6 +81,14 @@ struct RichKey {
     px_h: u32,
     cols: u16,
     rows: u16,
+    /// Where the rect sits, not just how big it is. A frame that only *moved* —
+    /// rotating the panes between the two stacked layouts, or the centred block
+    /// sliding as the window widens — keeps every other field, and the cells
+    /// carry the image id with them, so in principle nothing need be re-sent.
+    /// In practice that is the same fragile ground as a resize, and a transmit
+    /// only happens when the layout changes, so it is cheap insurance.
+    x: u16,
+    y: u16,
     quality: Quality,
 }
 
@@ -172,6 +180,21 @@ impl RichState {
             kitty::forget_live();
         }
         self.sent = None;
+    }
+
+    /// The terminal changed size: throw the frame away and send a fresh one.
+    ///
+    /// A resize is precisely where a terminal — and tmux in front of it — loses
+    /// or misplaces an image, and the transmit cache cannot see it happen: the
+    /// key is the *object rect*, and in a stacked layout both of that rect's
+    /// axes are capped (`STACK_MAX_COLS`, `BOOK_MAX_ROWS`), so resizing the
+    /// window very often leaves it identical. The key then still matches, the
+    /// cells move to their new centred position, and the image never gets
+    /// re-sent — the book comes back cut in half, or not at all. The
+    /// side-by-side layouts hide the bug because the object takes the whole pane
+    /// height, so a vertical resize always changes the key.
+    pub fn resized(&mut self) {
+        self.hide_image();
     }
 
     /// Take the image off the screen and forget everything about it.
@@ -328,11 +351,25 @@ impl<'a> RichPresenter<'a> {
             px_h: target.height,
             cols: area.width,
             rows: area.height,
+            x: area.x,
+            y: area.y,
             quality,
         };
 
         let mut transmitted = false;
         if self.state.sent != Some(key) {
+            // Changing the cell span means the old placement's geometry is
+            // wrong. Delete before re-placing rather than transmitting over the
+            // top of it: a stale placement composites as a torn or clipped
+            // image, which is the same symptom as a lost one and far harder to
+            // tell apart.
+            if self
+                .state
+                .sent
+                .is_some_and(|s| (s.cols, s.rows) != (key.cols, key.rows))
+            {
+                self.state.hide_image();
+            }
             if !self.transmit(book, target, params, area) {
                 return false;
             }

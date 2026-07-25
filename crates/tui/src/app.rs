@@ -233,6 +233,10 @@ pub struct App {
     /// Pixel-path state. A direct field, not behind a method: `present_book`
     /// borrows it disjointly alongside `scene` and `view`.
     pub rich: crate::render3d::present::RichState,
+    /// The terminal's size at the last draw, so `redraw` can notice a resize.
+    /// `None` until the first frame, which counts as a resize — nothing has been
+    /// transmitted yet, so invalidating costs nothing.
+    pub term_size: Option<(u16, u16)>,
     /// Frame cost accounting. Inert unless `--perf-log` gave it somewhere to
     /// write, so the normal session pays a relaxed atomic load per frame.
     pub perf: crate::perf::Recorder,
@@ -289,6 +293,7 @@ impl App {
             render_mode: RenderMode::default(),
             caps: Caps::default(),
             rich: crate::render3d::present::RichState::default(),
+            term_size: None,
             perf: crate::perf::Recorder::disabled(crate::perf::Meter::new()),
             rtt_sample: None,
             layout: crate::ui::LayoutPrefs::default(),
@@ -430,6 +435,26 @@ impl App {
     fn rotate_layout(&mut self) {
         self.layout.rotation = (self.layout.rotation + 1) % 4;
         self.status = Some("panes rotated ↻".into());
+    }
+
+    /// Show or hide the section pane. It comes back in wherever the layout
+    /// currently puts it — `t` decides the side, tab decides whether it is there.
+    fn toggle_panel(&mut self) {
+        self.layout.panel = !self.layout.panel;
+        self.status = Some(if self.layout.panel {
+            "sections shown".into()
+        } else {
+            "sections hidden — t to bring them back".into()
+        });
+    }
+
+    /// Bring the section pane back for a key that has nothing to act on without
+    /// it: asking for the menu is asking for the pane.
+    fn ensure_panel(&mut self) {
+        if !self.layout.panel {
+            self.layout.panel = true;
+            self.status = None;
+        }
     }
 
     /// Slide the pane divider, growing (positive) or shrinking the object's
@@ -587,6 +612,7 @@ impl App {
             }
             Action::ToggleSpin => self.spinning = !self.spinning,
             Action::RotateLayout => self.rotate_layout(),
+            Action::TogglePanel => self.toggle_panel(),
             Action::ToggleRenderer => self.toggle_renderer(),
             Action::GrowBook => self.slide_divider(crate::ui::DIVIDER_STEP),
             Action::ShrinkBook => self.slide_divider(-crate::ui::DIVIDER_STEP),
@@ -605,13 +631,15 @@ impl App {
                 }
             }
             Action::Up => {
+                self.ensure_panel();
                 if self.in_section {
                     self.step_tab(-1);
                 } else {
                     self.cycle_tab(-1);
                 }
             }
-            Action::Down | Action::NextTab => {
+            Action::Down => {
+                self.ensure_panel();
                 if self.in_section {
                     self.step_tab(1);
                 } else {
@@ -619,12 +647,14 @@ impl App {
                 }
             }
             Action::PrevTab => {
+                self.ensure_panel();
                 if !self.in_section {
                     self.cycle_tab(-1);
                 }
             }
             // Enter / right: open the highlighted section, or act on a row.
             Action::Select | Action::Right => {
+                self.ensure_panel();
                 if self.in_section {
                     self.activate_tab_row().await?;
                 } else {
@@ -1427,6 +1457,13 @@ pub fn redraw<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<(
     app.params.moving = Some(app.animating());
     let rtt = app.rtt_sample.take();
     let term = terminal.size()?;
+    // A resize invalidates whatever image the terminal is holding — see
+    // `RichState::resized`. This is the one place that sees every draw, and the
+    // only place that sees the terminal's size, so it is where the two meet.
+    if app.term_size != Some((term.width, term.height)) {
+        app.term_size = Some((term.width, term.height));
+        app.rich.resized();
+    }
     app.perf.frame_begin();
     let started = Instant::now();
     terminal.draw(|f| ui::draw(f, app))?;
@@ -1968,6 +2005,10 @@ mod tests {
                         app.clamp_tab_selection();
                         for options in [false, true] {
                             app.show_options = options;
+                            // The section pane's toggle rides along with the key
+                            // bar's, so both states are drawn at every size
+                            // without doubling an already-large sweep.
+                            app.layout.panel = options;
                             terminal.draw(|f| ui::draw(f, app)).expect("draw");
                         }
                     }
@@ -2021,6 +2062,79 @@ mod tests {
         }
     }
 
+    /// A resize must put a fresh image on screen, even when the object rect
+    /// comes out of it exactly the same size.
+    ///
+    /// The stacked layout caps *both* of that rect's axes (`STACK_MAX_COLS`,
+    /// `BOOK_MAX_ROWS`), so resizing the window routinely leaves it identical —
+    /// and the transmit cache is keyed on the rect. Without the resize hook the
+    /// key still matches, nothing is re-sent, and the terminal (which drops or
+    /// misplaces images across a resize, tmux especially) is left showing half
+    /// an image or none. The side-by-side layouts hide this: their object takes
+    /// the whole pane height, so a vertical resize always changes the key.
+    #[tokio::test]
+    async fn a_resize_retransmits_the_parked_image() {
+        use crate::render3d::caps::{Caps, Passthrough};
+        use crate::render3d::present::RichState;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Sink {
+            fn take(&self) -> String {
+                let mut g = self.0.lock().unwrap();
+                let s = String::from_utf8_lossy(&g).to_string();
+                g.clear();
+                s
+            }
+        }
+
+        let caps = Caps {
+            kitty_graphics: true,
+            cell_px: (9, 19),
+            cell_px_measured: true,
+            in_tmux: true,
+            passthrough: Passthrough::Already,
+        };
+        let sink = Sink::default();
+
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.set_render_mode(RenderMode::Rich);
+        app.caps = caps;
+        app.rich = RichState::with_writer(caps, Box::new(sink.clone()));
+        app.screen = Screen::Book;
+        app.spinning = false;
+
+        // Portrait, so the layout stacks: the object rect is 84 x 26 — both caps
+        // binding — at 120 columns and at 130.
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 70)).expect("terminal");
+        redraw(&mut terminal, &mut app).expect("first draw");
+        assert!(
+            sink.take().contains("a=T"),
+            "the parked book transmitted no image to begin with"
+        );
+
+        // Same rect, new window. The image has to be sent again.
+        terminal.backend_mut().resize(130, 70);
+        terminal.autoresize().expect("autoresize");
+        redraw(&mut terminal, &mut app).expect("redraw after resize");
+        assert!(
+            sink.take().contains("a=T"),
+            "a resize left the old image on screen and sent nothing"
+        );
+    }
+
     #[tokio::test]
     async fn rich_mode_draws_the_book_view_without_panicking() {
         // Rich falls back to the glyph presenter today; drawing it at every
@@ -2041,18 +2155,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rotate_and_resize_adjust_layout_and_redraw() {
+    async fn rotating_toggling_and_resizing_adjust_layout_and_redraw() {
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
         app.open_book(book).await.expect("open");
+        assert!(
+            app.layout.panel,
+            "the view opens with its sections in reach"
+        );
         assert_eq!(app.layout.rotation, 0);
         assert_eq!(app.layout.divider_bias, 0.0);
 
-        // Rotating cycles clockwise and wraps after four turns.
+        // `t` still rotates: clockwise, wrapping after four turns.
         for expected in [1, 2, 3, 0] {
             app.handle(Action::RotateLayout).await.expect("rotate");
             assert_eq!(app.layout.rotation, expected);
         }
+
+        // Tab takes the section pane away and brings it back.
+        app.handle(Action::TogglePanel).await.expect("toggle");
+        assert!(!app.layout.panel);
+        app.handle(Action::TogglePanel).await.expect("toggle");
+        assert!(app.layout.panel);
+
+        // Asking for the menu is asking for the pane: the keys that drive it
+        // bring it back rather than doing nothing.
+        for action in [Action::Down, Action::Up, Action::Select, Action::Right] {
+            app.layout.panel = false;
+            app.in_section = false;
+            app.handle(action).await.expect("menu key");
+            assert!(app.layout.panel, "{action:?} left the pane hidden");
+        }
+        app.in_section = false;
 
         // Grow / shrink move the divider bias and clamp.
         app.handle(Action::GrowBook).await.expect("grow");
@@ -2065,10 +2199,12 @@ mod tests {
         }
         assert!(app.layout.divider_bias <= 1.0, "bias stays clamped");
 
-        // Every orientation + an extreme bias must still draw at various sizes.
+        // Every orientation, panel shown or hidden, at an extreme bias, must
+        // still draw at any size.
         app.screen = Screen::Book;
         for rotation in 0..4 {
             app.layout.rotation = rotation;
+            app.layout.panel = rotation % 2 == 0;
             for bias in [-1.0, 0.0, 1.0] {
                 app.layout.divider_bias = bias;
                 for (w, h) in [(120, 40), (40, 60), (26, 8)] {
@@ -2588,9 +2724,18 @@ mod tests {
         let book = app.library.first().cloned().unwrap();
         rt.block_on(app.open_book(book)).unwrap();
         app.show_options = true;
-        // A wide case too: the book block is capped and centred above ~98
-        // columns, and that is the only place to see it.
-        for (w, h) in [(110, 32), (44, 26), (180, 44)] {
+        // Wide cases too: the object is centred on the window (with the panel
+        // beside it) once the width affords the panel its floor, and that is the
+        // only place to see it. The last case is tab — the pane dismissed, which
+        // is the one layout where the object has the whole window.
+        for (w, h, panel) in [
+            (110, 32, true),
+            (44, 26, true),
+            (86, 30, true),
+            (180, 44, true),
+            (180, 44, false),
+        ] {
+            app.layout.panel = panel;
             let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| ui::draw(f, &mut app)).unwrap();
             println!("=== {w}x{h} ===");

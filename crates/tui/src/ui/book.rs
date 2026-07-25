@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
 
-use super::{BookLayout, book_layout, split_rects};
+use super::{BookLayout, book_layout, book_rects};
 use crate::app::{App, BOOK_TABS, BookTab, BookView};
 use crate::theme;
 
@@ -25,27 +25,30 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let [main, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(bar_h)]).areas(area);
 
     let layout = book_layout(main, app.layout.rotation);
-    // The view occupies a width-capped, centred block rather than the whole
-    // pane, so a wide terminal grows the margins instead of the panel.
-    let block = match layout {
-        BookLayout::Split(o) => super::content_block(main, o),
-        BookLayout::Compact => main,
-    };
-    // The key bar follows the block: left flush against a 200-column terminal
-    // it would hang out alone in the margin, disowned by everything above it.
-    let bar = Rect {
-        x: block.x,
-        width: block.width,
-        ..bar
-    };
+    // The key bar follows the composition, not the terminal: left flush against
+    // a 200-column window it would hang out alone in the margin, disowned by
+    // everything above it.
+    let mut bar = bar;
 
     match layout {
+        // Panel dismissed with `t`: the object has the whole pane, which is the
+        // one case where it is centred by construction.
+        BookLayout::Split(_) if !app.layout.panel => {
+            present_book(f, app, main);
+            draw_header(f, app.view.as_ref().expect("checked above"), main);
+        }
         BookLayout::Split(orientation) => {
-            // Object + section panel split along one divider. The orientation is
-            // the aspect default rotated by the user; the divider position is
-            // the default (object capped) plus the user's slide. Title +
-            // progress float over the object's top rows.
-            let (object, panel, border) = split_rects(block, orientation, app.layout.divider_bias);
+            // Object + section panel split along one divider, on the side the
+            // pane's shape asks for. The object is centred on the window and the
+            // panel pushes it off centre only when the space is too tight. Title
+            // + progress float over the object's top rows.
+            let (object, panel, border) = book_rects(main, orientation, app.layout.divider_bias);
+            let hull = object.union(panel);
+            bar = Rect {
+                x: hull.x,
+                width: hull.width,
+                ..bar
+            };
             present_book(f, app, object);
             draw_header(f, app.view.as_ref().expect("checked above"), object);
             draw_panel(f, app, panel, border);
@@ -96,9 +99,10 @@ fn present_book(f: &mut Frame, app: &mut App, area: Rect) {
     presenter.draw_book(f, area, book, params);
 }
 
-/// The title + progress header, floated over the top two rows of the object.
-/// Text spans carry a `Color::Reset` background, so they read cleanly over the
-/// block-glyph render beneath them.
+/// The title + progress header, floated over the top two rows of the object and
+/// centred on it — the object is centred on the window, so the header lands on
+/// the same axis. Text spans carry a `Color::Reset` background, so they read
+/// cleanly over the block-glyph render beneath them.
 fn draw_header(f: &mut Frame, view: &BookView, object: Rect) {
     // Leave a row of book showing above nothing — only float when there's room.
     if object.height < 3 || object.width < 4 {
@@ -116,11 +120,13 @@ fn draw_header(f: &mut Frame, view: &BookView, object: Rect) {
             Span::styled(b.display_title().to_string(), theme::title()),
             Span::styled("  ·  ", theme::dim()),
             Span::styled(b.display_authors().to_string(), theme::dim()),
-        ])),
+        ]))
+        .alignment(Alignment::Center),
         title,
     );
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(progress_text(b), theme::accent()))),
+        Paragraph::new(Line::from(Span::styled(progress_text(b), theme::accent())))
+            .alignment(Alignment::Center),
         prog,
     );
 }
@@ -143,7 +149,12 @@ fn progress_text(b: &Book) -> String {
 fn draw_panel(f: &mut Frame, app: &mut App, area: Rect, border: Borders) {
     let block = Block::default().borders(border).border_style(theme::dim());
     let inner = block.inner(area);
-    f.render_widget(block, area);
+    // The rule earns its place between the object and a section's text; against
+    // the bare tab menu it is a line drawn through empty space. The cell is
+    // still reserved either way, so opening a section doesn't shift the panel.
+    if app.in_section {
+        f.render_widget(block, area);
+    }
     // Inset off a vertical rule (left/right) horizontally; a horizontal rule
     // (top/bottom) needs no extra inset.
     let margin = if border.intersects(Borders::LEFT | Borders::RIGHT) {
@@ -163,8 +174,29 @@ fn draw_panel(f: &mut Frame, app: &mut App, area: Rect, border: Borders) {
     }
 }
 
+/// The hint under the section menu, part of the block that gets centred.
+const MENU_HINT: &str = "enter ›";
+
+/// The menu's own box, centred in the pane on both axes.
+///
+/// The block is centred, not each line: the rows carry a `› ` / two-space
+/// prefix, so centring them individually would shuffle the caret column every
+/// time the selection moved and leave the labels in a ragged diamond.
+fn menu_box(area: Rect) -> Rect {
+    let width = BOOK_TABS
+        .iter()
+        .map(|(_, l)| l.chars().count() as u16 + 2)
+        .chain(std::iter::once(MENU_HINT.chars().count() as u16))
+        .max()
+        .unwrap_or(0);
+    // Tabs, a blank spacer, and the hint.
+    let height = BOOK_TABS.len() as u16 + 2;
+    super::centered(area, width, height)
+}
+
 /// The single-column section menu (Info / Notes / Highlights / Cards).
 fn draw_section_menu(f: &mut Frame, active: BookTab, area: Rect) {
+    let area = menu_box(area);
     let mut lines = Vec::new();
     for (tab, label) in BOOK_TABS {
         if tab == active {
@@ -180,7 +212,7 @@ fn draw_section_menu(f: &mut Frame, active: BookTab, area: Rect) {
         }
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("enter ›", theme::dim())));
+    lines.push(Line::from(Span::styled(MENU_HINT, theme::dim())));
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -377,7 +409,14 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("f", "finish"),
         ("x", "export"),
         ("space", spin),
-        ("t", "rotate"),
+        (
+            "tab",
+            if app.layout.panel {
+                "hide tabs"
+            } else {
+                "tabs"
+            },
+        ),
         ("[ ]", "panes"),
         ("v", render_label(app)),
         ("o", "less"),
@@ -438,6 +477,20 @@ mod tests {
             };
             assert!(pairs.contains(&"m"), "no menu key when expanded={expanded}");
         }
+    }
+
+    #[test]
+    fn the_section_menu_is_centred_in_its_pane() {
+        // Widest row is "  Highlights" (12); the box centres that on both axes.
+        let b = menu_box(Rect::new(0, 0, 46, 30));
+        assert_eq!(b.width, 12);
+        assert_eq!(b.x, (46 - 12) / 2);
+        assert_eq!(b.height, BOOK_TABS.len() as u16 + 2);
+        assert_eq!(b.y, (30 - b.height) / 2);
+
+        // A pane smaller than the box clamps instead of underflowing.
+        let b = menu_box(Rect::new(0, 0, 4, 2));
+        assert!(b.width <= 4 && b.height <= 2);
     }
 
     #[test]

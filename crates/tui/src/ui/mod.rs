@@ -18,7 +18,7 @@ use crate::theme;
 
 /// How the book view arranges itself for the space it has. A big pane splits
 /// into the object + the section panel along one divider; [`PaneOrientation`]
-/// says which side the object takes (the user rotates it). A small pane
+/// says which side the object takes, from the pane's own shape. A small pane
 /// collapses to the object alone, with sections reachable in its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BookLayout {
@@ -43,7 +43,7 @@ pub enum PaneOrientation {
 }
 
 impl PaneOrientation {
-    const CW: [PaneOrientation; 4] = [
+    const ALL: [PaneOrientation; 4] = [
         PaneOrientation::BookTop,
         PaneOrientation::BookRight,
         PaneOrientation::BookBottom,
@@ -52,8 +52,8 @@ impl PaneOrientation {
 
     /// Advance `steps` quarter-turns clockwise.
     pub fn rotate_cw(self, steps: u8) -> PaneOrientation {
-        let base = Self::CW.iter().position(|o| *o == self).unwrap_or(0);
-        Self::CW[(base + steps as usize) % 4]
+        let base = Self::ALL.iter().position(|o| *o == self).unwrap_or(0);
+        Self::ALL[(base + steps as usize) % 4]
     }
 
     /// A vertical divider (object and panel side by side) vs a horizontal one.
@@ -62,15 +62,28 @@ impl PaneOrientation {
     }
 }
 
-/// The user's per-view layout tweaks. `rotation` offsets the aspect-derived
-/// orientation clockwise; `divider_bias` slides the one divider (positive grows
-/// the object's share). Both reset implicitly by returning to defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// The user's per-view layout tweaks. `panel` shows or hides the section pane
+/// (tab); `rotation` offsets the aspect-derived orientation clockwise (`t`);
+/// `divider_bias` slides the one divider (positive grows the object's share).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutPrefs {
+    /// Whether the section pane is on screen at all.
+    pub panel: bool,
     /// Quarter-turns clockwise applied on top of the aspect default (0..=3).
     pub rotation: u8,
     /// Divider offset in fraction of the split axis, added to the default.
     pub divider_bias: f32,
+}
+
+impl Default for LayoutPrefs {
+    fn default() -> Self {
+        Self {
+            // The view opens with its sections in reach; tab takes them away.
+            panel: true,
+            rotation: 0,
+            divider_bias: 0.0,
+        }
+    }
 }
 
 /// The smallest pane that still splits into object + panel.
@@ -130,13 +143,15 @@ pub fn effective_orientation(area: Rect, rotation: u8) -> PaneOrientation {
     aspect_default(area).rotate_cw(rotation)
 }
 
-/// The natural orientation for the pane's shape: object on top when portrait,
-/// object on the left when landscape.
+/// The natural orientation for the pane's shape: object on top when portrait
+/// (the panel reads as a caption under it), object on the *right* when landscape
+/// — the section pane on the left is the composition that looks best, and it is
+/// the side the panel comes in from until `t` moves it.
 fn aspect_default(area: Rect) -> PaneOrientation {
     if portrait(area) {
         PaneOrientation::BookTop
     } else {
-        PaneOrientation::BookLeft
+        PaneOrientation::BookRight
     }
 }
 
@@ -165,11 +180,11 @@ pub fn stacked_object_height(height: u16) -> u16 {
 /// width and centred, so a wide terminal becomes symmetric margin rather than a
 /// giant panel with the object pinned to the left edge.
 ///
-/// Everything downstream — [`split_rects`], [`biased_span`], the divider bias,
-/// `t` rotation — runs against *this* rect rather than the raw pane, so `[`,
-/// `]` and `t` keep exactly the meaning they had; they simply act on a smaller
-/// stage. Composing the cap outside `split_rects` (instead of teaching it to
-/// stop tiling) is what keeps that function's contract, and its tests, intact.
+/// [`split_rects`] and [`biased_span`] run against *this* rect rather than the
+/// raw pane, so `[` and `]` keep exactly the meaning they had; they simply act
+/// on a smaller stage. Composing the cap outside `split_rects` (instead of
+/// teaching it to stop tiling) is what keeps that function's contract, and its
+/// tests, intact. [`book_rects`] then decides where the two rects actually sit.
 ///
 /// The orientation is decided from the **uncapped** pane by
 /// [`effective_orientation`]: the user's sense of the shape is about the
@@ -186,6 +201,73 @@ pub fn content_block(area: Rect, o: PaneOrientation) -> Rect {
         x: area.x + (area.width - width) / 2,
         width,
         ..area
+    }
+}
+
+/// The book view's two rects: the object slid toward the centre of `area`, and
+/// the section panel beside it.
+///
+/// [`content_block`] centres the *block* — object plus panel — which leaves the
+/// object itself sitting left of centre on a wide terminal. The object is the
+/// centrepiece, so it is the thing that wants the centre line: this slides it
+/// there and lets the panel take the side it was already on.
+///
+/// The block is still what *sizes* the object ([`split_rects`] runs against it),
+/// so `[` / `]` keep the step they had rather than scaling with the terminal —
+/// only the position is recomputed. The slide stops as soon as it would starve
+/// the panel below its floor, so a cramped pane degrades continuously back to
+/// exactly the old tiling instead of stepping off a cliff at some size.
+///
+/// Horizontal dividers are passed straight through: the stacked layout keeps its
+/// half-and-half spacing, which is what it looks best as. The book still finds
+/// the middle of the window there whenever the section pane is dismissed, since
+/// the object then has the whole thing.
+pub fn book_rects(area: Rect, o: PaneOrientation, bias: f32) -> (Rect, Rect, Borders) {
+    // The block sizes the object; where it and the panel *sit* is decided below.
+    let (object, panel, border) = split_rects(content_block(area, o), o, bias);
+    if !o.is_vertical_divider() {
+        return (object, panel, border);
+    }
+
+    let w = object.width;
+    let rest = area.width.saturating_sub(w);
+    // The floor we can actually afford: on a cramped pane the panel's usual
+    // minimum simply isn't there to reserve.
+    let floor = PANEL_MIN.min(rest);
+    let ideal = area.x + rest / 2;
+
+    match o {
+        PaneOrientation::BookLeft => {
+            let x = ideal.min(area.x + rest - floor).max(area.x);
+            let pw = (area.x + area.width - (x + w)).min(PANEL_MAX_COLS);
+            let object = Rect {
+                x,
+                width: w,
+                ..area
+            };
+            let panel = Rect {
+                x: x + w,
+                width: pw,
+                ..area
+            };
+            (object, panel, Borders::LEFT)
+        }
+        // Object on the right of its panel; the rule stays against the object.
+        _ => {
+            let x = ideal.max(area.x + floor).min(area.x + rest);
+            let pw = (x - area.x).min(PANEL_MAX_COLS);
+            let object = Rect {
+                x,
+                width: w,
+                ..area
+            };
+            let panel = Rect {
+                x: x - pw,
+                width: pw,
+                ..area
+            };
+            (object, panel, Borders::RIGHT)
+        }
     }
 }
 
@@ -351,15 +433,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn landscape_defaults_to_book_left() {
-        // Wider than tall (cells doubled): object left, panel right.
+    fn landscape_puts_the_section_pane_on_the_left() {
+        // Wider than tall (cells doubled): panel left, object right.
         assert_eq!(
             book_layout(Rect::new(0, 0, 120, 40), 0),
-            BookLayout::Split(PaneOrientation::BookLeft)
+            BookLayout::Split(PaneOrientation::BookRight)
         );
         assert_eq!(
             book_layout(Rect::new(0, 0, 60, 20), 0),
-            BookLayout::Split(PaneOrientation::BookLeft)
+            BookLayout::Split(PaneOrientation::BookRight)
         );
     }
 
@@ -378,14 +460,15 @@ mod tests {
 
     #[test]
     fn rotation_advances_clockwise_from_the_aspect_default() {
-        // Landscape default is BookLeft; each turn goes Left→Top→Right→Bottom.
+        // Landscape starts at BookRight (panel left); each `t` goes
+        // Right→Bottom→Left→Top.
         let a = Rect::new(0, 0, 120, 40);
-        assert_eq!(effective_orientation(a, 0), PaneOrientation::BookLeft);
-        assert_eq!(effective_orientation(a, 1), PaneOrientation::BookTop);
-        assert_eq!(effective_orientation(a, 2), PaneOrientation::BookRight);
-        assert_eq!(effective_orientation(a, 3), PaneOrientation::BookBottom);
+        assert_eq!(effective_orientation(a, 0), PaneOrientation::BookRight);
+        assert_eq!(effective_orientation(a, 1), PaneOrientation::BookBottom);
+        assert_eq!(effective_orientation(a, 2), PaneOrientation::BookLeft);
+        assert_eq!(effective_orientation(a, 3), PaneOrientation::BookTop);
         // Four turns returns to the default.
-        assert_eq!(effective_orientation(a, 4 % 4), PaneOrientation::BookLeft);
+        assert_eq!(effective_orientation(a, 4 % 4), PaneOrientation::BookRight);
     }
 
     #[test]
@@ -497,7 +580,7 @@ mod tests {
     #[test]
     fn the_content_block_bounds_both_panes() {
         for width in (26..=400).step_by(7) {
-            for o in PaneOrientation::CW {
+            for o in PaneOrientation::ALL {
                 let area = Rect::new(0, 0, width, 40);
                 let block = content_block(area, o);
                 assert!(
@@ -523,6 +606,129 @@ mod tests {
                         assert!(
                             pane.x >= block.x && pane.x + pane.width <= block.x + block.width,
                             "a pane escaped the block at {width}/{o:?}/{bias}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The point of the whole exercise: on a wide window the *object* — not the
+    /// seam between the panes — is what sits on the centre line.
+    #[test]
+    fn the_book_sits_at_the_centre_of_a_wide_pane() {
+        // 180 columns, the width the layout dev-aid prints: object 50 wide at
+        // x=65, so its centre is 90 — exactly the middle of the window.
+        let a = Rect::new(0, 0, 180, 44);
+        let (object, panel, border) = book_rects(a, PaneOrientation::BookLeft, 0.0);
+        assert_eq!((object.x, object.width), (65, BOOK_MAX_COLS));
+        assert_eq!(panel.x, 115);
+        assert_eq!(panel.width, PANEL_MAX_COLS);
+        assert_eq!(border, Borders::LEFT);
+
+        // Mirroring the divider moves the panel, not the book.
+        let (mirrored, panel, border) = book_rects(a, PaneOrientation::BookRight, 0.0);
+        assert_eq!(
+            mirrored, object,
+            "the book jumped when the panel swapped side"
+        );
+        assert_eq!(panel.x + panel.width, object.x);
+        assert_eq!(border, Borders::RIGHT);
+
+        // And it holds across widths, to within the odd leftover column.
+        for width in (86..=400).step_by(7) {
+            for o in [PaneOrientation::BookLeft, PaneOrientation::BookRight] {
+                let a = Rect::new(0, 0, width, 40);
+                let (object, _, _) = book_rects(a, o, 0.0);
+                let off = (2 * object.x + object.width).abs_diff(width);
+                assert!(off <= 1, "book off centre by {off} at {width}/{o:?}");
+            }
+        }
+    }
+
+    /// Below the width that affords the panel its floor beside a centred object,
+    /// the book slides as far as it can and no further — so the layout degrades
+    /// continuously into the old edge-to-edge tiling instead of stepping off a
+    /// cliff at some width.
+    #[test]
+    fn a_cramped_pane_slides_the_book_only_as_far_as_the_panel_allows() {
+        // 60 columns: the panel is already at its floor, so nothing moves and
+        // the result is exactly what the tiled layout gave.
+        let a = Rect::new(0, 0, 60, 30);
+        for o in PaneOrientation::ALL {
+            assert_eq!(
+                book_rects(a, o, 0.0),
+                split_rects(content_block(a, o), o, 0.0),
+                "the cramped layout changed at {o:?}"
+            );
+        }
+
+        // 80 columns: part of the way there, and the panel keeps its floor.
+        let (object, panel, _) =
+            book_rects(Rect::new(0, 0, 80, 30), PaneOrientation::BookLeft, 0.0);
+        assert_eq!(object.x, 12);
+        assert_eq!(panel.width, PANEL_MIN);
+    }
+
+    /// The stacked layout keeps its half-and-half spacing: it is what the
+    /// composition looks best as, so `book_rects` leaves those layouts exactly
+    /// as `split_rects` tiled them.
+    #[test]
+    fn a_stacked_layout_keeps_its_half_and_half_spacing() {
+        for width in [40u16, 98, 200] {
+            for height in [12u16, 30, 50, 90] {
+                for o in [PaneOrientation::BookTop, PaneOrientation::BookBottom] {
+                    for bias in [-0.3f32, 0.0, 0.3] {
+                        let a = Rect::new(0, 0, width, height);
+                        assert_eq!(
+                            book_rects(a, o, bias),
+                            split_rects(content_block(a, o), o, bias),
+                            "a stacked layout moved at {width}x{height}/{o:?}/{bias}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The same guarantee `the_content_block_bounds_both_panes` makes, for the
+    /// centred composition: whatever the width, orientation or slide, both panes
+    /// are alive, inside the pane, and do not overlap.
+    #[test]
+    fn centring_the_book_keeps_both_panes_alive() {
+        for width in (26..=400).step_by(7) {
+            for o in PaneOrientation::ALL {
+                for bias in [-1.0f32, -0.3, 0.0, 0.3, 1.0] {
+                    let area = Rect::new(0, 0, width, 40);
+                    let (object, panel, _) = book_rects(area, o, bias);
+                    let case = format!("{width}/{o:?}/{bias}");
+                    for pane in [object, panel] {
+                        assert!(pane.width > 0 && pane.height > 0, "empty pane at {case}");
+                        assert!(
+                            pane.x >= area.x && pane.x + pane.width <= area.x + area.width,
+                            "a pane escaped the window at {case}"
+                        );
+                    }
+                    // The divider's axis is the one they must not share.
+                    if o.is_vertical_divider() {
+                        assert!(
+                            object.x + object.width <= panel.x || panel.x + panel.width <= object.x,
+                            "the panes overlap at {case}"
+                        );
+                    } else {
+                        assert!(
+                            object.y + object.height <= panel.y
+                                || panel.y + panel.height <= object.y,
+                            "the panes overlap at {case}"
+                        );
+                    }
+                    // The panel keeps its floor wherever the span affords one.
+                    if o.is_vertical_divider() {
+                        let afforded = PANEL_MIN.min(width - object.width);
+                        assert!(
+                            panel.width >= afforded,
+                            "panel {} starved at {case}",
+                            panel.width
                         );
                     }
                 }
