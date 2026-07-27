@@ -22,7 +22,8 @@ See `plan.md` for the original design journal and `~/.claude/plans/` history for
 - Time either raster (release only, the caps depend on it): `make perf` runs all five reporting sweeps serially — `glyph_cost`, `glyph_wire_rate`, `raster_cost`, `frame_budget`, `wire_rate`. Serial matters: run in parallel they time each other's contention and the pixel traces read 20-30% slow.
 - Compare what each renderer costs, terminal included: `make bench`. Needs a real, **active** pane and a book with a **real cover**; it warns rather than silently producing flattering numbers when either is missing. Output lands in gitignored `perf/`: a timestamped per-frame `.jsonl` + `.txt` summary per run, plus `history.tsv` appended one row per mode per run. `make bench-trend` prints the history aligned. `make perf` runs the release-only raster/wire-rate sweeps into the same dir. Knobs are make variables, not flags on `make`: `make bench BENCH_REPS=3` (repeat, modes interleave), `BENCH_ARGS="--book x"`. Byte columns are deterministic at one rep; **latency columns are not** — re-run a surprising one at 3 reps before believing it.
 - Same comparison without giving up your terminal: **`make bench-box`** (`scripts/bench-sandbox.sh`). Runs the bench inside a disposable kitty (pinned font + window) hosting its own tmux server (`-L rbbench -f /dev/null`), against a *copy* of `database/`, so it touches neither your panes nor your library and needs no tty of yours — which is also how anything other than a person at a keyboard runs it. Refuses to start above `LOAD_MAX=2.0` (1-min load; `FORCE=1` overrides and the latency columns become suspect). **`env -u TMUX -u TMUX_PANE` is load-bearing**: inherited, they make the app DCS-wrap its queries and the fresh kitty swallows them whole, so every mode silently falls back to glyphs. Rows land in the same `history.tsv` tagged `env=box` — **trend box against box, never against `env=live`** (different font, size, neighbours). Defaults to **3 reps, and rep 1 is the terminal's warm-up**: a freshly launched kitty has never been sent an image, so `rich-always` reads 3.7ms p50 in rep 1 against 7.8-10.6ms in reps 2-3 of the same run, byte columns identical throughout. Not occlusion (reproduced with the window visible), and the in-process warm-up cannot reach it. Its acceptance test is the same calibration: if `rich-always` does not separate from `glyph` **by rep 2**, the box's latency columns are void. History also carries a `load1` column now, so a strange row stays diagnosable.
-- Bulk/standardized runner: **`Makefile`** at repo root — `make test` (workspace), `make test-import` (KOReader harness only), `make golden` (regenerate import snapshots), `make lint`, `make fmt`, `make check` (fmt+lint+test gate). Wraps `cargo-nextest` when installed, else falls back to plain `cargo test`, so nextest is never hard-required. `make help` lists targets.
+- Bulk/standardized runner: **`Makefile`** at repo root — `make test` (workspace), `make test-engine` (engine only, what CI gates), `make test-import` (KOReader harness only), `make golden` (regenerate import snapshots), `make synthetic` (regenerate the tier-1 hostile fixtures + goldens), `make corpus` / `make corpus-check` (tier-2 Gutenberg corpus), `make lint`, `make fmt`, `make check` (fmt+lint+whole-workspace test), **`make ci`** (reproduces the CI gate exactly). Wraps `cargo-nextest` when installed, else falls back to plain `cargo test`, so nextest is never hard-required. `make help` lists targets.
+- CI: `.github/workflows/ci.yml` gates PRs — fmt, `clippy --workspace --all-targets -D warnings` (whole workspace, so an engine change cannot silently break CLI/TUI), `nextest -p readingbuddy` on ubuntu + macOS, and cargo-deny. `scheduled.yml` carries what must not gate a PR (advisories, floating-stable clippy); `fuzz.yml` runs weekly. The toolchain is pinned in `rust-toolchain.toml` and `Cargo.lock` is committed.
 
 There is a `cargo-tester` agent configured to run `cargo test` and report only failures — use it before committing or after touching Rust code.
 
@@ -82,3 +83,61 @@ Cargo **workspace**, three crates:
 - New schema changes = new numbered file in `crates/engine/migrations/`; never edit an applied migration.
 - Engine tests use `sqlite::memory:` (Storage caps the pool at 1 connection for in-memory URLs — don't "fix" that). The TUI's `app.rs` tests do the same, and `every_screen_draws_at_every_size` renders every screen from 120x40 down to 1x1 — keep it passing, since a layout panic wrecks the user's tmux pane.
 - Truecolor in tmux needs `set -ga terminal-overrides ",*:RGB"`; without it the object's colors quantize to 256.
+
+## Engine standards
+
+The engine is held to a stricter bar than the TUI, and CI enforces it. These are
+the rules, and the reasons — the reasons are the part that matters.
+
+- **Degradations are typed, not stringly.** A partial failure returns a
+  `Diagnostic` (`diagnostic.rs`) carrying the provider/path plus an
+  `ErrorClass`, never a pre-formatted `String`. Its `Display` reproduces the old
+  CLI text byte-for-byte, so a change there is a change to user-visible output.
+  `Diagnostic` deliberately does **not** hold the source `EngineError`: that
+  would cost `Clone`/`Eq`, which the TUI's status buffer and the golden harness
+  both need. Add to `ErrorClass` instead.
+- **`EngineError::Other` is last-resort.** If a caller might branch on it, it
+  deserves a variant.
+- **No silently-skipping tests.** A test that `return`s when its fixture is
+  absent is green without asserting anything — `epub.rs` had two of those for
+  months. Every skip prints `SKIPPED:` and honours
+  `READINGBUDDY_REQUIRE_FIXTURES=1`, which turns it into a failure. The nightly
+  job sets it, so a broken fetch cannot masquerade as a passing build.
+- **Properties where an invariant exists**, in inline `mod props`. Prefer them
+  over more examples when the rule is general (checksums, round-trips,
+  partitions, orderings). Scope them honestly: `dedup`'s `prefer` fields are
+  order-independent and its `fill` fields are not, so only the former is
+  asserted permutation-invariant. Asserting something false and then weakening
+  it later is worse than asserting less.
+- **No network in tests, ever.** The fan-out is tested with a mock
+  `MetadataProvider`; timeouts use `#[tokio::test(start_paused = true)]`, which
+  is why `PROVIDER_TIMEOUT` must not become a config knob just to be testable.
+  `wiremock` is only for real status codes (404/429/500/truncated).
+- **Tracing: the engine emits, frontends subscribe.** The engine must never
+  install a subscriber. Two hard rules: nothing that can carry an API key goes
+  into a field without `googlebooks::scrub_key`, and **highlight text, note
+  bodies and search queries are the user's private reading — never above
+  `trace!`**. Assert on `Diagnostic`s, not log output; the one exception is
+  `tests/tracing_redaction.rs`.
+- **Fixtures are generated, not hand-written** (`cargo run -p corpus`). The
+  generator does not depend on `readingbuddy` — reusing the engine's own
+  parsing to build its fixtures would bake any bug straight into the goldens.
+  Tier 1 (`gen-synthetic`) is committed and covers *shape*; tier 2
+  (`gen-corpus`, gitignored, `make corpus`) covers *scale and realism*. Shape
+  coverage must never sit behind a download.
+- **Corpus determinism**: `ChaCha8Rng` only — not `StdRng`, whose algorithm may
+  change between `rand` versions. Fixed date epoch, never `now()`. Epubs pinned
+  by sha256; output pinned by `corpus.lock.json`.
+- **`epub` is pinned `=2.1.4`.** It shipped a breaking metadata API change in a
+  *patch* release, so a caret constraint is not safe. It is also GPL-3.0 (see
+  `deny.toml`), which makes a distributed binary GPL-3.0 as a whole — replacing
+  it with `zip` + `quick-xml` would settle both points.
+- **Fuzzing needs `-s none`** — ASAN cannot survive mlua's longjmp error
+  propagation here; measured, with numbers, in `fuzz/README.md`. Any crash found
+  gets minimized into `fuzz/seeds/`, where `tests/fuzz_seeds.rs` replays it on
+  stable on every PR. That replay is what makes fuzzing pay off.
+- **The panic hook is installed before `setup_terminal`.** `set_hook` chains via
+  `take_hook`, so the last hook installed runs first; this ordering gives
+  TUI hook → `restore_terminal()` → crash log → default. The hook must never
+  take a lock the panicking thread might hold, which is why the crash report
+  records the log file's *path* rather than a ring buffer of events.
