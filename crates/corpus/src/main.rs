@@ -13,6 +13,7 @@
 //! parsing or normalization to build its fixtures would bake any bug in those
 //! straight into the goldens; the generator stays an independent oracle.
 
+mod gutenberg;
 mod synthetic;
 
 use std::path::PathBuf;
@@ -34,6 +35,22 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Derive tier-2 sidecars from the fetched Project Gutenberg epubs.
+    GenCorpus {
+        /// PRNG seed. Output is a pure function of (seed, generator version,
+        /// epub bytes), so the same seed always reproduces the same corpus.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Highlights per sidecar.
+        #[arg(long, default_value_t = 40)]
+        per_book: usize,
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        #[arg(long)]
+        epubs: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -44,6 +61,29 @@ fn main() -> std::io::Result<()> {
             let written = synthetic::generate(&root)?;
             println!("wrote {written} fixture files under {}", root.display());
             println!("now run `make golden` to record their expected behaviour");
+            Ok(())
+        }
+        Cmd::GenCorpus {
+            seed,
+            per_book,
+            manifest,
+            epubs,
+            out,
+        } => {
+            let manifest = manifest.unwrap_or_else(gutenberg::default_manifest);
+            let epubs = epubs.unwrap_or_else(gutenberg::default_epub_dir);
+            let out = out.unwrap_or_else(gutenberg::default_out);
+            let n = gutenberg::generate(
+                &manifest,
+                &epubs,
+                &out,
+                &gutenberg::Options { seed, per_book },
+            )?;
+            println!(
+                "wrote {n} sidecars (v{}, seed {seed}) under {}",
+                gutenberg::GENERATOR_VERSION,
+                out.display()
+            );
             Ok(())
         }
     }

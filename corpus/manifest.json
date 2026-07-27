@@ -1,0 +1,37 @@
+{
+  "_comment": "Tier-2 corpus: real Project Gutenberg epubs, fetched by scripts/fetch-corpus.sh into the gitignored corpus/epub/. Chosen for diversity rather than fame — multiple scripts and languages, very long and very short, diacritics and non-Latin characters in titles and author names, multiple authors, and works with no author at all. `sha256` is filled in by `scripts/fetch-corpus.sh --record`; once set it is verified on every fetch, so a Gutenberg re-issue fails loudly instead of silently reshuffling every golden.",
+  "books": [
+    { "id": 1342, "title": "Pride and Prejudice", "author": "Jane Austen", "language": "en" },
+    { "id": 84, "title": "Frankenstein; Or, The Modern Prometheus", "author": "Mary Wollstonecraft Shelley", "language": "en" },
+    { "id": 11, "title": "Alice's Adventures in Wonderland", "author": "Lewis Carroll", "language": "en" },
+    { "id": 2701, "title": "Moby Dick; Or, The Whale", "author": "Herman Melville", "language": "en" },
+    { "id": 1661, "title": "The Adventures of Sherlock Holmes", "author": "Arthur Conan Doyle", "language": "en" },
+    { "id": 98, "title": "A Tale of Two Cities", "author": "Charles Dickens", "language": "en" },
+    { "id": 1080, "title": "A Modest Proposal", "author": "Jonathan Swift", "language": "en", "_why": "very short — exercises a spine with almost nothing in it" },
+    { "id": 2600, "title": "War and Peace", "author": "Leo Tolstoy", "language": "en", "_why": "very long — the scale case" },
+    { "id": 174, "title": "The Picture of Dorian Gray", "author": "Oscar Wilde", "language": "en" },
+    { "id": 345, "title": "Dracula", "author": "Bram Stoker", "language": "en" },
+    { "id": 1260, "title": "Jane Eyre: An Autobiography", "author": "Charlotte Brontë", "language": "en", "_why": "diacritic in the author name" },
+    { "id": 5200, "title": "Metamorphosis", "author": "Franz Kafka", "language": "en" },
+    { "id": 4300, "title": "Ulysses", "author": "James Joyce", "language": "en" },
+    { "id": 76, "title": "Adventures of Huckleberry Finn", "author": "Mark Twain", "language": "en" },
+    { "id": 16328, "title": "Beowulf: An Anglo-Saxon Epic Poem", "author": "Unknown", "language": "en", "_why": "no real author" },
+
+    { "id": 17489, "title": "Les Misérables", "author": "Victor Hugo", "language": "fr", "_why": "French, diacritics in the title" },
+    { "id": 13951, "title": "Le Petit Prince", "author": "Antoine de Saint-Exupéry", "language": "fr" },
+    { "id": 2000, "title": "Don Quijote", "author": "Miguel de Cervantes Saavedra", "language": "es", "_why": "Spanish" },
+    { "id": 21000, "title": "Der Struwwelpeter", "author": "Heinrich Hoffmann", "language": "de", "_why": "German, umlauts" },
+    { "id": 2229, "title": "Faust: Der Tragödie erster Teil", "author": "Johann Wolfgang von Goethe", "language": "de" },
+    { "id": 28054, "title": "Братья Карамазовы", "author": "Fyodor Dostoyevsky", "language": "ru", "_why": "Cyrillic title" },
+    { "id": 2554, "title": "Crime and Punishment", "author": "Fyodor Dostoyevsky", "language": "en" },
+    { "id": 24039, "title": "こころ", "author": "夏目 漱石", "language": "ja", "_why": "Japanese — space-less text, so every highlight is one word to single_word()" },
+    { "id": 1656, "title": "論語", "author": "Confucius", "language": "zh", "_why": "Chinese — same space-less property, different script" },
+    { "id": 30235, "title": "Il Decamerone", "author": "Giovanni Boccaccio", "language": "it", "_why": "Italian" },
+
+    { "id": 33283, "title": "The Federalist Papers", "author": "Alexander Hamilton, John Jay, James Madison", "language": "en", "_why": "multiple authors" },
+    { "id": 100, "title": "The Complete Works of William Shakespeare", "author": "William Shakespeare", "language": "en", "_why": "enormous spine" },
+    { "id": 25344, "title": "The Scarlet Letter", "author": "Nathaniel Hawthorne", "language": "en" },
+    { "id": 74, "title": "The Adventures of Tom Sawyer", "author": "Mark Twain", "language": "en" },
+    { "id": 219, "title": "Heart of Darkness", "author": "Joseph Conrad", "language": "en" }
+  ]
+}

@@ -16,3 +16,14 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }
+serde_json.workspace = true
+sha2.workspace = true
+epub.workspace = true
+# ChaCha8, specifically. NOT rand's StdRng, whose algorithm is explicitly
+# permitted to change between versions — which is the classic way a
+# "reproducible" corpus quietly stops being reproducible.
+rand_chacha = "0.9"
+rand_core = "0.9"
+# epub XHTML is well-formed XML, so a pull parser is enough; a full HTML5
+# parser would be a much larger dependency for no gain.
+quick-xml = "0.37"

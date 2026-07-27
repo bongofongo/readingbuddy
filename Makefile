@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-engine test-import golden lint fmt fmt-check check ci clean bench bench-box bench-trend perf
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic lint fmt fmt-check check ci clean bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -34,6 +34,9 @@ PERF_HISTORY ?= $(PERF_DIR)/history.tsv
 # across reps, so a transient cannot land entirely on one of them. Pass anything
 # else through with BENCH_ARGS, e.g. BENCH_ARGS="--book pachinko".
 BENCH_REPS ?= 1
+# Seed for the tier-2 corpus. Output is a pure function of (seed, generator
+# version, epub bytes), so changing this changes every generated sidecar.
+CORPUS_SEED ?= 42
 BENCH_ARGS ?=
 
 help: ## Show this help
@@ -114,6 +117,18 @@ ci: fmt-check lint test-engine ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only — the suite CI gates on
 	$(RUN) -p readingbuddy
+
+corpus: ## Fetch Gutenberg epubs, generate tier-2 sidecars, run the corpus tests
+	scripts/fetch-corpus.sh
+	cargo run -p corpus -- gen-corpus --seed $(CORPUS_SEED)
+	cargo test -p readingbuddy --test corpus -- --nocapture
+
+corpus-check: ## Corpus tests only (offline; skips loudly if not generated)
+	cargo test -p readingbuddy --test corpus -- --nocapture
+
+synthetic: ## Regenerate the committed tier-1 hostile fixtures, then the goldens
+	cargo run -p corpus -- gen-synthetic
+	$(MAKE) golden
 
 clean: ## cargo clean
 	cargo clean

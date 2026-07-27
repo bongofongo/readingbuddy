@@ -21,3 +21,8 @@ anki.tsv
 /crates/engine/tests/fixtures/koreader/real/*
 !/crates/engine/tests/fixtures/koreader/real/README.md
 !/crates/engine/tests/fixtures/koreader/real/.gitkeep
+
+# Tier-2 corpus: fetched Gutenberg epubs and the sidecars derived from them.
+# corpus/manifest.json IS committed (ids + checksums); the payload is not.
+/corpus/epub
+/corpus/generated
