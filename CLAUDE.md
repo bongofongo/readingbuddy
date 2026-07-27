@@ -8,6 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 See `plan.md` for the original design journal and `~/.claude/plans/` history for the 2026-07 engine redesign rationale.
 
+**Product direction lives in `docs/decisions.md`** — what is settled, no reasoning; read it before proposing features. `docs/ux-positioning.md` is the argument behind every line of it, and `docs/spec-engine-01-03.md` + `docs/prompts/` carry the next three engine items. The design axiom is **"a place, not a tool"**: state persists and is visible, nothing is modal-by-default or a dead end, idle is not blank, and there is **no task-completion framing** — places you can go, never a badge counting what you haven't done. Data ownership is **per-field with provenance recorded**: readingbuddy keeps a durable local copy of everything but is not the *origin* of what it copies (KOReader owns highlights and reading state, calibre owns files, providers own bibliographic metadata), and conflicts resolve toward the origin.
+
 ## Commands
 
 - Build: `cargo build --workspace`

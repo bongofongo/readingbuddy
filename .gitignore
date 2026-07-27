@@ -32,3 +32,6 @@ anki.tsv
 /fuzz/target
 /fuzz/corpus
 /fuzz/artifacts
+
+# The user's own calibre library / personal reading data. Never commit.
+/personal_data
