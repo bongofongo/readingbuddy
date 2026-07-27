@@ -5,6 +5,7 @@
 
 pub mod book;
 pub mod config;
+pub mod crash;
 pub mod diagnostic;
 pub mod epub;
 pub mod error;
@@ -22,6 +23,7 @@ use reqwest::Client;
 
 pub use book::{Book, isbn10_to_13, normalize_isbn};
 pub use config::EngineConfig;
+pub use crash::CrashContext;
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
 pub use koreader::{ImportReport, MatchMethod};

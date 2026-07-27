@@ -76,6 +76,11 @@ struct Cli {
     #[arg(long)]
     probe: bool,
 
+    /// Panic on purpose, to verify the crash hook restores the terminal, writes
+    /// a report, and prints where it went. Hidden: a test affordance, not UI.
+    #[arg(long, hide = true)]
+    panic_now: bool,
+
     /// Push N rich frames at the terminal as fast as it will take them and
     /// report the achieved rate. Separates our cost from the terminal's: run it
     /// in a real pane, since it measures the pty and the compositor too.
@@ -213,11 +218,29 @@ async fn main() -> Result<()> {
     }
     // Held for the whole run: dropping the guard flushes, and dropping it early
     // truncates the tail of the log — the part that matters after a crash.
+    // Installed BEFORE setup_terminal, and that ordering is the whole trick:
+    // `set_hook` chains via `take_hook`, so the LAST hook installed runs FIRST.
+    // setup_terminal installs the terminal-restoring hook afterwards, giving
+    // TUI hook -> restore_terminal() -> this -> write file -> std default.
+    // The pane is therefore already sane before anything prints.
+    readingbuddy::crash::install_hook(readingbuddy::CrashContext {
+        app: "readingbuddy-tui",
+        version: env!("CARGO_PKG_VERSION"),
+        log_dir: engine_config.log_dir.clone(),
+        log_file: Some(engine_config.log_dir.join("tui.log")),
+    });
+
     let log = logging::init(&engine_config.log_dir, None);
     if let Some(h) = &log {
         tracing::info!(version = env!("CARGO_PKG_VERSION"), log = %h.path.display(), "readingbuddy-tui starting");
     }
     let engine = Engine::open(engine_config).await?;
+
+    // Deliberate crash, for verifying the hook end-to-end (terminal restored,
+    // report written, path echoed). Hidden: it is a test affordance, not UI.
+    if cli.panic_now {
+        panic!("--panic-now: deliberate crash to exercise the crash hook");
+    }
 
     if let Some(spec) = &cli.dump_frame {
         return dump_frame(&engine, spec, &cli).await;

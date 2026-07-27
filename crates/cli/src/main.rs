@@ -31,6 +31,10 @@ struct Cli {
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     quiet: bool,
 
+    /// Panic on purpose, to verify the crash hook. Hidden: a test affordance.
+    #[arg(long, global = true, hide = true)]
+    panic_now: bool,
+
     /// Google Books API key for this invocation (overrides the stored one;
     /// prefer `readingbuddy config set google-api-key` for persistence)
     #[arg(
@@ -190,6 +194,15 @@ async fn main() -> Result<()> {
         .google_api_key
         .clone()
         .or(config_file::load()?.google_api_key);
+    readingbuddy::crash::install_hook(readingbuddy::CrashContext {
+        app: "readingbuddy",
+        version: env!("CARGO_PKG_VERSION"),
+        log_dir: config.log_dir.clone(),
+        log_file: None,
+    });
+    if cli.panic_now {
+        panic!("--panic-now: deliberate crash to exercise the crash hook");
+    }
     let engine = Engine::open(config).await?;
 
     match cli.cmd {
