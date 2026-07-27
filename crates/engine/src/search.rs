@@ -406,3 +406,236 @@ mod tests {
         assert!(one > deep);
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Every non-ISBN term's ceiling, summed: title 40 + query 30 + author 25 +
+    /// publisher 10 + translator 10 + year 5 + language 5 + position 8 +
+    /// multi-source 6. Kept here so the dominance property below states *why*
+    /// it holds rather than just asserting a number.
+    const MAX_NON_ISBN_SCORE: f64 = 40.0 + 30.0 + 25.0 + 10.0 + 10.0 + 5.0 + 5.0 + 8.0 + 6.0;
+
+    fn text() -> impl Strategy<Value = String> {
+        // Deliberately includes punctuation, accents and CJK: `normalize` and
+        // jaro_winkler both have to cope with whatever a provider returns.
+        prop_oneof![
+            "[a-zA-Z ]{0,20}",
+            "[\\p{Latin}\\p{Han}\\p{Hiragana}'’,.:!-]{0,20}",
+            Just(String::new()),
+        ]
+    }
+
+    fn arb_book() -> impl Strategy<Value = Book> {
+        (
+            proptest::option::of(text()),
+            proptest::collection::vec(text(), 0..3),
+            proptest::option::of(text()),
+            proptest::option::of(1000i64..2100),
+            proptest::option::of("[a-z]{2}"),
+        )
+            .prop_map(|(title, authors, publisher, publish_year, language)| Book {
+                title,
+                authors,
+                publisher,
+                publish_year,
+                language,
+                ..Default::default()
+            })
+    }
+
+    fn arb_req() -> impl Strategy<Value = SearchRequest> {
+        (
+            proptest::option::of(text()),
+            proptest::option::of(text()),
+            proptest::option::of(text()),
+            proptest::option::of(1000i64..2100),
+        )
+            .prop_map(|(query, title, author, year)| SearchRequest {
+                query,
+                title,
+                author,
+                year,
+                ..Default::default()
+            })
+    }
+
+    proptest! {
+        /// `federated_search` sorts with `total_cmp`, which does not panic on
+        /// NaN — it silently orders by bit pattern instead, so a NaN score
+        /// would scramble results with nothing looking wrong. jaro_winkler("",
+        /// "") returning 1.0 rather than NaN is the load-bearing assumption.
+        #[test]
+        fn rank_is_always_finite(
+            book in arb_book(),
+            req in arb_req(),
+            pos in 0usize..1000,
+            two_sources in any::<bool>(),
+        ) {
+            let sources: Vec<ProviderId> = if two_sources {
+                vec![ProviderId::OpenLibrary, ProviderId::GoogleBooks]
+            } else {
+                vec![ProviderId::OpenLibrary]
+            };
+            let s = rank(&book, &sources, pos, &req);
+            prop_assert!(s.is_finite(), "non-finite score {} for {:?}", s, book.title);
+            prop_assert!(s >= 0.0, "negative score {}", s);
+        }
+
+        /// An exact ISBN match must outrank anything a non-ISBN match can
+        /// possibly accumulate. Pinning this means a later "let's weight titles
+        /// more heavily" that breaks it fails here rather than silently
+        /// reordering someone's search.
+        #[test]
+        fn an_exact_isbn_match_always_wins(
+            other in arb_book(),
+            req_extra in arb_req(),
+            pos_a in 0usize..50,
+            pos_b in 0usize..50,
+        ) {
+            let isbn = "9780316228534";
+            let mut req = req_extra;
+            req.isbn = Some(isbn.to_string());
+
+            let matching = Book {
+                isbn_13: Some(isbn.to_string()),
+                ..Default::default()
+            };
+            // The rival gets every advantage: both providers, top position.
+            let mut rival = other;
+            rival.isbn_13 = None;
+            rival.isbn_10 = None;
+
+            let hit = rank(&matching, &[ProviderId::OpenLibrary], pos_a, &req);
+            let miss = rank(
+                &rival,
+                &[ProviderId::OpenLibrary, ProviderId::GoogleBooks],
+                pos_b,
+                &req,
+            );
+
+            prop_assert!(miss <= MAX_NON_ISBN_SCORE, "score model changed: {}", miss);
+            prop_assert!(
+                hit > miss,
+                "ISBN match ({}) did not outrank a non-match ({})", hit, miss
+            );
+        }
+
+        /// Monotone in position: a result the provider ranked higher never
+        /// scores lower for that reason alone.
+        #[test]
+        fn earlier_positions_never_score_lower(
+            book in arb_book(),
+            req in arb_req(),
+            a in 0usize..500,
+            b in 0usize..500,
+        ) {
+            prop_assume!(a < b);
+            let src = [ProviderId::OpenLibrary];
+            prop_assert!(rank(&book, &src, a, &req) >= rank(&book, &src, b, &req));
+        }
+
+        #[test]
+        fn agreement_between_providers_never_hurts(book in arb_book(), req in arb_req()) {
+            let one = rank(&book, &[ProviderId::OpenLibrary], 3, &req);
+            let two = rank(
+                &book,
+                &[ProviderId::OpenLibrary, ProviderId::GoogleBooks],
+                3,
+                &req,
+            );
+            prop_assert!(two >= one);
+        }
+
+        #[test]
+        fn normalize_is_idempotent_and_well_shaped(s in text()) {
+            let once = normalize(&s);
+            prop_assert_eq!(normalize(&once), once.clone());
+            prop_assert!(!once.starts_with(' ') && !once.ends_with(' '), "{:?}", once);
+            prop_assert!(!once.contains("  "), "double space in {:?}", once);
+            prop_assert!(
+                once.chars().all(|c| c.is_alphanumeric() || c == ' '),
+                "unexpected char in {:?}", once
+            );
+        }
+
+        /// `same_work` decides whether two provider results are the same book.
+        /// It must be symmetric — an asymmetry would make dedup's output depend
+        /// on provider ordering. Transitivity is deliberately NOT asserted:
+        /// near-match chains are legitimately non-transitive under a similarity
+        /// threshold, and demanding it would be demanding a different algorithm.
+        #[test]
+        fn same_work_is_symmetric(a in arb_book(), b in arb_book()) {
+            prop_assert_eq!(same_work(&a, &b), same_work(&b, &a));
+        }
+
+        /// Dedup can only ever merge, never invent or lose a work.
+        #[test]
+        fn dedup_never_grows_and_never_empties(
+            books in proptest::collection::vec(arb_book(), 0..8),
+        ) {
+            let raw: Vec<ProviderBook> = books
+                .into_iter()
+                .enumerate()
+                .map(|(i, book)| ProviderBook {
+                    book,
+                    provider: if i % 2 == 0 {
+                        ProviderId::OpenLibrary
+                    } else {
+                        ProviderId::GoogleBooks
+                    },
+                    position: i,
+                })
+                .collect();
+            let n = raw.len();
+            let out = dedup(raw);
+            prop_assert!(out.len() <= n);
+            prop_assert_eq!(out.is_empty(), n == 0);
+        }
+
+        /// Reordering the providers' replies must not change *which* works come
+        /// out, nor the ISBN-bearing fields.
+        ///
+        /// Scoped to the `prefer`-managed fields on purpose. The `fill` fields
+        /// (publisher, year, cover_url) are first-wins and therefore genuinely
+        /// order-dependent by design — asserting full commutativity would fail
+        /// for a reason that would then have to be relitigated rather than
+        /// fixed.
+        #[test]
+        fn dedup_identity_is_permutation_invariant(
+            books in proptest::collection::vec(arb_book(), 1..6),
+        ) {
+            let mk = |order: Vec<Book>| -> Vec<ProviderBook> {
+                order
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, book)| ProviderBook {
+                        book,
+                        provider: ProviderId::OpenLibrary,
+                        position: i,
+                    })
+                    .collect()
+            };
+            let forward = dedup(mk(books.clone()));
+            let mut reversed_input = books.clone();
+            reversed_input.reverse();
+            let backward = dedup(mk(reversed_input));
+
+            prop_assert_eq!(
+                forward.len(),
+                backward.len(),
+                "reordering changed how many distinct works were found"
+            );
+
+            let mut a: Vec<Option<String>> =
+                forward.iter().map(|m| m.book.isbn_13.clone()).collect();
+            let mut b: Vec<Option<String>> =
+                backward.iter().map(|m| m.book.isbn_13.clone()).collect();
+            a.sort();
+            b.sort();
+            prop_assert_eq!(a, b, "reordering changed the set of ISBNs");
+        }
+    }
+}

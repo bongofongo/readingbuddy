@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+proptest = "1"
 # For the redaction test's capturing layer only. The engine itself must never
 # depend on a subscriber.
 tracing-subscriber.workspace = true

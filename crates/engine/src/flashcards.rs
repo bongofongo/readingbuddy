@@ -64,3 +64,81 @@ mod tests {
         assert_eq!(lines[2], "mot\tline one line two\tA Book");
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn row(word: &str, context: Option<&str>, title: &str) -> FlashcardRow {
+        FlashcardRow {
+            id: 1,
+            word: word.to_string(),
+            context: context.map(str::to_string),
+            book_title: title.to_string(),
+            exported: false,
+        }
+    }
+
+    proptest! {
+        /// Anki splits on tabs and newlines, so a card whose text contains
+        /// either would silently become a malformed row — or two. `escape_tsv`
+        /// handles this today; this pins it, because the failure mode is a
+        /// corrupted import that looks fine until you open the deck.
+        #[test]
+        fn every_exported_row_has_exactly_three_fields(
+            cards in proptest::collection::vec(
+                (".{0,30}", proptest::option::of(".{0,30}"), ".{0,30}"),
+                0..6,
+            ),
+        ) {
+            let rows: Vec<FlashcardRow> = cards
+                .iter()
+                .map(|(w, c, t)| row(w, c.as_deref(), t))
+                .collect();
+            let tsv = export_tsv(&rows);
+
+            let lines: Vec<&str> = tsv.lines().collect();
+            // Two directive lines, then one line per card — no more, which is
+            // what proves nothing smuggled in a newline.
+            prop_assert_eq!(lines.len(), 2 + rows.len(), "row count changed: {:?}", tsv);
+            prop_assert!(lines[0].starts_with('#') && lines[1].starts_with('#'));
+
+            for line in lines.iter().skip(2) {
+                prop_assert_eq!(
+                    line.split('\t').count(),
+                    3,
+                    "not a 3-field row: {:?}", line
+                );
+            }
+        }
+
+        /// What `single_word` promises its one caller (the KOReader import,
+        /// which turns the result straight into a flashcard).
+        #[test]
+        fn a_single_word_is_really_a_single_clean_word(s in ".{0,40}") {
+            if let Some(w) = single_word(&s) {
+                prop_assert!(!w.is_empty());
+                prop_assert!(
+                    !w.chars().any(char::is_whitespace),
+                    "whitespace in {:?} from {:?}", w, s
+                );
+                // Edge punctuation is stripped from both ends.
+                prop_assert!(w.chars().next().unwrap().is_alphanumeric(), "{:?}", w);
+                prop_assert!(w.chars().last().unwrap().is_alphanumeric(), "{:?}", w);
+                prop_assert!(s.contains(&w), "{:?} is not a substring of {:?}", w, s);
+            }
+        }
+
+        /// Anything with a space in it is a passage, not a vocabulary word.
+        #[test]
+        fn multi_word_text_is_never_a_flashcard(a in "[a-z]{1,8}", b in "[a-z]{1,8}") {
+            prop_assert_eq!(single_word(&format!("{a} {b}")), None);
+        }
+
+        #[test]
+        fn single_word_never_panics(s in ".{0,100}") {
+            let _ = single_word(&s);
+        }
+    }
+}

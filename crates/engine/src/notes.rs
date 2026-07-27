@@ -139,19 +139,30 @@ fn frontmatter(
     fm
 }
 
-/// Byte offset within `rest` of the `\n` that begins a closing `---` fence: a
-/// line whose entire content is three dashes. Returns `None` if there is none.
+/// True when a closing `---` is the whole line — i.e. what follows the three
+/// dashes is a line break or the end of input. This is what separates a real
+/// fence from a `----` horizontal rule or a `---foo`.
+fn is_line_end(after: &str) -> bool {
+    after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n")
+}
+
+/// Byte offset within `rest` just past a closing `---` fence, or `None`.
 fn find_closing_fence(rest: &str) -> Option<usize> {
+    // The fence can be the very first line — an empty frontmatter block,
+    // `---\n---\n`. Searching only for `"\n---"` misses it, because there is no
+    // preceding newline to match, and the whole file then reads as body.
+    if let Some(after) = rest.strip_prefix("---")
+        && is_line_end(after)
+    {
+        return Some("---".len());
+    }
     let mut from = 0;
     while let Some(rel) = rest[from..].find("\n---") {
-        let at = from + rel;
-        // What follows the three dashes decides whether this is the fence or
-        // just a longer rule / some other text starting with dashes.
-        let after = &rest[at + "\n---".len()..];
-        if after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n") {
-            return Some(at);
+        let past = from + rel + "\n---".len();
+        if is_line_end(&rest[past..]) {
+            return Some(past);
         }
-        from = at + 1;
+        from += rel + 1;
     }
     None
 }
@@ -167,11 +178,11 @@ pub fn frontmatter_and_body(content: &str) -> (&str, &str) {
     // `"\n---"` also matched `\n----` (an ordinary markdown horizontal rule)
     // and `\n---foo`, either of which would be taken as the terminator and
     // mangle the split — losing part of the user's note body into the header.
-    let Some(end) = find_closing_fence(rest) else {
+    let Some(past_fence) = find_closing_fence(rest) else {
         return ("", content);
     };
-    // Byte offset just past the closing `\n---` line's newlines.
-    let after_close = "---\n".len() + end + "\n---".len();
+    // Byte offset just past the closing `---`, then past its trailing newlines.
+    let after_close = "---\n".len() + past_fence;
     let body_start = after_close + content[after_close..].len()
         - content[after_close..].trim_start_matches('\n').len();
     (&content[..body_start], &content[body_start..])
@@ -376,6 +387,21 @@ mod tests {
         assert_eq!(b, "See ---foo below.\n");
     }
 
+    /// Found by the partition property below, shrunk to this: the closing
+    /// fence of an *empty* frontmatter block sits on the first line, where a
+    /// search for "\n---" cannot see it — so the whole file read as body.
+    #[test]
+    fn an_empty_frontmatter_block_is_still_frontmatter() {
+        let (h, b) = frontmatter_and_body("---\n---\n\nbody text\n");
+        assert_eq!(h, "---\n---\n\n");
+        assert_eq!(b, "body text\n");
+
+        // And with nothing after it at all.
+        let (h2, b2) = frontmatter_and_body("---\n---\n");
+        assert_eq!(h2, "---\n---\n");
+        assert_eq!(b2, "");
+    }
+
     /// Whatever the input, the two halves must reassemble into exactly the
     /// original. `update_note_body` rewrites `header + new_body`, so any byte
     /// lost here is a byte lost from someone's note file.
@@ -492,5 +518,96 @@ mod tests {
         assert_eq!(rec[0].location.as_deref(), Some("Chapter 3"));
 
         std::fs::remove_dir_all(&vault).ok();
+    }
+}
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The strongest thing that can be said about the split, and the one
+        /// that protects the user's writing: `update_note_body` rewrites
+        /// `header + new_body`, so any byte this loses is a byte lost from a
+        /// note file on disk.
+        #[test]
+        fn the_split_is_always_a_partition(content in ".{0,200}") {
+            let (h, b) = frontmatter_and_body(&content);
+            prop_assert_eq!(format!("{h}{b}"), content.clone());
+        }
+
+        /// Generated note-shaped input, so the property exercises the real
+        /// parsing path rather than mostly hitting the no-frontmatter early
+        /// return.
+        #[test]
+        fn note_shaped_input_splits_cleanly(
+            keys in proptest::collection::vec("[a-z-]{1,10}", 0..5),
+            body in ".{0,80}",
+        ) {
+            let mut content = String::from("---\n");
+            for (i, k) in keys.iter().enumerate() {
+                content.push_str(&format!("{k}: value{i}\n"));
+            }
+            content.push_str("---\n\n");
+            content.push_str(&body);
+
+            let (h, b) = frontmatter_and_body(&content);
+            prop_assert_eq!(format!("{h}{b}"), content.clone());
+            prop_assert!(h.starts_with("---\n"), "header lost its opening fence");
+            prop_assert_eq!(b, body.as_str());
+        }
+
+        /// `slugify` names a file on disk. Empty, or `.`/`..`, or something
+        /// with a separator in it would be a broken or dangerous path.
+        #[test]
+        fn a_slug_is_always_a_safe_filename(s in ".{0,120}") {
+            let slug = slugify(&s);
+            prop_assert!(!slug.is_empty());
+            prop_assert!(!slug.starts_with('-') && !slug.ends_with('-'), "{:?}", slug);
+            prop_assert!(!slug.contains("--"), "{:?}", slug);
+            prop_assert!(slug != "." && slug != "..", "{:?}", slug);
+            prop_assert!(
+                !slug.contains('/') && !slug.contains('\\') && !slug.contains(':'),
+                "path separator in {:?}", slug
+            );
+            // The 60 cap is a *byte* check applied after pushing, so multibyte
+            // input can overshoot by up to one character's width. Assert the
+            // real bound rather than a 60 that would be wrong.
+            prop_assert!(slug.len() <= 60 + 4, "unbounded slug: {} bytes", slug.len());
+            prop_assert_eq!(slugify(&slug), slug.clone(), "slugify is not idempotent");
+        }
+
+        #[test]
+        fn wikilink_targets_are_always_substrings_of_the_body(body in ".{0,200}") {
+            let links = extract_wikilinks(&body);
+            let mut seen = Vec::new();
+            for l in &links {
+                prop_assert!(!l.is_empty());
+                prop_assert!(body.contains(l.as_str()), "{:?} not in body", l);
+                prop_assert!(!l.contains(']') && !l.contains('|') && !l.contains('#'), "{:?}", l);
+                prop_assert!(!seen.contains(l), "duplicate target {:?}", l);
+                seen.push(l.clone());
+            }
+        }
+
+        #[test]
+        fn well_formed_wikilinks_are_extracted(
+            names in proptest::collection::vec("[a-z][a-z ]{0,10}", 1..4),
+        ) {
+            let body: String = names
+                .iter()
+                .map(|n| format!("[[{n}]] "))
+                .collect();
+            let got = extract_wikilinks(&body);
+            let mut want: Vec<String> = Vec::new();
+            for n in &names {
+                let t = n.trim().to_string();
+                if !t.is_empty() && !want.contains(&t) {
+                    want.push(t);
+                }
+            }
+            prop_assert_eq!(got, want);
+        }
     }
 }
