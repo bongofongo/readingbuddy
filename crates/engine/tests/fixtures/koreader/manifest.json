@@ -1,11 +1,13 @@
 {
-  "_comment": "Books to seed (Storage::upsert_book) before importing each synthetic fixture. Sidecars without a sibling .epub match the library by fuzzy title, so the title here must match the fixture's doc_props.title. Fixtures with an empty books list are expected to stay unmatched.",
+  "_comment": "Books to seed (Storage::upsert_book) before importing each synthetic fixture. Sidecars without a sibling .epub match the library by fuzzy title, so the title here must match the fixture's doc_props.title. Fixtures with an empty books list are expected to stay unmatched. A book may also carry isbn_10/isbn_13/language; `expect.match_via` ('isbn' or 'title') is asserted against BookImportStats.matched_by, which is the only thing guarding the sibling-epub ISBN branch — fuzzy title matching would otherwise silently rescue it. `Gen-*` fixtures are written by `cargo run -p corpus -- gen-synthetic`.",
   "fixtures": {
     "Pachinko.sdr": {
-      "books": [{ "title": "Pachinko", "authors": ["Min Jin Lee"] }]
+      "books": [{ "title": "Pachinko", "authors": ["Min Jin Lee"] }],
+      "expect": { "match_via": "title" }
     },
     "The-Trial.sdr": {
-      "books": [{ "title": "The Trial", "authors": ["Franz Kafka"] }]
+      "books": [{ "title": "The Trial", "authors": ["Franz Kafka"] }],
+      "expect": { "match_via": "title" }
     },
     "Multi-Chapter.sdr": {
       "books": [{ "title": "The Odyssey", "authors": ["Homer"] }]
@@ -21,6 +23,42 @@
     },
     "Unmatched.sdr": {
       "books": []
-    }
+    },
+
+    "Gen-Isbn-Match.sdr": {
+      "_note": "The seeded title is deliberately nothing like the sidecar's doc_props.title, so a match can ONLY come from the sibling epub's ISBN.",
+      "books": [
+        {
+          "title": "The ISBN Matched Book",
+          "authors": ["A Generated Author"],
+          "isbn_13": "9780316769488",
+          "language": "en"
+        }
+      ],
+      "expect": { "match_via": "isbn" }
+    },
+    "Gen-Holey-Annotations.sdr": {
+      "books": [{ "title": "Holey Book", "authors": ["A Syncer"] }]
+    },
+    "Gen-No-Datetime.sdr": {
+      "books": [{ "title": "Undated Book", "authors": ["No Clock"] }]
+    },
+    "Gen-Duplicate-Entries.sdr": {
+      "books": [{ "title": "Doubled Book", "authors": ["Sync Conflict"] }]
+    },
+    "Gen-Both-Layouts.sdr": {
+      "books": [{ "title": "Both Layouts", "authors": ["Two Eras"] }]
+    },
+    "Gen-Incomplete-Entries.sdr": {
+      "books": [{ "title": "Incomplete Book", "authors": ["Half Written"] }]
+    },
+    "Gen-Pdf-Sidecar.sdr": {
+      "books": [{ "title": "A Scanned Book", "authors": ["Pdf Author"] }]
+    },
+
+    "Gen-No-Doc-Props.sdr": { "books": [] },
+    "Gen-Not-A-Table.sdr": { "books": [] },
+    "Gen-Not-Utf8.sdr": { "books": [] },
+    "Gen-Runaway-Loop.sdr": { "books": [] }
   }
 }

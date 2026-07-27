@@ -1,0 +1,32 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "Undated Book",
+      "flashcard_words": [
+        "elsewhere"
+      ],
+      "flashcards": 1,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": null,
+          "note": null,
+          "page": 1,
+          "text": "same position"
+        },
+        {
+          "chapter": null,
+          "ko_datetime": null,
+          "note": null,
+          "page": 9,
+          "text": "elsewhere"
+        }
+      ],
+      "inserted": 2,
+      "matched_by": "title",
+      "skipped": 1
+    }
+  ],
+  "unmatched": []
+}

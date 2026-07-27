@@ -1,0 +1,23 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "Incomplete Book",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": "2026-04-03 10:00:00",
+          "note": null,
+          "page": 3,
+          "text": "a real one"
+        }
+      ],
+      "inserted": 1,
+      "matched_by": "title",
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

@@ -1,0 +1,23 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "A Scanned Book",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": "2026-05-01 10:00:00",
+          "note": null,
+          "page": 7,
+          "text": "from a pdf"
+        }
+      ],
+      "inserted": 1,
+      "matched_by": "title",
+      "skipped": 0
+    }
+  ],
+  "unmatched": []
+}

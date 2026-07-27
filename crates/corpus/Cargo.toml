@@ -1,0 +1,18 @@
+[package]
+name = "corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "corpus"
+path = "src/main.rs"
+
+# Deliberately does NOT depend on `readingbuddy`. A generator that reused the
+# engine's own normalize_isbn to build fixtures would bless a bug in
+# normalize_isbn into every golden — the generator has to stay an independent
+# oracle.
+[dependencies]
+clap.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }

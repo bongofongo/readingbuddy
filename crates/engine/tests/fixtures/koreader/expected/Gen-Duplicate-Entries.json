@@ -1,0 +1,23 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "Doubled Book",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": "2026-02-02 09:00:00",
+          "note": null,
+          "page": 12,
+          "text": "said twice"
+        }
+      ],
+      "inserted": 1,
+      "matched_by": "title",
+      "skipped": 1
+    }
+  ],
+  "unmatched": []
+}

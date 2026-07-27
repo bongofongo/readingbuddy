@@ -71,6 +71,12 @@ async fn seed_books(storage: &Storage, books: &Value) {
             .upsert_book(&Book {
                 title: b["title"].as_str().map(str::to_owned),
                 authors,
+                // Optional, and the reason the schema was extended: without an
+                // ISBN on the seeded book, the sibling-epub match path can
+                // never fire and stays untested.
+                isbn_10: b["isbn_10"].as_str().map(str::to_owned),
+                isbn_13: b["isbn_13"].as_str().map(str::to_owned),
+                language: b["language"].as_str().map(str::to_owned),
                 ..Default::default()
             })
             .await
@@ -173,6 +179,7 @@ async fn import_matches_golden() {
     let update = std::env::var("UPDATE_GOLDEN").is_ok();
     let man = manifest();
     let mut failures = Vec::new();
+    let mut produced: Vec<PathBuf> = Vec::new();
 
     for fixture in synthetic_fixtures() {
         let books = man
@@ -186,6 +193,7 @@ async fn import_matches_golden() {
         if update {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, format!("{}\n", pretty(&actual))).unwrap();
+            produced.push(path);
             continue;
         }
 
@@ -210,10 +218,82 @@ async fn import_matches_golden() {
     }
 
     if update {
-        eprintln!("UPDATE_GOLDEN: rewrote golden snapshots.");
+        // Regeneration used to be a pure overwrite that never removed anything,
+        // so deleting a fixture left its golden behind to rot — still loaded,
+        // still green, guarding nothing.
+        let expected_dir = fixtures_root().join("expected");
+        let mut stale = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&expected_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("json") && !produced.contains(&p)
+                {
+                    stale.push(p);
+                }
+            }
+        }
+        stale.sort();
+        for p in &stale {
+            std::fs::remove_file(p).expect("remove stale golden");
+            eprintln!("UPDATE_GOLDEN: removed stale golden {}", p.display());
+        }
+        eprintln!(
+            "UPDATE_GOLDEN: rewrote {} golden snapshots.",
+            produced.len()
+        );
         return;
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
+}
+
+/// The sibling-epub ISBN branch is the one match path that a failure hides:
+/// break it and fuzzy title matching silently rescues almost everything, with
+/// every other golden field unchanged. `expect.match_via` in the manifest is
+/// what makes that failure visible.
+#[tokio::test]
+async fn fixtures_match_by_the_method_the_manifest_expects() {
+    let man = manifest();
+    let mut checked = 0;
+
+    for fixture in synthetic_fixtures() {
+        let Some(want) = man
+            .get(&fixture)
+            .and_then(|f| f.get("expect"))
+            .and_then(|e| e.get("match_via"))
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        let books = man
+            .get(&fixture)
+            .and_then(|f| f.get("books"))
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+
+        let storage = mem_storage().await;
+        seed_books(&storage, &books).await;
+        let report = koreader::import(&storage, &synthetic_dir().join(&fixture), false)
+            .await
+            .expect("import");
+
+        assert_eq!(
+            report.imported.len(),
+            1,
+            "{fixture}: expected exactly one matched book, got {:?}",
+            report.imported
+        );
+        assert_eq!(
+            report.imported[0].matched_by.to_string(),
+            want,
+            "{fixture}: matched by the wrong method"
+        );
+        checked += 1;
+    }
+
+    assert!(
+        checked > 0,
+        "no fixture declares expect.match_via — the ISBN branch is unguarded"
+    );
 }
 
 #[tokio::test]
@@ -254,12 +334,17 @@ async fn reimport_is_strictly_idempotent() {
         for s in &second.imported {
             assert_eq!(s.inserted, 0, "{fixture}: re-import inserted rows");
         }
-        // Second-run skipped count equals what the first run inserted.
-        let first_inserted: usize = first.imported.iter().map(|s| s.inserted).sum();
+        // On a re-import every entry the sidecar contains must be skipped —
+        // which is `inserted + skipped` from the first run, not `inserted`
+        // alone. A sidecar can carry duplicates of its *own* entries (KOReader
+        // emits them after a sync conflict), so the first run already skips
+        // some; assuming otherwise made this assertion accidentally specific to
+        // duplicate-free fixtures.
+        let first_seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
         let second_skipped: usize = second.imported.iter().map(|s| s.skipped).sum();
         assert_eq!(
-            first_inserted, second_skipped,
-            "{fixture}: skipped count != original inserted"
+            first_seen, second_skipped,
+            "{fixture}: re-import did not skip every entry it saw"
         );
 
         // Every row must be byte-for-byte unchanged: no overwrite, reorder, dup.
@@ -297,34 +382,16 @@ async fn appends_only_new_on_partial_reimport() {
     let base_inserted = first.imported[0].inserted;
     let before = highlight_rows(&storage, book_id).await;
 
-    // Build a superset sidecar in a temp dir: original annotations + one more.
-    let tmp = std::env::temp_dir().join(format!("rb-ko-superset-{}", std::process::id()));
-    let sdr = tmp.join("Pachinko.sdr");
-    std::fs::create_dir_all(&sdr).unwrap();
-    let original = std::fs::read_to_string(base.join("metadata.epub.lua")).unwrap();
-    let extra = r#"        [4] = {
-            ["chapter"] = "Chapter Three",
-            ["datetime"] = "2026-01-07 10:00:00",
-            ["drawer"] = "lighten",
-            ["pageno"] = 70,
-            ["pos0"] = "/body/DocFragment[10]/body/p[1]/text().0",
-            ["pos1"] = "/body/DocFragment[10]/body/p[1]/text().12",
-            ["text"] = "A brand new highlight added later.",
-        },
-"#;
-    // Insert the extra entry just before the annotations table closes.
-    let marker = "    },\n    [\"doc_props\"]";
-    let superset = original.replacen(marker, &format!("{extra}    }},\n    [\"doc_props\"]"), 1);
-    assert!(
-        superset.contains("A brand new highlight"),
-        "superset injection failed"
-    );
-    std::fs::write(sdr.join("metadata.epub.lua"), superset).unwrap();
-
-    let second = koreader::import(&storage, &tmp, false)
+    // The superset is a committed fixture, not a string splice. This used to
+    // do `original.replacen("    },\n    [\"doc_props\"]", ..)` against
+    // Pachinko's literal indentation, so reformatting that file silently broke
+    // this test. It lives under `variants/` because fixture discovery is a
+    // NON-recursive read_dir — invisible to the golden loop, so it needs no
+    // golden of its own.
+    let superset_dir = synthetic_dir().join("variants/Pachinko-Superset.sdr");
+    let second = koreader::import(&storage, &superset_dir, false)
         .await
         .expect("superset import");
-    std::fs::remove_dir_all(&tmp).ok();
 
     let s = &second.imported[0];
     assert_eq!(s.inserted, 1, "exactly one new highlight expected");
@@ -403,8 +470,14 @@ async fn real_exports_are_idempotent() {
     let real = fixtures_root().join("real");
     let sidecars = koreader::find_sidecars(&real).expect("scan real dir");
     if sidecars.is_empty() {
+        if std::env::var("READINGBUDDY_REQUIRE_FIXTURES").is_ok() {
+            panic!(
+                "REQUIRE_FIXTURES set but no drop-in exports under {}",
+                real.display()
+            );
+        }
         eprintln!(
-            "real_exports_are_idempotent: no drop-in exports under {} — skipped",
+            "SKIPPED real_exports_are_idempotent: no drop-in exports under {}",
             real.display()
         );
         return;
@@ -465,5 +538,87 @@ async fn real_exports_are_idempotent() {
         "real_exports_are_idempotent: verified {} sidecar(s), {} book(s) imported",
         sidecars.len(),
         first.imported.len()
+    );
+}
+
+/// A real library is a directory tree, not a flat list of `.sdr` dirs. Nothing
+/// covered the recursive walk, the depth cap, or the rule that a non-sidecar
+/// file inside a `.sdr` is ignored.
+#[tokio::test]
+async fn a_nested_library_tree_is_walked_to_its_leaves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let deep = tmp
+        .path()
+        .join("Fiction/Translated/Japanese/Modern/The Trial.sdr");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(
+        deep.join("metadata.epub.lua"),
+        std::fs::read(
+            synthetic_dir()
+                .join("The-Trial.sdr")
+                .join("metadata.epub.lua"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // Files that are not sidecars must be ignored, even inside a `.sdr`.
+    std::fs::write(deep.join("cover.jpg"), b"not a sidecar").unwrap();
+    std::fs::write(deep.join("notes.txt"), b"also not a sidecar").unwrap();
+
+    let found = koreader::find_sidecars(tmp.path()).expect("walk");
+    assert_eq!(found.len(), 1, "expected one sidecar, got {found:?}");
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "The Trial", "authors": ["Franz Kafka"] }]),
+    )
+    .await;
+    let report = koreader::import(&storage, tmp.path(), false)
+        .await
+        .expect("import from a nested tree");
+    assert_eq!(report.imported.len(), 1);
+    assert!(report.imported[0].inserted > 0);
+}
+
+/// Not a CI case — it exists so the cost of a genuinely large export is known
+/// rather than guessed. `cargo test -p readingbuddy -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "scale check; run explicitly"]
+async fn a_very_large_export_imports_in_reasonable_time() {
+    const N: usize = 5_000;
+
+    let mut lua = String::from("return {\n    [\"annotations\"] = {\n");
+    for i in 1..=N {
+        lua.push_str(&format!(
+            "        [{i}] = {{ [\"text\"] = \"highlight number {i}\", \
+             [\"pos0\"] = \"/body/p[{i}]/text().0\", [\"pageno\"] = {i}, \
+             [\"datetime\"] = \"2026-01-01 00:00:00\" }},\n"
+        ));
+    }
+    lua.push_str("    },\n    [\"doc_props\"] = { [\"title\"] = \"Enormous Book\" },\n}\n");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let sdr = tmp.path().join("Enormous Book.sdr");
+    std::fs::create_dir_all(&sdr).unwrap();
+    std::fs::write(sdr.join("metadata.epub.lua"), &lua).unwrap();
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Enormous Book", "authors": [] }]),
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let report = koreader::import(&storage, tmp.path(), false)
+        .await
+        .expect("large import");
+    let elapsed = started.elapsed();
+
+    assert_eq!(report.imported[0].inserted, N);
+    eprintln!(
+        "imported {N} highlights in {elapsed:?} ({:.0}/s)",
+        N as f64 / elapsed.as_secs_f64()
     );
 }
