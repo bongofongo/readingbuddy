@@ -11,9 +11,13 @@ pub async fn import(engine: &Engine, path: &Path, dry_run: bool) -> Result<()> {
         eprintln!("warning: {w}");
     }
     for s in &report.imported {
+        // `updated` sits next to `new` because it is the same kind of news: the
+        // device said something we did not already have. Before it existed a
+        // note edited on the reader was reported as "already known".
         println!(
-            "{}{mode}: {} new, {} already known, {} flashcard candidates",
-            s.book_title, s.inserted, s.skipped, s.flashcards
+            "{}{mode}: {} new, {} updated from the device, {} already known, \
+             {} flashcard candidates",
+            s.book_title, s.inserted, s.updated, s.skipped, s.flashcards
         );
     }
     for u in &report.unmatched {

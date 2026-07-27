@@ -19,7 +19,8 @@
       "percent_finished": 0.5,
       "rating": 3,
       "skipped": 0,
-      "status": "abandoned"
+      "status": "abandoned",
+      "updated": 0
     }
   ],
   "unmatched": []

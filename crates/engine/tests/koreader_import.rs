@@ -98,7 +98,14 @@ async fn highlight_rows(storage: &Storage, book_id: i64) -> Value {
                     "text": h.text,
                     "chapter": h.chapter,
                     "page": h.page,
-                    "note": h.note,
+                    // The device's note (`highlights.ko_note` since migration
+                    // 0004). Keyed as `note` still, because the key names what
+                    // the *sidecar* wrote and renaming it would churn every
+                    // golden for no change in behaviour. Our own `annotation`
+                    // is deliberately absent: import must never write it, and
+                    // that is asserted by name in
+                    // `device_edits_refresh_but_ours_survive`.
+                    "note": h.ko_note,
                     "ko_datetime": h.ko_datetime,
                 })
             })
@@ -134,6 +141,12 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
         imported.push(json!({
             "book_title": s.book_title,
             "inserted": s.inserted,
+            // Device-owned fields refreshed on a row we already had. Zero
+            // everywhere in this loop — each fixture is imported once into a
+            // fresh database, so there is nothing yet to refresh — and that is
+            // the point: it pins that a first import never claims to have
+            // updated anything.
+            "updated": s.updated,
             "skipped": s.skipped,
             "flashcards": s.flashcards,
             // Recorded because the two match paths are not interchangeable and
@@ -394,6 +407,10 @@ async fn reimport_is_strictly_idempotent() {
             .expect("second import");
         for s in &second.imported {
             assert_eq!(s.inserted, 0, "{fixture}: re-import inserted rows");
+            // Identical bytes carry no device edit, so the refresh must find
+            // nothing to do. The sum assertion below would catch this too, but
+            // only as an arithmetic mismatch several lines from the cause.
+            assert_eq!(s.updated, 0, "{fixture}: re-import refreshed rows");
         }
         // On a re-import every entry the sidecar contains must be skipped —
         // which is `inserted + skipped` from the first run, not `inserted`
@@ -474,6 +491,136 @@ async fn appends_only_new_on_partial_reimport() {
             .iter()
             .any(|r| r["text"] == "A brand new highlight added later."),
         "new highlight not stored"
+    );
+}
+
+/// Import Pachinko, put an annotation of our own on the highlight that is about
+/// to change, then import the same export with that highlight's device note
+/// rewritten.
+///
+/// This is the case `reimport_is_strictly_idempotent` structurally cannot see.
+/// That test is not wrong and stays: identical bytes genuinely should change
+/// nothing. What it cannot do is distinguish "nothing should have changed" from
+/// "we discard device updates", because the fixture it re-imports contains no
+/// device update. The gap was a missing fixture, not a too-strong assertion.
+#[tokio::test]
+async fn device_edits_refresh_but_ours_survive() {
+    const EDITED: &str = "History has failed us, but no matter.";
+
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Pachinko", "authors": ["Min Jin Lee"] }]),
+    )
+    .await;
+
+    let first = koreader::import(&storage, &synthetic_dir().join("Pachinko.sdr"), false)
+        .await
+        .expect("base import");
+    let book_id = first.imported[0].book_id;
+    assert_eq!(first.imported[0].updated, 0, "nothing to refresh yet");
+
+    let before: Vec<_> = storage.list_highlights(book_id).await.expect("list");
+    let target = before
+        .iter()
+        .find(|h| h.text == EDITED)
+        .expect("the highlight the variant edits");
+    storage
+        .set_annotation(target.id, Some("mine, and not the device's business"))
+        .await
+        .expect("annotate");
+
+    let second = koreader::import(
+        &storage,
+        &synthetic_dir().join("variants/Pachinko-NoteEdited.sdr"),
+        false,
+    )
+    .await
+    .expect("edited import");
+
+    let s = &second.imported[0];
+    assert_eq!(s.inserted, 0, "an edited note is not a new highlight");
+    assert_eq!(s.updated, 1, "exactly the one edited row");
+    assert_eq!(s.skipped, before.len() - 1, "the rest are untouched");
+
+    let after = storage.list_highlights(book_id).await.expect("list");
+    assert_eq!(after.len(), before.len(), "no row was added or lost");
+
+    let refreshed = after
+        .iter()
+        .find(|h| h.text == EDITED)
+        .expect("still there");
+    // Theirs tracked the device...
+    assert_eq!(
+        refreshed.ko_note.as_deref(),
+        Some("Rewritten on the device weeks later.")
+    );
+    // ...and ours did not move an inch.
+    assert_eq!(
+        refreshed.annotation.as_deref(),
+        Some("mine, and not the device's business")
+    );
+    assert_eq!(refreshed.source, target.source, "provenance is not payload");
+    assert_eq!(
+        refreshed.created_at, target.created_at,
+        "created_at is when WE stored it; a refresh must not restamp it"
+    );
+    assert_eq!(refreshed.text, target.text, "highlight text is frozen");
+}
+
+/// The one that would really hurt. `notes.highlight_id` and
+/// `flashcards.highlight_id` are foreign keys (`0001_init.sql:48`, `:67`), so a
+/// refresh implemented as delete-and-reinsert would silently null note anchors
+/// and cascade flashcards away — with nothing in any other assertion looking
+/// wrong. Assert it, don't assume it.
+#[tokio::test]
+async fn highlight_ids_are_stable_across_refresh() {
+    let storage = mem_storage().await;
+    seed_books(
+        &storage,
+        &json!([{ "title": "Pachinko", "authors": ["Min Jin Lee"] }]),
+    )
+    .await;
+
+    let first = koreader::import(&storage, &synthetic_dir().join("Pachinko.sdr"), false)
+        .await
+        .expect("base import");
+    let book_id = first.imported[0].book_id;
+
+    let ids_before: Vec<i64> = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list")
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    let cards_before = flashcard_words(&storage, book_id).await;
+    assert!(!ids_before.is_empty(), "nothing to keep stable");
+    assert!(
+        !cards_before.is_empty(),
+        "the FK that would cascade is unused"
+    );
+
+    koreader::import(
+        &storage,
+        &synthetic_dir().join("variants/Pachinko-NoteEdited.sdr"),
+        false,
+    )
+    .await
+    .expect("edited import");
+
+    let ids_after: Vec<i64> = storage
+        .list_highlights(book_id)
+        .await
+        .expect("list")
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(ids_before, ids_after, "a refresh must update in place");
+    assert_eq!(
+        cards_before,
+        flashcard_words(&storage, book_id).await,
+        "flashcards hang off highlight_id and would have cascaded away"
     );
 }
 

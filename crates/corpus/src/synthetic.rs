@@ -374,7 +374,82 @@ return {{
         ),
     )?;
 
+    // 16. A note edited on the device: `Pachinko.sdr` with one existing
+    //     annotation's `note` rewritten and a `datetime_updated` stamped on it.
+    //     Everything that takes part in the identity hash — `datetime`, `pos0`,
+    //     `text` — is untouched, so the highlight must be recognised as the
+    //     same row and refreshed, not re-inserted.
+    //
+    //     Sibling to `variants/Pachinko-Superset.sdr` and there for the same
+    //     recorded reason: a committed fixture, not a string splice. The test
+    //     that needed one of these used to `replacen` against Pachinko's
+    //     literal indentation, so reformatting that file broke it silently.
+    //
+    //     Under `variants/` because fixture discovery is a NON-recursive
+    //     read_dir: invisible to the golden loop, so it needs no golden of its
+    //     own and does not perturb the ones that exist.
+    n += variant(
+        &synthetic,
+        "Pachinko-NoteEdited",
+        &format!(
+            r#"{HEADER}-- ../../Pachinko.sdr with entry [1]'s note rewritten on the device.
+-- `datetime`, `pos0` and `text` are byte-identical, so the identity hash is
+-- unchanged: this is the SAME highlight with a new note, not a new one.
+return {{
+    ["annotations"] = {{
+        [1] = {{
+            ["chapter"] = "Chapter One",
+            ["datetime"] = "2026-01-05 21:14:08",
+            ["datetime_updated"] = "2026-02-14 07:31:52",
+            ["drawer"] = "lighten",
+            ["color"] = "yellow",
+            ["page"] = "/body/DocFragment[8]/body/p[12]/text().0",
+            ["pageno"] = 42,
+            ["pos0"] = "/body/DocFragment[8]/body/p[12]/text().0",
+            ["pos1"] = "/body/DocFragment[8]/body/p[12]/text().57",
+            ["text"] = "History has failed us, but no matter.",
+            ["note"] = "Rewritten on the device weeks later.",
+        }},
+        [2] = {{
+            ["chapter"] = "Chapter Two",
+            ["datetime"] = "2026-01-06 08:02:11",
+            ["drawer"] = "lighten",
+            ["pageno"] = 55,
+            ["pos0"] = "/body/DocFragment[9]/body/p[4]/text().10",
+            ["pos1"] = "/body/DocFragment[9]/body/p[4]/text().19",
+            ["text"] = "pachinko",
+        }},
+        [3] = {{
+            -- plain bookmark, no pos0: must be skipped
+            ["datetime"] = "2026-01-06 09:00:00",
+            ["pageno"] = 60,
+            ["text"] = "dogear",
+        }},
+    }},
+    ["doc_props"] = {{
+        ["authors"] = "Min Jin Lee",
+        ["title"] = "Pachinko",
+        ["language"] = "en",
+    }},
+    ["partial_md5_checksum"] = "0d6ba6c47caf63b8b3d1a2b3c4d5e6f7",
+}}
+"#
+        ),
+    )?;
+
     Ok(n)
+}
+
+/// Write `variants/<name>.sdr/metadata.epub.lua`.
+///
+/// No `Gen-` prefix, unlike [`lua`]: `variants/` is not the auto-discovered
+/// fixture dir, its two entries are named after the fixture they vary, and the
+/// `GENERATED` header inside the file carries the same warning the prefix does.
+fn variant(synthetic: &Path, name: &str, body: &str) -> std::io::Result<usize> {
+    let dir = synthetic.join("variants").join(format!("{name}.sdr"));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("metadata.epub.lua"), body)?;
+    Ok(1)
 }
 
 /// Write `<name>.sdr/metadata.epub.lua`.

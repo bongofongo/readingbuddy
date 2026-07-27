@@ -19,7 +19,8 @@
       "percent_finished": null,
       "rating": null,
       "skipped": 1,
-      "status": null
+      "status": null,
+      "updated": 0
     }
   ],
   "unmatched": []

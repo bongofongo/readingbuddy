@@ -367,6 +367,16 @@ pub struct BookImportStats {
     pub book_id: i64,
     pub book_title: String,
     pub inserted: usize,
+    /// Rows already present whose **device-owned** payload (`ko_note`, `color`,
+    /// `chapter`, `page`) the sidecar disagreed with, and which were refreshed
+    /// toward the device. Ours — `annotation` — is never in this count.
+    ///
+    /// It exists because without it a note edited on the device is reported as
+    /// `skipped`, indistinguishable from "already had it, identical". Silence
+    /// looked exactly like success.
+    pub updated: usize,
+    /// Present and identical. Narrower than it used to be: what would now be
+    /// counted as `updated` used to land here.
     pub skipped: usize,
     pub flashcards: usize,
     pub matched_by: MatchMethod,
@@ -590,6 +600,7 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
             book_id,
             book_title: book.display_title().to_string(),
             inserted: 0,
+            updated: 0,
             skipped: 0,
             flashcards: 0,
             matched_by,
@@ -600,7 +611,14 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
         for h in &sc.highlights {
             if dry_run {
                 if storage.highlight_exists(book_id, h).await? {
-                    stats.skipped += 1;
+                    // A preview that reported a device edit as "already known"
+                    // would disagree with the import it is previewing, which is
+                    // the one thing a dry run must not do.
+                    if storage.device_fields_differ(book_id, h).await? {
+                        stats.updated += 1;
+                    } else {
+                        stats.skipped += 1;
+                    }
                 } else {
                     stats.inserted += 1;
                     if single_word(&h.text).is_some() {
@@ -610,7 +628,16 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
                 continue;
             }
             match storage.insert_highlight(book_id, h).await? {
-                None => stats.skipped += 1,
+                // Already present. KOReader owns `ko_note`/`color`/`chapter`/
+                // `page`, so the sidecar wins on those — and only a row that
+                // genuinely changed counts as `updated`.
+                None => {
+                    if storage.refresh_device_fields(book_id, h).await? {
+                        stats.updated += 1;
+                    } else {
+                        stats.skipped += 1;
+                    }
+                }
                 Some(highlight_id) => {
                     stats.inserted += 1;
                     if let Some(word) = single_word(&h.text) {
@@ -632,6 +659,7 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
         tracing::info!(
             book_id,
             inserted = stats.inserted,
+            updated = stats.updated,
             skipped = stats.skipped,
             flashcards = stats.flashcards,
             matched_by = %stats.matched_by,

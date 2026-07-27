@@ -19,7 +19,8 @@
       "percent_finished": 0.0,
       "rating": null,
       "skipped": 0,
-      "status": "tbr"
+      "status": "tbr",
+      "updated": 0
     }
   ],
   "unmatched": []

@@ -116,8 +116,11 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
         let page = h.page.map(|p| format!("p.{p} ")).unwrap_or_default();
         let chapter = h.chapter.map(|c| format!("[{c}] ")).unwrap_or_default();
         println!("  {page}{chapter}“{}”", h.text);
-        if let Some(note) = h.note {
+        if let Some(note) = h.ko_note {
             println!("      ↳ {note}");
+        }
+        if let Some(annotation) = h.annotation {
+            println!("      » {annotation}");
         }
     }
     Ok(())
