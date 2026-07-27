@@ -255,8 +255,11 @@ impl MetadataProvider for OpenLibraryProvider {
             return Ok(None);
         }
         let text = resp.error_for_status()?.text().await?;
-        let edition: EditionJson = serde_json::from_str(&text)
-            .map_err(|e| EngineError::Other(format!("openlibrary edition decode: {e}")))?;
+        let edition: EditionJson =
+            serde_json::from_str(&text).map_err(|e| EngineError::Provider {
+                provider: ProviderId::OpenLibrary,
+                message: format!("edition decode: {e}"),
+            })?;
         let book = edition_to_book(edition, &self.client).await?;
         Ok(Some(ProviderBook {
             book,

@@ -17,7 +17,10 @@ pub fn scrub_key(msg: &str) -> String {
 }
 
 fn scrubbed(e: reqwest::Error) -> EngineError {
-    EngineError::Other(scrub_key(&e.to_string()))
+    EngineError::Provider {
+        provider: ProviderId::GoogleBooks,
+        message: scrub_key(&e.to_string()),
+    }
 }
 
 /// Live-check an API key against the volumes endpoint. `Ok(())` means Google

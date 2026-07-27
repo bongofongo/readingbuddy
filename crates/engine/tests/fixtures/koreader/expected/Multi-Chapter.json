@@ -36,6 +36,7 @@
         }
       ],
       "inserted": 4,
+      "matched_by": "title",
       "skipped": 0
     }
   ],

@@ -4,6 +4,7 @@ use std::time::Duration;
 use strsim::jaro_winkler;
 
 use crate::book::Book;
+use crate::diagnostic::Diagnostic;
 use crate::error::Result;
 use crate::providers::{MetadataProvider, ProviderBook, ProviderId, SearchRequest};
 
@@ -21,7 +22,20 @@ pub struct RankedResult {
 pub struct SearchOutcome {
     pub results: Vec<RankedResult>,
     /// Per-provider failures — a dead API degrades, never kills the search.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Diagnostic>,
+}
+
+impl SearchOutcome {
+    /// Providers that contributed nothing because they failed or timed out.
+    /// Lets a frontend say *which* source is missing rather than just showing
+    /// fewer results.
+    pub fn failed_providers(&self) -> Vec<ProviderId> {
+        self.warnings.iter().filter_map(|d| d.provider()).collect()
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.warnings.iter().any(|d| d.is_timeout())
+    }
 }
 
 pub async fn federated_search(
@@ -31,19 +45,32 @@ pub async fn federated_search(
     let fetches = providers.iter().map(|p| async {
         let id = p.id();
         match tokio::time::timeout(PROVIDER_TIMEOUT, p.search(req)).await {
-            Ok(Ok(books)) => (id, Ok(books)),
-            Ok(Err(e)) => (id, Err(e.to_string())),
-            Err(_) => (id, Err("timed out".to_string())),
+            Ok(Ok(books)) => (id, None, Some(books)),
+            Ok(Err(e)) => (id, Some(Diagnostic::provider_failed(id, &e)), None),
+            Err(_) => (
+                id,
+                Some(Diagnostic::provider_timed_out(id, PROVIDER_TIMEOUT)),
+                None,
+            ),
         }
     });
     let responses = futures::future::join_all(fetches).await;
 
     let mut outcome = SearchOutcome::default();
     let mut raw: Vec<ProviderBook> = Vec::new();
-    for (id, res) in responses {
-        match res {
-            Ok(books) => raw.extend(books),
-            Err(e) => outcome.warnings.push(format!("{id}: {e}")),
+    for (id, diag, books) in responses {
+        match (diag, books) {
+            (_, Some(books)) => {
+                tracing::debug!(provider = %id, count = books.len(), "provider answered");
+                raw.extend(books);
+            }
+            (Some(d), None) => {
+                // Emitted here, beside the push, so the log line and the
+                // in-band diagnostic can never drift apart.
+                tracing::warn!(provider = %id, detail = %d.detail, "provider degraded");
+                outcome.warnings.push(d);
+            }
+            (None, None) => {}
         }
     }
 

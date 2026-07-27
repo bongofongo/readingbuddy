@@ -24,6 +24,7 @@
         }
       ],
       "inserted": 2,
+      "matched_by": "title",
       "skipped": 0
     }
   ],

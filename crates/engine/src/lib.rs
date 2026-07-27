@@ -5,6 +5,7 @@
 
 pub mod book;
 pub mod config;
+pub mod diagnostic;
 pub mod epub;
 pub mod error;
 pub mod flashcards;
@@ -21,8 +22,9 @@ use reqwest::Client;
 
 pub use book::{Book, isbn10_to_13, normalize_isbn};
 pub use config::EngineConfig;
+pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
-pub use koreader::ImportReport;
+pub use koreader::{ImportReport, MatchMethod};
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
@@ -101,7 +103,18 @@ impl Engine {
             match p.by_isbn(&isbn).await {
                 Ok(Some(pb)) => found.push(pb),
                 Ok(None) => {}
-                Err(_) => {} // one provider down must not kill the lookup
+                // One provider down must not kill the lookup — but it used to
+                // vanish entirely here: no warning, no log, nothing. There is
+                // no diagnostic channel on this return type, so at minimum it
+                // gets logged.
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %p.id(),
+                        isbn = %isbn,
+                        error = %e,
+                        "provider lookup failed; continuing with the others"
+                    );
+                }
             }
         }
         Ok(search::merge_provider_books(found))

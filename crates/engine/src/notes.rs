@@ -35,7 +35,9 @@ impl std::str::FromStr for NoteKind {
             "note" => Ok(NoteKind::Note),
             "session" => Ok(NoteKind::Session),
             "final" => Ok(NoteKind::Final),
-            other => Err(EngineError::Other(format!("unknown note kind: {other}"))),
+            other => Err(EngineError::InvalidInput(format!(
+                "unknown note kind: {other}"
+            ))),
         }
     }
 }
@@ -137,6 +139,23 @@ fn frontmatter(
     fm
 }
 
+/// Byte offset within `rest` of the `\n` that begins a closing `---` fence: a
+/// line whose entire content is three dashes. Returns `None` if there is none.
+fn find_closing_fence(rest: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(rel) = rest[from..].find("\n---") {
+        let at = from + rel;
+        // What follows the three dashes decides whether this is the fence or
+        // just a longer rule / some other text starting with dashes.
+        let after = &rest[at + "\n---".len()..];
+        if after.is_empty() || after.starts_with('\n') || after.starts_with("\r\n") {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
 /// Split a note file into its raw frontmatter header (through the closing
 /// `---` and any blank line after it) and the body. When there is no
 /// frontmatter the header is empty and the body is the whole content.
@@ -144,7 +163,11 @@ pub fn frontmatter_and_body(content: &str) -> (&str, &str) {
     let Some(rest) = content.strip_prefix("---\n") else {
         return ("", content);
     };
-    let Some(end) = rest.find("\n---") else {
+    // The closing fence is a line that is exactly `---`. Searching for a bare
+    // `"\n---"` also matched `\n----` (an ordinary markdown horizontal rule)
+    // and `\n---foo`, either of which would be taken as the terminator and
+    // mangle the split — losing part of the user's note body into the header.
+    let Some(end) = find_closing_fence(rest) else {
         return ("", content);
     };
     // Byte offset just past the closing `\n---` line's newlines.
@@ -203,11 +226,9 @@ pub async fn create_note(
     std::fs::create_dir_all(&dir)?;
 
     let now = OffsetDateTime::now_utc();
-    let stamp = now
-        .format(format_description!(
-            "[year][month][day][hour][minute][second]"
-        ))
-        .map_err(|e| EngineError::Other(format!("timestamp format: {e}")))?;
+    let stamp = now.format(format_description!(
+        "[year][month][day][hour][minute][second]"
+    ))?;
     let base = format!("{stamp}-{}", slugify(&title));
     let mut file_name = format!("{base}.md");
     let mut n = 1;
@@ -218,9 +239,7 @@ pub async fn create_note(
     let file = dir.join(&file_name);
     let rel_path = format!("{book_dir}/{file_name}");
 
-    let created_str = now
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|e| EngineError::Other(format!("timestamp format: {e}")))?;
+    let created_str = now.format(&time::format_description::well_known::Rfc3339)?;
     let content = format!(
         "{}{}\n",
         frontmatter(
@@ -336,6 +355,51 @@ mod tests {
         let (h2, b2) = frontmatter_and_body("just text\n");
         assert_eq!(h2, "");
         assert_eq!(b2, "just text\n");
+    }
+
+    /// A markdown horizontal rule is `----`, and a bare `find("\n---")` matches
+    /// its first four bytes. Taking that as the closing fence swallows part of
+    /// the user's note into the header — and `update_note_body` then writes the
+    /// mangled split back to disk, so the damage is permanent.
+    #[test]
+    fn a_horizontal_rule_in_the_body_is_not_mistaken_for_the_closing_fence() {
+        let content = "---\nkind: note\n---\n\nIntro paragraph.\n\n----\n\nAfter the rule.\n";
+        let (header, body) = frontmatter_and_body(content);
+
+        assert_eq!(header, "---\nkind: note\n---\n\n");
+        assert_eq!(body, "Intro paragraph.\n\n----\n\nAfter the rule.\n");
+
+        // Same for a fence-like line that merely starts with three dashes.
+        let dashed = "---\nkind: note\n---\n\nSee ---foo below.\n";
+        let (h, b) = frontmatter_and_body(dashed);
+        assert_eq!(h, "---\nkind: note\n---\n\n");
+        assert_eq!(b, "See ---foo below.\n");
+    }
+
+    /// Whatever the input, the two halves must reassemble into exactly the
+    /// original. `update_note_body` rewrites `header + new_body`, so any byte
+    /// lost here is a byte lost from someone's note file.
+    #[test]
+    fn the_split_always_partitions_the_input() {
+        for content in [
+            "",
+            "---",
+            "---\n",
+            "---\n---\n",
+            "---\nkind: note\n---\n\nbody\n",
+            "no frontmatter at all\n",
+            "---\nkind: note\n\nunterminated frontmatter\n",
+            "---\na: b\n---\n\n----\n\nrule\n",
+            "---\r\na: b\r\n---\r\n\r\nCRLF body\r\n",
+            "text\n---\nnot frontmatter, wrong position\n",
+        ] {
+            let (h, b) = frontmatter_and_body(content);
+            assert_eq!(
+                format!("{h}{b}"),
+                content,
+                "split lost or duplicated bytes for {content:?}"
+            );
+        }
     }
 
     #[test]

@@ -130,6 +130,12 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
             "inserted": s.inserted,
             "skipped": s.skipped,
             "flashcards": s.flashcards,
+            // Recorded because the two match paths are not interchangeable and
+            // the fallback masks the failure of the better one: break the
+            // sibling-epub ISBN lookup and fuzzy title matching silently
+            // rescues every fixture, leaving every other field in this golden
+            // unchanged. This is the only line that guards that branch.
+            "matched_by": s.matched_by.to_string(),
             "highlights": highlight_rows(&storage, s.book_id).await,
             "flashcard_words": flashcard_words(&storage, s.book_id).await,
         }));
