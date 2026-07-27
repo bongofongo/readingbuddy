@@ -12,6 +12,20 @@ pub struct NewHighlight {
     pub pos0: Option<String>,
     pub pos1: Option<String>,
     pub ko_datetime: Option<String>,
+    /// KOReader's `datetime_updated`: when the annotation was last *edited* on
+    /// the device, as distinct from when it was created.
+    ///
+    /// **Parsed but not yet persisted** — the column arrives with item 2's
+    /// ownership migration, which is what will use it to tell "the device
+    /// changed this" from "nothing happened". It is carried here rather than in
+    /// a side channel so that item 2 does not have to reopen the parser, the
+    /// fixtures and every golden just to add one field.
+    ///
+    /// It must never enter `identity_hash`: `datetime` is KOReader's immutable
+    /// creation stamp and this one moves on every edit, so hashing it would
+    /// make an edited highlight re-import as a duplicate row. See
+    /// `docs/koreader-format.md` §1.
+    pub ko_datetime_updated: Option<String>,
     pub color: Option<String>,
     pub note: Option<String>,
     pub source: String,
@@ -19,6 +33,11 @@ pub struct NewHighlight {
 
 impl NewHighlight {
     /// Stable identity for idempotent imports.
+    ///
+    /// Deliberately excludes everything the device may rewrite in place:
+    /// `chapter`, `page`, `color`, `note` and `ko_datetime_updated`. Only
+    /// `ko_datetime` (creation time, never changed by KOReader), `pos0` and the
+    /// highlighted text take part.
     pub fn identity_hash(&self, book_id: i64) -> String {
         let mut hasher = Sha256::new();
         hasher.update(book_id.to_string());
@@ -120,10 +139,61 @@ mod tests {
             pos0: Some("/body/DocFragment[8]/p[3]/text().0".into()),
             pos1: None,
             ko_datetime: Some("2026-01-01 10:00:00".into()),
+            ko_datetime_updated: None,
             color: None,
             note: None,
             source: "koreader".into(),
         }
+    }
+
+    /// The invariant `docs/koreader-format.md` §1 establishes, asserted rather
+    /// than trusted: KOReader leaves `datetime` alone when a note is edited and
+    /// stamps `datetime_updated` instead. If that field ever reached the hash,
+    /// every edited highlight would come back as a second row on the next
+    /// import — silently, with nothing on screen looking wrong.
+    #[test]
+    fn identity_survives_an_edit_on_the_device() {
+        let base = hl("a phrase worth keeping");
+
+        let edited = NewHighlight {
+            ko_datetime_updated: Some("2026-06-01 12:00:00".into()),
+            note: Some("a note the user typed later".into()),
+            // A re-render moves page numbers with no user action at all.
+            page: Some(43),
+            chapter: Some("Ch 1 (renamed)".into()),
+            color: Some("gray".into()),
+            ..base.clone()
+        };
+
+        assert_eq!(
+            base.identity_hash(1),
+            edited.identity_hash(1),
+            "device-owned fields must not take part in identity"
+        );
+    }
+
+    #[test]
+    fn identity_still_tracks_the_fields_it_should() {
+        let base = hl("a phrase worth keeping");
+        for changed in [
+            NewHighlight {
+                text: "a different phrase".into(),
+                ..base.clone()
+            },
+            NewHighlight {
+                pos0: Some("/body/DocFragment[9]/p[1]/text().0".into()),
+                ..base.clone()
+            },
+            NewHighlight {
+                ko_datetime: Some("2026-01-02 10:00:00".into()),
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(base.identity_hash(1), changed.identity_hash(1));
+        }
+        // book_id is an input, so the same annotation under a different book is
+        // a different row — this is what item 3's merge has to recompute.
+        assert_ne!(base.identity_hash(1), base.identity_hash(2));
     }
 
     #[tokio::test]

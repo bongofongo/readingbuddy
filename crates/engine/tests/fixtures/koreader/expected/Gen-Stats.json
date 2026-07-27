@@ -1,0 +1,33 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "A Counted Book",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": "2026-07-02 10:00:00",
+          "note": null,
+          "page": 3,
+          "text": "counted as a highlight"
+        },
+        {
+          "chapter": null,
+          "ko_datetime": "2026-07-02 11:00:00",
+          "note": "stats.notes counts entries WITH a note",
+          "page": 4,
+          "text": "counted as a note"
+        }
+      ],
+      "inserted": 2,
+      "matched_by": "title",
+      "percent_finished": 1.0,
+      "rating": null,
+      "skipped": 0,
+      "status": null
+    }
+  ],
+  "unmatched": []
+}

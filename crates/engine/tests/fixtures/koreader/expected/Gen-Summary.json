@@ -1,0 +1,26 @@
+{
+  "has_warnings": false,
+  "imported": [
+    {
+      "book_title": "A Rated Book",
+      "flashcard_words": [],
+      "flashcards": 0,
+      "highlights": [
+        {
+          "chapter": null,
+          "ko_datetime": "2026-07-01 10:00:00",
+          "note": "edited 27s later; datetime must not have moved",
+          "page": 11,
+          "text": "a passage in a finished book"
+        }
+      ],
+      "inserted": 1,
+      "matched_by": "title",
+      "percent_finished": 0.99770326136886,
+      "rating": 4,
+      "skipped": 0,
+      "status": "complete"
+    }
+  ],
+  "unmatched": []
+}

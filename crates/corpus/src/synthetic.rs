@@ -224,6 +224,156 @@ return {{
         n += 2;
     }
 
+    // 12. The device's own reading state: `summary` and `percent_finished`.
+    //     Everything here is reported but deliberately NOT persisted — status,
+    //     rating and progress belong to `readings` (build item 4), and parking
+    //     them on `books` now would only have to be undone. The golden is what
+    //     proves the parse happens at all in the meantime.
+    //
+    //     `summary.note` is the user's review. It is real in KOReader's source
+    //     but written by no build we have seen, so this is the only place the
+    //     field is exercised.
+    n += lua(
+        &synthetic,
+        "Summary",
+        &format!(
+            r#"{HEADER}return {{
+    ["annotations"] = {{
+        [1] = {{ ["text"] = "a passage in a finished book", ["pos0"] = "/body/p[1]/text().0",
+                 ["pageno"] = 11, ["datetime"] = "2026-07-01 10:00:00",
+                 ["datetime_updated"] = "2026-07-01 10:00:27",
+                 ["note"] = "edited 27s later; datetime must not have moved" }},
+    }},
+    ["doc_props"] = {{ ["title"] = "A Rated Book", ["authors"] = "Someone Rated" }},
+    ["percent_finished"] = 0.99770326136886,
+    ["summary"] = {{
+        ["modified"] = "2026-07-22",
+        ["note"] = "A few words about the book.",
+        ["rating"] = 4,
+        ["status"] = "complete",
+    }},
+}}
+"#
+        ),
+    )?;
+
+    // 13. The `stats` subtable, in the shape a 2024.11+ device actually writes
+    //     it: NO `md5` and NO `total_time_in_sec`, both of which the spec
+    //     assumed were there. `device_books` therefore keys on the root
+    //     `partial_md5_checksum`, which this fixture carries — see
+    //     docs/koreader-format.md §2.1.
+    //
+    //     `percent_finished` is the bare integer `1`, not `1.0`: that is how
+    //     KOReader serialises a completed book, and a parser that demands a
+    //     float silently loses it.
+    n += lua(
+        &synthetic,
+        "Stats",
+        &format!(
+            r#"{HEADER}return {{
+    ["annotations"] = {{
+        [1] = {{ ["text"] = "counted as a highlight", ["pos0"] = "/body/p[1]/text().0",
+                 ["pageno"] = 3, ["datetime"] = "2026-07-02 10:00:00" }},
+        [2] = {{ ["text"] = "counted as a note", ["pos0"] = "/body/p[2]/text().0",
+                 ["pageno"] = 4, ["datetime"] = "2026-07-02 11:00:00",
+                 ["note"] = "stats.notes counts entries WITH a note" }},
+    }},
+    ["doc_pages"] = 412,
+    ["doc_props"] = {{ ["title"] = "A Counted Book", ["authors"] = "Stat Keeper" }},
+    ["partial_md5_checksum"] = "9f2c4e6a8b0d1357911d3f5b7d9f1a3c",
+    ["percent_finished"] = 1,
+    ["stats"] = {{
+        ["authors"] = "Stat Keeper",
+        ["highlights"] = 1,
+        ["language"] = "en",
+        ["notes"] = 1,
+        ["pages"] = 412,
+        ["performance_in_pages"] = {{}},
+        ["series"] = "N/A",
+        ["title"] = "A Counted Book",
+    }},
+}}
+"#
+        ),
+    )?;
+
+    // 14. Device state on a LEGACY sidecar. `summary`, `stats` and
+    //     `percent_finished` are DocSettings *root* keys, written by subsystems
+    //     that never look at the annotations layout — so a pre-2024 file
+    //     carries them too. Source-derived: no legacy sidecar exists in the
+    //     real corpus to check against, which is exactly why it is pinned here.
+    //
+    //     A legacy file is also the most likely place `stats.md5` and
+    //     `total_time_in_sec` still appear, since the pre-DB statistics plugin
+    //     predates the annotations format. This is the only coverage they get.
+    n += lua(
+        &synthetic,
+        "Summary-Legacy",
+        &format!(
+            r#"{HEADER}-- No `annotations` key: the parser must take the legacy branch AND still
+-- read the root-level device state.
+return {{
+    ["bookmarks"] = {{
+        [1] = {{
+            ["datetime"] = "2021-05-02 22:30:00",
+            ["notes"] = "an older passage",
+            ["text"] = "the note lives in bookmarks, joined by datetime",
+        }},
+    }},
+    ["highlight"] = {{
+        [7] = {{
+            [1] = {{ ["datetime"] = "2021-05-02 22:30:00", ["chapter"] = "I",
+                     ["text"] = "an older passage", ["pos0"] = "/body/p[7]/text().0",
+                     ["pos1"] = "/body/p[7]/text().16", ["drawer"] = "lighten" }},
+        }},
+    }},
+    ["doc_props"] = {{ ["title"] = "An Old Book", ["authors"] = "Legacy Format" }},
+    ["percent_finished"] = 0.5,
+    ["stats"] = {{
+        ["authors"] = "Legacy Format",
+        ["md5"] = "1b3d5f7911d3f5b7d9f1a3c5e7092b4d",
+        ["pages"] = 180,
+        ["title"] = "An Old Book",
+        ["total_time_in_sec"] = 7200,
+    }},
+    ["summary"] = {{
+        ["modified"] = "2021-05-03",
+        ["rating"] = 3,
+        ["status"] = "abandoned",
+    }},
+}}
+"#
+        ),
+    )?;
+
+    // 15. A status KOReader does not write today. It must import cleanly and
+    //     round-trip as `KoStatus::Other`, never fail the import — a future
+    //     KOReader adding a status must not cost somebody their highlights.
+    //
+    //     It also warns, and that warning is the point: it is the only signal
+    //     we would ever get that the device grew a status we do not model, and
+    //     silence would be indistinguishable from success. The golden's
+    //     `has_warnings` is what asserts it.
+    n += lua(
+        &synthetic,
+        "Summary-Unknown-Status",
+        &format!(
+            r#"{HEADER}return {{
+    ["annotations"] = {{
+        [1] = {{ ["text"] = "still imported", ["pos0"] = "/body/p[1]/text().0",
+                 ["pageno"] = 1, ["datetime"] = "2026-07-03 10:00:00" }},
+    }},
+    ["doc_props"] = {{ ["title"] = "A Future Book", ["authors"] = "Not Yet Written" }},
+    ["percent_finished"] = 0.0,
+    ["summary"] = {{
+        ["modified"] = "2026-07-23",
+        ["status"] = "tbr",
+    }},
+}}
+"#
+        ),
+    )?;
+
     Ok(n)
 }
 

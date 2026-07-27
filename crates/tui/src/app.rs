@@ -1585,6 +1585,7 @@ mod tests {
                     pos0: Some("/body/p[1]".into()),
                     pos1: None,
                     ko_datetime: Some("2026-01-01 10:00:00".into()),
+                    ko_datetime_updated: None,
                     color: None,
                     note: None,
                     source: "koreader".into(),

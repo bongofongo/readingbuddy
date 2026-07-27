@@ -9,7 +9,7 @@ use crate::diagnostic::Diagnostic;
 use crate::error::{EngineError, Result};
 use crate::flashcards::single_word;
 use crate::search::normalize;
-use crate::storage::{NewHighlight, Storage};
+use crate::storage::{LinkedBy, NewHighlight, Storage};
 
 /// Instructions a sidecar chunk may execute before it is killed.
 ///
@@ -36,7 +36,102 @@ pub struct KoSidecar {
     pub authors: Option<String>,
     pub language: Option<String>,
     pub partial_md5: Option<String>,
+    /// Root `percent_finished`, 0.0..=1.0.
+    pub percent_finished: Option<f64>,
+    /// The device's own status/rating/review.
+    pub summary: Option<KoSummary>,
+    pub stats: Option<KoStats>,
     pub highlights: Vec<NewHighlight>,
+}
+
+/// KOReader's per-book reading status.
+///
+/// `Other` is not a nicety: a future KOReader adding a status must degrade to a
+/// value we carry through, never fail somebody's import. The three known
+/// variants come from the status toggle's `args` in `bookstatuswidget.lua`, and
+/// they are lowercase — the doc-comment in that same file showing `"Reading"`
+/// is stale. Only `reading` and `complete` have been seen in the wild.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KoStatus {
+    Reading,
+    Abandoned,
+    Complete,
+    Other(String),
+}
+
+impl KoStatus {
+    /// True when the value was not one KOReader is known to write. The import
+    /// turns this into a `Diagnostic`, which is the only signal we would ever
+    /// get that the device grew a status we do not model.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, KoStatus::Other(_))
+    }
+}
+
+impl From<&str> for KoStatus {
+    fn from(s: &str) -> Self {
+        match s {
+            "reading" => KoStatus::Reading,
+            "abandoned" => KoStatus::Abandoned,
+            "complete" => KoStatus::Complete,
+            other => KoStatus::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for KoStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Round-trips through `From<&str>`, so an unknown status survives a
+        // parse/render cycle unchanged rather than collapsing to a placeholder.
+        match self {
+            KoStatus::Reading => write!(f, "reading"),
+            KoStatus::Abandoned => write!(f, "abandoned"),
+            KoStatus::Complete => write!(f, "complete"),
+            KoStatus::Other(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// The `summary` subtable: the device's status, rating and review.
+///
+/// None of this is persisted yet — `readings` (build item 4) is where it
+/// belongs, and parking it on `books` now would only have to be undone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KoSummary {
+    pub status: Option<KoStatus>,
+    /// 1..=5. **Absent means unrated, not zero** — KOReader deletes the key
+    /// when the user clears the rating rather than writing 0.
+    pub rating: Option<i64>,
+    /// The user's own review. Real in KOReader's source, but unwritten by any
+    /// build we have seen — expect `None`.
+    pub note: Option<String>,
+    /// `"%Y-%m-%d"`. Date only, unlike annotation datetimes.
+    pub modified: Option<String>,
+}
+
+/// The `stats` subtable.
+///
+/// Residue rather than live data: current KOReader keeps per-book statistics in
+/// `statistics.sqlite3` and only ever *reads* this block, once, to migrate a
+/// pre-DB sidecar. It survives rewrites because DocSettings re-serialises
+/// whatever it loaded.
+///
+/// `md5` and `total_time_in_sec` are absent on every 2024.11+ sidecar we have;
+/// they are kept as `Option` so an older file still round-trips. **Nothing may
+/// depend on them** — the book identifier is the root `partial_md5_checksum`,
+/// which is what `device_books` keys on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KoStats {
+    pub title: Option<String>,
+    pub authors: Option<String>,
+    pub language: Option<String>,
+    pub series: Option<String>,
+    pub pages: Option<i64>,
+    /// Counts annotations *without* a note; `notes` counts those *with* one.
+    pub highlights: Option<i64>,
+    pub notes: Option<i64>,
+    pub md5: Option<String>,
+    pub total_time_in_sec: Option<i64>,
 }
 
 /// Evaluate a sidecar chunk (`return { ... }`) in a sandboxed Lua VM (no
@@ -76,6 +171,13 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
 
     let mut sidecar = KoSidecar {
         partial_md5: get_str(&root, "partial_md5_checksum"),
+        percent_finished: get_f64(&root, "percent_finished"),
+        // `summary`, `stats` and `percent_finished` are DocSettings *root*
+        // keys, written by subsystems that never look at the annotations
+        // layout. Reading them before the layout dispatch below is what makes a
+        // legacy sidecar carry them too — pinned by `Gen-Summary-Legacy`.
+        summary: get_table(&root, "summary").map(|t| parse_summary(&t)),
+        stats: get_table(&root, "stats").map(|t| parse_stats(&t)),
         ..Default::default()
     };
     if let Some(props) = get_table(&root, "doc_props") {
@@ -106,8 +208,37 @@ fn get_int(t: &Table, key: &str) -> Option<i64> {
     t.get::<Option<i64>>(key).ok().flatten()
 }
 
+/// A completed book is written as the bare integer `1`, not `1.0`, so this must
+/// not require a Lua float. `mlua`'s `f64` conversion accepts either.
+fn get_f64(t: &Table, key: &str) -> Option<f64> {
+    t.get::<Option<f64>>(key).ok().flatten()
+}
+
 fn get_table(t: &Table, key: &str) -> Option<Table> {
     t.get::<Option<Table>>(key).ok().flatten()
+}
+
+fn parse_summary(t: &Table) -> KoSummary {
+    KoSummary {
+        status: get_str(t, "status").map(|s| KoStatus::from(s.as_str())),
+        rating: get_int(t, "rating"),
+        note: get_str(t, "note"),
+        modified: get_str(t, "modified"),
+    }
+}
+
+fn parse_stats(t: &Table) -> KoStats {
+    KoStats {
+        title: get_str(t, "title"),
+        authors: get_str(t, "authors"),
+        language: get_str(t, "language"),
+        series: get_str(t, "series"),
+        pages: get_int(t, "pages"),
+        highlights: get_int(t, "highlights"),
+        notes: get_int(t, "notes"),
+        md5: get_str(t, "md5"),
+        total_time_in_sec: get_int(t, "total_time_in_sec"),
+    }
 }
 
 fn entry_to_highlight(item: &Table, page: Option<i64>) -> Option<NewHighlight> {
@@ -122,6 +253,7 @@ fn entry_to_highlight(item: &Table, page: Option<i64>) -> Option<NewHighlight> {
         pos0: Some(pos0),
         pos1: get_str(item, "pos1"),
         ko_datetime: get_str(item, "datetime"),
+        ko_datetime_updated: get_str(item, "datetime_updated"),
         color: get_str(item, "color").or_else(|| get_str(item, "drawer")),
         note: get_str(item, "note"),
         source: "koreader".to_string(),
@@ -210,6 +342,10 @@ pub struct ImportReport {
 /// green. Without this field that branch is effectively untested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchMethod {
+    /// A `device_books` row already links this sidecar's `partial_md5` to a
+    /// book. Strongest of the three: it is a decision that was made once and
+    /// recorded, not a guess re-made on every import.
+    Md5,
     /// A sibling `.epub` next to the `.sdr` dir carried an ISBN we know.
     Isbn,
     /// Fuzzy jaro-winkler match on the normalized `doc_props.title`.
@@ -219,6 +355,7 @@ pub enum MatchMethod {
 impl std::fmt::Display for MatchMethod {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            MatchMethod::Md5 => write!(f, "md5"),
             MatchMethod::Isbn => write!(f, "isbn"),
             MatchMethod::Title => write!(f, "title"),
         }
@@ -233,6 +370,16 @@ pub struct BookImportStats {
     pub skipped: usize,
     pub flashcards: usize,
     pub matched_by: MatchMethod,
+    /// The device's reading state, reported but **not persisted**.
+    ///
+    /// `readings` (build item 4) is where status, rating and progress belong,
+    /// and `books`' progress columns are about to move there — parking these on
+    /// `books` now would only have to be undone. Carrying them in the report
+    /// means the parse is exercised end to end and visible in the goldens
+    /// rather than being dead code until item 4 lands.
+    pub percent_finished: Option<f64>,
+    pub status: Option<KoStatus>,
+    pub rating: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -303,13 +450,24 @@ fn is_sidecar_file(p: &Path) -> bool {
     name.starts_with("metadata.") && name.ends_with(".lua")
 }
 
-/// Match a sidecar to a library book: (a) sibling ebook file's ISBN,
-/// (b) fuzzy doc_props title (jaro-winkler >= 0.85 on normalized titles).
+/// Match a sidecar to a library book: (a) a recorded `device_books` link on the
+/// sidecar's `partial_md5`, (b) sibling ebook file's ISBN, (c) fuzzy doc_props
+/// title (jaro-winkler >= 0.85 on normalized titles).
 async fn match_book(
     storage: &Storage,
     sidecar_path: &Path,
     sc: &KoSidecar,
 ) -> Result<Option<(Book, MatchMethod)>> {
+    // The recorded link goes first, and it is the only branch that is not a
+    // guess. It also covers what the other two cannot: a sidecar filed under
+    // KOReader's `hash` or `dir` storage layout has no sibling ebook at all,
+    // and a title the user edited on either side defeats the fuzzy match.
+    if let Some(md5) = &sc.partial_md5
+        && let Some(book) = storage.find_book_by_partial_md5(md5).await?
+    {
+        return Ok(Some((book, MatchMethod::Md5)));
+    }
+
     // Sidecar lives at <Book Name>.sdr/metadata.epub.lua; sibling ebook is
     // <Book Name>.epub next to the .sdr dir.
     if let Some(sdr_dir) = sidecar_path.parent()
@@ -404,6 +562,30 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
             continue;
         };
 
+        // Record the link so the next import matches on md5 rather than
+        // re-guessing from a title the user may edit on either side. Skipped
+        // under `dry_run`, which must not write. Item 3's `link_sidecar`
+        // replaces this call site, not the table.
+        if !dry_run && let Some(md5) = &sc.partial_md5 {
+            storage
+                .link_device_book(md5, book_id, LinkedBy::Auto)
+                .await?;
+        }
+
+        let summary = sc.summary.as_ref();
+        let status = summary.and_then(|s| s.status.clone());
+        if let Some(KoStatus::Other(value)) = &status {
+            tracing::warn!(
+                path = %sidecar_path.display(),
+                status = %value,
+                "unknown KOReader status; imported as-is"
+            );
+            report.warnings.push(Diagnostic::unknown_device_status(
+                sidecar_path.clone(),
+                value,
+            ));
+        }
+
         let mut stats = BookImportStats {
             book_id,
             book_title: book.display_title().to_string(),
@@ -411,6 +593,9 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
             skipped: 0,
             flashcards: 0,
             matched_by,
+            percent_finished: sc.percent_finished,
+            status,
+            rating: summary.and_then(|s| s.rating),
         };
         for h in &sc.highlights {
             if dry_run {
@@ -440,12 +625,19 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
                 }
             }
         }
+        // `summary.note` is the user's review — private reading, the same class
+        // as highlight text and note bodies. It is deliberately absent from
+        // every field here and must never rise above `trace!`. Status, rating
+        // and progress are device state, not prose, and are fine to log.
         tracing::info!(
             book_id,
             inserted = stats.inserted,
             skipped = stats.skipped,
             flashcards = stats.flashcards,
             matched_by = %stats.matched_by,
+            status = stats.status.as_ref().map(|s| s.to_string()),
+            rating = stats.rating,
+            percent_finished = stats.percent_finished,
             dry_run,
             "imported sidecar"
         );
@@ -571,6 +763,238 @@ return {
         assert_eq!(sc.highlights[1].text, "verdict");
         assert_eq!(sc.highlights[1].page, Some(77));
         assert_eq!(sc.highlights[1].note, None);
+    }
+
+    // ---- device state -----------------------------------------------------
+
+    /// The shape a 2024.11+ device actually writes, taken from a real export:
+    /// per-entry `datetime_updated`, a `summary` with no `note`, and a `stats`
+    /// with neither `md5` nor `total_time_in_sec`.
+    const DEVICE_STATE: &str = r#"
+return {
+    ["annotations"] = {
+        [1] = {
+            ["chapter"] = "Chapter 2",
+            ["color"] = "gray",
+            ["datetime"] = "2026-07-04 15:34:12",
+            ["datetime_updated"] = "2026-07-04 15:34:23",
+            ["drawer"] = "lighten",
+            ["note"] = "typed 11 seconds after the highlight was made",
+            ["page"] = "/body/DocFragment[15]/body/p[66]/text().897",
+            ["pageno"] = 68,
+            ["pos0"] = "/body/DocFragment[15]/body/p[66]/text().897",
+            ["pos1"] = "/body/DocFragment[15]/body/p[66]/text().1149",
+            ["text"] = "a passage",
+        },
+    },
+    ["doc_pages"] = 2177,
+    ["doc_props"] = { ["title"] = "1Q84", ["authors"] = "Haruki Murakami" },
+    ["partial_md5_checksum"] = "a5b01da92a68bbbb6d88c12483cf3b56",
+    ["percent_finished"] = 0.99770326136886,
+    ["stats"] = {
+        ["authors"] = "Haruki Murakami",
+        ["highlights"] = 45,
+        ["language"] = "en",
+        ["notes"] = 38,
+        ["pages"] = 2177,
+        ["performance_in_pages"] = {},
+        ["series"] = "N/A",
+        ["title"] = "1Q84",
+    },
+    ["summary"] = {
+        ["modified"] = "2026-07-22",
+        ["rating"] = 5,
+        ["status"] = "complete",
+    },
+}
+"#;
+
+    #[test]
+    fn parses_the_devices_own_reading_state() {
+        let sc = parse_sidecar(DEVICE_STATE).unwrap();
+
+        assert_eq!(sc.percent_finished, Some(0.99770326136886));
+
+        let summary = sc.summary.expect("summary");
+        assert_eq!(summary.status, Some(KoStatus::Complete));
+        assert_eq!(summary.rating, Some(5));
+        assert_eq!(summary.modified.as_deref(), Some("2026-07-22"));
+        // The user's review. Real in KOReader's source, written by no build we
+        // have seen — see docs/koreader-format.md §2.2.
+        assert_eq!(summary.note, None);
+
+        let stats = sc.stats.expect("stats");
+        assert_eq!(stats.title.as_deref(), Some("1Q84"));
+        assert_eq!(stats.pages, Some(2177));
+        assert_eq!(stats.highlights, Some(45));
+        assert_eq!(stats.notes, Some(38));
+        // The two fields the spec assumed were here and are not. The root
+        // `partial_md5_checksum` is the book identifier, not `stats.md5`.
+        assert_eq!(stats.md5, None);
+        assert_eq!(stats.total_time_in_sec, None);
+        assert_eq!(
+            sc.partial_md5.as_deref(),
+            Some("a5b01da92a68bbbb6d88c12483cf3b56")
+        );
+    }
+
+    /// The field item 2 needs to tell "the device changed this" from "nothing
+    /// happened", and the field that must never reach the identity hash.
+    #[test]
+    fn parses_the_edit_timestamp_separately_from_the_creation_one() {
+        let sc = parse_sidecar(DEVICE_STATE).unwrap();
+        let h = &sc.highlights[0];
+        assert_eq!(h.ko_datetime.as_deref(), Some("2026-07-04 15:34:12"));
+        assert_eq!(
+            h.ko_datetime_updated.as_deref(),
+            Some("2026-07-04 15:34:23")
+        );
+    }
+
+    /// A completed book is serialised as the bare integer `1`. A parser that
+    /// demands a Lua float reads `None` and silently loses the progress.
+    #[test]
+    fn a_completed_book_writes_percent_finished_as_an_integer() {
+        let sc = parse_sidecar(r#"return { ["percent_finished"] = 1 }"#).unwrap();
+        assert_eq!(sc.percent_finished, Some(1.0));
+    }
+
+    /// A future KOReader adding a status must not cost anybody their
+    /// highlights. It degrades to `Other` and round-trips unchanged.
+    #[test]
+    fn an_unknown_status_degrades_rather_than_failing() {
+        let sc = parse_sidecar(r#"return { ["summary"] = { ["status"] = "tbr" } }"#)
+            .expect("an unknown status must not fail the parse");
+        let status = sc.summary.unwrap().status.unwrap();
+        assert_eq!(status, KoStatus::Other("tbr".into()));
+        assert!(status.is_unknown());
+        assert_eq!(status.to_string(), "tbr");
+        assert_eq!(KoStatus::from(status.to_string().as_str()), status);
+    }
+
+    #[test]
+    fn every_known_status_round_trips() {
+        for s in ["reading", "abandoned", "complete"] {
+            let parsed = KoStatus::from(s);
+            assert!(!parsed.is_unknown(), "{s} should be a known status");
+            assert_eq!(parsed.to_string(), s);
+        }
+    }
+
+    /// `summary`, `stats` and `percent_finished` are DocSettings *root* keys,
+    /// written by subsystems that never look at the annotations layout — so the
+    /// legacy branch must still pick them up. Source-derived: no legacy sidecar
+    /// exists in the real corpus.
+    #[test]
+    fn legacy_sidecars_still_carry_device_state() {
+        let src = r#"
+return {
+    ["highlight"] = {
+        [7] = { [1] = { ["datetime"] = "2021-05-02 22:30:00", ["text"] = "old",
+                        ["pos0"] = "/body/p[7]/text().0" } },
+    },
+    ["doc_props"] = { ["title"] = "An Old Book" },
+    ["percent_finished"] = 0.5,
+    ["summary"] = { ["status"] = "abandoned", ["rating"] = 3 },
+    ["stats"] = { ["md5"] = "deadbeef", ["total_time_in_sec"] = 7200 },
+}
+"#;
+        let sc = parse_sidecar(src).unwrap();
+        assert_eq!(sc.highlights.len(), 1, "legacy branch must still have run");
+        assert_eq!(sc.percent_finished, Some(0.5));
+        let summary = sc.summary.expect("summary");
+        assert_eq!(summary.status, Some(KoStatus::Abandoned));
+        assert_eq!(summary.rating, Some(3));
+        // A legacy file is the likeliest place these two still appear.
+        let stats = sc.stats.expect("stats");
+        assert_eq!(stats.md5.as_deref(), Some("deadbeef"));
+        assert_eq!(stats.total_time_in_sec, Some(7200));
+    }
+
+    /// The recorded link must beat the fuzzy title guess, and it must be
+    /// *recorded* by an ordinary import — otherwise the branch is unreachable
+    /// until item 3 lands and nothing here is real.
+    #[tokio::test]
+    async fn a_recorded_md5_link_wins_over_a_fuzzy_title_match() {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sdr = tmp.path().join("1Q84.sdr");
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua"), DEVICE_STATE).unwrap();
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let book_id = s
+            .upsert_book(&Book {
+                title: Some("1Q84".into()),
+                authors: vec!["Haruki Murakami".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        // First pass: nothing recorded yet, so the title guess is all we have.
+        let first = import(&s, tmp.path(), false).await.unwrap();
+        assert_eq!(first.imported[0].matched_by, MatchMethod::Title);
+
+        // Rename the book out from under the sidecar. The fuzzy match can no
+        // longer find it; only the recorded link can.
+        sqlx::query("UPDATE books SET title = ? WHERE id = ?")
+            .bind("Something Else Entirely")
+            .bind(book_id)
+            .execute(s.pool())
+            .await
+            .unwrap();
+
+        let second = import(&s, tmp.path(), false).await.unwrap();
+        assert_eq!(second.imported.len(), 1, "the link must survive a rename");
+        assert_eq!(second.imported[0].matched_by, MatchMethod::Md5);
+        assert_eq!(second.imported[0].book_id, book_id);
+        assert_eq!(second.imported[0].inserted, 0, "still idempotent");
+    }
+
+    /// A dry run reports; it must not write. Recording the link is a write.
+    #[tokio::test]
+    async fn a_dry_run_records_no_device_link() {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sdr = tmp.path().join("1Q84.sdr");
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua"), DEVICE_STATE).unwrap();
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        s.upsert_book(&Book {
+            title: Some("1Q84".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        import(&s, tmp.path(), true).await.unwrap();
+
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM device_books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// Every flush writes a `metadata.*.lua.old` beside the live file — 9 of
+    /// the 10 real `.sdr` dirs have one. Importing both would resurrect
+    /// highlights the user deleted, so the walker must not see them. It does
+    /// not, because `.lua.old` is not `.lua` — incidental, and now guarded.
+    #[test]
+    fn the_walker_ignores_the_old_backup_koreader_leaves_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sdr = tmp.path().join("1Q84.sdr");
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua"), DEVICE_STATE).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua.old"), DEVICE_STATE).unwrap();
+
+        let found = find_sidecars(tmp.path()).unwrap();
+        assert_eq!(found.len(), 1, "the .old backup must not be imported");
+        assert!(found[0].ends_with("metadata.epub.lua"));
     }
 
     #[test]

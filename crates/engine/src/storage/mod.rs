@@ -1,9 +1,11 @@
 mod books;
+mod device_books;
 mod flashcards;
 mod highlights;
 mod notes;
 
 pub use books::BookSort;
+pub use device_books::LinkedBy;
 pub use flashcards::FlashcardRow;
 pub use highlights::{Highlight, NewHighlight};
 pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit};

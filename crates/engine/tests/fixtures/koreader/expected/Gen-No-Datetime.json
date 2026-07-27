@@ -25,7 +25,10 @@
       ],
       "inserted": 2,
       "matched_by": "title",
-      "skipped": 1
+      "percent_finished": null,
+      "rating": null,
+      "skipped": 1,
+      "status": null
     }
   ],
   "unmatched": []

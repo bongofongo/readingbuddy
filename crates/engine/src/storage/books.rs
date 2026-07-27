@@ -13,12 +13,12 @@ pub enum BookSort {
     Progress,
 }
 
-const BOOK_COLUMNS: &str = "id, title, sort_title, authors, translators, publisher, publish_year, \
+pub(super) const BOOK_COLUMNS: &str = "id, title, sort_title, authors, translators, publisher, publish_year, \
      language, isbn_10, isbn_13, openlibrary_key, googlebooks_id, cover_url, cover_path, \
      page_count, description, first_sentence, current_page, finished, date_started, \
      date_finished, created_at, last_modified";
 
-fn row_to_book(row: &SqliteRow) -> Result<Book> {
+pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
     let authors: String = row.try_get("authors")?;
     let translators: String = row.try_get("translators")?;
     let created: i64 = row.try_get("created_at")?;

@@ -8,7 +8,10 @@
       "highlights": [],
       "inserted": 0,
       "matched_by": "title",
-      "skipped": 0
+      "percent_finished": null,
+      "rating": null,
+      "skipped": 0,
+      "status": null
     }
   ],
   "unmatched": []

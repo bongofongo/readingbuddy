@@ -26,7 +26,7 @@ pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
-pub use koreader::{ImportReport, MatchMethod};
+pub use koreader::{ImportReport, KoStats, KoStatus, KoSummary, MatchMethod};
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};

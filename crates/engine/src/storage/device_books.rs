@@ -1,0 +1,149 @@
+//! The device-file → book mapping (`device_books`, migration `0003`).
+//!
+//! Keyed on the sidecar's root `partial_md5_checksum`. See
+//! `docs/koreader-format.md` §2.1 for why it is that value and not `stats.md5`.
+
+use super::books::{BOOK_COLUMNS, row_to_book};
+use super::{Storage, now_unix};
+use crate::book::Book;
+use crate::error::Result;
+
+/// How a device file came to be linked to a book.
+///
+/// A `Manual` link is the user's decision and must never be silently
+/// overwritten by a later automatic match; `Auto` is ours and may be revisited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkedBy {
+    Auto,
+    Manual,
+}
+
+impl LinkedBy {
+    fn as_str(self) -> &'static str {
+        match self {
+            LinkedBy::Auto => "auto",
+            LinkedBy::Manual => "manual",
+        }
+    }
+}
+
+impl Storage {
+    /// The book a device file is already linked to, if any.
+    ///
+    /// A subquery rather than a join so `BOOK_COLUMNS` can be reused verbatim —
+    /// a join would need every column prefixed, which is a second copy of the
+    /// list waiting to drift from the first.
+    pub async fn find_book_by_partial_md5(&self, partial_md5: &str) -> Result<Option<Book>> {
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} FROM books
+             WHERE id = (SELECT book_id FROM device_books WHERE partial_md5 = ?)"
+        );
+        let row = sqlx::query(&sql)
+            .bind(partial_md5)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(row_to_book).transpose()
+    }
+
+    /// Record (or refresh) the mapping.
+    ///
+    /// Re-linking only bumps `last_seen`: `book_id` and `linked_by` are left
+    /// alone so re-importing a library cannot quietly relabel a link the user
+    /// made by hand as one we guessed. Repointing a mapping at a different book
+    /// is a deliberate act and belongs to item 3's merge, not to a scan.
+    pub async fn link_device_book(
+        &self,
+        partial_md5: &str,
+        book_id: i64,
+        linked_by: LinkedBy,
+    ) -> Result<()> {
+        let now = now_unix();
+        sqlx::query(
+            r#"INSERT INTO device_books (partial_md5, book_id, linked_by, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(partial_md5) DO UPDATE SET last_seen = excluded.last_seen"#,
+        )
+        .bind(partial_md5)
+        .bind(book_id)
+        .bind(linked_by.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::Book;
+
+    async fn seed(s: &Storage, title: &str) -> i64 {
+        s.upsert_book(&Book {
+            title: Some(title.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_link_is_found_again_and_relinking_is_idempotent() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = seed(&s, "Pachinko").await;
+
+        assert!(s.find_book_by_partial_md5("abc").await.unwrap().is_none());
+        s.link_device_book("abc", id, LinkedBy::Auto).await.unwrap();
+
+        let found = s.find_book_by_partial_md5("abc").await.unwrap().unwrap();
+        assert_eq!(found.id, Some(id));
+        assert_eq!(found.title.as_deref(), Some("Pachinko"));
+
+        // Re-linking must not duplicate the row.
+        s.link_device_book("abc", id, LinkedBy::Auto).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM device_books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    /// A manual link is the user's decision. A later library scan re-links the
+    /// same file automatically, and that must not relabel it.
+    #[tokio::test]
+    async fn an_automatic_relink_does_not_downgrade_a_manual_one() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = seed(&s, "Pachinko").await;
+        s.link_device_book("abc", id, LinkedBy::Manual)
+            .await
+            .unwrap();
+        s.link_device_book("abc", id, LinkedBy::Auto).await.unwrap();
+
+        let by: String =
+            sqlx::query_scalar("SELECT linked_by FROM device_books WHERE partial_md5 = ?")
+                .bind("abc")
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(by, "manual");
+    }
+
+    /// The mapping is meaningless without its book, and a dangling row would
+    /// make `find_book_by_partial_md5` return None while the link still looked
+    /// present to anything querying the table directly.
+    #[tokio::test]
+    async fn deleting_the_book_cascades_the_mapping_away() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = seed(&s, "Pachinko").await;
+        s.link_device_book("abc", id, LinkedBy::Auto).await.unwrap();
+
+        s.delete_book(id).await.unwrap();
+
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM device_books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "foreign keys must be ON for this to hold");
+    }
+}

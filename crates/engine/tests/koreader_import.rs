@@ -142,6 +142,14 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
             // rescues every fixture, leaving every other field in this golden
             // unchanged. This is the only line that guards that branch.
             "matched_by": s.matched_by.to_string(),
+            // The device's own reading state. Nothing persists it yet — it
+            // lands in `readings` at build item 4 — so this is the only place
+            // the `summary`/`percent_finished` parse is asserted end to end.
+            // Without these three lines the four device-state fixtures would be
+            // green while parsing nothing.
+            "percent_finished": s.percent_finished,
+            "status": s.status.as_ref().map(|s| s.to_string()),
+            "rating": s.rating,
             "highlights": highlight_rows(&storage, s.book_id).await,
             "flashcard_words": flashcard_words(&storage, s.book_id).await,
         }));
@@ -294,6 +302,59 @@ async fn fixtures_match_by_the_method_the_manifest_expects() {
         checked > 0,
         "no fixture declares expect.match_via — the ISBN branch is unguarded"
     );
+}
+
+/// No fixture can declare `expect.match_via: "md5"`, because on a first import
+/// into a fresh library there is no mapping yet — the link is a consequence of
+/// matching, not an input to it. So the md5 branch needs its own test: import
+/// twice and assert the second pass used the recorded link rather than
+/// re-guessing.
+///
+/// `Gen-Stats` is the synthetic fixture carrying a root `partial_md5_checksum`.
+/// If that ever changes this test fails loudly rather than quietly checking
+/// nothing, which is the same reason `fixtures_match_by_the_method_the_manifest_expects`
+/// refuses to pass at zero.
+#[tokio::test]
+async fn a_second_import_matches_on_the_link_it_recorded() {
+    let fixture = "Gen-Stats.sdr";
+    let man = manifest();
+    let books = man
+        .get(fixture)
+        .and_then(|f| f.get("books"))
+        .cloned()
+        .expect("Gen-Stats must be in the manifest");
+
+    let storage = mem_storage().await;
+    seed_books(&storage, &books).await;
+    let dir = synthetic_dir().join(fixture);
+
+    let first = koreader::import(&storage, &dir, false)
+        .await
+        .expect("first");
+    assert_eq!(
+        first.imported[0].matched_by.to_string(),
+        "title",
+        "nothing is recorded yet, so the first pass can only guess"
+    );
+
+    // Mirrors the fixture's root `partial_md5_checksum`. If `Gen-Stats` loses
+    // that key, this fails rather than the test quietly degrading into a second
+    // title match that still says "md5" for no reason.
+    let linked = storage
+        .find_book_by_partial_md5("9f2c4e6a8b0d1357911d3f5b7d9f1a3c")
+        .await
+        .expect("lookup");
+    assert_eq!(
+        linked.and_then(|b| b.id),
+        Some(first.imported[0].book_id),
+        "the import must record the link it just made"
+    );
+
+    let second = koreader::import(&storage, &dir, false)
+        .await
+        .expect("second");
+    assert_eq!(second.imported[0].matched_by.to_string(), "md5");
+    assert_eq!(second.imported[0].inserted, 0);
 }
 
 #[tokio::test]

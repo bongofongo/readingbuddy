@@ -56,6 +56,20 @@
       "books": [{ "title": "A Scanned Book", "authors": ["Pdf Author"] }]
     },
 
+    "Gen-Summary.sdr": {
+      "books": [{ "title": "A Rated Book", "authors": ["Someone Rated"] }]
+    },
+    "Gen-Stats.sdr": {
+      "books": [{ "title": "A Counted Book", "authors": ["Stat Keeper"], "language": "en" }]
+    },
+    "Gen-Summary-Legacy.sdr": {
+      "books": [{ "title": "An Old Book", "authors": ["Legacy Format"] }]
+    },
+    "Gen-Summary-Unknown-Status.sdr": {
+      "_note": "An unrecognised status must import cleanly and warn, never fail. `has_warnings` in the golden is the assertion.",
+      "books": [{ "title": "A Future Book", "authors": ["Not Yet Written"] }]
+    },
+
     "Gen-No-Doc-Props.sdr": { "books": [] },
     "Gen-Not-A-Table.sdr": { "books": [] },
     "Gen-Not-Utf8.sdr": { "books": [] },

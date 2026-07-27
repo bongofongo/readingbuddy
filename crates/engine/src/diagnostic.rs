@@ -102,6 +102,15 @@ pub enum DiagnosticKind {
     NoSidecarsFound {
         path: PathBuf,
     },
+    /// The sidecar's `summary.status` was a value KOReader is not known to
+    /// write. The import carries it through as `KoStatus::Other` and continues;
+    /// this warning exists because it is otherwise the one thing that could
+    /// tell us the device grew a status we do not model, and silence would look
+    /// exactly like success.
+    UnknownDeviceStatus {
+        path: PathBuf,
+        status: String,
+    },
 }
 
 /// One degradation, carried in-band on a partly-successful result.
@@ -163,6 +172,17 @@ impl Diagnostic {
         }
     }
 
+    pub fn unknown_device_status(path: PathBuf, status: &str) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::UnknownDeviceStatus {
+                path,
+                status: status.to_string(),
+            },
+            severity: Severity::Warning,
+            detail: format!("unknown KOReader status {status:?}; imported as-is"),
+        }
+    }
+
     /// The provider this diagnostic is about, if any.
     pub fn provider(&self) -> Option<ProviderId> {
         match self.kind {
@@ -205,7 +225,8 @@ impl fmt::Display for Diagnostic {
                 write!(f, "{provider}: {}", self.detail)
             }
             DiagnosticKind::SidecarUnreadable { path, .. }
-            | DiagnosticKind::SidecarUnparsable { path } => {
+            | DiagnosticKind::SidecarUnparsable { path }
+            | DiagnosticKind::UnknownDeviceStatus { path, .. } => {
                 write!(f, "{}: {}", path.display(), self.detail)
             }
             DiagnosticKind::NoSidecarsFound { path } => {

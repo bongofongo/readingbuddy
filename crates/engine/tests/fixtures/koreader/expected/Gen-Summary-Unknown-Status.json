@@ -1,25 +1,25 @@
 {
-  "has_warnings": false,
+  "has_warnings": true,
   "imported": [
     {
-      "book_title": "Both Layouts",
+      "book_title": "A Future Book",
       "flashcard_words": [],
       "flashcards": 0,
       "highlights": [
         {
           "chapter": null,
-          "ko_datetime": "2026-03-01 10:00:00",
+          "ko_datetime": "2026-07-03 10:00:00",
           "note": null,
           "page": 1,
-          "text": "from annotations"
+          "text": "still imported"
         }
       ],
       "inserted": 1,
       "matched_by": "title",
-      "percent_finished": null,
+      "percent_finished": 0.0,
       "rating": null,
       "skipped": 0,
-      "status": null
+      "status": "tbr"
     }
   ],
   "unmatched": []
