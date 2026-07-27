@@ -50,14 +50,37 @@ pub async fn verify_key(key: &str) -> std::result::Result<(), String> {
     Err(scrub_key(&reason))
 }
 
+/// The live endpoint. Overridable only so tests can point at a local server —
+/// see [`GoogleBooksProvider::with_base`].
+const DEFAULT_BASE: &str = "https://www.googleapis.com/books/v1/volumes";
+
 pub struct GoogleBooksProvider {
     client: Client,
     api_key: Option<String>,
+    base: String,
 }
 
 impl GoogleBooksProvider {
     pub fn new(client: Client, api_key: Option<String>) -> Self {
-        GoogleBooksProvider { client, api_key }
+        GoogleBooksProvider {
+            client,
+            api_key,
+            base: DEFAULT_BASE.to_string(),
+        }
+    }
+
+    /// Point the provider at a different base URL.
+    ///
+    /// The only reason this exists is to let tests exercise real HTTP status
+    /// handling (404/429/500, truncated bodies) against a local server, which
+    /// no amount of pure-function testing can reach.
+    #[doc(hidden)]
+    pub fn with_base(client: Client, api_key: Option<String>, base: impl Into<String>) -> Self {
+        GoogleBooksProvider {
+            client,
+            api_key,
+            base: base.into(),
+        }
     }
 }
 
@@ -168,13 +191,13 @@ fn build_query(req: &SearchRequest) -> String {
     parts.join(" ")
 }
 
-fn build_url(req: &SearchRequest, api_key: Option<&str>) -> Result<String> {
+fn build_url(base: &str, req: &SearchRequest, api_key: Option<&str>) -> Result<String> {
     let limit = if req.limit == 0 {
         30
     } else {
         req.limit.min(40)
     };
-    let mut url = Url::parse("https://www.googleapis.com/books/v1/volumes")?;
+    let mut url = Url::parse(base)?;
     {
         let mut qp = url.query_pairs_mut();
         qp.append_pair("q", &build_query(req));
@@ -197,7 +220,7 @@ impl MetadataProvider for GoogleBooksProvider {
     }
 
     async fn search(&self, req: &SearchRequest) -> Result<Vec<ProviderBook>> {
-        let url = build_url(req, self.api_key.as_deref())?;
+        let url = build_url(&self.base, req, self.api_key.as_deref())?;
         let text = self
             .client
             .get(url)
@@ -274,10 +297,61 @@ mod tests {
             query: Some("dune".into()),
             ..Default::default()
         };
-        let without = build_url(&req, None).unwrap();
+        let without = build_url(DEFAULT_BASE, &req, None).unwrap();
         assert!(!without.contains("key="));
-        let with = build_url(&req, Some("SECRET")).unwrap();
+        let with = build_url(DEFAULT_BASE, &req, Some("SECRET")).unwrap();
         assert!(with.contains("key=SECRET"));
+    }
+
+    /// Pins the exact query string for a fully-populated request. The
+    /// `intitle:`/`inauthor:`/`inpublisher:` mapping is the thing that breaks
+    /// silently when someone edits `build_query` — the search still returns
+    /// *something*, just the wrong something.
+    #[test]
+    fn a_full_request_maps_to_an_exact_url() {
+        let req = SearchRequest {
+            query: Some("dune".into()),
+            title: Some("Dune".into()),
+            author: Some("Frank Herbert".into()),
+            publisher: Some("Ace".into()),
+            isbn: Some("9780441013593".into()),
+            language: Some("en".into()),
+            limit: 10,
+            ..Default::default()
+        };
+        let url = build_url(DEFAULT_BASE, &req, None).unwrap();
+        assert_eq!(
+            url,
+            "https://www.googleapis.com/books/v1/volumes\
+             ?q=dune+intitle%3A%22Dune%22+inauthor%3A%22Frank+Herbert%22\
+             +inpublisher%3A%22Ace%22+isbn%3A9780441013593\
+             &maxResults=10&printType=books&langRestrict=en"
+        );
+    }
+
+    /// The API caps maxResults at 40, and 0 means "unset" rather than "none".
+    #[test]
+    fn limits_are_clamped_to_what_the_api_accepts() {
+        let mk = |limit| SearchRequest {
+            query: Some("x".into()),
+            limit,
+            ..Default::default()
+        };
+        assert!(
+            build_url(DEFAULT_BASE, &mk(0), None)
+                .unwrap()
+                .contains("maxResults=30")
+        );
+        assert!(
+            build_url(DEFAULT_BASE, &mk(1000), None)
+                .unwrap()
+                .contains("maxResults=40")
+        );
+        assert!(
+            build_url(DEFAULT_BASE, &mk(7), None)
+                .unwrap()
+                .contains("maxResults=7")
+        );
     }
 
     #[test]

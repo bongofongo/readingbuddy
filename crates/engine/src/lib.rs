@@ -140,17 +140,30 @@ impl Engine {
     /// Resolve a user-supplied selector: numeric id, ISBN, or title fragment.
     /// Returns all candidates (empty = nothing matched, >1 = ambiguous).
     pub async fn resolve_books(&self, selector: &str) -> Result<Vec<Book>> {
-        if let Ok(id) = selector.parse::<i64>() {
-            return Ok(self.storage.get_book(id).await?.into_iter().collect());
-        }
+        // ISBN before id, deliberately. A bare ISBN-13 is thirteen digits and
+        // therefore *also* parses as an i64, so trying the id first meant
+        // `show 9781784161880` looked up row 9781784161880, found nothing, and
+        // reported no match — plain ISBN selectors never resolved at all, while
+        // hyphenated ones did.
         if let Some(isbn) = normalize_isbn(selector) {
-            return Ok(self
+            let hits: Vec<Book> = self
                 .storage
                 .find_book_by_isbn(&isbn)
                 .await?
                 .into_iter()
-                .collect());
+                .collect();
+            if !hits.is_empty() {
+                return Ok(hits);
+            }
         }
+        if let Ok(id) = selector.parse::<i64>() {
+            let hits: Vec<Book> = self.storage.get_book(id).await?.into_iter().collect();
+            if !hits.is_empty() {
+                return Ok(hits);
+            }
+        }
+        // Each branch falls through rather than returning early on a miss, so a
+        // selector that looks like one kind but matches another still resolves.
         self.storage.find_books_by_title(selector).await
     }
 

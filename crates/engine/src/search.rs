@@ -639,3 +639,223 @@ mod props {
         }
     }
 }
+
+/// Tests for the fan-out itself, which had no coverage at all: only the pure
+/// `dedup`/`rank` helpers were exercised, so the 5s timeout and the
+/// per-provider failure degradation had never once run.
+#[cfg(test)]
+mod fanout_tests {
+    use super::*;
+    use crate::error::EngineError;
+    use async_trait::async_trait;
+
+    enum Behaviour {
+        Answers(Vec<Book>),
+        /// Fails with this message. Carried rather than fixed so a test can
+        /// steer the resulting `ErrorClass`.
+        Fails(String),
+        /// Sleeps past PROVIDER_TIMEOUT. Costs no real time under
+        /// `start_paused` — tokio auto-advances its clock when every task is
+        /// idle with a timer pending.
+        Hangs,
+    }
+
+    struct FakeProvider {
+        id: ProviderId,
+        behaviour: Behaviour,
+    }
+
+    #[async_trait]
+    impl MetadataProvider for FakeProvider {
+        fn id(&self) -> ProviderId {
+            self.id
+        }
+        async fn search(&self, _req: &SearchRequest) -> Result<Vec<ProviderBook>> {
+            match &self.behaviour {
+                Behaviour::Answers(books) => Ok(books
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(position, book)| ProviderBook {
+                        book,
+                        provider: self.id,
+                        position,
+                    })
+                    .collect()),
+                Behaviour::Fails(message) => Err(EngineError::Provider {
+                    provider: self.id,
+                    message: message.clone(),
+                }),
+                Behaviour::Hangs => {
+                    tokio::time::sleep(PROVIDER_TIMEOUT * 2).await;
+                    Ok(Vec::new())
+                }
+            }
+        }
+        async fn by_isbn(&self, _isbn: &str) -> Result<Option<ProviderBook>> {
+            Ok(None)
+        }
+    }
+
+    fn provider(id: ProviderId, behaviour: Behaviour) -> Box<dyn MetadataProvider> {
+        Box::new(FakeProvider { id, behaviour })
+    }
+
+    fn book(title: &str) -> Book {
+        Book {
+            title: Some(title.into()),
+            authors: vec!["Someone".into()],
+            ..Default::default()
+        }
+    }
+
+    fn req() -> SearchRequest {
+        SearchRequest {
+            query: Some("dune".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn one_provider_failing_does_not_lose_the_other_s_results() {
+        let providers = vec![
+            provider(
+                ProviderId::OpenLibrary,
+                Behaviour::Fails("upstream exploded".into()),
+            ),
+            provider(
+                ProviderId::GoogleBooks,
+                Behaviour::Answers(vec![book("Dune"), book("Dune Messiah")]),
+            ),
+        ];
+        let out = federated_search(&providers, &req()).await.unwrap();
+
+        assert_eq!(
+            out.results.len(),
+            2,
+            "surviving provider's results were lost"
+        );
+        assert_eq!(out.warnings.len(), 1);
+        assert_eq!(out.failed_providers(), vec![ProviderId::OpenLibrary]);
+        assert!(!out.timed_out(), "a failure is not a timeout");
+    }
+
+    /// The whole point of `start_paused`: a provider that sleeps twice the
+    /// timeout resolves instantly here. This is why PROVIDER_TIMEOUT should not
+    /// be widened into a config knob merely to make it testable.
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_provider_times_out_and_says_so() {
+        let started = std::time::Instant::now();
+        let providers = vec![
+            provider(ProviderId::OpenLibrary, Behaviour::Hangs),
+            provider(
+                ProviderId::GoogleBooks,
+                Behaviour::Answers(vec![book("Dune")]),
+            ),
+        ];
+        let out = federated_search(&providers, &req()).await.unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "test actually waited {:?}; paused time is not in effect",
+            started.elapsed()
+        );
+        assert_eq!(out.results.len(), 1);
+        assert!(out.timed_out());
+        assert_eq!(out.failed_providers(), vec![ProviderId::OpenLibrary]);
+        // The exact user-visible string, unchanged by the typed-diagnostic
+        // refactor.
+        assert_eq!(out.warnings[0].to_string(), "openlibrary: timed out");
+    }
+
+    /// Every provider down is still a successful, empty search — never an Err.
+    /// A dead network must not look like a bug in the app.
+    #[tokio::test(start_paused = true)]
+    async fn every_provider_down_is_still_ok_with_two_diagnostics() {
+        let providers = vec![
+            provider(ProviderId::OpenLibrary, Behaviour::Hangs),
+            provider(
+                ProviderId::GoogleBooks,
+                Behaviour::Fails("upstream exploded".into()),
+            ),
+        ];
+        let out = federated_search(&providers, &req())
+            .await
+            .expect("total provider failure must not be an Err");
+
+        assert!(out.results.is_empty());
+        assert_eq!(out.warnings.len(), 2);
+        let mut failed = out.failed_providers();
+        failed.sort();
+        assert_eq!(
+            failed,
+            vec![ProviderId::OpenLibrary, ProviderId::GoogleBooks]
+        );
+    }
+
+    #[tokio::test]
+    async fn both_answering_dedups_and_credits_both_sources() {
+        let providers = vec![
+            provider(
+                ProviderId::OpenLibrary,
+                Behaviour::Answers(vec![book("Dune")]),
+            ),
+            provider(
+                ProviderId::GoogleBooks,
+                Behaviour::Answers(vec![book("Dune")]),
+            ),
+        ];
+        let out = federated_search(&providers, &req()).await.unwrap();
+
+        assert!(out.warnings.is_empty());
+        assert_eq!(out.results.len(), 1, "the same work was not deduped");
+        assert_eq!(
+            out.results[0].sources.len(),
+            2,
+            "second source not credited"
+        );
+    }
+
+    /// A keyless Google Books key hits quota routinely, and it is the one
+    /// failure a frontend can act on ("add an API key"). It must survive the
+    /// trip into a Diagnostic as something distinguishable, not as generic
+    /// text.
+    #[tokio::test]
+    async fn a_quota_refusal_stays_recognisable_as_a_rate_limit() {
+        let providers = vec![provider(
+            ProviderId::GoogleBooks,
+            Behaviour::Fails("HTTP 429 rate limit exceeded".into()),
+        )];
+        let out = federated_search(&providers, &req()).await.unwrap();
+
+        assert_eq!(out.warnings.len(), 1);
+        assert!(
+            out.warnings[0].is_rate_limited(),
+            "quota refusal lost its classification: {:?}",
+            out.warnings[0]
+        );
+        assert!(!out.warnings[0].is_timeout());
+    }
+
+    #[tokio::test]
+    async fn no_providers_at_all_is_an_empty_success() {
+        let out = federated_search(&[], &req()).await.unwrap();
+        assert!(out.results.is_empty() && out.warnings.is_empty());
+    }
+
+    /// Results come back ordered best-first, since the frontends render the
+    /// list as given.
+    #[tokio::test]
+    async fn results_are_sorted_by_descending_score() {
+        let providers = vec![provider(
+            ProviderId::OpenLibrary,
+            Behaviour::Answers(vec![book("Something Else"), book("Dune"), book("Dune Two")]),
+        )];
+        let out = federated_search(&providers, &req()).await.unwrap();
+        let scores: Vec<f64> = out.results.iter().map(|r| r.score).collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "not descending: {scores:?}"
+        );
+    }
+}
