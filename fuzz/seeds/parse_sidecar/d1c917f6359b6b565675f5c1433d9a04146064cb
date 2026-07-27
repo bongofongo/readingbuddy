@@ -1,0 +1,7 @@
+-- GENEp corpus -- edit.
+return {
+    ["annotations"] = {
+        [1] = { ["text"] = "orphaned highlight", ["pos0"] = "/body/p[1]/text().0",
+                 ["datetime"] = "2026-01-01 10:00:00" },
+    },
+}

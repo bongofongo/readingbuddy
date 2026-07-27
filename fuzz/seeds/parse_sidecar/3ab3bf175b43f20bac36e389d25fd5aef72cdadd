@@ -1,0 +1,13 @@
+-- Synth `bookmdie).
+return {
+    ["highlight"] = {
+           },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03",
+        ["text"] = "Famous opuiltef` bore act.",
+        },
+    },
+    ["doc_props"] = {
+      },
+}

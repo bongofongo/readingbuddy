@@ -1,0 +1,24 @@
+-- Synthetic KORcy `highlight` rd highlight (flashcard candidate).
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {
+        ["datetime"] = "2024DocFragment[3]/body/p[1]/text().49",
+                ["drawer"] = "lighten",
+                            ["text"] = "verdict",
+                ["pos0"] = "/body/DocFragment[5]/body/p[9]/text().4",
+                ["pos1"] = "/body/DocFragment[5]/body/p[9]/text().11",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:0 beenlling lies about Josef K.",
+            ["text"] = "Famous opining, guilt before act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kafka",
+        ["title"] = "The Trial",
+    },
+}

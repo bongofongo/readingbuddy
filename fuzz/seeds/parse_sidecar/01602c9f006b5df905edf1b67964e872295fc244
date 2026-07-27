@@ -1,0 +1,6 @@
+-- Tic Kd ed.
+return {
+    ["annotations"] = {"en",
+    },
+["partial_md5_checksum"] = "aadd",
+}

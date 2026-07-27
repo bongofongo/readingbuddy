@@ -1,0 +1,66 @@
+name: Fuzz
+
+# Never on PRs. This needs a nightly toolchain and runs for a fixed wall-clock
+# time, neither of which belongs in a gate someone is waiting on.
+#
+# PR-time protection comes from `crates/engine/tests/fuzz_seeds.rs` instead: it
+# replays the committed seed corpus on stable in milliseconds. Anything this job
+# finds gets minimized into fuzz/seeds/ and is guarded there from then on.
+on:
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        default: "300"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse_sidecar, epub_info]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@cargo-fuzz
+
+      # `-timeout=10` is load-bearing for parse_sidecar: it is how a
+      # non-terminating Lua chunk is detected at all. Without it a runaway loop
+      # reads as a slow input rather than a hang.
+      # `-s none` — no AddressSanitizer, and that is measured rather than
+      # cargo-culted. mlua's vendored Lua propagates errors with longjmp, which
+      # ASAN's interceptors do not survive here: with ASAN the target pinned a
+      # core and made no progress at all, while without it parse_sidecar managed
+      # 741k execs in 26s and epub_info 110k. libFuzzer's coverage guidance,
+      # panic detection and -timeout hang detection all still work; what is lost
+      # is memory-error detection inside the C dependencies. Revisit if the
+      # interaction is ever fixed upstream.
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
+        run: |
+          cargo fuzz run -s none "${{ matrix.target }}" \
+            -- -max_total_time="$SECONDS_PER_TARGET" \
+               -timeout=10 \
+               -rss_limit_mb=2048 \
+               fuzz/seeds/"${{ matrix.target }}"
+
+      # Any crash is a file under fuzz/artifacts/. Keep it: it is the input that
+      # becomes the next committed seed.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

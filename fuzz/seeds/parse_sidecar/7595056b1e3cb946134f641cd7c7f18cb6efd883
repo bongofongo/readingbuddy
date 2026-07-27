@@ -1,0 +1,32 @@
+-- Synthetic KOReader sidecar: legacy `highlight` + `bookmayed; user no.
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {
+                ["datetime"] = "2024-03-01 10:00:00",
+                ["text"] = "Someone must have been telling lies about Josef K.",
+                ["pos0"] = "/body/DocFragment[3]/body/p[1]/tex|t().0",
+                ["pos1"] = "/body/DocFragment[3]/body/p[1]/text().49",
+                ["drawer"] = "lighten",
+            },
+        },
+        [01] = {
+            [1] = {
+                ["dateimet"] = "2)24-03-02 22:30:00",
+                ["chapter"] = "III",
+                ["text"] = "verdict",
+                ["pos0"] = "t().11",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:00:00",
+            ["notes"] = "Someon act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["title"] = "The Trial",
+    },
+}

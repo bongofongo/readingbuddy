@@ -1,0 +1,7 @@
+-- S(nth)
+return {
+    ["highlight"] = {
+        [82] = {   ["text"] = "Famous opuil{efore act.",
+        },
+ },
+}

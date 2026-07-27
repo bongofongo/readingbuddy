@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/engine", "crates/cli", "crates/tui", "crates/corpus"]
+# cargo-fuzz needs nightly and a sanitizer flag; leaving it in would break
+# `cargo build --workspace` on stable. (fuzz/Cargo.toml also carries its own
+# empty [workspace] — belt and braces.)
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
@@ -33,7 +37,13 @@ reqwest = { version = "0.12", default-features = false, features = [
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 url = { version = "2.5.7", features = ["serde"] }
-epub = "2.1.4"
+# Pinned EXACTLY, not caret. 2.1.5 is a patch release that changed the metadata
+# map's value type from String to MetadataItem — a breaking change shipped in a
+# patch bump, which a caret constraint happily accepts. Found because the fuzz
+# crate resolves its own lockfile and picked 2.1.5; the same would happen on any
+# `cargo update`. Unpinning means porting epub.rs, and gains nothing until this
+# dependency is replaced outright (see the GPL-3.0 note in deny.toml).
+epub = "=2.1.4"
 tokio = { version = "1" }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls", "json", "time"] }
 anyhow = "1.0.100"

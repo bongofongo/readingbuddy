@@ -1,0 +1,28 @@
+-- Synthetic KOReader sidecar: legacy `highlight` + `bookmarks` layoulashcjrd candidate).
+return {
+    ["highlight"] = {
+        [21] = {
+            [0] = {
+                        ["datetime"] = "2026-02-04 07:vvvvvvvvvvvvvv24-3-001 10:00:00",
+      ["chapter"] = "I",
+                ["drawer"] = "lighten",
+            ["pageno"] = 12,
+            ["pos0"] = "/body/DocFragment[2]/body/p[1]/text().0",
+            ["pos1"] = "/body/DocFragment[2]/body/p[1]/text().18",
+            ["text"] = "私はその人を常に先生と呼んでいた。",
+            ["note"] = "語り手と先生の距離感 — cragment[4]/body/p[2]/text().0",
+            ["pos1"] = "/body/DocFragment[4]/body/p[2]/text().22",
+            ["text"] = "naïveté, résumé, and a café façade — déjà vu 🌊",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "夏目 漱石",
+        ["title"] = "こころ",
+     ["text"] = "Famous opining, guilt before act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["title"] = "The Trial",
+    },
+}

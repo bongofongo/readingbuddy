@@ -1,0 +1,20 @@
+-- S a single-word highlight (flashcad candidate).
+return {
+    ["highlight"] = {
+        [43] = {
+            [1] = {
+                ["datetime"] = "2024-03-xt().11",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime%"] = "2024-0/3-eone must have been telling liJosef K.",
+            ["text"] = "Famous o`ining, guilt before act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["tle"] = "The Trial",
+    },
+}

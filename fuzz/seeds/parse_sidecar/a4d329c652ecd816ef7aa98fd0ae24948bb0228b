@@ -1,0 +1,2 @@
+--`D. Invalid UTF-8 f2ollows.
+retu{ ["text"] = "ÿş€" }

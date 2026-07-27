@@ -1,0 +1,22 @@
+-- Synthetic s`, joined by
+-- datetime. `verdict` is a single-word highlight (flashcard candidate).
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {
+                ["datetime"] = "2024-]/text(1",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:00:00",
+            ["notes"] = "Someone Josef K.",
+            ["text"] = "Famous opining, guilt before act.",
+        },
+    },
+    {
+        ["authors"] = "Franz Kafka",
+        ["title"] = "The Trial",
+    },
+}

@@ -1,0 +1,16 @@
+-- Syskip.
+return {
+    ["annotations"] = {
+        [2] = {
+                ["page"] = "/body/Doc12]/text().",
+    ["pos0"] = "p[12]/text().0",
+         
+            ["text"] = "dogear",
+        },
+    },
+    ["doc_props"] = {
+      ["title"] = "Pachinko",
+        ["language"] = #"en",
+    },
+    ["partial_sum"] = "0d6ba6c47caf63b8b3d1a2b3c4d5e6f7",
+}

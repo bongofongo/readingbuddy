@@ -1,0 +1,6 @@
+-- GENERAEDedit.
+return {
+    ["annotations"] = {
+   K },
+    ["doc_props"] = { ["t%tle"] = "A S", ["authors"] = "Puthor" },
+}

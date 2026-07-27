@@ -1,0 +1,12 @@
+-- Syntder sidate).
+return {
+    ["highlight"] = {
+       [""] = {
+       },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kafka",
+        ["title"] = 0>2,
+       
+    },
+}

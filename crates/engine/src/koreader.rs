@@ -11,10 +11,19 @@ use crate::flashcards::single_word;
 use crate::search::normalize;
 use crate::storage::{NewHighlight, Storage};
 
-/// Instructions a sidecar chunk may execute before it is killed. A genuine
-/// sidecar is a table literal; this is orders of magnitude above the largest
-/// real export and still terminates a `while true do end`.
-const LUA_INSTRUCTION_BUDGET: u32 = 50_000_000;
+/// Instructions a sidecar chunk may execute before it is killed.
+///
+/// A genuine sidecar is a table literal, so its cost is roughly proportional to
+/// its entries: the 5000-highlight scale fixture is on the order of 10^5
+/// instructions. 5M is ~50x headroom over the largest export anyone plausibly
+/// has, while still tripping quickly.
+///
+/// It was 50M first, which is wrong for a reason worth recording: the budget
+/// has to bite quickly under *instrumentation*, not just in a release build.
+/// Under ASAN + sanitizer coverage the fuzzer ran for minutes on a single
+/// `while true do end` input instead of the milliseconds a normal build takes —
+/// so the ceiling that looked harmless made the fuzz target useless.
+const LUA_INSTRUCTION_BUDGET: u32 = 5_000_000;
 
 /// How deep a library tree may nest before the walk gives up. Guards against a
 /// symlink cycle, which is otherwise an unbounded recursion.

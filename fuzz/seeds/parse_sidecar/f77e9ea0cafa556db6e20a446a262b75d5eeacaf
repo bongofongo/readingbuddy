@@ -1,0 +1,20 @@
+-- Synthetic KOReader sidecar: valid highlights whmport must report it as unmatched, not abort.
+return {
+    ["annotations"] = {
+        [1] = {
+            ["chapter"] = "Prologue",
+            ["datetime"] = "2026-04-01 18:00:00",
+            ["drawer"] = "lighten",
+            ["pageno"] = 1,
+            ["pos0"] = "/body/DocFragment[1]/body/p[1]/text().0",
+            ["pos1"] = "/body/Doc",
+            ["text"] = "A passage from bao nobody added.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Ghost Writer",
+        ["title"] = "Nonexistent Tome",
+        ["language"] = "en",
+    },
+    ["partial_md5_checksum"] = "deadbeefdeadbeefdeadbeefdeadbeef",
+}

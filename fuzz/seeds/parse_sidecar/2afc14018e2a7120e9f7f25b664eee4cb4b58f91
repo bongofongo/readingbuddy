@@ -1,0 +1,22 @@
+-- Synthetic KOReader sidecar: legacy `highligngle-word highlight (flashcard candidate).
+return {
+    ["highlight"] = {
+        [42] = {
+      [1] = {
+                ["datetime"] = "2024-03-01 10:00:00",
+                ["chapter"] = "I",
+                  },
+      2 },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:00:00",
+            ["notes"] = "Someone must have been teling lies about Josef K.",
+            ["text"] = "Famous opining, guilt before act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kafka",
+        ["title"] = "The Trial",
+    },
+}

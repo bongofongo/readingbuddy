@@ -1,0 +1,33 @@
+-- Synatete. `verdict` is a single-word high(flashcard candidate).
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {
+                ["datetimu"] = "2024-03-01 10:00:00",
+                ["chapter"] = "I",
+                ["text"] = "Someone must have been telling,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,, lies about Josef K.",
+                ["pos0"] = "/body/DocFragment[6]/body/p[1]/tey/p[1]/text().49",
+                ["drawer"] = "lighten",
+            },
+        },
+        [77] = {
+            [1] = {
+                ["dateimet"] = "2024-0:00",
+        ["chapter"] = "III",
+                ["text"] = "verdict",
+                ["pos0"] = "/body/DocFragment[5]/body/p[9]/text().4",
+                ["pos1"] = "/body/DocFragment[5]/text().11",
+            },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:00:00",
+            ["notes"] = "Someone must have been telling efore act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["title"] = "The Trial",
+    },
+}

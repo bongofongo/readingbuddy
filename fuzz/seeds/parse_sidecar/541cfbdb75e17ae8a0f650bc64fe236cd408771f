@@ -1,0 +1,11 @@
+-- acy `highligte).
+return {
+    ["highlight"] = {
+        [42] = {
+            },
+    },
+    ["bookmarks"] = {
+        ["authors"] = "Franz Kaf",
+  ["title"] = "The Trial",
+    },
+}

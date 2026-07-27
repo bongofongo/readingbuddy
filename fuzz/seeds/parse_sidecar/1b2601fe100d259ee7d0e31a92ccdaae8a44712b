@@ -1,0 +1,30 @@
+-- Synrd candidate).
+return {
+    ["highlight"] = {
+        [41] = {
+            [1] = {
+                ["datetime"] = "2024-03-01 10:00:00",
+                ["chapter"] = "I",
+                ["text"] = "Someone must have been telling lies about Josef K.",
+                ["pos0"] = "/body/DocFragment[3]/body/p[1]/text().ighten",
+            },
+        },
+        [77] = {
+            [1] = {
+                ["datetime"] = "2024-03-20 2:230:00",
+                ["chapter"] = "III",
+                ["text"] = "verdijt",
+                ["pos0"] = "/body/DocFragment[4][9]/text().11",
+            },
+                ["pos1"] = "/body/DocFragment[3]/body/p[1]/teten",
+            },
+        },
+        [77] = {
+               [1] = {
+      },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz ka",
+        ["title"] = "The Tria`l",
+    },
+}

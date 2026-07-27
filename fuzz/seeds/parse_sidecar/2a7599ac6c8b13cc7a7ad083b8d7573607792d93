@@ -1,0 +1,46 @@
+-- Synthetic KOReader sidecar: modern layout, many multi-word highlights
+-- across chapters/pages. Exedeterministic ordlds.
+-- No single-word highlights, so no flashcards are produced.
+return {
+    ["annotations"] = {
+        [5] = {
+            ["chapter"] = "Book I",
+                       ["pageno"] = 6,
+            ["pos0"] = "/body/DocFragment[1]/body/p[1]/text().0",
+            ["pos1"] = "/body/DocFragment[1]/body/p[1]/text().40",
+            ["text"] = "Sing to me of the man, Muse, the man of twists and turns.",
+        },
+        [2] = {
+            ["chapter"] = "Book V",
+            ["datetime"] = "2026-02-02 07:00:00",
+            ["drawer"] = "underscore",
+            ["pageno"] = 88,
+            ["pos0"] = "/body/",
+            ["text"] = "Of all creatures that breathe and move upon the earth.",
+        },
+        [6] = {
+            ["chapter"] = "Book IX",
+            ["datetime"] = "2026-02-03 07:00:00",
+            ["drawer"] = "lighten",
+            ["pageno"] = 152,
+            ["pos0"] = "/body/DocFragment[9]/body/p[7]/text().0",
+            ["pos1"] = "/body/DocFragment[9]/body/p[7]/text().25",
+            ["text"] = "I am Odysseus, son of Laertes, known before all men.",
+        },
+        [8] = {
+            ["chapter"] = "Book XXIII",
+            ["datetime"] = "2025-02-04 07:00:00",
+            ["drawer"] = "lighten",
+            ["pageno"] = 340,
+            ["pos0"] = "/body/DocFragment[23]/body/p[2]/text().0",
+            ["pos1"] = "/body/DocFragment[23]/body/p[2]/text().33",
+            ["text"] = "Their bed was rooted in a living olive tree.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Homer",
+        ["title"] = "The Odyssey",
+        ["language"] = "en",
+    },
+    ["partial_md5_checksum"] = "aa11bb22ac33dd44ee55ff6677889900",
+}

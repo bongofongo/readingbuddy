@@ -26,3 +26,9 @@ anki.tsv
 # corpus/manifest.json IS committed (ids + checksums); the payload is not.
 /corpus/epub
 /corpus/generated
+
+# cargo-fuzz working state. `fuzz/seeds/` IS committed — a small hand-picked
+# read-only set that tests/fuzz_seeds.rs replays on stable in PR CI.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

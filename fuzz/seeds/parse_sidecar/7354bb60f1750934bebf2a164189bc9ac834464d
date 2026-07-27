@@ -1,0 +1,22 @@
+-- Syntle-word highlight (flashcard candidate).
+return {
+    ["highlight"] = {
+        [41] = {
+            [1] = {
+                ["datetime"] = "2525-03-01 10:00nt[3]/body/p[1]/text().49",
+                ["drawer"] = "lighten",
+            },
+        },
+        [77] = {
+            [1] = {
+                ["qqqqqqqqqqqq1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqdateimet"] = "2024-0-302 22:30:00",
+            ["drawer"] = "lighten",
+            },
+        },
+        [54] = {
+            [1] = {
+                ["qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqyqqqqqqqqqqqqqqdateimet"] = "2025p[9]/text()/p[9]/text().11",
+            },
+        },
+    },
+}

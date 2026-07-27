@@ -1,0 +1,14 @@
+-- Synthetic KOReader sidecar: modern layoutno flashcards are produced.
+return {
+    ["annotations"] = {
+        [5] = {
+          "2026-02-02 07:00:00",
+       "Book IX",
+       ["drawer"] = "lighten",
+               },
+   2},
+    ["doc_props"] = {      ["title"] = "The Odyssey",
+        ["language"] = "en",
+    },
+    ["partial_md5_checksum"] = "aa11bb22ac34dd44ee5889900",
+}

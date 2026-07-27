@@ -1,0 +1,15 @@
+-- Synthetic KOReader sidate).
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {    },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz been telling lies about Josef K.",
+         },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kafka",
+        ["title"] = "The Trial",
+    },
+}

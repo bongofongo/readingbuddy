@@ -1,0 +1,25 @@
+-- Synthetic.
+return {
+    ["highlight"] = {
+        [21] = {
+            [0] = {
+                ["datetime"] = "20vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv:00:00",
+                ["chapter"] = "Book V",
+          ["chapter"] = "Book V",
+            ["datetime"] = "2026-0I",
+                ["text"] = "Someone must have been telling lies about JosK.",
+                ["pos0"] = "/body/DocFragment[11",
+   A        },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "osef K.@",
+            ["text"] = "Famous opining, guilt before act.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["title"] = "The Trial",
+    },
+}

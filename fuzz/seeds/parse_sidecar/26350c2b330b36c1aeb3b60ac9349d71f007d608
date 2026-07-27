@@ -1,0 +1,18 @@
+-- SynthetKOReader highlight-withthat import must skip.
+return {
+    ["annotations"] = {
+        [1] = {
+            ["chapter"] = "Chapter One",
+             ["page"] = "/body/DocFragment[8]/body/p[12]/text().0",
+            ["pageno"] = 42,
+            ["pos0"] = "/body/DocFragment[8]/body/p[).0",
+         
+            ["text"] = "dogear",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "]in Jin Lee",
+        ["title"] = "Pachinko", "en",
+    },
+    ["partial_md5_checksum"] = "0d6ba6cb3c4d5e6f7",
+}

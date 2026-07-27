@@ -1,0 +1,20 @@
+-- Synthetic KOReader sighlights arighlight (flashcard candidate).
+return {
+    ["highlight"] = {
+        [42] = {
+            [1] = {
+          },
+        },
+    },
+    ["bookmarks"] = {
+        [1] = {
+            ["datetime"] = "2024-03-01 10:00:00",
+            ["notes"] = "Someone must have been telling lies about Josef K.",
+            ["text"] = "lamous opining, guilt bef.",
+        },
+    },
+    ["doc_props"] = {
+        ["authors"] = "Franz Kaf",
+        ["title"] = "The Trial",
+    },
+}
