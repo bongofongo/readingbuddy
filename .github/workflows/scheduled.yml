@@ -1,0 +1,42 @@
+name: Scheduled
+
+# The things that must not gate a PR, because they fail for reasons a PR author
+# cannot fix: a newly-published advisory, a new clippy lint on floating stable.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  advisories:
+    name: security advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  floating-stable:
+    name: clippy on floating stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Advisory only. This exists so a new lint is *visible* before the pinned
+    # toolchain in rust-toolchain.toml is bumped — never so it blocks anything.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # RUSTUP_TOOLCHAIN is what overrides rust-toolchain.toml's pin — this is
+      # the one job that deliberately ignores it.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          RUSTUP_TOOLCHAIN: stable

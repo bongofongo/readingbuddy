@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # `paths-ignore`, deliberately, rather than a `paths` allowlist: with branch
+    # protection an allowlist leaves required checks stuck "pending" forever on
+    # a docs-only PR, which is then unmergeable for no reason.
+    # Duplicated below rather than shared via a YAML anchor — the Actions
+    # workflow parser does not support anchors/aliases.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "perf/**"
+      - ".gitignore"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "perf/**"
+      - ".gitignore"
+
+# No DATABASE_URL anywhere below, and that is correct — this crate uses runtime
+# `sqlx::query()` only (zero `query!` macros, no `.sqlx/`), and the
+# `sqlx::migrate!` in storage/mod.rs is a compile-time *file* read. Nothing here
+# needs a database. Please don't helpfully add one.
+#
+# No toolchain action either: the runners ship rustup, which reads
+# rust-toolchain.toml and installs the pinned version plus its components on the
+# first cargo call. Adding a setup action would just fight the pin.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+
+      # --all-targets subsumes `cargo check`, so there is no separate build job.
+      # And it covers the *whole workspace*, not just the engine: an engine-only
+      # gate that lets a change to `SearchOutcome` break the CLI is not a gate.
+      # `-D warnings` lives here rather than in RUSTFLAGS — as an env var it
+      # would invalidate the cache against every local build.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: engine tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS earns its slot: it's the dev machine, and both C dependencies
+        # (vendored lua54, libsqlite3-sys) build differently there. Free here
+        # because the repo is public; on a private repo these bill at 10x and
+        # should move to the scheduled workflow instead.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      # Engine only. The TUI's render/layout suite is deliberately out of scope
+      # for this gate; its *compilation* is covered by the clippy job above.
+      - run: cargo nextest run -p readingbuddy
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # bans + licenses + sources only. `advisories` is on the scheduled
+      # workflow instead: the advisory DB moves independently of this repo, so
+      # running it here would red PRs for a reason their author cannot fix.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources

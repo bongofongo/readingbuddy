@@ -1,0 +1,66 @@
+# cargo-deny config. `check bans licenses sources` gates PRs; `check advisories`
+# runs on the scheduled workflow only, because the advisory DB moves on its own
+# schedule and would otherwise red PRs for reasons their author cannot fix.
+
+[graph]
+# The app is only ever built for the machine in front of it. Restricting the
+# graph keeps Windows-only and wasm-only crates out of the ban/license report.
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+]
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+# Permissive only, with one deliberate exception. Anything else copyleft landing
+# in the tree should be a visible decision, not something that arrives with a
+# routine `cargo update` — which is exactly what this list is for.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+
+    # DELIBERATE EXCEPTION, and the one entry here worth understanding.
+    #
+    # `epub` 2.1.4 is GPL-3.0, and the engine links it (epub.rs, and the
+    # KOReader sibling-epub ISBN match path). GPL-3.0 is viral on linking, so a
+    # *distributed* readingbuddy binary is effectively GPL-3.0 as a whole,
+    # whatever this repo's own crates say.
+    #
+    # That is fine for a personal, source-shipped app and nothing here needs to
+    # change today. It would need revisiting before publishing binaries under a
+    # non-GPL licence — the fix would be replacing the `epub` crate (it does
+    # zip + OPF/XML parsing; `zip` + `quick-xml` directly would cover what
+    # epub.rs actually uses) rather than relicensing anything.
+    "GPL-3.0",
+]
+confidence-threshold = 0.8
+
+# The three workspace crates carry no `license` field and are `publish = false`;
+# they aren't going to crates.io, so don't demand SPDX metadata from them.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# `readingbuddy = { path = "../engine" }` in cli/ and tui/ has no version, which
+# reads as a wildcard. That is the normal way to depend across a workspace.
+allow-wildcard-paths = true
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
