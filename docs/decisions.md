@@ -213,7 +213,20 @@ Provider enrichment on device pull. Non-numeric rating scales.
 ## Build order
 
 1. KOReader format work — source, real sidecars, `summary`, `percent_finished`,
-   `stats.md5`; settle the `datetime`-on-edit question.
+   the device→book mapping key; settle the `datetime`-on-edit question. **Done;
+   see `docs/koreader-format.md`.** Two corrections it produced: `datetime` is
+   immutable (edits write `datetime_updated`), so item 2's design stands; and
+   **`stats.md5` does not exist** on any 2024.11+ device — the mapping keys on
+   the root `partial_md5_checksum`, so read "`stats.md5`" as that wherever it
+   appears above.
+   - **Follow-up:** the only realistic-scale KOReader coverage we have is the
+     user's own library, which is personal and uncommittable, so it protects
+     nobody else and vanishes on another machine. Add a generated
+     realistic-device tier to `crates/corpus` — many books, hundreds of
+     annotations, `datetime_updated`, notes, mixed statuses, PDF sidecars,
+     `.lua.old` siblings — so the committed corpus reaches that scale without
+     the private text. Tier 1 covers shape and tier 2 covers Gutenberg-derived
+     text; neither covers a *device library*.
 2. Highlight ownership seam — `ko_note`/`annotation`, device-field refresh,
    `updated` counter, `last_seen_ko_note`, new fixture, three-way test.
 3. `import_book_from_sidecar` + link/merge — offline, no enrichment.
