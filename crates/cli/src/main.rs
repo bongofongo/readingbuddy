@@ -1,5 +1,6 @@
 mod commands;
 mod config_file;
+mod logging;
 mod prompt;
 mod render;
 mod repl;
@@ -20,6 +21,15 @@ struct Cli {
     /// Data directory root (default: READINGBUDDY_DATA_DIR env or current dir)
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
+
+    /// Increase log verbosity: -v info, -vv debug, -vvv trace (to stderr).
+    /// RUST_LOG overrides this.
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Silence logging entirely.
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    quiet: bool,
 
     /// Google Books API key for this invocation (overrides the stored one;
     /// prefer `readingbuddy config set google-api-key` for persistence)
@@ -162,6 +172,7 @@ enum CardsCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    logging::init(cli.verbose, cli.quiet);
 
     // `config` must not touch the engine: it would create database/ in the
     // current directory just to store a key.

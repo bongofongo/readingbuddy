@@ -8,6 +8,13 @@ pub struct EngineConfig {
     pub images_dir: PathBuf,
     /// Obsidian-openable vault directory for note markdown files.
     pub vault_dir: PathBuf,
+    /// Where a frontend should put its log and crash files.
+    ///
+    /// Under the data root rather than `$XDG_STATE_HOME` on purpose: the data
+    /// root is already this app's single runtime-state anchor, it is already
+    /// gitignored, and it moves with `--data-dir` — so a sandbox run writes its
+    /// logs into the sandbox instead of the user's home.
+    pub log_dir: PathBuf,
     /// Optional Google Books API key (keyless works at lower quota).
     pub google_api_key: Option<String>,
 }
@@ -20,7 +27,30 @@ impl EngineConfig {
             db_url: format!("sqlite://{}", root.join("database/app.db").display()),
             images_dir: root.join("database/images"),
             vault_dir: root.join("vault"),
+            log_dir: root.join("logs"),
             google_api_key: std::env::var("GOOGLE_BOOKS_API_KEY").ok(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rooted_at_puts_everything_under_the_given_root() {
+        let c = EngineConfig::rooted_at("/tmp/rb");
+        assert_eq!(c.db_url, "sqlite:///tmp/rb/database/app.db");
+        assert_eq!(c.images_dir, PathBuf::from("/tmp/rb/database/images"));
+        assert_eq!(c.vault_dir, PathBuf::from("/tmp/rb/vault"));
+        // Logs must follow --data-dir, or a sandbox run scribbles in $HOME.
+        assert_eq!(c.log_dir, PathBuf::from("/tmp/rb/logs"));
+    }
+
+    #[test]
+    fn a_relative_root_stays_relative() {
+        let c = EngineConfig::rooted_at(".");
+        assert_eq!(c.db_url, "sqlite://./database/app.db");
+        assert_eq!(c.log_dir, PathBuf::from("./logs"));
     }
 }

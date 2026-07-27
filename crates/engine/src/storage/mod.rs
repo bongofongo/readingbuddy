@@ -37,6 +37,7 @@ impl Storage {
             .connect_with(opts)
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
+        tracing::info!(max_connections = max, "storage connected and migrated");
         Ok(Storage { pool })
     }
 

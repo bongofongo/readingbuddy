@@ -8,6 +8,7 @@ mod app;
 mod clipboard;
 mod config;
 mod event;
+mod logging;
 mod perf;
 mod render3d;
 mod theme;
@@ -209,6 +210,12 @@ async fn main() -> Result<()> {
     // shared config file, so a key set in either frontend is picked up here.
     if engine_config.google_api_key.is_none() {
         engine_config.google_api_key = config::load_google_key();
+    }
+    // Held for the whole run: dropping the guard flushes, and dropping it early
+    // truncates the tail of the log — the part that matters after a crash.
+    let log = logging::init(&engine_config.log_dir, None);
+    if let Some(h) = &log {
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), log = %h.path.display(), "readingbuddy-tui starting");
     }
     let engine = Engine::open(engine_config).await?;
 

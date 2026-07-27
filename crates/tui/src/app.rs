@@ -1300,14 +1300,27 @@ impl App {
         };
         match self.engine.search(&req).await {
             Ok(outcome) => {
+                // A dead provider means fewer results, and this used to say
+                // nothing at all about it — the user saw a short list with no
+                // hint that half the sources never answered. `failed_providers`
+                // is exactly what the typed diagnostics bought.
+                let degraded = outcome.failed_providers();
                 self.search_results = outcome.results;
                 self.search_state
                     .select((!self.search_results.is_empty()).then_some(0));
+
+                let names: Vec<String> = degraded.iter().map(|p| p.to_string()).collect();
+                let suffix = if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (no answer from {})", names.join(", "))
+                };
+
                 self.status = Some(if self.search_results.is_empty() {
-                    "nothing found".into()
+                    format!("nothing found{suffix}")
                 } else {
                     format!(
-                        "{} results — enter to add, / to search again",
+                        "{} results — enter to add, / to search again{suffix}",
                         self.search_results.len()
                     )
                 });
@@ -1544,6 +1557,7 @@ mod tests {
             db_url: "sqlite::memory:".into(),
             images_dir: tmp.join("images"),
             vault_dir: tmp.join("vault"),
+            log_dir: tmp.join("logs"),
             google_api_key: None,
         };
         let engine = Engine::open(config).await.expect("engine");

@@ -86,6 +86,9 @@ impl Engine {
     // ---- metadata search ---------------------------------------------------
 
     /// Federated fielded search: fan out to all providers, dedup, rank.
+    // The query itself is the user's private reading interest — `skip` keeps it
+    // out of the span, and only its presence is recorded.
+    #[tracing::instrument(skip_all, fields(has_isbn = req.isbn.is_some()))]
     pub async fn search(&self, req: &SearchRequest) -> Result<SearchOutcome> {
         let mut req = req.clone();
         if let Some(raw) = &req.isbn {
@@ -96,6 +99,7 @@ impl Engine {
     }
 
     /// Direct edition lookup by ISBN, merging fields across providers.
+    #[tracing::instrument(skip(self))]
     pub async fn lookup_isbn(&self, raw: &str) -> Result<Option<Book>> {
         let isbn = normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
         let mut found: Vec<ProviderBook> = Vec::new();
@@ -174,6 +178,7 @@ impl Engine {
     /// Import a local .epub: extract its ISBN, enrich via providers, extract
     /// the embedded cover, save. Falls back to epub metadata alone when the
     /// file has no usable ISBN or the providers are unreachable.
+    #[tracing::instrument(skip(self), fields(path = %path.display()))]
     pub async fn import_epub(&self, path: &Path) -> Result<Book> {
         let info = epub::epub_info(path)?;
         let mut book = match &info.isbn {
@@ -209,6 +214,7 @@ impl Engine {
     /// Import KOReader highlights/notes from a sidecar file, .sdr dir, or
     /// library root. Idempotent; single-word highlights become flashcard
     /// candidates.
+    #[tracing::instrument(skip(self), fields(path = %path.display()))]
     pub async fn import_koreader(&self, path: &Path, dry_run: bool) -> Result<ImportReport> {
         koreader::import(&self.storage, path, dry_run).await
     }

@@ -25,5 +25,8 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
+# For the redaction test's capturing layer only. The engine itself must never
+# depend on a subscriber.
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 serde_json.workspace = true
