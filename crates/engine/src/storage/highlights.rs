@@ -39,16 +39,37 @@ impl NewHighlight {
     /// `ko_datetime` (creation time, never changed by KOReader), `pos0` and the
     /// highlighted text take part.
     pub fn identity_hash(&self, book_id: i64) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(book_id.to_string());
-        hasher.update("|");
-        hasher.update(self.ko_datetime.as_deref().unwrap_or(""));
-        hasher.update("|");
-        hasher.update(self.pos0.as_deref().unwrap_or(""));
-        hasher.update("|");
-        hasher.update(&self.text);
-        format!("{:x}", hasher.finalize())
+        identity_hash_of(
+            book_id,
+            self.ko_datetime.as_deref(),
+            self.pos0.as_deref(),
+            &self.text,
+        )
     }
+}
+
+/// The identity hash from loose parts.
+///
+/// Exists so [`Storage::merge_books`] can recompute a stored highlight's hash
+/// against its new `book_id` — `book_id` is one of the inputs, so a moved
+/// highlight's hash is stale the moment it moves. Recomputing it there with a
+/// second copy of this formula would be a silent duplicate-detection bug the
+/// day either copy changed, so there is one copy and both callers use it.
+pub(crate) fn identity_hash_of(
+    book_id: i64,
+    ko_datetime: Option<&str>,
+    pos0: Option<&str>,
+    text: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(book_id.to_string());
+    hasher.update("|");
+    hasher.update(ko_datetime.unwrap_or(""));
+    hasher.update("|");
+    hasher.update(pos0.unwrap_or(""));
+    hasher.update("|");
+    hasher.update(text);
+    format!("{:x}", hasher.finalize())
 }
 
 #[derive(Debug, Clone)]

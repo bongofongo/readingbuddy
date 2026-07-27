@@ -111,6 +111,17 @@ pub enum DiagnosticKind {
         path: PathBuf,
         status: String,
     },
+    /// The sidecar carries no root `partial_md5_checksum`, so there is nothing
+    /// to key a `device_books` mapping on.
+    ///
+    /// The pull still happens — refusing would be a dead end for a file the
+    /// user explicitly pointed at — but it cannot be made idempotent: a second
+    /// pull of the same sidecar creates a second book. Saying so is the whole
+    /// point of the variant, because the duplicate appears silently and long
+    /// after the fact.
+    SidecarNotIdentified {
+        path: PathBuf,
+    },
 }
 
 /// One degradation, carried in-band on a partly-successful result.
@@ -183,6 +194,15 @@ impl Diagnostic {
         }
     }
 
+    pub fn sidecar_not_identified(path: PathBuf) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::SidecarNotIdentified { path },
+            severity: Severity::Warning,
+            detail: "no partial_md5_checksum; this book will be created again on a second pull"
+                .to_string(),
+        }
+    }
+
     /// The provider this diagnostic is about, if any.
     pub fn provider(&self) -> Option<ProviderId> {
         match self.kind {
@@ -226,7 +246,8 @@ impl fmt::Display for Diagnostic {
             }
             DiagnosticKind::SidecarUnreadable { path, .. }
             | DiagnosticKind::SidecarUnparsable { path }
-            | DiagnosticKind::UnknownDeviceStatus { path, .. } => {
+            | DiagnosticKind::UnknownDeviceStatus { path, .. }
+            | DiagnosticKind::SidecarNotIdentified { path } => {
                 write!(f, "{}: {}", path.display(), self.detail)
             }
             DiagnosticKind::NoSidecarsFound { path } => {

@@ -100,6 +100,49 @@ pub async fn progress(
     Ok(())
 }
 
+/// Fold one book into another. The duplicate the ISBN-less pull path
+/// guarantees will eventually happen is what this is for.
+pub async fn merge(
+    engine: &Engine,
+    src_selector: &str,
+    dst_selector: &str,
+    yes: bool,
+) -> Result<()> {
+    let src = resolve_one(engine, src_selector).await?;
+    let dst = resolve_one(engine, dst_selector).await?;
+    let (Some(src_id), Some(dst_id)) = (src.id, dst.id) else {
+        bail!("both books must be saved before they can be merged");
+    };
+    if src_id == dst_id {
+        println!("{} is already one book.", src.display_title());
+        return Ok(());
+    }
+
+    if !yes
+        && !prompt::confirm(&format!(
+            "fold {} into {}? {} is deleted",
+            render::book_line(&src),
+            render::book_line(&dst),
+            src.display_title()
+        ))?
+    {
+        println!("cancelled.");
+        return Ok(());
+    }
+
+    let r = engine.merge_books(src_id, dst_id).await?;
+    println!("merged into {}", render::book_line(&dst));
+    println!(
+        "  {} highlights moved, {} dropped as duplicates",
+        r.highlights_moved, r.highlights_dropped
+    );
+    println!(
+        "  {} notes, {} flashcards moved ({} dropped), {} device links moved",
+        r.notes_moved, r.flashcards_moved, r.flashcards_dropped, r.device_links_moved
+    );
+    Ok(())
+}
+
 pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("stored book has id");

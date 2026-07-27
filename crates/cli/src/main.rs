@@ -124,6 +124,16 @@ enum Cmd {
     },
     /// Show a book's highlights
     Highlights { book: String },
+    /// Fold one book into another (moves highlights, notes, cards, links)
+    Merge {
+        /// The duplicate, deleted once folded in
+        src: String,
+        /// The book to keep
+        dst: String,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// KOReader integration
     Ko {
         #[command(subcommand)]
@@ -151,6 +161,21 @@ enum KoCmd {
         /// Report what would be imported without writing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Pull a book in from the reader: create it from the sidecar, then import
+    Pull {
+        /// A sidecar file or its .sdr directory
+        path: PathBuf,
+        /// Create a new book even when the library holds a near-miss
+        #[arg(long)]
+        new: bool,
+    },
+    /// Record that a sidecar is a book you already have, then import into it
+    Link {
+        /// A sidecar file or its .sdr directory
+        path: PathBuf,
+        /// Book selector: id, ISBN, or title fragment
+        book: String,
     },
 }
 
@@ -246,9 +271,14 @@ async fn main() -> Result<()> {
             commands::note::list_or_search(&engine, book.as_deref(), search.as_deref()).await?
         }
         Cmd::Highlights { book } => commands::book::highlights(&engine, &book).await?,
-        Cmd::Ko {
-            cmd: KoCmd::Import { path, dry_run },
-        } => commands::ko::import(&engine, &path, dry_run).await?,
+        Cmd::Merge { src, dst, yes } => commands::book::merge(&engine, &src, &dst, yes).await?,
+        Cmd::Ko { cmd } => match cmd {
+            KoCmd::Import { path, dry_run } => {
+                commands::ko::import(&engine, &path, dry_run).await?
+            }
+            KoCmd::Pull { path, new } => commands::ko::pull(&engine, &path, new).await?,
+            KoCmd::Link { path, book } => commands::ko::link(&engine, &path, &book).await?,
+        },
         Cmd::Cards { cmd } => match cmd {
             CardsCmd::List { all } => commands::cards::list(&engine, all).await?,
             CardsCmd::Export { out, all } => commands::cards::export(&engine, &out, all).await?,
