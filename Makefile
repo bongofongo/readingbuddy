@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-import golden lint fmt fmt-check check clean bench bench-box bench-trend perf
+.PHONY: help test test-engine test-import golden lint fmt fmt-check check ci clean bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -96,8 +96,8 @@ perf: ## Cost + wire-rate sweeps, both renderers (release, ignored tests)
 	  --ignored --nocapture --test-threads 1 \
 	  glyph_cost raster_cost frame_budget glyph_wire_rate wire_rate
 
-lint: ## Clippy across the workspace
-	cargo clippy --workspace --all-targets
+lint: ## Clippy across the workspace (warnings are errors, same as CI)
+	cargo clippy --workspace --all-targets -- -D warnings
 
 fmt: ## Format all crates
 	cargo fmt --all
@@ -105,7 +105,15 @@ fmt: ## Format all crates
 fmt-check: ## Verify formatting without writing
 	cargo fmt --all --check
 
-check: fmt-check lint test ## CI-style gate: fmt + lint + test
+check: fmt-check lint test ## Local gate: fmt + lint + whole-workspace test
+
+# What .github/workflows/ci.yml runs, in the same order. `check` above also runs
+# the TUI's suite; CI deliberately does not — the engine is what it gates. Keep
+# the two in step: a change here belongs in the workflow too.
+ci: fmt-check lint test-engine ## Reproduce the CI gate locally
+
+test-engine: ## Engine tests only — the suite CI gates on
+	$(RUN) -p readingbuddy
 
 clean: ## cargo clean
 	cargo clean

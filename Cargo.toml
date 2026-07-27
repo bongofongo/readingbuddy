@@ -5,9 +5,31 @@ members = ["crates/engine", "crates/cli", "crates/tui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# Edition 2024 needs 1.85; the let-chains in `lib.rs` need 1.88. Declaring it
+# buys a clear cargo error instead of a syntax error on an older toolchain.
+rust-version = "1.88"
+# Not going to crates.io. Also what lets cargo-deny's `private.ignore` skip the
+# "unlicensed crate" check on these three.
+publish = false
+
+# A release backtrace is bare addresses without this, which makes the crash log
+# worthless. Costs a few MB of binary and nothing else.
+[profile.release]
+debug = "line-tables-only"
+strip = "none"
 
 [workspace.dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+# `default-features = false` is load-bearing: the defaults pull native-tls ->
+# openssl-sys, which a CI runner then needs libssl-dev for. sqlx already speaks
+# rustls, so this drops a C dependency rather than adding one. Note rustls-tls
+# bundles webpki-roots and ignores the system trust store — swap to
+# rustls-tls-native-roots if a TLS-intercepting proxy ever gets in the way.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "http2",
+    "charset",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 url = { version = "2.5.7", features = ["serde"] }
@@ -23,6 +45,9 @@ strsim = "0.11"
 mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
 sha2 = "0.10"
 regex = "1"
+# The engine emits only — it must never install a subscriber, or it would be
+# deciding I/O policy for its frontends. tracing-subscriber lives in cli/tui.
+tracing = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 rpassword = "7"

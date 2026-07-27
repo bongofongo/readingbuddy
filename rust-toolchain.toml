@@ -1,0 +1,7 @@
+[toolchain]
+# Pinned deliberately. CI runs clippy with `-D warnings`, and a floating stable
+# turns every new lint into a red PR that has nothing to do with the change that
+# opened it. Bumping this is its own commit, with the lint fallout it causes.
+# A scheduled CI job tracks floating stable so new lints are still visible.
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
