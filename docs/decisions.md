@@ -241,10 +241,26 @@ Provider enrichment on device pull. Non-numeric rating scales.
    scan must never use; and `merge_books` lives in `storage/` rather than
    `koreader.rs`, since folding two books together is not the reader's business
    and all SQL belongs behind that boundary.
-4. `readings` table + progress migration.
-5. `partialMD5` + the device→book mapping table.
+4. `readings` table + progress migration. Spec: `docs/spec-engine-04-07.md`.
+   The progress columns **leave `books`** — no compat mirror — and `Book` keeps
+   `current_page`/`finished`/`date_started`/`date_finished` as read-only
+   projections of the active reading, which is what leaves every render call
+   site untouched. `upsert_book`'s `finished`-merges-with-MAX clause is retired
+   with them: it only ever existed because reading state lived on `books`.
+5. `partialMD5`. **Erratum:** the device→book mapping table this item was
+   written to include (`device_books`) landed with item 1b, and a sidecar
+   already supplies its own `partial_md5_checksum`. What remains — and is now
+   the whole of the item — is **computing the same hash ourselves over a local
+   file**, so our file identity agrees with the device's. Owned files stay
+   item 12.
 6. Device screen — per-book state, single pull, then multi-select and sync-all.
-7. Reflection + Review.
+   **Split in two:** 6a is the engine scan plus the sidecar mtime/size cache,
+   6b is the TUI screen. The halves have no dependency on each other, so 6a runs
+   beside item 4 instead of queueing behind it.
+7. Reflection + Review. Both are **notes with a new `kind`** plus side tables for
+   the rating, the Goodreads lookup and the citations — because the reflection
+   is the graph hub and `note_links` is already the graph. `notes.kind = 'final'`
+   is superseded by `'reflection'`.
 8. Currently-reading home screen; action = open the reflection.
 9. Backlinks pane.
 10. Goodreads CSV in/out.
