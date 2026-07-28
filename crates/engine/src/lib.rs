@@ -149,6 +149,22 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
     }
 
+    /// What you are reading: one row per **open** reading, most-recently-touched
+    /// first.
+    ///
+    /// On the facade rather than left to `engine.storage`, which is public and
+    /// which both frontends reach into today — unpicking that is most of item
+    /// 14, and a new screen should not add to it.
+    ///
+    /// The [`Reading`] comes back beside the [`Book`] because the two are not
+    /// interchangeable here: `Book`'s progress fields are projections of the
+    /// *current* reading, which for a finished book is a closed one, while this
+    /// row is specifically the open one and carries its own `status`, `source`
+    /// and device mirror.
+    pub async fn currently_reading(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
+        self.storage.list_open_readings(limit).await
+    }
+
     /// Resolve a user-supplied selector: numeric id, ISBN, or title fragment.
     /// Returns all candidates (empty = nothing matched, >1 = ambiguous).
     pub async fn resolve_books(&self, selector: &str) -> Result<Vec<Book>> {
@@ -420,6 +436,58 @@ impl Engine {
     pub async fn open_review(&self, book_id: i64, reading_id: Option<i64>) -> Result<CreatedNote> {
         self.open_anchored(book_id, reading_id, NoteKind::Review)
             .await
+    }
+
+    /// [`Engine::open_reflection`], as the [`NoteRecord`] an editor needs.
+    ///
+    /// `CreatedNote` is what the *creating* caller wants — a path to hand to
+    /// `$EDITOR` and the links it started with. Everything that then edits the
+    /// note wants a `NoteRecord` instead: `note_body`, `update_note_body`,
+    /// `delete_note` and the TUI's `TextEditor` all take one. The CLI already
+    /// patches over the gap with a follow-up `storage.get_note(note.id)`, and
+    /// the home screen's whole action is "open the reflection", so it meets the
+    /// same gap on its first keypress.
+    ///
+    /// A wrapper rather than a change of return type: `open_reflection` is what
+    /// the CLI calls, and widening its signature is a diff in files this has no
+    /// other reason to touch. Both go through the same `open_anchored`, so
+    /// there is one definition of which note this is.
+    pub async fn open_reflection_record(
+        &self,
+        book_id: i64,
+        reading_id: Option<i64>,
+    ) -> Result<NoteRecord> {
+        self.open_anchored_record(book_id, reading_id, NoteKind::Reflection)
+            .await
+    }
+
+    /// [`Engine::open_review`], as a [`NoteRecord`]. The twin of
+    /// [`Engine::open_reflection_record`], and it exists for the same reason.
+    pub async fn open_review_record(
+        &self,
+        book_id: i64,
+        reading_id: Option<i64>,
+    ) -> Result<NoteRecord> {
+        self.open_anchored_record(book_id, reading_id, NoteKind::Review)
+            .await
+    }
+
+    /// Open the note, then read the row back.
+    ///
+    /// `NotFound` rather than an `expect`: the row was written or found a
+    /// statement ago, so its absence means the database changed underneath us,
+    /// and the engine is a library — it must not take a frontend down over it.
+    async fn open_anchored_record(
+        &self,
+        book_id: i64,
+        reading_id: Option<i64>,
+        kind: NoteKind,
+    ) -> Result<NoteRecord> {
+        let note = self.open_anchored(book_id, reading_id, kind).await?;
+        self.storage
+            .get_note(note.id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("note id {}", note.id)))
     }
 
     /// The one implementation behind both. They differ in the `kind` they
