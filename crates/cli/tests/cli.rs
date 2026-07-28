@@ -53,7 +53,27 @@ impl Cli {
     /// Every environment pin here is load-bearing, and one of them is a safety
     /// issue rather than hygiene.
     fn try_run_in(&self, cwd: &Path, args: &[&str]) -> Out {
+        self.try_run_with_path(cwd, None, args)
+    }
+
+    /// The same, with `PATH` prefixed by `bin_dir`.
+    ///
+    /// This is the only place `PATH` can honestly be exercised: it belongs to a
+    /// *child* process here, so setting it is a per-spawn value rather than a
+    /// `set_var` racing every other test in the binary. It is what covers
+    /// calibre feature detection finding a tool the ordinary way — the engine's
+    /// own suite points `EngineConfig::calibre_bin_dir` at a directory instead,
+    /// precisely to keep out of the process environment.
+    fn try_run_with_path(&self, cwd: &Path, bin_dir: Option<&Path>, args: &[&str]) -> Out {
+        let path = match bin_dir {
+            Some(dir) => {
+                let existing = std::env::var("PATH").unwrap_or_default();
+                format!("{}:{existing}", dir.display())
+            }
+            None => std::env::var("PATH").unwrap_or_default(),
+        };
         let out: Output = Command::new(BIN)
+            .env("PATH", path)
             .args(["--data-dir", self.data_dir().to_str().unwrap()])
             .args(args)
             .current_dir(cwd)
@@ -185,6 +205,7 @@ fn the_subcommand_set_is_what_we_decided() {
 
     let expected = [
         "add",
+        "calibre",
         "cards",
         "cite",
         "config",
@@ -373,6 +394,84 @@ fn links_reads_both_directions_and_prints_a_dangling_target_as_text() {
     let missing = cli.try_run(&["links", "Noa"]);
     assert!(!missing.ok, "a selector matching no note must not exit 0");
     missing.has("no note matches");
+}
+
+/// Calibre is feature-detected off `PATH`, and the binary finds it there.
+///
+/// The engine's own suite points `EngineConfig::calibre_bin_dir` at a directory
+/// of fakes, deliberately, because `set_var("PATH")` from a test is a data race.
+/// That leaves the `PATH` half — the one every real user actually takes —
+/// unasserted, and this is where it can be asserted safely: the environment
+/// belongs to the child.
+///
+/// The *absent* half is deliberately not here. Detection falls through to `PATH`
+/// and then to the directories calibre installs itself in — which is right, and
+/// which makes "no calibre" unreachable from outside the process on a machine
+/// that has it. The wording of that branch has a rule attached to it
+/// (`docs/decisions.md`: never ask the user to install or configure other
+/// software), so it is asserted where it is deterministic:
+/// `commands::calibre::tests::an_absent_calibre_is_reported_and_never_prescribed`.
+#[cfg(unix)]
+#[test]
+fn calibre_is_found_on_path_and_both_tiers_run_through_the_binary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let cli = Cli::new();
+    let bin = cli.root.path().join("fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let lib = cli.root.path().join("callib");
+    std::fs::create_dir_all(&lib).unwrap();
+    // The marker the engine insists on before it will run calibredb — without
+    // it a mistyped path has calibre *create* a library there.
+    std::fs::write(lib.join("metadata.db"), b"").unwrap();
+
+    let write = |name: &str, body: &str| {
+        let p = bin.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    write("ebook-convert", "cp \"$1\" \"$2\"");
+    write(
+        "calibredb",
+        r#"cat <<'EOF'
+[{"id": 1, "uuid": "aaaa-bbbb", "title": "Pachinko", "authors": "Min Jin Lee & Deborah Smith", "tags": ["fiction"]}]
+EOF"#,
+    );
+
+    let with_fakes = |args: &[&str]| cli.try_run_with_path(&cli.data_dir(), Some(&bin), args);
+
+    // Found on PATH, and the status line says what that enables.
+    let status = with_fakes(&["calibre", "status"]);
+    assert!(status.ok, "status must not fail\n{}", status.stderr);
+    status
+        .has("ebook-convert")
+        .has("calibredb")
+        .has("conversion and library import are available.");
+
+    // Tier (ii), through the real binary: the fake's JSON becomes a book.
+    with_fakes(&["calibre", "import", "--library", lib.to_str().unwrap()]).has("Pachinko");
+    cli.run(&["list"]).has("Pachinko");
+
+    // Tier (i): the two paths reach `ebook-convert`, and a second run is
+    // refused with the flag that would allow it.
+    let input = cli.root.path().join("in.epub");
+    let output = cli.root.path().join("out.azw3");
+    std::fs::write(&input, b"epub").unwrap();
+    with_fakes(&[
+        "calibre",
+        "convert",
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+    ])
+    .has("out.azw3");
+    assert!(output.is_file());
+    with_fakes(&[
+        "calibre",
+        "convert",
+        input.to_str().unwrap(),
+        output.to_str().unwrap(),
+    ])
+    .has("--force");
 }
 
 /// A selector that matches nothing is an error, and an under-specified sync

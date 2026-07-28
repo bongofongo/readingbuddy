@@ -1,0 +1,64 @@
+[
+  {
+    "author_sort": "Lee, Min Jin",
+    "authors": "Min Jin Lee & Deborah Smith",
+    "comments": "<strong>A new tour de force from the bestselling author of <i>Free Food for Millionaires</i>.</strong><br>Profoundly moving and gracefully told, PACHINKO follows one Korean family through the generations.",
+    "cover": "/books/calibre/Min Jin Lee/Pachinko (1)/cover.jpg",
+    "formats": [
+      "/books/calibre/Min Jin Lee/Pachinko (1)/Pachinko - Min Jin Lee.epub",
+      "/books/calibre/Min Jin Lee/Pachinko (1)/Pachinko - Min Jin Lee.azw3"
+    ],
+    "id": 1,
+    "identifiers": {
+      "goodreads": "34051011",
+      "isbn": "9781455563937"
+    },
+    "isbn": "9781455563937",
+    "languages": [
+      "eng"
+    ],
+    "last_modified": "2026-07-28T16:22:09+00:00",
+    "pubdate": "2017-02-07T00:00:00+00:00",
+    "publisher": "Grand Central Publishing",
+    "rating": 10,
+    "series": "Saga",
+    "series_index": 1.0,
+    "size": 670357,
+    "tags": [
+      "fiction",
+      "korean-lit"
+    ],
+    "timestamp": "2026-07-28T16:21:57+00:00",
+    "title": "Pachinko",
+    "uuid": "c47437a8-d73c-4719-838d-ff362479bf63"
+  },
+  {
+    "author_sort": "Mandel, Emily St. John",
+    "authors": "Emily St. John Mandel",
+    "cover": "/books/calibre/Emily St. John Mandel/Station Eleven (2)/cover.jpg",
+    "formats": [
+      "/books/calibre/Emily St. John Mandel/Station Eleven (2)/Station Eleven - Emily St. John Mandel.epub"
+    ],
+    "id": 2,
+    "identifiers": {},
+    "isbn": "",
+    "languages": [
+      "eng"
+    ],
+    "last_modified": "2026-07-28T16:24:02+00:00",
+    "pubdate": "0101-01-01T00:00:00+00:00",
+    "series_index": 1.0,
+    "size": 481120,
+    "tags": [],
+    "timestamp": "2026-07-28T16:23:41+00:00",
+    "title": "Station Eleven",
+    "uuid": "0b4a2d15-6f31-4c88-9a2e-1f5b7c9d0e33"
+  },
+  {
+    "id": 3,
+    "series_index": 1.0,
+    "timestamp": "2026-07-28T16:25:10+00:00",
+    "title": "Untitled Draft",
+    "uuid": "5e8c1a77-2b40-4d6f-8e91-3c7a0d2f4b16"
+  }
+]

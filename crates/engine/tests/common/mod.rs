@@ -33,6 +33,14 @@ pub const SYNTHETIC: &str = concat!(
 /// Returns the `TempDir` as well, and the caller must hold it: dropping it
 /// deletes the vault out from under the engine mid-test.
 pub async fn engine() -> (tempfile::TempDir, Engine) {
+    engine_with_calibre(None).await
+}
+
+/// The same engine, told where to look for calibre's tools.
+///
+/// `calibre_bin_dir` rather than a `PATH` edit: `PATH` is process-global and
+/// `set_var` from a test races every other test in the same binary.
+pub async fn engine_with_calibre(bin_dir: Option<PathBuf>) -> (tempfile::TempDir, Engine) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config = EngineConfig {
         db_url: "sqlite::memory:".into(),
@@ -40,6 +48,7 @@ pub async fn engine() -> (tempfile::TempDir, Engine) {
         vault_dir: tmp.path().join("vault"),
         log_dir: tmp.path().join("logs"),
         google_api_key: None,
+        calibre_bin_dir: bin_dir,
     };
     let engine = Engine::open(config).await.expect("engine opens");
     (tmp, engine)

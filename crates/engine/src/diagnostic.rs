@@ -170,6 +170,26 @@ pub enum DiagnosticKind {
         title: String,
         dropped: usize,
     },
+
+    // ---- calibre (item 13) -------------------------------------------------
+    /// A calibre row with no title, so there is nothing to match on. The rest
+    /// of the library still imports.
+    CalibreRowSkipped {
+        calibre_id: i64,
+    },
+    /// A calibre row with no `uuid`. It still imports — refusing would be a
+    /// dead end for a book the user plainly has — but it cannot be made
+    /// idempotent, and a second run creates a second copy. The sibling of
+    /// [`DiagnosticKind::SidecarNotIdentified`], and it exists for the same
+    /// reason: the duplicate appears silently and long after the fact.
+    CalibreRowNotIdentified {
+        calibre_id: i64,
+    },
+    /// Calibre named a cover we could not copy — its library may live on a
+    /// volume that is not mounted. The book still imports without one.
+    CalibreCoverUnreadable {
+        path: PathBuf,
+    },
 }
 
 /// One degradation, carried in-band on a partly-successful result.
@@ -311,6 +331,13 @@ impl fmt::Display for Diagnostic {
             | DiagnosticKind::GoodreadsRatingUnmapped { title }
             | DiagnosticKind::GoodreadsRereadsDropped { title, .. } => {
                 write!(f, "{title}: {}", self.detail)
+            }
+            DiagnosticKind::CalibreRowSkipped { calibre_id }
+            | DiagnosticKind::CalibreRowNotIdentified { calibre_id } => {
+                write!(f, "calibre #{calibre_id}: {}", self.detail)
+            }
+            DiagnosticKind::CalibreCoverUnreadable { path } => {
+                write!(f, "{}: {}", path.display(), self.detail)
             }
         }
     }
