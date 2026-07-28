@@ -1,5 +1,7 @@
 //! Application state and the async event loop.
 
+use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -10,8 +12,8 @@ use ratatui::backend::Backend;
 use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
-    Book, BookSort, Engine, FlashcardRow, Highlight, NewNoteInput, NoteKind, NoteRecord,
-    RankedResult, SearchRequest,
+    Book, BookSort, DeviceBook, DeviceState, Diagnostic, Engine, FlashcardRow, Highlight,
+    MatchCandidate, NewNoteInput, NoteKind, NoteRecord, RankedResult, SearchRequest,
 };
 
 use crossterm::event::KeyModifiers;
@@ -39,6 +41,8 @@ pub enum Screen {
     Book,
     Search,
     Settings,
+    /// The mounted reader's own shelf: one row per book on the device.
+    Device,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,12 +52,13 @@ pub enum MenuItem {
     Search,
     AddIsbn,
     ImportKo,
+    Device,
     Cards,
     Settings,
     Quit,
 }
 
-pub const MENU: [(MenuItem, &str, &str); 8] = [
+pub const MENU: [(MenuItem, &str, &str); 9] = [
     (
         MenuItem::Library,
         "Library",
@@ -78,6 +83,11 @@ pub const MENU: [(MenuItem, &str, &str); 8] = [
         MenuItem::ImportKo,
         "Import KOReader",
         "pull highlights from a .sdr / library path",
+    ),
+    (
+        MenuItem::Device,
+        "Device",
+        "the shelf on your mounted reader",
     ),
     (
         MenuItem::Cards,
@@ -128,6 +138,49 @@ impl BookView {
     }
 }
 
+/// One row of the device screen: what the scan said, plus what this session has
+/// since done to it.
+///
+/// The scan's own `DeviceBook` is kept whole rather than flattened into strings
+/// — `ui::device` needs the state's numbers, and `l` needs `New`'s candidate
+/// band. `notices` is the reason this wrapper exists at all: the TUI has one
+/// `status` line and every other engine call flattens into it, which is fine for
+/// "search failed" and useless for forty books where the third one had a bad
+/// sidecar. [`Diagnostic`] is `Clone` precisely so a frontend can buffer it.
+pub struct DeviceRow {
+    pub book: DeviceBook,
+    /// What the last pull of *this* row reported, if it has been pulled.
+    pub note: Option<String>,
+    /// Degradations from this row's own pull, kept beside it rather than
+    /// overwriting the shared status line.
+    pub notices: Vec<Diagnostic>,
+}
+
+impl DeviceRow {
+    pub(crate) fn new(book: DeviceBook) -> DeviceRow {
+        DeviceRow {
+            book,
+            note: None,
+            notices: Vec::new(),
+        }
+    }
+}
+
+/// The candidate chooser opened by `l` on an unmatched row.
+///
+/// It offers exactly the band the engine already computed
+/// (`CANDIDATE_MIN..AUTO_MATCH`) — the point of `DeviceState::New` carrying its
+/// candidates is that unmatched is a decision rather than a dead end, and
+/// re-deriving a different list here would quietly disagree with the CLI.
+pub struct LinkPicker {
+    /// The sidecar being linked. Held by path so a rescan underneath cannot
+    /// leave the picker pointing at a different row.
+    pub path: PathBuf,
+    pub title: String,
+    pub candidates: Vec<MatchCandidate>,
+    pub state: ListState,
+}
+
 /// What an open text input is collecting, so `commit` knows what to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContext {
@@ -135,6 +188,8 @@ pub enum InputContext {
     IsbnAdd,
     ProgressPage,
     KoPath,
+    /// A device (or library) path to scan, when no reader was found by itself.
+    DevicePath,
     /// Optional page anchor asked for after composing a new note.
     NotePage,
     /// A `#RRGGBB` accent color typed on the settings screen.
@@ -266,6 +321,24 @@ pub struct App {
     pub confirm: Option<Confirm>,
     pub search_results: Vec<RankedResult>,
     pub search_state: ListState,
+    /// The mounted reader's books, as the last scan found them.
+    pub device: Vec<DeviceRow>,
+    pub device_state: ListState,
+    /// Rows marked with `x`, by index into `device`. Cleared by every scan —
+    /// the indices are only meaningful against the list they were made on.
+    pub device_marks: HashSet<usize>,
+    /// The root the last scan walked, so `r` knows what to walk again.
+    pub device_root: Option<PathBuf>,
+    /// The open candidate chooser, if `l` is mid-decision.
+    pub device_link: Option<LinkPicker>,
+    /// A device root awaiting its (blocking) walk. Drained by the event loop
+    /// *after* it has drawn the frame that says "scanning…" — the same
+    /// deferred-work shape as `pending_verify`.
+    pub pending_scan: Option<PathBuf>,
+    /// Sidecars awaiting their pull, drained **one per loop iteration** with a
+    /// redraw between. A `for` loop here would freeze the draw loop and the
+    /// 20fps ticker for the whole sync and show no progress at all.
+    pub pending_pull: Option<VecDeque<PathBuf>>,
     pub dirty: bool,
     pub quit: bool,
     /// Pitch the nod oscillates around; the yaw just keeps turning.
@@ -310,6 +383,13 @@ impl App {
             confirm: None,
             search_results: Vec::new(),
             search_state: ListState::default(),
+            device: Vec::new(),
+            device_state: ListState::default(),
+            device_marks: HashSet::new(),
+            device_root: None,
+            device_link: None,
+            pending_scan: None,
+            pending_pull: None,
             dirty: true,
             quit: false,
             base_pitch: Pose::default().pitch,
@@ -503,6 +583,9 @@ impl App {
             && self.input.is_none()
             && self.note_editor.is_none()
             && self.api_key.is_none()
+            // The candidate chooser is a modal like the others: while a decision
+            // is open the background stops drifting behind it.
+            && self.device_link.is_none()
     }
 
     /// Advance the idle animations. Returns true when something moved.
@@ -591,6 +674,8 @@ impl App {
             (Screen::Settings, Action::EditApiKey) => self.open_api_key(),
             (Screen::Settings, Action::CycleAmbient) => self.cycle_ambient(),
             (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
+
+            (Screen::Device, action) => self.handle_device(action).await?,
 
             (Screen::Book, action) => self.handle_book(action).await?,
 
@@ -698,6 +783,7 @@ impl App {
             }
             MenuItem::AddIsbn => self.start_input(InputContext::IsbnAdd, "isbn", ""),
             MenuItem::ImportKo => self.start_input(InputContext::KoPath, "koreader path", ""),
+            MenuItem::Device => self.open_device(),
             MenuItem::Cards => {
                 let n = self.engine.list_flashcards(false).await?.len();
                 self.status = Some(format!(
@@ -708,6 +794,403 @@ impl App {
             MenuItem::Quit => self.quit = true,
         }
         Ok(())
+    }
+
+    // ---- the device screen -------------------------------------------------
+
+    /// Open the device screen, and start a scan if we can tell which volume is
+    /// meant.
+    ///
+    /// One mounted reader is the ordinary case and needs no question asked.
+    /// Zero and several both open the screen anyway with the path box up: a
+    /// menu entry that refuses to go anywhere is exactly the dead end the axiom
+    /// rules out, and a library directory is a perfectly good thing to point it
+    /// at besides.
+    fn open_device(&mut self) {
+        self.screen = Screen::Device;
+        self.device_link = None;
+        let mut mounts = readingbuddy::candidate_mounts();
+        match mounts.len() {
+            1 => self.start_scan(mounts.remove(0)),
+            0 => {
+                self.status =
+                    Some("no reader mounted — give me a path (a library directory works)".into());
+                self.start_input(InputContext::DevicePath, "device path", "");
+            }
+            n => {
+                // Picking one would be a guess about which reader was meant,
+                // and both are plugged in.
+                self.status = Some(format!(
+                    "{n} readers mounted: {}",
+                    mounts
+                        .iter()
+                        .map(|m| m.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                self.start_input(
+                    InputContext::DevicePath,
+                    "device path",
+                    &mounts[0].display().to_string(),
+                );
+            }
+        }
+    }
+
+    /// Queue a walk of `root`. The work itself happens in [`App::finish_scan`],
+    /// after the loop has drawn the frame this status line belongs to.
+    fn start_scan(&mut self, root: PathBuf) {
+        self.status = Some(format!("scanning {}…", root.display()));
+        self.pending_scan = Some(root);
+        self.dirty = true;
+    }
+
+    /// Walk the device. Called by the event loop, not a key handler.
+    pub async fn finish_scan(&mut self, root: &Path) -> Result<()> {
+        self.dirty = true;
+        let scan = match self.engine.scan_device(root).await {
+            Ok(scan) => scan,
+            Err(e) => {
+                self.status = Some(format!("scan failed: {e}"));
+                return Ok(());
+            }
+        };
+        // A scan is a fresh list, so the marks made against the old one mean
+        // nothing — they are indices, and row 3 is a different book now.
+        self.device_marks.clear();
+        self.device = scan.books.into_iter().map(DeviceRow::new).collect();
+        self.device_state
+            .select((!self.device.is_empty()).then_some(0));
+        self.device_root = Some(scan.root);
+
+        let syncable = self
+            .device
+            .iter()
+            .filter(|r| r.book.state.is_syncable())
+            .count();
+        self.status = Some(match scan.warnings.first() {
+            // The interesting warning here is "no sidecars found", and an empty
+            // list with no explanation reads as a broken screen.
+            Some(w) => w.detail.clone(),
+            None => format!(
+                "{} book(s) on the device · {syncable} to bring across ({} read, {} unchanged)",
+                self.device.len(),
+                scan.parsed,
+                scan.cached
+            ),
+        });
+        Ok(())
+    }
+
+    fn step_device(&mut self, delta: isize) {
+        if self.device.is_empty() {
+            return;
+        }
+        let len = self.device.len() as isize;
+        let cur = self.device_state.selected().unwrap_or(0) as isize;
+        self.device_state
+            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+    }
+
+    /// Device-screen keys. The candidate chooser, when open, takes the
+    /// directions and Enter for itself; everything else is the list.
+    async fn handle_device(&mut self, action: Action) -> Result<()> {
+        if self.device_link.is_some() {
+            return self.handle_link_picker(action).await;
+        }
+        match action {
+            Action::Up => self.step_device(-1),
+            Action::Down => self.step_device(1),
+            Action::Back => self.screen = Screen::Menu,
+            Action::Select => self.pull_selected(),
+            Action::Mark => self.toggle_mark(),
+            Action::Sync => self.sync_marked(),
+            Action::Link => self.open_link_picker(),
+            Action::Rescan => match self.device_root.clone() {
+                Some(root) => self.start_scan(root),
+                None => self.start_input(InputContext::DevicePath, "device path", ""),
+            },
+            Action::Query => self.start_input(
+                InputContext::DevicePath,
+                "device path",
+                &self
+                    .device_root
+                    .as_ref()
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_default(),
+            ),
+            _ => self.dirty = false,
+        }
+        Ok(())
+    }
+
+    fn selected_row(&self) -> Option<&DeviceRow> {
+        self.device_state
+            .selected()
+            .and_then(|i| self.device.get(i))
+    }
+
+    fn toggle_mark(&mut self) {
+        let Some(i) = self.device_state.selected() else {
+            return;
+        };
+        if !self.device_marks.remove(&i) {
+            self.device_marks.insert(i);
+        }
+    }
+
+    /// Queue the selected row's sidecar.
+    fn pull_selected(&mut self) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        if let DeviceState::Unreadable(d) = &row.book.state {
+            // Refusing here rather than letting `sync_device` fail: a scan
+            // degrades on a bad sidecar, a sync errors on one, and the reason
+            // is already in the row.
+            self.status = Some(format!("can't read that one — {}", d.detail));
+            return;
+        }
+        let (path, title) = (row.book.path.clone(), row.book.display_title());
+        self.status = Some(format!("bringing {title} across…"));
+        self.queue_pull(vec![path]);
+    }
+
+    /// Queue every marked row, or — with nothing marked — everything the scan
+    /// said there is something to do about.
+    fn sync_marked(&mut self) {
+        let chosen: Vec<PathBuf> = if self.device_marks.is_empty() {
+            self.device
+                .iter()
+                .filter(|r| r.book.state.is_syncable())
+                .map(|r| r.book.path.clone())
+                .collect()
+        } else {
+            // Sorted, so the queue runs in the order the rows are shown.
+            let mut marks: Vec<usize> = self.device_marks.iter().copied().collect();
+            marks.sort_unstable();
+            marks
+                .into_iter()
+                .filter_map(|i| self.device.get(i))
+                .filter(|r| !matches!(r.book.state, DeviceState::Unreadable(_)))
+                .map(|r| r.book.path.clone())
+                .collect()
+        };
+        if chosen.is_empty() {
+            self.status = Some("nothing to bring across — mark a row with x".into());
+            return;
+        }
+        self.status = Some(format!("bringing {} book(s) across…", chosen.len()));
+        self.queue_pull(chosen);
+    }
+
+    fn queue_pull(&mut self, paths: Vec<PathBuf>) {
+        // An empty queue must never be `Some`: `has_deferred` would then keep
+        // the loop's ready-arm firing forever on work that does not exist.
+        if paths.is_empty() {
+            return;
+        }
+        self.pending_pull
+            .get_or_insert_with(VecDeque::new)
+            .extend(paths);
+        self.dirty = true;
+    }
+
+    /// Take the next sidecar to pull, dropping the queue once it runs dry — see
+    /// [`App::queue_pull`] for why an emptied queue cannot be left in place.
+    fn next_pull(&mut self) -> Option<PathBuf> {
+        let next = self.pending_pull.as_mut().and_then(|q| q.pop_front());
+        if self.pending_pull.as_ref().is_some_and(|q| q.is_empty()) {
+            self.pending_pull = None;
+        }
+        next
+    }
+
+    /// Pull **one** sidecar. Called by the event loop, once per iteration, so a
+    /// forty-book sync redraws between books instead of freezing.
+    pub async fn finish_pull(&mut self, path: &Path) -> Result<()> {
+        self.dirty = true;
+        let left = self.pending_pull.as_ref().map_or(0, |q| q.len());
+        let reports = match self
+            .engine
+            .sync_device(std::slice::from_ref(&path.to_path_buf()))
+            .await
+        {
+            Ok(reports) => reports,
+            Err(e) => {
+                let msg = format!("pull failed: {e}");
+                if let Some(row) = self.row_for_mut(path) {
+                    row.note = Some(msg.clone());
+                }
+                self.status = Some(msg);
+                return Ok(());
+            }
+        };
+
+        let mut line = String::new();
+        for report in reports {
+            let s = &report.stats;
+            line = format!(
+                "{}: {} new, {} refreshed, {} already here",
+                s.book_title, s.inserted, s.updated, s.skipped
+            );
+            if let Some(row) = self.row_for_mut(path) {
+                row.note = Some(line.clone());
+                row.notices = report.warnings.clone();
+                row.book.book_id = Some(s.book_id);
+                row.book.matched_by = Some(s.matched_by);
+                // Everything the sidecar had is here now; the next scan is what
+                // re-derives this properly.
+                row.book.state = DeviceState::Unchanged;
+            }
+        }
+        // Marks are a selection for work that has now been done.
+        if let Some(i) = self.index_of(path) {
+            self.device_marks.remove(&i);
+        }
+        self.status = Some(if left > 0 {
+            format!("{line}  ·  {left} to go")
+        } else {
+            line
+        });
+        if self.pending_pull.is_none() {
+            // The shelf gained books; the library list is what shows them.
+            self.refresh_library().await?;
+        }
+        Ok(())
+    }
+
+    fn index_of(&self, path: &Path) -> Option<usize> {
+        self.device.iter().position(|r| r.book.path == path)
+    }
+
+    fn row_for_mut(&mut self, path: &Path) -> Option<&mut DeviceRow> {
+        self.device.iter_mut().find(|r| r.book.path == path)
+    }
+
+    /// Offer the engine's candidate band for the selected row.
+    fn open_link_picker(&mut self) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let candidates = match &row.book.state {
+            DeviceState::New { candidates } => candidates.clone(),
+            // Already linked: `l` would repoint it, and doing that silently on
+            // a keypress is not something to offer.
+            _ => {
+                self.status = Some(format!(
+                    "{} is already linked — enter brings it across",
+                    row.book.display_title()
+                ));
+                return;
+            }
+        };
+        if candidates.is_empty() {
+            self.status = Some(
+                "nothing in the library looks like it — enter pulls it in as a new book".into(),
+            );
+            return;
+        }
+        let mut state = ListState::default();
+        state.select(Some(0));
+        self.device_link = Some(LinkPicker {
+            path: row.book.path.clone(),
+            title: row.book.display_title(),
+            candidates,
+            state,
+        });
+        self.status = None;
+    }
+
+    async fn handle_link_picker(&mut self, action: Action) -> Result<()> {
+        let Some(picker) = self.device_link.as_mut() else {
+            return Ok(());
+        };
+        let len = picker.candidates.len() as isize;
+        match action {
+            Action::Up | Action::Down => {
+                let delta = if action == Action::Up { -1 } else { 1 };
+                let cur = picker.state.selected().unwrap_or(0) as isize;
+                picker
+                    .state
+                    .select(Some((cur + delta).rem_euclid(len.max(1)) as usize));
+            }
+            Action::Back | Action::Left => {
+                self.device_link = None;
+                self.status = Some("left it unlinked".into());
+            }
+            Action::Select | Action::Right => self.commit_link().await?,
+            _ => self.dirty = false,
+        }
+        Ok(())
+    }
+
+    /// Record the user's choice, then bring the book across.
+    ///
+    /// `Engine::link_sidecar` writes the mapping as `Manual` — it *repoints*,
+    /// unlike the scan's own `link_device_book`, which must never relabel a
+    /// decision the user made. Importing straight afterwards is what stops
+    /// linking from looking like a key that did nothing.
+    async fn commit_link(&mut self) -> Result<()> {
+        let Some(picker) = self.device_link.take() else {
+            return Ok(());
+        };
+        let Some(candidate) = picker
+            .state
+            .selected()
+            .and_then(|i| picker.candidates.get(i))
+        else {
+            return Ok(());
+        };
+        match self
+            .engine
+            .link_sidecar(&picker.path, candidate.book_id)
+            .await
+        {
+            Ok(_) => {
+                self.status = Some(format!(
+                    "linked {} → {} · bringing it across…",
+                    picker.title, candidate.title
+                ));
+                if let Some(row) = self.row_for_mut(&picker.path) {
+                    row.book.book_id = Some(candidate.book_id);
+                }
+                self.queue_pull(vec![picker.path.clone()]);
+            }
+            Err(e) => self.status = Some(format!("could not link it: {e}")),
+        }
+        Ok(())
+    }
+
+    // ---- deferred work -----------------------------------------------------
+
+    /// Is there work waiting that the loop must not block on `select!` for?
+    pub fn has_deferred(&self) -> bool {
+        self.pending_verify.is_some() || self.pending_scan.is_some() || self.pending_pull.is_some()
+    }
+
+    /// Do **one** unit of deferred work, and say whether anything was done.
+    ///
+    /// Every engine call in this crate is awaited inline in a key handler, and
+    /// that is fine for a lookup and ruinous for a device sync. The work that
+    /// blocks the loop lives here instead: the key handler queues it, the loop
+    /// draws the frame that announces it, and only then is it run — one book at
+    /// a time, so `select!` is reachable between books and the user sees each
+    /// one land.
+    pub async fn pump_deferred(&mut self) -> Result<bool> {
+        if let Some(key) = self.pending_verify.take() {
+            self.finish_verify(key).await;
+            return Ok(true);
+        }
+        if let Some(root) = self.pending_scan.take() {
+            self.finish_scan(&root).await?;
+            return Ok(true);
+        }
+        if let Some(path) = self.next_pull() {
+            self.finish_pull(&path).await?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     // ---- book-view sub-actions --------------------------------------------
@@ -1261,6 +1744,10 @@ impl App {
             InputContext::SearchQuery => self.run_search(text).await?,
             InputContext::IsbnAdd => self.add_isbn(text).await?,
             InputContext::KoPath => self.import_ko(text).await?,
+            InputContext::DevicePath => {
+                self.screen = Screen::Device;
+                self.start_scan(PathBuf::from(text));
+            }
             InputContext::ProgressPage => self.commit_progress(text).await?,
             InputContext::AccentHex => match theme::parse_hex(&text) {
                 Some(rgb) => self.set_accent_rgb(rgb),
@@ -1426,7 +1913,12 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
     redraw(terminal, app)?;
 
     loop {
+        // `biased`, so a keypress is still seen first while a sync is running;
+        // the last arm is what stops the loop *waiting* for one when there is
+        // queued work — without it a forty-book sync would advance one book per
+        // 50ms tick.
         tokio::select! {
+            biased;
             maybe_event = events.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => dispatch_key(app, key).await?,
@@ -1441,6 +1933,7 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                     app.dirty = true;
                 }
             }
+            _ = std::future::ready(()), if app.has_deferred() => {}
         }
 
         if app.quit {
@@ -1449,10 +1942,10 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
         if app.dirty {
             redraw(terminal, app)?;
         }
-        // A submitted key: the frame above showed "verifying", so run the
-        // (blocking-ish) network check now and redraw its result immediately.
-        if let Some(key) = app.pending_verify.take() {
-            app.finish_verify(key).await;
+        // Deferred work runs *after* the frame that announced it — "verifying…",
+        // "scanning…", "bringing 12 books across…" — and one unit at a time, so
+        // the next iteration comes straight back here with a redraw between.
+        if app.pump_deferred().await? {
             redraw(terminal, app)?;
         }
     }
@@ -1530,7 +2023,7 @@ async fn dispatch_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Char('y') | KeyCode::Char('Y') => app.resolve_confirm(true).await?,
             _ => app.resolve_confirm(false).await?,
         }
-    } else if let Some(action) = crate::event::map_key(key) {
+    } else if let Some(action) = crate::event::map_key_on(app.screen, key) {
         app.handle(action).await?;
     }
     Ok(())
@@ -1614,7 +2107,67 @@ mod tests {
             })
             .await
             .expect("note");
-        App::new(engine).await.expect("app")
+        let mut app = App::new(engine).await.expect("app");
+        // The device screen is seeded from a real fixture tree, scanned through
+        // the real engine: every state below is one the scan actually reached,
+        // so a change to the four-state logic shows up here rather than in a
+        // hand-built list that agrees with nothing.
+        let root = write_device_tree(&tmp.join("device"));
+        app.finish_scan(&root).await.expect("scan");
+        app
+    }
+
+    /// A miniature device: one book the library already has with an annotation
+    /// it does not (Updated), one it has never seen (New), and one sidecar that
+    /// is not Lua at all (Unreadable).
+    fn write_device_tree(root: &std::path::Path) -> PathBuf {
+        let sidecar = |dir: &str, title: &str, authors: &str, md5: &str, text: &str| {
+            let d = root.join(dir);
+            std::fs::create_dir_all(&d).expect("sdr dir");
+            std::fs::write(
+                d.join("metadata.epub.lua"),
+                format!(
+                    r#"return {{
+    ["annotations"] = {{
+        [1] = {{
+            ["chapter"] = "One",
+            ["datetime"] = "2026-02-02 09:00:00",
+            ["pageno"] = 12,
+            ["pos0"] = "/body/DocFragment[1]/body/p[3]/text().0",
+            ["pos1"] = "/body/DocFragment[1]/body/p[3]/text().20",
+            ["text"] = "{text}",
+        }},
+    }},
+    ["doc_props"] = {{
+        ["authors"] = "{authors}",
+        ["title"] = "{title}",
+    }},
+    ["percent_finished"] = 0.42,
+    ["partial_md5_checksum"] = "{md5}",
+}}
+"#
+                ),
+            )
+            .expect("sidecar");
+        };
+        sidecar(
+            "Station Eleven.sdr",
+            "Station Eleven",
+            "Emily St. John Mandel",
+            "1111111111111111111111111111aaaa",
+            "the Museum of Civilization",
+        );
+        sidecar(
+            "Piranesi.sdr",
+            "Piranesi",
+            "Susanna Clarke",
+            "2222222222222222222222222222bbbb",
+            "the Beauty of the House is immeasurable",
+        );
+        let broken = root.join("Broken.sdr");
+        std::fs::create_dir_all(&broken).expect("sdr dir");
+        std::fs::write(broken.join("metadata.epub.lua"), "not lua {{{ &&&").expect("broken");
+        root.to_path_buf()
     }
 
     /// Draw every screen and every book tab at sizes from a full terminal down
@@ -2012,6 +2565,7 @@ mod tests {
                 Screen::Book,
                 Screen::Search,
                 Screen::Settings,
+                Screen::Device,
             ] {
                 app.screen = screen;
                 for tab in [
@@ -2048,6 +2602,23 @@ mod tests {
             });
             terminal.draw(|f| ui::draw(f, app)).expect("draw confirm");
             app.confirm = None;
+            // With the device screen's candidate chooser open, and with a row
+            // marked — both are overlay/gutter arithmetic that 1x1 tests.
+            app.screen = Screen::Device;
+            app.device_marks.insert(0);
+            app.device_link = Some(LinkPicker {
+                path: PathBuf::from("/mnt/Piranesi.sdr/metadata.epub.lua"),
+                title: "Piranesi".into(),
+                candidates: vec![MatchCandidate {
+                    book_id: 1,
+                    title: "Piranesi's House".into(),
+                    score: 0.71,
+                }],
+                state: ListState::default(),
+            });
+            terminal.draw(|f| ui::draw(f, app)).expect("draw link");
+            app.device_link = None;
+            app.device_marks.clear();
             // With the note editor open over the book view.
             app.screen = Screen::Book;
             app.note_editor = Some(NoteDraft {
@@ -2617,6 +3188,319 @@ mod tests {
         assert!(seen_back && seen_front, "never completed a turn");
     }
 
+    // ---- the device screen -------------------------------------------------
+
+    /// The scan produces all four states against a fixture tree, and each row
+    /// is the one the tree deserves.
+    #[tokio::test]
+    async fn a_scan_seeds_one_row_per_book_in_the_state_it_deserves() {
+        let app = test_app().await;
+        assert_eq!(app.device.len(), 3, "one row per sidecar");
+        assert!(app.device_root.is_some());
+        assert_eq!(app.device_state.selected(), Some(0));
+
+        let by_title = |t: &str| {
+            app.device
+                .iter()
+                .find(|r| r.book.display_title() == t)
+                .unwrap_or_else(|| panic!("no row for {t}"))
+        };
+        // Already in the library, with an annotation the library has not seen.
+        assert!(matches!(
+            by_title("Station Eleven").book.state,
+            DeviceState::Updated {
+                new_highlights: 1,
+                ..
+            }
+        ));
+        // Never seen.
+        assert!(matches!(
+            by_title("Piranesi").book.state,
+            DeviceState::New { .. }
+        ));
+        // Not Lua. Falls back to the `.sdr` name, which is the only thing an
+        // unreadable sidecar can be identified by at all.
+        assert!(matches!(
+            by_title("Broken").book.state,
+            DeviceState::Unreadable(_)
+        ));
+    }
+
+    /// Marking, then syncing the marks; and the drain is **one book per loop
+    /// iteration**, which is what gives a forty-book sync visible progress.
+    #[tokio::test]
+    async fn a_sync_drains_one_book_per_iteration() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+
+        // Mark both syncable rows (the unreadable one is left alone).
+        let syncable: Vec<usize> = app
+            .device
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.book.state.is_syncable())
+            .map(|(i, _)| i)
+            .collect();
+        for i in syncable {
+            app.device_state.select(Some(i));
+            app.toggle_mark();
+        }
+        assert_eq!(app.device_marks.len(), 2);
+
+        app.handle(Action::Sync).await.expect("sync");
+        assert_eq!(
+            app.pending_pull.as_ref().map(|q| q.len()),
+            Some(2),
+            "the whole selection is queued, not run"
+        );
+        assert!(app.has_deferred(), "the loop must not block on select!");
+
+        // One unit of work per pump, with the queue shrinking each time — the
+        // loop redraws between these two calls.
+        assert!(app.pump_deferred().await.expect("pump"));
+        assert_eq!(
+            app.pending_pull.as_ref().map(|q| q.len()),
+            Some(1),
+            "a sync-all ran more than one book before redrawing"
+        );
+        assert!(app.pump_deferred().await.expect("pump"));
+        assert!(
+            app.pending_pull.is_none(),
+            "the queue drops when it empties"
+        );
+        assert!(!app.pump_deferred().await.expect("pump"), "nothing left");
+
+        // Both rows report what their pull did, and neither is still marked.
+        for row in &app.device {
+            if row.book.state == DeviceState::Unchanged && row.note.is_some() {
+                assert!(row.note.as_deref().unwrap().contains("new"));
+            }
+        }
+        assert!(app.device_marks.is_empty());
+        // The new book landed in the library.
+        assert_eq!(app.library.len(), 2);
+    }
+
+    /// With nothing marked, `s` takes every row there is something to do about
+    /// — and never the unreadable one, which a sync would error on.
+    #[tokio::test]
+    async fn an_unmarked_sync_takes_every_syncable_row() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.handle(Action::Sync).await.expect("sync");
+        let queued = app.pending_pull.as_ref().expect("queued");
+        assert_eq!(queued.len(), 2);
+        assert!(
+            !queued
+                .iter()
+                .any(|p| p.to_string_lossy().contains("Broken")),
+            "an unreadable sidecar was queued for a sync that would error on it"
+        );
+    }
+
+    /// Enter pulls exactly the selected row, and refuses the unreadable one
+    /// with the reason already on the row rather than an engine error.
+    #[tokio::test]
+    async fn enter_pulls_one_row_and_refuses_an_unreadable_one() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        let broken = app
+            .device
+            .iter()
+            .position(|r| matches!(r.book.state, DeviceState::Unreadable(_)))
+            .expect("a broken row");
+        app.device_state.select(Some(broken));
+        app.handle(Action::Select).await.expect("enter");
+        assert!(
+            app.pending_pull.is_none(),
+            "queued a sidecar it cannot read"
+        );
+        assert!(app.status.as_deref().unwrap().contains("can't read"));
+
+        let piranesi = app
+            .device
+            .iter()
+            .position(|r| r.book.display_title() == "Piranesi")
+            .expect("piranesi");
+        app.device_state.select(Some(piranesi));
+        app.handle(Action::Select).await.expect("enter");
+        assert_eq!(app.pending_pull.as_ref().map(|q| q.len()), Some(1));
+
+        app.pump_deferred().await.expect("pull");
+        assert!(app.library.iter().any(|b| b.display_title() == "Piranesi"));
+        assert!(
+            app.device[piranesi].note.is_some(),
+            "the row says what it did"
+        );
+    }
+
+    /// `l` offers the engine's own candidate band, and linking records the
+    /// choice *and* brings the book across — a link that appeared to do nothing
+    /// is the failure this ordering exists to avoid.
+    #[tokio::test]
+    async fn linking_offers_candidates_and_then_imports() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        let piranesi = app
+            .device
+            .iter()
+            .position(|r| r.book.display_title() == "Piranesi")
+            .expect("piranesi");
+        app.device_state.select(Some(piranesi));
+
+        // The fixture's own band is empty (nothing in the library is close), so
+        // `l` says so rather than opening an empty chooser.
+        app.handle(Action::Link).await.expect("link");
+        assert!(app.device_link.is_none());
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap()
+                .contains("nothing in the library")
+        );
+
+        // Given a candidate, `l` opens the chooser and Enter commits it.
+        let book_id = app.library[0].id.expect("seeded book id");
+        app.device[piranesi].book.state = DeviceState::New {
+            candidates: vec![MatchCandidate {
+                book_id,
+                title: "Station Eleven".into(),
+                score: 0.72,
+            }],
+        };
+        app.handle(Action::Link).await.expect("link");
+        assert!(app.device_link.is_some(), "the chooser opened");
+
+        app.handle(Action::Select).await.expect("commit link");
+        assert!(app.device_link.is_none());
+        assert_eq!(app.device[piranesi].book.book_id, Some(book_id));
+        assert_eq!(
+            app.pending_pull.as_ref().map(|q| q.len()),
+            Some(1),
+            "linking queued no import, so it would look like a key that did nothing"
+        );
+
+        // The highlights land on the book that was chosen, not on a new one.
+        app.pump_deferred().await.expect("import");
+        assert_eq!(app.library.len(), 1, "linking created a second book");
+    }
+
+    /// Esc leaves the chooser without linking, and leaves the screen reachable.
+    #[tokio::test]
+    async fn the_candidate_chooser_can_be_left_alone() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.device_link = Some(LinkPicker {
+            path: app.device[0].book.path.clone(),
+            title: "Piranesi".into(),
+            candidates: vec![MatchCandidate {
+                book_id: 1,
+                title: "Something".into(),
+                score: 0.7,
+            }],
+            state: ListState::default(),
+        });
+        // While the decision is open the background stops drifting behind it,
+        // exactly as it does under the other modals.
+        app.ambient = crate::ambient::Ambient::new(crate::ambient::Motif::Motes);
+        assert!(app.ambient_visible(), "the layer should still be drawn");
+        assert!((0..40).all(|_| !app.tick()));
+
+        app.handle(Action::Back).await.expect("esc");
+        assert!(app.device_link.is_none());
+        assert!(app.pending_pull.is_none());
+        assert_eq!(app.screen, Screen::Device, "esc left the screen entirely");
+    }
+
+    /// A rescan is queued, not run in the handler, and it drops the marks —
+    /// they are indices, and row 1 is a different book after a walk.
+    #[tokio::test]
+    async fn rescanning_defers_the_walk_and_drops_the_marks() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.device_marks.insert(1);
+
+        app.handle(Action::Rescan).await.expect("rescan");
+        assert!(
+            app.pending_scan.is_some(),
+            "the walk ran in the key handler"
+        );
+        assert!(app.status.as_deref().unwrap().contains("scanning"));
+
+        app.pump_deferred().await.expect("scan");
+        assert!(app.pending_scan.is_none());
+        assert_eq!(app.device.len(), 3);
+        assert!(app.device_marks.is_empty(), "stale marks survived a rescan");
+    }
+
+    /// `x` toggles, and the marks address the selected row.
+    #[tokio::test]
+    async fn marking_toggles_the_selected_row() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.device_state.select(Some(2));
+        app.handle(Action::Mark).await.expect("mark");
+        assert_eq!(
+            app.device_marks.iter().copied().collect::<Vec<_>>(),
+            vec![2]
+        );
+        app.handle(Action::Mark).await.expect("unmark");
+        assert!(app.device_marks.is_empty());
+    }
+
+    /// The screen is never a dead end: `m` returns to the menu from it, and the
+    /// up/down keys wrap.
+    #[tokio::test]
+    async fn the_device_screen_navigates_and_returns_to_the_menu() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.handle(Action::Up).await.expect("up");
+        assert_eq!(app.device_state.selected(), Some(2), "wraps backwards");
+        app.handle(Action::Down).await.expect("down");
+        assert_eq!(app.device_state.selected(), Some(0));
+        app.handle(Action::Menu).await.expect("menu");
+        assert_eq!(app.screen, Screen::Menu);
+    }
+
+    /// The menu row exists and reaches the screen. With no reader plugged in it
+    /// still opens, with the path box up — a menu entry that goes nowhere is
+    /// the dead end the design rules out.
+    #[tokio::test]
+    async fn the_menu_opens_the_device_screen() {
+        let mut app = test_app().await;
+        app.menu_index = MENU
+            .iter()
+            .position(|(item, ..)| *item == MenuItem::Device)
+            .expect("a Device menu row");
+        app.handle(Action::Select).await.expect("open device");
+        assert_eq!(app.screen, Screen::Device);
+        // Either a mount was found and queued, or the box is asking for a path.
+        assert!(app.pending_scan.is_some() || app.input.is_some());
+    }
+
+    /// A typed path scans it: this is the same screen for a library directory
+    /// as for a mounted reader.
+    #[tokio::test]
+    async fn a_typed_path_is_scanned() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        app.device.clear();
+        app.screen = Screen::Menu;
+
+        app.start_input(InputContext::DevicePath, "device path", "");
+        for c in root.to_string_lossy().chars() {
+            app.on_input_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
+        }
+        app.on_input_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("commit");
+        assert_eq!(app.screen, Screen::Device);
+        app.pump_deferred().await.expect("scan");
+        assert_eq!(app.device.len(), 3);
+    }
+
     #[tokio::test]
     async fn quitting_and_navigation_move_between_screens() {
         let mut app = test_app().await;
@@ -2670,9 +3554,40 @@ mod tests {
             .collect();
         app.search_state.select(Some(0));
 
+        // A marked row, so the gutter shows in the dump too.
+        app.device_marks.insert(1);
+
         let (w, h) = (96u16, 16u16);
-        for screen in [Screen::Library, Screen::Search] {
+        // The device screen twice: the shelf, then the candidate chooser over
+        // it. `linking` is what opens the second one.
+        for (screen, linking) in [
+            (Screen::Library, false),
+            (Screen::Search, false),
+            (Screen::Device, false),
+            (Screen::Device, true),
+        ] {
             app.screen = screen;
+            if linking {
+                let mut state = ListState::default();
+                state.select(Some(1));
+                app.device_link = Some(LinkPicker {
+                    path: app.device[1].book.path.clone(),
+                    title: app.device[1].book.display_title(),
+                    candidates: vec![
+                        MatchCandidate {
+                            book_id: 1,
+                            title: "Piranesi's House".into(),
+                            score: 0.78,
+                        },
+                        MatchCandidate {
+                            book_id: 2,
+                            title: "Piranesi (illustrated)".into(),
+                            score: 0.64,
+                        },
+                    ],
+                    state,
+                });
+            }
             let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| ui::draw(f, &mut app)).unwrap();
             println!("=== {screen:?} {w}x{h} ===");

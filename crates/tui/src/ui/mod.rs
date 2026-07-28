@@ -2,6 +2,7 @@
 
 pub mod apikey;
 pub mod book;
+pub mod device;
 pub mod input;
 pub mod library;
 pub mod menu;
@@ -376,6 +377,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Book => book::draw(f, app, body),
         Screen::Search => search::draw(f, app, body),
         Screen::Settings => settings::draw(f, app, body),
+        Screen::Device => device::draw(f, app, body),
     }
 
     if let Some(msg) = &status_line {
