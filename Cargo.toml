@@ -80,3 +80,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 flate2 = "1.1"
 base64 = "0.22"
 libc = "0.2"
+# Noticing a reader arriving, rather than being told about it. Only the thin
+# adapter in `watch.rs` touches it — the debounce it feeds is driven by a
+# channel, so the part with the logic in it is testable without hardware.
+# CC0-1.0, which is a deliberate entry in deny.toml's allow list.
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }

@@ -297,7 +297,17 @@ async fn main() -> Result<()> {
     app.set_caps(caps);
     app.set_render_mode(cli.render.resolve(caps));
     app.rich.count_bytes(meter);
-    let result = app::run(&mut terminal, &mut app).await;
+    // A machine that cannot watch is a machine that still runs the app: every
+    // device screen, `r` and `ko scan` work exactly as before. Warned about in
+    // the log rather than on screen, since the alternate screen is already up.
+    let mounts = match readingbuddy::watch_mounts() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            tracing::warn!(error = %e, "not watching for devices");
+            None
+        }
+    };
+    let result = app::run(&mut terminal, &mut app, mounts).await;
     restore_terminal();
     result
 }

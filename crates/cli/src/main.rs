@@ -290,6 +290,8 @@ enum KoCmd {
         /// The mount to scan. Omitted, a mounted KOReader device is looked for
         path: Option<PathBuf>,
     },
+    /// Wait for a reader to be plugged in and scan it. Read-only, ctrl-c to stop
+    Watch,
     /// Pull books in from a mounted reader
     Sync {
         /// The mount to sync from
@@ -428,6 +430,7 @@ async fn main() -> Result<()> {
             KoCmd::Pull { path, new } => commands::ko::pull(&engine, &path, new).await?,
             KoCmd::Link { path, book } => commands::ko::link(&engine, &path, &book).await?,
             KoCmd::Scan { path } => commands::ko::scan(&engine, path.as_deref()).await?,
+            KoCmd::Watch => commands::ko::watch(&engine).await?,
             KoCmd::Sync { path, all, books } => {
                 commands::ko::sync(&engine, &path, all, &books).await?
             }

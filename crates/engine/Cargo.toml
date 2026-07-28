@@ -23,7 +23,10 @@ md-5.workspace = true
 regex.workspace = true
 csv.workspace = true
 tracing.workspace = true
-tokio = { workspace = true, features = ["time"] }
+# `sync` is the mount watcher's channel seam; `time` is the provider timeout
+# and the watcher's debounce.
+tokio = { workspace = true, features = ["time", "sync"] }
+notify.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
