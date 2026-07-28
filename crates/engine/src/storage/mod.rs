@@ -3,12 +3,15 @@ mod device_books;
 mod flashcards;
 mod highlights;
 mod notes;
+mod sidecar_seen;
 
 pub use books::{BookSort, MergeReport};
 pub use device_books::LinkedBy;
 pub use flashcards::FlashcardRow;
+pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
 pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit};
+pub use sidecar_seen::SidecarFacts;
 
 use std::str::FromStr;
 

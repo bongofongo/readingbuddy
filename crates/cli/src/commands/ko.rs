@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use readingbuddy::{BookImportStats, Engine, MatchCandidate};
+use readingbuddy::{BookImportStats, DeviceBook, DeviceState, Engine, MatchCandidate};
 
 use super::resolve_one;
 
@@ -84,6 +84,189 @@ pub async fn link(engine: &Engine, path: &Path, selector: &str) -> Result<()> {
     // The link only pays off on the next import, so run it now: otherwise
     // `link` looks like it did nothing.
     import(engine, path, false).await
+}
+
+/// Show the state of every book on a mounted reader. Writes nothing.
+pub async fn scan(engine: &Engine, path: Option<&Path>) -> Result<()> {
+    let root = resolve_mount(path)?;
+    let scan = engine.scan_device(&root).await?;
+
+    for w in &scan.warnings {
+        eprintln!("warning: {w}");
+    }
+    for b in &scan.books {
+        println!("{}", device_line(b));
+        match &b.state {
+            // Unmatched is a decision, not a dead end — say what the two moves
+            // are, and which book it probably already is.
+            DeviceState::New { candidates } => {
+                print_candidates(candidates);
+                if !candidates.is_empty() {
+                    println!(
+                        "    link it    : readingbuddy ko link {} <book>",
+                        b.path.display()
+                    );
+                }
+            }
+            DeviceState::Unreadable(d) => println!("    {}", d.detail),
+            _ => {}
+        }
+    }
+
+    let syncable = scan.syncable().count();
+    println!();
+    println!(
+        "{} books on {} ({} read, {} unchanged since last scan)",
+        scan.books.len(),
+        root.display(),
+        scan.parsed,
+        scan.cached
+    );
+    if syncable > 0 {
+        println!(
+            "  bring them across: readingbuddy ko sync {} --all",
+            root.display()
+        );
+    }
+    Ok(())
+}
+
+/// Pull a selection of a mounted reader in.
+pub async fn sync(engine: &Engine, path: &Path, all: bool, selectors: &[String]) -> Result<()> {
+    let scan = engine.scan_device(path).await?;
+    for w in &scan.warnings {
+        eprintln!("warning: {w}");
+    }
+
+    let syncable: Vec<&DeviceBook> = scan.syncable().collect();
+    if syncable.is_empty() {
+        println!(
+            "nothing to sync — everything on {} is already here.",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    // Neither flag is not "sync everything": it is a question. Show what would
+    // happen and name the flag rather than writing forty books unasked.
+    if !all && selectors.is_empty() {
+        println!("{} books to bring across:", syncable.len());
+        for b in &syncable {
+            println!("{}", device_line(b));
+        }
+        println!();
+        println!(
+            "  all of them : readingbuddy ko sync {} --all",
+            path.display()
+        );
+        println!(
+            "  or one      : readingbuddy ko sync {} --book \"{}\"",
+            path.display(),
+            syncable[0].display_title()
+        );
+        return Ok(());
+    }
+
+    let chosen: Vec<&DeviceBook> = if all {
+        syncable.clone()
+    } else {
+        select(&syncable, selectors)?
+    };
+
+    let paths: Vec<PathBuf> = chosen.iter().map(|b| b.path.clone()).collect();
+    for report in engine.sync_device(&paths).await? {
+        for w in &report.warnings {
+            eprintln!("warning: {w}");
+        }
+        println!("{}", stats_line(&report.stats, ""));
+    }
+    Ok(())
+}
+
+/// Which mount to work on: the one given, else the one plugged in.
+fn resolve_mount(path: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = path {
+        return Ok(p.to_path_buf());
+    }
+    let mut mounts = readingbuddy::candidate_mounts();
+    match mounts.len() {
+        0 => bail!(
+            "no mounted KOReader device found (looked under /Volumes, /run/media/$USER and \
+             /media/$USER). Pass the path to scan a library directory instead."
+        ),
+        1 => Ok(mounts.remove(0)),
+        _ => {
+            // Picking one for the user would be a guess about which reader they
+            // meant, and both are plugged in.
+            let list: Vec<String> = mounts.iter().map(|m| m.display().to_string()).collect();
+            bail!(
+                "several KOReader devices are mounted; name one:\n  {}",
+                list.join("\n  ")
+            )
+        }
+    }
+}
+
+/// Resolve `--book` selectors against the scanned rows: a case-insensitive
+/// fragment of the title, or of the sidecar path.
+fn select<'a>(books: &[&'a DeviceBook], selectors: &[String]) -> Result<Vec<&'a DeviceBook>> {
+    let mut chosen: Vec<&DeviceBook> = Vec::new();
+    for want in selectors {
+        let needle = want.to_lowercase();
+        let hits: Vec<&&DeviceBook> = books
+            .iter()
+            .filter(|b| {
+                b.display_title().to_lowercase().contains(&needle)
+                    || b.path.to_string_lossy().to_lowercase().contains(&needle)
+            })
+            .collect();
+        // Silently syncing nothing, or the wrong book, is worse than stopping.
+        match hits.len() {
+            0 => bail!("no book to sync matches '{want}'"),
+            _ => {
+                for b in hits {
+                    if !chosen.iter().any(|c| c.path == b.path) {
+                        chosen.push(b);
+                    }
+                }
+            }
+        }
+    }
+    Ok(chosen)
+}
+
+fn device_line(b: &DeviceBook) -> String {
+    let detail = match &b.state {
+        DeviceState::Updated {
+            new_highlights,
+            refreshed,
+        } => {
+            let mut parts = Vec::new();
+            if *new_highlights > 0 {
+                parts.push(format!("{new_highlights} new"));
+            }
+            if *refreshed > 0 {
+                parts.push(format!("{refreshed} edited on the device"));
+            }
+            format!("  ({})", parts.join(", "))
+        }
+        DeviceState::New { .. } => String::new(),
+        _ => String::new(),
+    };
+    let progress = b
+        .ko_percent
+        .map(|p| format!("  [{:.0}%]", p * 100.0))
+        .unwrap_or_default();
+    let authors = b
+        .authors
+        .as_deref()
+        .map(|a| format!(" — {}", a.replace('\n', ", ")))
+        .unwrap_or_default();
+    format!(
+        "  {:<10} {}{authors}{progress}{detail}",
+        b.state.label(),
+        b.display_title()
+    )
 }
 
 fn stats_line(s: &BookImportStats, mode: &str) -> String {

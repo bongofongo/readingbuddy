@@ -72,6 +72,84 @@ pub(crate) fn identity_hash_of(
     format!("{:x}", hasher.finalize())
 }
 
+/// One digest over the device-owned state of a set of highlights.
+///
+/// Exists so the two sides of the device scan's comparison — what the sidecar
+/// file says, and what the library already holds — are hashed by **one** piece
+/// of code. Two copies of this formula would drift the day either changed, and
+/// the symptom would be a scan that silently stopped noticing device edits.
+/// Same rule as [`identity_hash_of`] and `DEVICE_FIELDS_DIFFER`.
+///
+/// The fields are the identity (`ko_datetime`, `pos0`, `text`) plus exactly the
+/// four the device owns. `annotation` is ours and is deliberately absent: a
+/// note the reader wrote here must not make the device look changed.
+///
+/// Sorted in [`DeviceDigest::finish`] rather than by the caller, so neither
+/// side has to promise an ordering — a `SELECT` without an `ORDER BY` and a
+/// sidecar's own sequence are then equally fine.
+#[derive(Default)]
+pub(crate) struct DeviceDigest {
+    parts: Vec<String>,
+}
+
+/// One annotation's identity plus the four fields the device owns — the exact
+/// field set [`DeviceDigest`] hashes, named once so a sidecar row and a stored
+/// row cannot be assembled differently.
+pub(crate) struct DeviceEntry<'a> {
+    pub ko_datetime: Option<&'a str>,
+    pub pos0: Option<&'a str>,
+    pub text: &'a str,
+    pub ko_note: Option<&'a str>,
+    pub color: Option<&'a str>,
+    pub chapter: Option<&'a str>,
+    pub page: Option<i64>,
+}
+
+impl NewHighlight {
+    pub(crate) fn device_entry(&self) -> DeviceEntry<'_> {
+        DeviceEntry {
+            ko_datetime: self.ko_datetime.as_deref(),
+            pos0: self.pos0.as_deref(),
+            text: &self.text,
+            ko_note: self.note.as_deref(),
+            color: self.color.as_deref(),
+            chapter: self.chapter.as_deref(),
+            page: self.page,
+        }
+    }
+}
+
+impl DeviceDigest {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn add(&mut self, e: DeviceEntry<'_>) {
+        // `\u{1f}` (unit separator) cannot occur in any of these, so no value
+        // can impersonate a field boundary.
+        self.parts.push(format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            e.ko_datetime.unwrap_or(""),
+            e.pos0.unwrap_or(""),
+            e.text,
+            e.ko_note.unwrap_or(""),
+            e.color.unwrap_or(""),
+            e.chapter.unwrap_or(""),
+            e.page.map(|p| p.to_string()).unwrap_or_default(),
+        ));
+    }
+
+    pub(crate) fn finish(mut self) -> String {
+        self.parts.sort();
+        let mut hasher = Sha256::new();
+        for p in &self.parts {
+            hasher.update(p);
+            hasher.update("\u{1e}");
+        }
+        format!("{:x}", hasher.finalize())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Highlight {
     pub id: i64,
@@ -216,6 +294,49 @@ impl Storage {
             .execute(self.pool())
             .await?;
         Ok(())
+    }
+
+    /// The device-owned state of everything this book holds from a device, as
+    /// one digest.
+    ///
+    /// The device scan's cheap half. Compared against the digest cached for a
+    /// sidecar, it decides whether an unmodified file can be called `Unchanged`
+    /// without re-parsing it — and, unlike a row count, it notices a note the
+    /// device rewrote in place, which is the case that would otherwise be
+    /// reported once and then silently forgotten forever.
+    ///
+    /// Restricted to `source = 'koreader'` so a highlight added by any other
+    /// route cannot make a sidecar look imported.
+    pub async fn device_highlight_digest(&self, book_id: i64) -> Result<String> {
+        let rows = sqlx::query(
+            "SELECT ko_datetime, pos0, text, ko_note, color, chapter, page
+             FROM highlights WHERE book_id = ? AND source = 'koreader'",
+        )
+        .bind(book_id)
+        .fetch_all(self.pool())
+        .await?;
+
+        let mut digest = DeviceDigest::new();
+        for r in &rows {
+            let (ko_datetime, pos0, text, ko_note, color, chapter) = (
+                r.get::<Option<String>, _>("ko_datetime"),
+                r.get::<Option<String>, _>("pos0"),
+                r.get::<String, _>("text"),
+                r.get::<Option<String>, _>("ko_note"),
+                r.get::<Option<String>, _>("color"),
+                r.get::<Option<String>, _>("chapter"),
+            );
+            digest.add(DeviceEntry {
+                ko_datetime: ko_datetime.as_deref(),
+                pos0: pos0.as_deref(),
+                text: &text,
+                ko_note: ko_note.as_deref(),
+                color: color.as_deref(),
+                chapter: chapter.as_deref(),
+                page: r.get::<Option<i64>, _>("page"),
+            });
+        }
+        Ok(digest.finish())
     }
 
     pub async fn highlight_exists(&self, book_id: i64, h: &NewHighlight) -> Result<bool> {
@@ -515,5 +636,101 @@ mod tests {
         };
         assert!(s.refresh_device_fields(first, &edited).await.unwrap());
         assert_eq!(s.list_highlights(second).await.unwrap()[0].ko_note, None);
+    }
+
+    // ---- the device digest -------------------------------------------------
+
+    fn digest_of(hs: &[NewHighlight]) -> String {
+        let mut d = DeviceDigest::new();
+        for h in hs {
+            d.add(h.device_entry());
+        }
+        d.finish()
+    }
+
+    /// The two sides of the scan's comparison arrive in different orders — a
+    /// sidecar's own sequence against a `SELECT` with no `ORDER BY` — so the
+    /// digest cannot depend on one.
+    #[test]
+    fn the_digest_does_not_depend_on_the_order_it_was_fed() {
+        let a = hl("first");
+        let mut b = hl("second");
+        b.ko_datetime = Some("2026-02-02 10:00:00".into());
+        let mut c = hl("third");
+        c.page = Some(9);
+
+        let forward = digest_of(&[a.clone(), b.clone(), c.clone()]);
+        assert_eq!(digest_of(&[c.clone(), a.clone(), b.clone()]), forward);
+        assert_eq!(digest_of(&[b, c, a]), forward);
+    }
+
+    /// Every field the device owns has to move the digest, or the scan's cheap
+    /// path would call that change "unchanged" and never look again.
+    #[test]
+    fn every_device_owned_field_moves_the_digest() {
+        let base = digest_of(&[hl("passage")]);
+        let moves = |name: &str, mutate: &dyn Fn(&mut NewHighlight)| {
+            let mut h = hl("passage");
+            mutate(&mut h);
+            assert_ne!(digest_of(&[h]), base, "{name} did not move the digest");
+        };
+        moves("text", &|h| h.text = "different".into());
+        moves("ko_datetime", &|h| {
+            h.ko_datetime = Some("2020-01-01 00:00:00".into())
+        });
+        moves("pos0", &|h| h.pos0 = Some("/body/p[9]/text().0".into()));
+        moves("note", &|h| h.note = Some("edited on the device".into()));
+        moves("color", &|h| h.color = Some("cyan".into()));
+        moves("chapter", &|h| h.chapter = Some("Ch 2".into()));
+        moves("page", &|h| h.page = Some(43));
+    }
+
+    /// A field separator that a value could contain would let two different
+    /// sets of annotations hash the same.
+    #[test]
+    fn a_value_cannot_impersonate_a_field_boundary() {
+        let mut split = hl("a");
+        split.chapter = Some("b".into());
+        let mut joined = hl("a\u{1f}b");
+        joined.chapter = None;
+        assert_ne!(digest_of(&[split]), digest_of(&[joined]));
+    }
+
+    /// The ownership seam, on the scan's side: `annotation` is ours, and the
+    /// reader writing one must not make the device look like it changed.
+    #[tokio::test]
+    async fn our_own_annotation_is_not_part_of_the_device_digest() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let book = s
+            .upsert_book(&Book {
+                title: Some("Pachinko".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let h = hl("a passage");
+        let id = s.insert_highlight(book, &h).await.unwrap().unwrap();
+
+        let before = s.device_highlight_digest(book).await.unwrap();
+        assert_eq!(
+            before,
+            digest_of(std::slice::from_ref(&h)),
+            "both sides, one formula"
+        );
+
+        s.set_annotation(id, Some("what I thought about it"))
+            .await
+            .unwrap();
+        assert_eq!(
+            s.device_highlight_digest(book).await.unwrap(),
+            before,
+            "ours must not read as a device change"
+        );
+
+        // A highlight from anywhere else is not the device's either.
+        let mut mine = hl("something I typed");
+        mine.source = "manual".into();
+        s.insert_highlight(book, &mine).await.unwrap();
+        assert_eq!(s.device_highlight_digest(book).await.unwrap(), before);
     }
 }
