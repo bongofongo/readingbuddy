@@ -3,6 +3,7 @@
 pub mod apikey;
 pub mod book;
 pub mod device;
+pub mod home;
 pub mod input;
 pub mod library;
 pub mod menu;
@@ -372,6 +373,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     match app.screen {
+        Screen::Home => home::draw(f, app, body),
         Screen::Menu => menu::draw(f, app, body),
         Screen::Library => library::draw(f, app, body),
         Screen::Book => book::draw(f, app, body),

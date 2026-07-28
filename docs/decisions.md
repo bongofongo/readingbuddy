@@ -273,6 +273,14 @@ Provider enrichment on device pull. Non-numeric rating scales.
      names does not exist — the TUI has no reflection or review surface at all —
      so item 8 is not implementable without building it, and splitting them means
      two passes over the same four exhaustive matches in `app.rs`.
+   - **Done.** Two things the spec was silent about, decided while building it.
+     Moving the front door means `Esc` on the **menu** can no longer quit the
+     app — it returns home, because a key that leaves the app from a screen one
+     keypress in is a trap; `q` still quits from anywhere. And the reflection
+     and review keys are **`e` / `w`, not the mnemonic `r` / `v`**: those are
+     spent on reset-pose and swap-renderer, where they read correctly, and both
+     the home screen and the book view need the pair — so it is global rather
+     than a `map_key_on` override two screens would install identically.
 9. Backlinks pane. **Split:** 9a is the engine query plus migration `0008`
    (`note_links` has no index on `to_note` or `target_title`, so both a backlink
    query and `write_links`' back-resolution are full scans today); 9b is the

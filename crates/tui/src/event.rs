@@ -32,6 +32,11 @@ pub enum Action {
     PrevTab,
     /// Compose a new note.
     NewNote,
+    /// Open this reading's reflection: private, accretes, the hub of the graph.
+    Reflect,
+    /// Open this reading's review: public prose, and the one note kind that
+    /// carries a rating.
+    Review,
     /// Show what links to (and out of) the selected note.
     Links,
     /// Update the reading page.
@@ -134,6 +139,19 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Tab => Some(Action::TogglePanel),
         KeyCode::BackTab => Some(Action::PrevTab),
         KeyCode::Char('n') => Some(Action::NewNote),
+        // The reflection and the review, and **not** on `r` / `v`.
+        //
+        // Those are the mnemonic letters and both are already spent — `r`
+        // resets the pose, `v` swaps the renderer — on the one screen where the
+        // book actually turns, so renaming either would read wrong exactly
+        // where it currently reads right. `map_key_on` could scope a rebinding
+        // to a screen (it is what the device shelf does with `x`/`l`/`r`), but
+        // both the home screen *and* the book view need this pair, and an
+        // override map two screens install identically is the global map with
+        // extra steps. So the pair takes two unspent letters: `w` for the
+        // review one writes for other people, `e` for the reflection beside it.
+        KeyCode::Char('e') => Some(Action::Reflect),
+        KeyCode::Char('w') => Some(Action::Review),
         KeyCode::Char('p') => Some(Action::EditProgress),
         KeyCode::Char('f') => Some(Action::ToggleFinished),
         KeyCode::Char('x') => Some(Action::Export),
@@ -213,6 +231,30 @@ mod tests {
             assert_eq!(
                 map_key_on(Screen::Device, press(code)),
                 map_key(press(code))
+            );
+        }
+    }
+
+    /// The reflection/review pair is global, and the keys it would rather have
+    /// still mean what they meant.
+    #[test]
+    fn the_reflection_pair_takes_unspent_keys() {
+        assert_eq!(map_key(press(KeyCode::Char('e'))), Some(Action::Reflect));
+        assert_eq!(map_key(press(KeyCode::Char('w'))), Some(Action::Review));
+        assert_eq!(map_key(press(KeyCode::Char('r'))), Some(Action::Reset));
+        assert_eq!(
+            map_key(press(KeyCode::Char('v'))),
+            Some(Action::ToggleRenderer)
+        );
+
+        // Global, so the home screen and the book view get the same pair — and
+        // the device screen's override map does not shadow it either.
+        use crate::app::Screen;
+        for screen in [Screen::Home, Screen::Book, Screen::Device] {
+            assert_eq!(
+                map_key_on(screen, press(KeyCode::Char('e'))),
+                Some(Action::Reflect),
+                "reflect was rebound on {screen:?}"
             );
         }
     }

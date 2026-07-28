@@ -12,8 +12,9 @@ use ratatui::backend::Backend;
 use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
-    Book, BookSort, DeviceBook, DeviceState, Diagnostic, Engine, FlashcardRow, Highlight,
-    MatchCandidate, NewNoteInput, NoteKind, NoteRecord, RankedResult, SearchRequest,
+    Book, BookSort, DeviceBook, DeviceState, Diagnostic, Engine, EngineError, FlashcardRow,
+    Highlight, MatchCandidate, NewNoteInput, NoteKind, NoteRecord, RankedResult, Reading,
+    SearchRequest,
 };
 
 use crossterm::event::KeyModifiers;
@@ -34,8 +35,19 @@ const NOD: f32 = 0.06;
 const NOD_SPEED: f32 = 0.011;
 pub const TICK: Duration = Duration::from_millis(50);
 
+/// How many open readings the home screen asks for.
+///
+/// A ceiling rather than a page size: the list scrolls, and a person with more
+/// than this many books genuinely on the go has a different problem. It is not
+/// shown anywhere — the screen carries no count of anything.
+const HOME_LIMIT: i64 = 50;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// What you are currently reading — one row per open reading, and the
+    /// screen the app opens to. `m` still reaches the menu from anywhere, so
+    /// making this the front door takes nothing away.
+    Home,
     Menu,
     Library,
     Book,
@@ -47,6 +59,9 @@ pub enum Screen {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
+    /// Back to the currently-reading shelf. Esc from the menu goes there too;
+    /// this row is what makes it findable rather than a thing you have to know.
+    Home,
     Library,
     Continue,
     Search,
@@ -58,7 +73,12 @@ pub enum MenuItem {
     Quit,
 }
 
-pub const MENU: [(MenuItem, &str, &str); 9] = [
+pub const MENU: [(MenuItem, &str, &str); 10] = [
+    (
+        MenuItem::Home,
+        "Currently reading",
+        "the books you have open",
+    ),
     (
         MenuItem::Library,
         "Library",
@@ -192,6 +212,10 @@ pub enum InputContext {
     DevicePath,
     /// Optional page anchor asked for after composing a new note.
     NotePage,
+    /// The rating asked for after saving a review — the one note kind that
+    /// carries one. Empty (or Esc) leaves whatever rating it already had:
+    /// skipping is not clearing.
+    ReviewRating,
     /// A `#RRGGBB` accent color typed on the settings screen.
     AccentHex,
 }
@@ -313,9 +337,15 @@ pub struct NoteDraft {
 }
 
 impl NoteDraft {
+    /// What the editor's border calls this. A reflection and a review are named
+    /// rather than both reading "edit note": they are the two notes you open by
+    /// a key rather than pick off a list, so the border is the only thing that
+    /// says which one is under the cursor.
     pub fn title(&self) -> &'static str {
-        match self.target {
+        match &self.target {
             NoteTarget::New { .. } => "new note",
+            NoteTarget::Edit(n) if n.kind == NoteKind::Reflection.as_str() => "reflection",
+            NoteTarget::Edit(n) if n.kind == NoteKind::Review.as_str() => "review",
             NoteTarget::Edit(_) => "edit note",
         }
     }
@@ -327,6 +357,14 @@ pub struct App {
     pub menu_index: usize,
     pub library: Vec<Book>,
     pub library_state: ListState,
+    /// The home shelf: one entry per **open** reading.
+    ///
+    /// The [`Reading`] rides along beside the [`Book`] because the two are not
+    /// interchangeable — `Book`'s progress fields are projections of the
+    /// *current* reading, while this is specifically the open one and carries
+    /// the device's own percentage, which is all a sidecar-seeded book has.
+    pub reading: Vec<(Book, Reading)>,
+    pub reading_state: ListState,
     pub view: Option<BookView>,
     /// The book-view section the right pane highlights (in the menu) or shows
     /// (when entered).
@@ -381,6 +419,9 @@ pub struct App {
     /// this after drawing the "verifying" frame.
     pub pending_verify: Option<String>,
     pub confirm: Option<Confirm>,
+    /// A saved review awaiting its rating, held while the box asks for it —
+    /// the same shape as `pending_note` holding a body while its page is asked.
+    pub pending_rating: Option<i64>,
     pub search_results: Vec<RankedResult>,
     pub search_state: ListState,
     /// The mounted reader's books, as the last scan found them.
@@ -415,10 +456,13 @@ impl App {
         let scene = Scene::new(engine.config.images_dir.clone());
         let mut app = App {
             engine,
-            screen: Screen::Menu,
+            // The front door is what you are reading, not a list of commands.
+            screen: Screen::Home,
             menu_index: 0,
             library: Vec::new(),
             library_state: ListState::default(),
+            reading: Vec::new(),
+            reading_state: ListState::default(),
             view: None,
             book_tab: BookTab::Info,
             in_section: false,
@@ -444,6 +488,7 @@ impl App {
             api_key: None,
             pending_verify: None,
             confirm: None,
+            pending_rating: None,
             search_results: Vec::new(),
             search_state: ListState::default(),
             device: Vec::new(),
@@ -498,6 +543,32 @@ impl App {
         {
             self.library_state
                 .select((!self.library.is_empty()).then(|| self.library.len() - 1));
+        }
+        self.refresh_reading().await?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Reload the home shelf.
+    ///
+    /// Folded into [`App::refresh_library`] rather than left to the home
+    /// screen's own key: "state persists and is visible" means the shelf is
+    /// right when you arrive at it, and every path that changes what is on it —
+    /// an import, a device pull, a removal, a new book — already funnels
+    /// through there. The two mutations that do *not* (progress and the
+    /// finished toggle) call this directly.
+    pub async fn refresh_reading(&mut self) -> Result<()> {
+        self.reading = self.engine.currently_reading(HOME_LIMIT).await?;
+        if !self.reading.is_empty() && self.reading_state.selected().is_none() {
+            self.reading_state.select(Some(0));
+        }
+        if self
+            .reading_state
+            .selected()
+            .is_some_and(|i| i >= self.reading.len())
+        {
+            self.reading_state
+                .select((!self.reading.is_empty()).then(|| self.reading.len() - 1));
         }
         self.dirty = true;
         Ok(())
@@ -702,6 +773,18 @@ impl App {
             }
             (_, Action::Refresh) => self.refresh_library().await?,
 
+            (Screen::Home, Action::Up) => self.step_reading(-1),
+            (Screen::Home, Action::Down) => self.step_reading(1),
+            (Screen::Home, Action::Select) => self.open_selected_reading().await?,
+            (Screen::Home, Action::Reflect) => self.open_reading_note(NoteKind::Reflection).await?,
+            (Screen::Home, Action::Review) => self.open_reading_note(NoteKind::Review).await?,
+            // The two ways a book gets onto this shelf are search and the
+            // library, and `/` already means "search" everywhere else.
+            (Screen::Home, Action::Query) => self.open_search(),
+            // The front door: back from here is out, exactly as it used to be
+            // from the menu.
+            (Screen::Home, Action::Back) => self.quit = true,
+
             (Screen::Menu, Action::Up) => {
                 self.menu_index = (self.menu_index + MENU.len() - 1) % MENU.len();
             }
@@ -709,7 +792,10 @@ impl App {
                 self.menu_index = (self.menu_index + 1) % MENU.len();
             }
             (Screen::Menu, Action::Select) => self.activate_menu().await?,
-            (Screen::Menu, Action::Back) => self.quit = true,
+            // Esc used to quit here, when the menu was the front door. It is
+            // not any more, and a key that leaves the app from the middle of it
+            // is worse than one that goes back where you came from.
+            (Screen::Menu, Action::Back) => self.screen = Screen::Home,
 
             (Screen::Library, Action::Up) => self.step_library(-1),
             (Screen::Library, Action::Down) => self.step_library(1),
@@ -807,6 +893,22 @@ impl App {
             Action::GrowBook => self.slide_divider(crate::ui::DIVIDER_STEP),
             Action::ShrinkBook => self.slide_divider(-crate::ui::DIVIDER_STEP),
             Action::NewNote => self.new_note(false),
+            // The book view's half of item 7. `reading_id: None` is the engine's
+            // "the current reading", which opens one when the book has none —
+            // a reflection is written mid-book, and that is the normal case.
+            Action::Reflect => {
+                let book_id = self.view.as_ref().and_then(|v| v.book.id);
+                if let Some(id) = book_id {
+                    self.open_anchored_note(id, None, NoteKind::Reflection)
+                        .await?;
+                }
+            }
+            Action::Review => {
+                let book_id = self.view.as_ref().and_then(|v| v.book.id);
+                if let Some(id) = book_id {
+                    self.open_anchored_note(id, None, NoteKind::Review).await?;
+                }
+            }
             Action::Delete => self.ask_delete_selected_note(),
             Action::EditProgress => self.start_input(InputContext::ProgressPage, "page", ""),
             Action::ToggleFinished => self.toggle_finished().await?,
@@ -856,6 +958,100 @@ impl App {
         Ok(())
     }
 
+    // ---- the home screen ---------------------------------------------------
+
+    fn step_reading(&mut self, delta: isize) {
+        if self.reading.is_empty() {
+            return;
+        }
+        let len = self.reading.len() as isize;
+        let cur = self.reading_state.selected().unwrap_or(0) as isize;
+        self.reading_state
+            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+    }
+
+    /// The selected row's book id and the id of the reading it is showing.
+    ///
+    /// Both, not just the book: this screen is a list of *readings*, so a
+    /// reflection opened from it belongs to the one on screen rather than to
+    /// whichever the engine would resolve as current.
+    fn selected_reading(&self) -> Option<(i64, i64)> {
+        self.reading_state
+            .selected()
+            .and_then(|i| self.reading.get(i))
+            .and_then(|(b, r)| b.id.map(|id| (id, r.id)))
+    }
+
+    async fn open_selected_reading(&mut self) -> Result<()> {
+        let book = self
+            .reading_state
+            .selected()
+            .and_then(|i| self.reading.get(i))
+            .map(|(b, _)| b.clone());
+        if let Some(book) = book {
+            self.open_book(book).await?;
+        }
+        Ok(())
+    }
+
+    /// Open the selected row's reflection or review.
+    async fn open_reading_note(&mut self, kind: NoteKind) -> Result<()> {
+        let Some((book_id, reading_id)) = self.selected_reading() else {
+            self.status = Some("nothing open to write about — / to find a book".into());
+            return Ok(());
+        };
+        self.open_anchored_note(book_id, Some(reading_id), kind)
+            .await
+    }
+
+    /// Open a reading's reflection or review into the in-house editor.
+    ///
+    /// The engine finds the existing note before creating one, which is what
+    /// "accretes" means: pressing the key twice on the same reading opens the
+    /// same file, mid-book and after it, for ever. There is no `$EDITOR` path
+    /// in this crate — deliberately, after a broken vim once killed the TUI —
+    /// so it goes straight into [`TextEditor`] like every other note here.
+    async fn open_anchored_note(
+        &mut self,
+        book_id: i64,
+        reading_id: Option<i64>,
+        kind: NoteKind,
+    ) -> Result<()> {
+        let opened = match kind {
+            NoteKind::Review => self.engine.open_review_record(book_id, reading_id).await,
+            _ => {
+                self.engine
+                    .open_reflection_record(book_id, reading_id)
+                    .await
+            }
+        };
+        let record = match opened {
+            Ok(record) => record,
+            Err(e) => {
+                self.status = Some(format!("could not open it: {e}"));
+                return Ok(());
+            }
+        };
+        let body = self.engine.note_body(&record).unwrap_or_default();
+        self.note_editor = Some(NoteDraft {
+            target: NoteTarget::Edit(record),
+            editor: TextEditor::new(&body),
+        });
+        // The note exists from the moment it is opened, not from the moment it
+        // is saved, so the Notes list behind the editor is already out of date.
+        self.reload_view().await?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Open the search screen onto a fresh query box.
+    fn open_search(&mut self) {
+        self.screen = Screen::Search;
+        self.search_results.clear();
+        self.search_state.select(None);
+        self.start_input(InputContext::SearchQuery, "search", "");
+    }
+
     /// Open the highlighted section into the right pane.
     fn enter_section(&mut self) {
         self.in_section = true;
@@ -864,6 +1060,10 @@ impl App {
 
     async fn activate_menu(&mut self) -> Result<()> {
         match MENU[self.menu_index].0 {
+            MenuItem::Home => {
+                self.refresh_reading().await?;
+                self.screen = Screen::Home;
+            }
             MenuItem::Library => {
                 self.refresh_library().await?;
                 if self.library.is_empty() {
@@ -880,12 +1080,7 @@ impl App {
                     None => self.status = Some("nothing to continue — the library is empty".into()),
                 }
             }
-            MenuItem::Search => {
-                self.screen = Screen::Search;
-                self.search_results.clear();
-                self.search_state.select(None);
-                self.start_input(InputContext::SearchQuery, "search", "");
-            }
+            MenuItem::Search => self.open_search(),
             MenuItem::AddIsbn => self.start_input(InputContext::IsbnAdd, "isbn", ""),
             MenuItem::ImportKo => self.start_input(InputContext::KoPath, "koreader path", ""),
             MenuItem::Device => self.open_device(),
@@ -1655,6 +1850,13 @@ impl App {
                 self.status = Some(format!("updated “{}”", note.title));
                 self.reload_view().await?;
                 self.clamp_tab_selection();
+                // A review is the only note kind that carries a rating, so
+                // saving one asks for it — the same "ask after the body" shape
+                // as a new note's page anchor.
+                if note.kind == NoteKind::Review.as_str() {
+                    self.pending_rating = Some(note.id);
+                    self.start_input(InputContext::ReviewRating, "rating (enter to skip)", "");
+                }
             }
         }
         Ok(())
@@ -1714,6 +1916,9 @@ impl App {
             .update_progress(id, None, Some(!finished))
             .await?;
         self.reload_view().await?;
+        // Finishing a book closes its reading, so it leaves the home shelf —
+        // and unfinishing reopens the same one, so it comes back.
+        self.refresh_reading().await?;
         self.status = Some(if finished {
             "marked unfinished".into()
         } else {
@@ -1979,6 +2184,9 @@ impl App {
                 if context == InputContext::NotePage {
                     // Esc skips the page but keeps the note already written.
                     self.commit_pending_note(String::new()).await?;
+                } else if context == InputContext::ReviewRating {
+                    // The review is already saved; the rating was optional.
+                    self.pending_rating = None;
                 } else if self.screen == Screen::Search && self.search_results.is_empty() {
                     // A cancelled search query with no results falls back to menu.
                     self.screen = Screen::Menu;
@@ -2004,6 +2212,12 @@ impl App {
         if context == InputContext::NotePage {
             return self.commit_pending_note(text).await;
         }
+        // Same for the rating: an empty one has to reach its own handler so the
+        // pending review is dropped rather than left waiting for a box that has
+        // already closed.
+        if context == InputContext::ReviewRating {
+            return self.commit_rating(text).await;
+        }
         if text.is_empty() {
             if context == InputContext::SearchQuery && self.search_results.is_empty() {
                 self.screen = Screen::Menu;
@@ -2023,8 +2237,46 @@ impl App {
                 Some(rgb) => self.set_accent_rgb(rgb),
                 None => self.status = Some(format!("not a #RRGGBB color: {text}")),
             },
-            InputContext::NotePage => unreachable!("handled above"),
+            InputContext::NotePage | InputContext::ReviewRating => {
+                unreachable!("handled above")
+            }
         }
+        Ok(())
+    }
+
+    /// Rate the review that was just saved.
+    ///
+    /// The value goes through `Storage::set_review_rating`, which snaps it with
+    /// [`readingbuddy::RatingScale::canonical`] — the one quantizer both sides
+    /// of the rating machinery go through. A value that is not a point on the
+    /// scale comes back as an error naming the scale's bounds and step, and is
+    /// **shown, never rounded**; so is a value the Goodreads map has no entry
+    /// for, because Goodreads takes integers 0–5 and what a half means is the
+    /// user's call, not ours.
+    async fn commit_rating(&mut self, text: String) -> Result<()> {
+        let Some(note_id) = self.pending_rating.take() else {
+            return Ok(());
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        let Ok(value) = text.parse::<f64>() else {
+            self.status = Some(format!("'{text}' isn't a number"));
+            return Ok(());
+        };
+        if let Err(e) = self.engine.set_rating(note_id, value).await {
+            self.status = Some(format!("{e}"));
+            return Ok(());
+        }
+        self.status = Some(match self.engine.goodreads_rating(note_id).await {
+            Ok(Some(g)) => format!("rated {value} · goodreads {g}"),
+            Ok(None) => format!("rated {value}"),
+            Err(EngineError::UnmappedRating { value, scale }) => {
+                format!("rated {value} · no goodreads mapping on '{scale}' for it yet")
+            }
+            Err(e) => format!("rated {value}, but: {e}"),
+        });
         Ok(())
     }
 
@@ -2039,6 +2291,9 @@ impl App {
                     .update_progress(id, Some(page), None)
                     .await?;
                 self.reload_view().await?;
+                // Progress opens a reading when the book had none, so a page
+                // typed here is what puts a book on the home shelf.
+                self.refresh_reading().await?;
                 self.status = Some(format!("progress → page {page}"));
             }
             Err(_) => self.status = Some(format!("'{text}' isn't a page number")),
@@ -2385,6 +2640,35 @@ mod tests {
         let root = write_device_tree(&tmp.join("device"));
         app.finish_scan(&root).await.expect("scan");
         app
+    }
+
+    /// An open reading, for the dev aids that need rows without a database
+    /// behind them. Never used by an assertion — everything that checks
+    /// behaviour goes through the real engine.
+    fn sample_reading(ko_percent: Option<f64>) -> Reading {
+        Reading {
+            id: 1,
+            book_id: 1,
+            started_at: None,
+            finished_at: None,
+            status: "reading".into(),
+            source: "manual".into(),
+            current_page: None,
+            ko_status: None,
+            ko_percent,
+            ko_rating: None,
+            created_at: 0,
+            last_modified: 0,
+        }
+    }
+
+    /// Where a menu row is, by identity rather than by index — the array grew a
+    /// row for the home screen, and a hard-coded index is how that becomes a
+    /// test that opens something else and still passes.
+    fn menu_row(item: MenuItem) -> usize {
+        MENU.iter()
+            .position(|(it, ..)| *it == item)
+            .unwrap_or_else(|| panic!("no {item:?} menu row"))
     }
 
     /// A miniature device: one book the library already has with an annotation
@@ -2880,6 +3164,7 @@ mod tests {
             let app = &mut *app;
             let mut terminal = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
             for screen in [
+                Screen::Home,
                 Screen::Menu,
                 Screen::Library,
                 Screen::Book,
@@ -2922,6 +3207,14 @@ mod tests {
             });
             terminal.draw(|f| ui::draw(f, app)).expect("draw confirm");
             app.confirm = None;
+            // The home screen with nothing open: its own branch of `home::draw`
+            // (the empty box), and the one likeliest to underflow at 1x1.
+            app.screen = Screen::Home;
+            let held = std::mem::take(&mut app.reading);
+            terminal
+                .draw(|f| ui::draw(f, app))
+                .expect("draw empty home");
+            app.reading = held;
             // With the device screen's candidate chooser open, and with a row
             // marked — both are overlay/gutter arithmetic that 1x1 tests.
             app.screen = Screen::Device;
@@ -3816,6 +4109,235 @@ mod tests {
         assert!(seen_back && seen_front, "never completed a turn");
     }
 
+    // ---- the home screen ---------------------------------------------------
+
+    /// The front door is what you are reading, and the menu is still one key
+    /// away — which is what makes moving it off the front door cost nothing.
+    #[tokio::test]
+    async fn the_app_opens_onto_what_you_are_reading() {
+        let mut app = test_app().await;
+        assert_eq!(app.screen, Screen::Home);
+        assert_eq!(app.reading.len(), 1, "the seeded book has an open reading");
+        assert_eq!(app.reading_state.selected(), Some(0));
+
+        let text = screen_text(&mut app, 80, 20);
+        assert!(text.contains("Station Eleven"), "{text}");
+        // Its progress, from the reading — 120 of 333.
+        assert!(text.contains("36%"), "{text}");
+
+        // `m` reaches the menu, and Esc comes back rather than quitting.
+        app.handle(Action::Menu).await.expect("menu");
+        assert_eq!(app.screen, Screen::Menu);
+        app.handle(Action::Back).await.expect("back");
+        assert_eq!(app.screen, Screen::Home);
+        assert!(!app.quit, "esc out of the menu killed the app");
+
+        // And the menu carries a row back here, so it is findable.
+        app.screen = Screen::Menu;
+        app.menu_index = menu_row(MenuItem::Home);
+        app.handle(Action::Select).await.expect("home");
+        assert_eq!(app.screen, Screen::Home);
+    }
+
+    /// The screen counts nothing. `docs/decisions.md` bans task-completion
+    /// framing by name, and a tally of unfinished books is exactly the thing a
+    /// currently-reading screen invites.
+    #[tokio::test]
+    async fn the_home_screen_greets_you_with_no_numbers() {
+        let mut app = test_app().await;
+        // The fixture's device scan leaves its own report in the status line;
+        // arriving here at startup there is none.
+        app.status = None;
+        let text = screen_text(&mut app, 80, 20);
+        // The one number on screen is this row's own progress; nothing counts
+        // rows, and nothing says how many anything there are.
+        for line in text.lines() {
+            let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
+            assert!(
+                digits.is_empty() || line.contains("Station Eleven"),
+                "a number that is not a book's own progress: {line}"
+            );
+        }
+    }
+
+    /// Nothing open is still a place: it says where the books come from, and
+    /// the key it names actually works.
+    #[tokio::test]
+    async fn the_empty_shelf_offers_a_way_onward() {
+        let mut app = test_app().await;
+        let id = app.library[0].id.expect("id");
+        // Finishing closes the reading, which is the ordinary way this screen
+        // empties.
+        app.engine
+            .storage
+            .update_progress(id, None, Some(true))
+            .await
+            .expect("finish");
+        app.refresh_reading().await.expect("refresh");
+        assert!(app.reading.is_empty());
+
+        let text = screen_text(&mut app, 80, 20);
+        assert!(text.contains("nothing open"), "{text}");
+        assert!(text.contains("search"), "no way onward: {text}");
+        assert!(text.contains("menu"), "no way onward: {text}");
+
+        // And the key it advertises does what it says.
+        app.handle(Action::Query).await.expect("search");
+        assert_eq!(app.screen, Screen::Search);
+        assert!(app.input.is_some(), "/ opened no query box");
+    }
+
+    /// The round trip the whole item is for: home → book → the reflection, in
+    /// the in-house editor, and back to a Notes list that shows it as one.
+    #[tokio::test]
+    async fn home_opens_a_book_and_its_reflection() {
+        let mut app = test_app().await;
+        app.handle(Action::Select).await.expect("open the book");
+        assert_eq!(app.screen, Screen::Book);
+        assert_eq!(
+            app.view.as_ref().unwrap().book.display_title(),
+            "Station Eleven"
+        );
+
+        // `e` opens the reflection straight into the editor — no `$EDITOR`.
+        app.handle(Action::Reflect).await.expect("reflect");
+        let draft = app.note_editor.as_ref().expect("the editor opened");
+        assert_eq!(draft.title(), "reflection");
+
+        for c in "the museum of civilization".chars() {
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
+        }
+        app.on_editor_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("save");
+        assert!(app.note_editor.is_none());
+
+        let notes = &app.view.as_ref().unwrap().notes;
+        let reflection = notes
+            .iter()
+            .find(|n| n.kind == "reflection")
+            .expect("the reflection is in the Notes list");
+        assert!(reflection.reading_id.is_some(), "anchored to the reading");
+        assert_eq!(
+            app.engine.note_body(reflection).unwrap().trim(),
+            "the museum of civilization"
+        );
+
+        // It is marked in the list rather than hidden in a tab of its own.
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        assert!(screen_text(&mut app, 120, 40).contains('◆'));
+    }
+
+    /// The accretion rule, from the frontend: a reflection is one note per
+    /// reading, opened again and again.
+    #[tokio::test]
+    async fn opening_a_reflection_twice_is_the_same_note() {
+        let mut app = test_app().await;
+        app.handle(Action::Reflect).await.expect("first");
+        let first = match &app.note_editor.as_ref().unwrap().target {
+            NoteTarget::Edit(n) => n.id,
+            _ => panic!("a reflection opens as an edit of the note that exists"),
+        };
+        app.note_editor = None;
+
+        app.handle(Action::Reflect).await.expect("second");
+        let second = match &app.note_editor.as_ref().unwrap().target {
+            NoteTarget::Edit(n) => n.id,
+            _ => panic!("edit"),
+        };
+        assert_eq!(first, second, "a second press started a second reflection");
+
+        let id = app.library[0].id.expect("id");
+        let notes = app.engine.list_notes(Some(id)).await.expect("notes");
+        assert_eq!(notes.iter().filter(|n| n.kind == "reflection").count(), 1);
+    }
+
+    /// A review is the one kind that carries a rating, so saving one asks —
+    /// and an answer that is not on the scale is reported, never rounded.
+    #[tokio::test]
+    async fn a_review_asks_for_its_rating_and_never_rounds_one() {
+        let mut app = test_app().await;
+        app.handle(Action::Review).await.expect("review");
+        assert_eq!(app.note_editor.as_ref().unwrap().title(), "review");
+        for c in "worth your time".chars() {
+            app.on_editor_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
+        }
+        app.on_editor_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("save");
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::ReviewRating),
+            "saving a review did not ask for its rating"
+        );
+
+        // 4.25 is not a point on the seeded 0–5 step-0.5 scale: said, not
+        // snapped.
+        for c in "4.25".chars() {
+            app.on_input_key(KeyEvent::from(KeyCode::Char(c)))
+                .await
+                .expect("type");
+        }
+        app.on_input_key(KeyEvent::from(KeyCode::Enter))
+            .await
+            .expect("commit");
+        let status = app.status.clone().unwrap_or_default();
+        assert!(
+            status.contains("4.25") && status.contains("scale"),
+            "{status}"
+        );
+
+        // 4.5 *is* on the scale and has no Goodreads meaning, which is the
+        // other half of the same rule: kept, and said.
+        let note_id = app
+            .engine
+            .list_notes(Some(app.library[0].id.unwrap()))
+            .await
+            .expect("notes")
+            .into_iter()
+            .find(|n| n.kind == "review")
+            .expect("the review")
+            .id;
+        app.pending_rating = Some(note_id);
+        app.commit_rating("4.5".into()).await.expect("rate");
+        let status = app.status.clone().unwrap_or_default();
+        assert!(status.contains("rated 4.5"), "{status}");
+        assert!(status.contains("goodreads"), "{status}");
+
+        // A whole star maps, and says so.
+        app.pending_rating = Some(note_id);
+        app.commit_rating("4".into()).await.expect("rate");
+        assert_eq!(app.status.as_deref(), Some("rated 4 · goodreads 4"));
+    }
+
+    /// Finishing a book takes it off the shelf, and unfinishing puts it back —
+    /// the home screen is a view of `readings`, not a list it keeps by hand.
+    #[tokio::test]
+    async fn finishing_a_book_takes_it_off_the_shelf() {
+        let mut app = test_app().await;
+        app.handle(Action::Select).await.expect("open");
+        app.handle(Action::ToggleFinished).await.expect("finish");
+        assert!(app.reading.is_empty(), "a finished book is still 'reading'");
+        app.handle(Action::ToggleFinished).await.expect("unfinish");
+        assert_eq!(app.reading.len(), 1, "unfinishing reopened nothing");
+    }
+
+    /// The screen navigates and is never a dead end.
+    #[tokio::test]
+    async fn the_home_screen_navigates_and_reaches_the_menu() {
+        let mut app = test_app().await;
+        app.handle(Action::Up).await.expect("up");
+        assert_eq!(app.reading_state.selected(), Some(0), "one row wraps to it");
+        app.handle(Action::Menu).await.expect("menu");
+        assert_eq!(app.screen, Screen::Menu);
+    }
+
     // ---- the device screen -------------------------------------------------
 
     /// The scan produces all four states against a fixture tree, and each row
@@ -4096,10 +4618,8 @@ mod tests {
     #[tokio::test]
     async fn the_menu_opens_the_device_screen() {
         let mut app = test_app().await;
-        app.menu_index = MENU
-            .iter()
-            .position(|(item, ..)| *item == MenuItem::Device)
-            .expect("a Device menu row");
+        app.screen = Screen::Menu;
+        app.menu_index = menu_row(MenuItem::Device);
         app.handle(Action::Select).await.expect("open device");
         assert_eq!(app.screen, Screen::Device);
         // Either a mount was found and queued, or the box is asking for a path.
@@ -4132,8 +4652,10 @@ mod tests {
     #[tokio::test]
     async fn quitting_and_navigation_move_between_screens() {
         let mut app = test_app().await;
-        assert_eq!(app.screen, Screen::Menu);
-        app.menu_index = 0; // Library
+        // The app opens onto what you are reading, not onto a list of commands.
+        assert_eq!(app.screen, Screen::Home);
+        app.handle(Action::Menu).await.expect("menu");
+        app.menu_index = menu_row(MenuItem::Library);
         app.handle(Action::Select).await.expect("open library");
         assert_eq!(app.screen, Screen::Library);
         app.handle(Action::Select).await.expect("open book");
@@ -4171,6 +4693,21 @@ mod tests {
             });
         }
         app.library_state.select(Some(0));
+        // A couple more open readings, so the home shelf shows what a shelf
+        // looks like rather than a box with one row in it. The second has the
+        // device's percentage and no page, which is the commonest row there.
+        for (book, percent) in [("Piranesi", Some(0.42)), ("The Overstory", None)] {
+            app.reading.push((
+                Book {
+                    title: Some(book.into()),
+                    authors: vec!["Someone".into()],
+                    page_count: Some(300),
+                    ..Book::default()
+                },
+                sample_reading(percent),
+            ));
+        }
+        app.reading_state.select(Some(0));
         app.search_results = app
             .library
             .iter()
@@ -4188,13 +4725,18 @@ mod tests {
         let (w, h) = (96u16, 16u16);
         // The device screen twice: the shelf, then the candidate chooser over
         // it. `linking` is what opens the second one.
-        for (screen, linking) in [
-            (Screen::Library, false),
-            (Screen::Search, false),
-            (Screen::Device, false),
-            (Screen::Device, true),
+        // Home twice as well: the shelf, and the empty state, which is a
+        // different branch of the same draw and the one worth looking at.
+        for (screen, linking, empty) in [
+            (Screen::Home, false, false),
+            (Screen::Home, false, true),
+            (Screen::Library, false, false),
+            (Screen::Search, false, false),
+            (Screen::Device, false, false),
+            (Screen::Device, true, false),
         ] {
             app.screen = screen;
+            let held = empty.then(|| std::mem::take(&mut app.reading));
             if linking {
                 let mut state = ListState::default();
                 state.select(Some(1));
@@ -4218,7 +4760,10 @@ mod tests {
             }
             let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
             t.draw(|f| ui::draw(f, &mut app)).unwrap();
-            println!("=== {screen:?} {w}x{h} ===");
+            println!(
+                "=== {screen:?}{} {w}x{h} ===",
+                if empty { " (empty)" } else { "" }
+            );
             let buf = t.backend().buffer();
             for y in 0..h {
                 let text: String = (0..w)
@@ -4238,6 +4783,9 @@ mod tests {
                 } else {
                     println!("|{text}|  reversed: |{}|", mask.trim_end());
                 }
+            }
+            if let Some(rows) = held {
+                app.reading = rows;
             }
         }
     }
@@ -4289,19 +4837,38 @@ mod tests {
         let book = app.library.first().cloned().unwrap();
         rt.block_on(app.open_book(book)).unwrap();
         app.show_options = true;
+        // Open the reflection so there is one to look at: it is a row in the
+        // Notes list, not a section of its own, so the only way to judge that
+        // choice is to see it beside an ordinary note.
+        rt.block_on(app.handle(Action::Reflect)).unwrap();
+        app.note_editor = None;
         // Wide cases too: the object is centred on the window (with the panel
         // beside it) once the width affords the panel its floor, and that is the
-        // only place to see it. The last case is tab — the pane dismissed, which
-        // is the one layout where the object has the whole window.
-        for (w, h, panel) in [
-            (110, 32, true),
-            (44, 26, true),
-            (86, 30, true),
-            (180, 44, true),
-            (180, 44, false),
+        // only place to see it. The `notes` case opens the section; the last is
+        // tab — the pane dismissed, the one layout where the object has the
+        // whole window.
+        for (w, h, panel, notes) in [
+            (110, 32, true, false),
+            (44, 26, true, false),
+            (86, 30, true, false),
+            (110, 32, true, true),
+            (180, 44, true, false),
+            (180, 44, false, false),
         ] {
             app.layout.panel = panel;
-            print_frame(&mut app, w, h, &format!("{w}x{h}"));
+            app.book_tab = if notes { BookTab::Notes } else { BookTab::Info };
+            app.in_section = notes;
+            app.clamp_tab_selection();
+            print_frame(
+                &mut app,
+                w,
+                h,
+                &format!(
+                    "{w}x{h}{}{}",
+                    if notes { " · notes" } else { "" },
+                    if panel { "" } else { " · no panel" }
+                ),
+            );
         }
 
         // The links pane, in the Notes section's place, over a graph read out of
