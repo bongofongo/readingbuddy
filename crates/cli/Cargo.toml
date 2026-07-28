@@ -16,6 +16,9 @@ clap.workspace = true
 serde.workspace = true
 toml.workspace = true
 rpassword.workspace = true
+# Reading dates are unix seconds on the wire; the CLI is where they become a
+# date a person reads. Already a workspace dependency — no version to pick.
+time.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

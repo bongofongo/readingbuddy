@@ -1,4 +1,51 @@
-use readingbuddy::{Book, RankedResult};
+use readingbuddy::{Book, RankedResult, Reading};
+
+/// One reading of a book: which of how many, its dates, and where it got to.
+///
+/// The device-owned mirror is shown separately from ours (`ko …`) because they
+/// are different claims — theirs is what the reader said, ours is what the user
+/// told readingbuddy — and collapsing them would hide a disagreement.
+pub fn reading_line(r: &Reading, nth: usize, of: usize) -> String {
+    let dates = match (r.started_at, r.finished_at) {
+        (Some(a), Some(b)) => format!("{} → {}", date(a), date(b)),
+        (Some(a), None) => format!("{} → …", date(a)),
+        (None, Some(b)) => format!("? → {}", date(b)),
+        (None, None) => "no dates".to_string(),
+    };
+    let page = r
+        .current_page
+        .map(|p| format!("  p.{p}"))
+        .unwrap_or_default();
+    let device = match (&r.ko_status, r.ko_percent, r.ko_rating) {
+        (None, None, None) => String::new(),
+        (s, pct, rating) => {
+            let mut parts = Vec::new();
+            if let Some(s) = s {
+                parts.push(s.clone());
+            }
+            if let Some(p) = pct {
+                parts.push(format!("{:.0}%", p * 100.0));
+            }
+            if let Some(n) = rating {
+                parts.push(format!("{n}★"));
+            }
+            format!("  [ko {}]", parts.join(" "))
+        }
+    };
+    format!(
+        "reading {nth}/{of}  {}  {dates}{page}{device}  ({})",
+        r.status, r.source
+    )
+}
+
+/// Unix seconds as a plain date. Times of day are noise here — a reading is a
+/// span of days.
+fn date(unix: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(unix)
+        .ok()
+        .map(|d| format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day()))
+        .unwrap_or_else(|| unix.to_string())
+}
 
 pub fn book_line(b: &Book) -> String {
     let id = b.id.map(|i| i.to_string()).unwrap_or_else(|| "-".into());

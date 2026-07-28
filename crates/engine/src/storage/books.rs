@@ -31,6 +31,10 @@ pub struct MergeReport {
     /// the survivor first.
     pub highlights_dropped: usize,
     pub notes_moved: usize,
+    /// Readings repointed at `dst`. Both books may have had an open reading;
+    /// the older one is closed as `abandoned` rather than deleted, so it is
+    /// counted here like any other.
+    pub readings_moved: usize,
     pub flashcards_moved: usize,
     /// `flashcards` is `UNIQUE(book_id, word)`, so a word both books captured
     /// cannot move.
@@ -42,10 +46,37 @@ pub struct MergeReport {
     pub orphaned_cover: Option<String>,
 }
 
-pub(super) const BOOK_COLUMNS: &str = "id, title, sort_title, authors, translators, publisher, publish_year, \
-     language, isbn_10, isbn_13, openlibrary_key, googlebooks_id, cover_url, cover_path, \
-     page_count, description, first_sentence, current_page, finished, date_started, \
-     date_finished, created_at, last_modified";
+/// The `books` columns plus the four reading-state **projections**.
+///
+/// `current_page`, `finished`, `date_started` and `date_finished` left `books`
+/// with migration `0005` and now come off the current reading. Keeping them on
+/// [`Book`] as read-only projections is what left every consumer — the CLI's
+/// `render.rs`, the TUI's `progress_tag` and `progress_text`, the note page
+/// auto-anchor — untouched by that move, and [`row_to_book`] unchanged with it.
+///
+/// Every `books` column is qualified: `readings` carries `id`, `created_at` and
+/// `last_modified` of its own, and an unqualified name would be ambiguous.
+pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, books.authors, \
+     books.translators, books.publisher, books.publish_year, books.language, books.isbn_10, \
+     books.isbn_13, books.openlibrary_key, books.googlebooks_id, books.cover_url, \
+     books.cover_path, books.page_count, books.description, books.first_sentence, \
+     cur.current_page AS current_page, \
+     CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
+     cur.started_at AS date_started, cur.finished_at AS date_finished, \
+     books.created_at, books.last_modified";
+
+/// The join that resolves **the current reading**: the open one if there is
+/// one, else the most recent.
+///
+/// One join rather than four correlated subqueries, and one definition of
+/// "current" rather than a different one per column — a book whose `finished`
+/// came from its last reading while its `current_page` came from nowhere would
+/// render as a contradiction.
+pub(super) const BOOK_FROM: &str = "FROM books LEFT JOIN readings cur ON cur.id = (
+         SELECT r.id FROM readings r WHERE r.book_id = books.id
+          ORDER BY (r.finished_at IS NULL) DESC,
+                   COALESCE(r.started_at, r.created_at) DESC, r.id DESC
+          LIMIT 1)";
 
 pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
     let authors: String = row.try_get("authors")?;
@@ -82,8 +113,17 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
 impl Storage {
     /// Insert-or-merge keyed on isbn_10, else isbn_13, else plain insert.
     /// COALESCE(excluded.x, books.x) keeps NULL fields from clobbering
-    /// existing data; `finished` merges with MAX so a re-import never
-    /// un-finishes a book. Returns the row id.
+    /// existing data. Returns the row id.
+    ///
+    /// **Reading state is not written here, and `Book`'s four progress fields
+    /// are ignored.** They are projections of the current reading
+    /// (`BOOK_COLUMNS`); writing them belongs to
+    /// [`Storage::update_progress`]. This is also why the old
+    /// `finished = MAX(excluded.finished, books.finished)` clause is gone rather
+    /// than moved: it only ever existed to stop a metadata refresh from
+    /// un-finishing a book, and a provider upsert now has no reach into reading
+    /// state at all. Everything else keeps its `COALESCE` no-clobber — that
+    /// pattern is still right for providers, which return partial records.
     pub async fn upsert_book(&self, book: &Book) -> Result<i64> {
         let set_clause = r#"
             title           = CASE WHEN excluded.title != '' THEN excluded.title ELSE books.title END,
@@ -102,19 +142,14 @@ impl Storage {
             page_count      = COALESCE(excluded.page_count,      books.page_count),
             description     = COALESCE(excluded.description,     books.description),
             first_sentence  = COALESCE(excluded.first_sentence,  books.first_sentence),
-            current_page    = COALESCE(excluded.current_page,    books.current_page),
-            finished        = MAX(excluded.finished, books.finished),
-            date_started    = COALESCE(excluded.date_started,    books.date_started),
-            date_finished   = COALESCE(excluded.date_finished,   books.date_finished),
             last_modified   = excluded.last_modified
         "#;
 
         let insert = r#"INSERT INTO books (
                 title, sort_title, authors, translators, publisher, publish_year, language,
                 isbn_10, isbn_13, openlibrary_key, googlebooks_id, cover_url, cover_path,
-                page_count, description, first_sentence, current_page, finished,
-                date_started, date_finished, created_at, last_modified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
+                page_count, description, first_sentence, created_at, last_modified
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
 
         let sql = if book.isbn_10.is_some() {
             format!("{insert} ON CONFLICT(isbn_10) DO UPDATE SET {set_clause} RETURNING id")
@@ -142,10 +177,6 @@ impl Storage {
             .bind(book.page_count)
             .bind(book.description.as_ref())
             .bind(book.first_sentence.as_ref())
-            .bind(book.current_page)
-            .bind(book.finished)
-            .bind(book.date_started)
-            .bind(book.date_finished)
             .bind(now)
             .bind(now)
             .fetch_one(self.pool())
@@ -154,7 +185,7 @@ impl Storage {
     }
 
     pub async fn get_book(&self, id: i64) -> Result<Option<Book>> {
-        let sql = format!("SELECT {BOOK_COLUMNS} FROM books WHERE id = ?");
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
         let row = sqlx::query(&sql)
             .bind(id)
             .fetch_optional(self.pool())
@@ -164,7 +195,9 @@ impl Storage {
 
     /// Lookup by a normalized ISBN (either column).
     pub async fn find_book_by_isbn(&self, isbn: &str) -> Result<Option<Book>> {
-        let sql = format!("SELECT {BOOK_COLUMNS} FROM books WHERE isbn_10 = ?1 OR isbn_13 = ?1");
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.isbn_10 = ?1 OR books.isbn_13 = ?1"
+        );
         let row = sqlx::query(&sql)
             .bind(isbn)
             .fetch_optional(self.pool())
@@ -174,7 +207,8 @@ impl Storage {
 
     pub async fn find_books_by_title(&self, fragment: &str) -> Result<Vec<Book>> {
         let sql = format!(
-            "SELECT {BOOK_COLUMNS} FROM books WHERE title LIKE ? ORDER BY last_modified DESC"
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.title LIKE ?
+             ORDER BY books.last_modified DESC"
         );
         let rows = sqlx::query(&sql)
             .bind(format!("%{fragment}%"))
@@ -185,46 +219,20 @@ impl Storage {
 
     pub async fn list_books(&self, limit: i64, sort: BookSort) -> Result<Vec<Book>> {
         let order = match sort {
-            BookSort::LastModified => "last_modified DESC",
-            BookSort::Title => "title COLLATE NOCASE ASC",
+            BookSort::LastModified => "books.last_modified DESC",
+            BookSort::Title => "books.title COLLATE NOCASE ASC",
+            // The joined reading's page, not a `books` column any more.
             BookSort::Progress => {
-                "CAST(current_page AS REAL) / NULLIF(page_count, 0) DESC NULLS LAST"
+                "CAST(cur.current_page AS REAL) / NULLIF(books.page_count, 0) DESC NULLS LAST"
             }
         };
-        let sql = format!("SELECT {BOOK_COLUMNS} FROM books ORDER BY {order} LIMIT ?");
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} ORDER BY {order} LIMIT ?");
         let rows = sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?;
         rows.iter().map(row_to_book).collect()
     }
 
-    pub async fn update_progress(
-        &self,
-        id: i64,
-        page: Option<i64>,
-        finished: Option<bool>,
-    ) -> Result<Book> {
-        let now = now_unix();
-        sqlx::query(
-            r#"UPDATE books SET
-                current_page  = COALESCE(?2, current_page),
-                date_started  = COALESCE(date_started, ?3),
-                finished      = COALESCE(?4, finished),
-                date_finished = CASE WHEN ?4 = 1 THEN COALESCE(date_finished, ?3) ELSE date_finished END,
-                last_modified = ?3
-            WHERE id = ?1"#,
-        )
-        .bind(id)
-        .bind(page)
-        .bind(now)
-        .bind(finished)
-        .execute(self.pool())
-        .await?;
-        self.get_book(id)
-            .await?
-            .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
-    }
-
-    /// Fold `src` into `dst`: move highlights, notes, flashcards and device
-    /// links, fill `dst`'s empty fields from `src`, delete `src`.
+    /// Fold `src` into `dst`: move highlights, notes, flashcards, readings and
+    /// device links, fill `dst`'s empty fields from `src`, delete `src`.
     ///
     /// This exists because the ISBN-less insert path guarantees duplicates
     /// regardless of how good matching gets: `upsert_book` branches
@@ -273,7 +281,7 @@ impl Storage {
             return Err(EngineError::NotFound(format!("book id {dst}")));
         };
 
-        let sql = format!("SELECT {BOOK_COLUMNS} FROM books WHERE id = ?");
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
         let Some(src_row) = sqlx::query(&sql).bind(src).fetch_optional(&mut *tx).await? else {
             // Already merged (or never existed). Returning an empty report
             // rather than an error is what makes merging twice equal merging
@@ -366,6 +374,33 @@ impl Storage {
             .await?
             .rows_affected() as usize;
 
+        // ---- readings ------------------------------------------------------
+        // Two open readings would violate `idx_readings_one_open`, so the older
+        // one is closed first — `abandoned`, at its own `last_modified`, because
+        // deleting it would lose a reading that really happened. This runs
+        // before the move (and before `src` is deleted, which would cascade its
+        // readings away entirely).
+        sqlx::query(
+            r#"UPDATE readings SET finished_at = last_modified, status = 'abandoned'
+               WHERE id = (
+                   SELECT id FROM readings
+                    WHERE book_id IN (?1, ?2) AND finished_at IS NULL
+                    ORDER BY COALESCE(started_at, created_at) ASC, id ASC
+                    LIMIT 1)
+                 AND (SELECT count(*) FROM readings
+                       WHERE book_id IN (?1, ?2) AND finished_at IS NULL) > 1"#,
+        )
+        .bind(src)
+        .bind(dst)
+        .execute(&mut *tx)
+        .await?;
+        report.readings_moved = sqlx::query("UPDATE readings SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
         // ---- device links --------------------------------------------------
         report.device_links_moved =
             sqlx::query("UPDATE device_books SET book_id = ? WHERE book_id = ?")
@@ -407,11 +442,7 @@ impl Storage {
                    page_count      = COALESCE(page_count,      ?15),
                    description     = COALESCE(description,     ?16),
                    first_sentence  = COALESCE(first_sentence,  ?17),
-                   current_page    = COALESCE(current_page,    ?18),
-                   finished        = MAX(finished,             ?19),
-                   date_started    = COALESCE(date_started,    ?20),
-                   date_finished   = COALESCE(date_finished,   ?21),
-                   last_modified   = ?22
+                   last_modified   = ?18
                WHERE id = ?1"#,
         )
         .bind(dst)
@@ -431,10 +462,6 @@ impl Storage {
         .bind(src_book.page_count)
         .bind(src_book.description.as_ref())
         .bind(src_book.first_sentence.as_ref())
-        .bind(src_book.current_page)
-        .bind(src_book.finished)
-        .bind(src_book.date_started)
-        .bind(src_book.date_finished)
         .bind(now_unix())
         .execute(&mut *tx)
         .await?;
@@ -519,16 +546,60 @@ mod tests {
         assert!(b.finished);
         assert!(b.date_finished.is_some());
         assert_eq!(b.current_page, Some(100));
+    }
 
-        // Re-upsert must not un-finish.
-        s.upsert_book(&sample()).await.unwrap();
+    /// The *absence* of the retired `finished = MAX(excluded.finished,
+    /// books.finished)` clause, pinned.
+    ///
+    /// That clause existed only because reading state lived on `books`, and
+    /// without a test naming it the behaviour comes straight back the next time
+    /// someone "fixes" the upsert to carry a `Book`'s progress fields. A
+    /// provider record cannot know what page you are on: the fields are ignored,
+    /// in both directions — an incoming `finished: true` must not finish a book,
+    /// and an incoming `finished: false` must not un-finish one.
+    #[tokio::test]
+    async fn a_provider_upsert_never_touches_reading_state() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample()).await.unwrap();
+        s.update_progress(id, Some(100), Some(true)).await.unwrap();
+        let before = s.list_readings(id).await.unwrap();
+
+        // A metadata refresh arriving with the opposite of everything.
+        let refreshed = Book {
+            page_count: Some(490),
+            current_page: Some(1),
+            finished: false,
+            date_started: Some(1),
+            date_finished: Some(2),
+            ..sample()
+        };
+        assert_eq!(s.upsert_book(&refreshed).await.unwrap(), id);
+
         let b = s.get_book(id).await.unwrap().unwrap();
-        assert!(b.finished);
+        assert!(b.finished, "a provider upsert must not un-finish a book");
+        assert_eq!(b.current_page, Some(100));
+        assert_eq!(b.page_count, Some(490), "metadata still lands");
+        assert_eq!(s.list_readings(id).await.unwrap(), before);
+
+        // And the other direction: it must not *start* a reading either.
+        let fresh = s
+            .upsert_book(&Book {
+                title: Some("Never opened".into()),
+                current_page: Some(42),
+                finished: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(s.list_readings(fresh).await.unwrap().is_empty());
+        let b = s.get_book(fresh).await.unwrap().unwrap();
+        assert_eq!(b.current_page, None);
+        assert!(!b.finished);
     }
 
     // ---- merge ------------------------------------------------------------
 
-    use crate::storage::{LinkedBy, NewHighlight};
+    use crate::storage::{LinkedBy, NewHighlight, Reading};
 
     fn hl(text: &str, datetime: &str) -> NewHighlight {
         NewHighlight {
@@ -685,11 +756,11 @@ mod tests {
                 isbn_13: Some("9781455563937".into()),
                 description: Some("from the duplicate".into()),
                 page_count: Some(490),
-                finished: true,
                 ..Default::default()
             })
             .await
             .unwrap();
+        s.update_progress(src, None, Some(true)).await.unwrap();
         let dst = s
             .upsert_book(&Book {
                 title: Some("Pachinko (the keeper)".into()),
@@ -706,7 +777,62 @@ mod tests {
         assert_eq!(got.description.as_deref(), Some("the one to keep"));
         assert_eq!(got.isbn_13.as_deref(), Some("9781455563937"), "gap filled");
         assert_eq!(got.page_count, Some(490));
-        assert!(got.finished, "finished merges upward, never back to unread");
+        // Not a field merge any more: `src`'s reading came with it, and the
+        // projection reads off that.
+        assert!(got.finished, "src's reading survives the fold");
+    }
+
+    /// Both books were being read. That is two open readings on one book the
+    /// moment they fold together, which `idx_readings_one_open` forbids — so the
+    /// older is closed as `abandoned` rather than deleted, because it is a
+    /// reading that really happened.
+    #[tokio::test]
+    async fn merging_moves_readings_and_leaves_exactly_one_open() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Pachinko (dupe)").await;
+        let dst = book(&s, "Pachinko").await;
+
+        // `src` started first, and finished a reading before this one.
+        s.open_reading(src, Some(1_000), "manual").await.unwrap();
+        s.finish_reading(src).await.unwrap();
+        s.open_reading(src, Some(2_000), "manual").await.unwrap();
+        s.open_reading(dst, Some(3_000), "manual").await.unwrap();
+
+        let r = s.merge_books(src, dst).await.unwrap();
+        assert_eq!(r.readings_moved, 2);
+
+        let readings = s.list_readings(dst).await.unwrap();
+        assert_eq!(readings.len(), 3, "nothing is deleted");
+        let open: Vec<&Reading> = readings
+            .iter()
+            .filter(|r| r.finished_at.is_none())
+            .collect();
+        assert_eq!(open.len(), 1, "the index invariant survives the merge");
+        assert_eq!(open[0].started_at, Some(3_000), "the newer one stays open");
+
+        let closed = readings
+            .iter()
+            .find(|r| r.started_at == Some(2_000))
+            .expect("src's open reading moved");
+        assert_eq!(closed.status, crate::storage::STATUS_ABANDONED);
+        assert!(closed.finished_at.is_some());
+    }
+
+    /// Only one side was being read: nothing has to be closed, and the open
+    /// reading must survive as open. The close is conditional, and a
+    /// close-unconditionally version passes the test above.
+    #[tokio::test]
+    async fn merging_one_open_reading_leaves_it_open() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = book(&s, "Pachinko (dupe)").await;
+        let dst = book(&s, "Pachinko").await;
+        s.open_reading(src, Some(2_000), "manual").await.unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+        let readings = s.list_readings(dst).await.unwrap();
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].finished_at, None);
+        assert_eq!(readings[0].status, crate::storage::STATUS_READING);
     }
 
     /// `src` keeps its cover only when `dst` had none. Otherwise the file is

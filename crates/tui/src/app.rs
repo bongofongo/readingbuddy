@@ -1566,13 +1566,20 @@ mod tests {
                 title: Some("Station Eleven".into()),
                 authors: vec!["Emily St. John Mandel".into()],
                 page_count: Some(333),
-                current_page: Some(120),
                 isbn_13: Some("9781447268963".into()),
                 ..Book::default()
             })
             .await
             .expect("save");
         let id = book.id.expect("id");
+        // Progress is a reading, not a book column, since engine migration
+        // `0005` — setting `current_page` on the `Book` above would be silently
+        // ignored and every progress-bearing layout would render blank.
+        engine
+            .storage
+            .update_progress(id, Some(120), None)
+            .await
+            .expect("seed progress");
         // Seed one of each so the tab lists render with content.
         engine
             .storage

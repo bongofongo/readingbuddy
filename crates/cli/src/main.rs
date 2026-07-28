@@ -87,6 +87,9 @@ enum Cmd {
         /// Mark the book finished
         #[arg(long)]
         finished: bool,
+        /// Start reading it again: close the open reading and open a new one
+        #[arg(long)]
+        reread: bool,
     },
     /// Write a note (opens $EDITOR when TEXT is omitted)
     Note {
@@ -257,7 +260,8 @@ async fn main() -> Result<()> {
             book,
             page,
             finished,
-        } => commands::book::progress(&engine, &book, page, finished).await?,
+            reread,
+        } => commands::book::progress(&engine, &book, page, finished, reread).await?,
         Cmd::Note {
             text,
             book,

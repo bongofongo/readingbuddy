@@ -61,6 +61,11 @@ pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
         if !highlights.is_empty() {
             println!("  {:<14} {}", "highlights", highlights.len());
         }
+        // Rereads are first-class, so the history is a list rather than a count.
+        let readings = engine.storage.list_readings(id).await?;
+        for (i, r) in readings.iter().enumerate() {
+            println!("  {}", render::reading_line(r, i + 1, readings.len()));
+        }
     }
     Ok(())
 }
@@ -82,14 +87,33 @@ pub async fn progress(
     selector: &str,
     page: Option<i64>,
     finished: bool,
+    reread: bool,
 ) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("stored book has id");
+    if reread {
+        if finished {
+            bail!("--reread and --finished contradict each other");
+        }
+        engine.storage.reread(id).await?;
+    }
     let updated = engine
         .storage
         .update_progress(id, page, finished.then_some(true))
         .await?;
+
     println!("{}", render::book_line(&updated));
+    // Name the reading that was touched, not just the book: with rereads a book
+    // carries several, and "progress → p.30" against the wrong one is a silent
+    // mistake.
+    let readings = engine.storage.list_readings(id).await?;
+    let touched = engine.storage.active_reading(id).await?;
+    let touched = touched.as_ref().or(readings.last());
+    if let Some(r) = touched
+        && let Some(nth) = readings.iter().position(|x| x.id == r.id)
+    {
+        println!("  {}", render::reading_line(r, nth + 1, readings.len()));
+    }
     if finished {
         println!(
             "\n🎉 finished {}! congratulations.",
@@ -140,6 +164,7 @@ pub async fn merge(
         "  {} notes, {} flashcards moved ({} dropped), {} device links moved",
         r.notes_moved, r.flashcards_moved, r.flashcards_dropped, r.device_links_moved
     );
+    println!("  {} readings moved", r.readings_moved);
     Ok(())
 }
 

@@ -41,7 +41,7 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    BookSort, FlashcardRow, Highlight, MergeReport, NoteRecord, NoteSearchHit, Storage,
+    BookSort, FlashcardRow, Highlight, MergeReport, NoteRecord, NoteSearchHit, Reading, Storage,
 };
 
 use providers::googlebooks::GoogleBooksProvider;
