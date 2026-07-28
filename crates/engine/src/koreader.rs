@@ -35,13 +35,13 @@ const MAX_LIBRARY_DEPTH: usize = 32;
 /// `const`, not config, for the same reason `PROVIDER_TIMEOUT` is: a knob here
 /// would be a knob on what "the same book" means, and the only honest way to
 /// test either value is against a fixed one.
-const AUTO_MATCH: f64 = 0.85;
+pub(crate) const AUTO_MATCH: f64 = 0.85;
 
 /// Below this a title match is noise, not a candidate. The band between the two
 /// is what [`match_candidates`] returns: too weak to link silently, too strong
 /// to throw away, which is exactly the case where a variant title used to
 /// become a duplicate with nothing said.
-const CANDIDATE_MIN: f64 = 0.60;
+pub(crate) const CANDIDATE_MIN: f64 = 0.60;
 
 /// Parsed KOReader `.sdr` sidecar (`metadata.epub.lua` etc.).
 #[derive(Debug, Default)]
@@ -580,7 +580,21 @@ pub async fn match_book(
 /// showing up as a candidate is the whole point, and a book it accepted showing
 /// up as one as well would be an invitation to link what is already linked.
 async fn title_scores(storage: &Storage, sc: &KoSidecar) -> Result<Vec<(f64, Book)>> {
-    let Some(title) = &sc.title else {
+    title_scores_for(storage, sc.title.as_deref()).await
+}
+
+/// The same scan, given a bare title.
+///
+/// `pub(crate)` because a Goodreads row needs the *same* matcher a sidecar
+/// gets: `docs/decisions.md` names "do not invent a second matcher" under
+/// **Files**, and it applies wherever books are matched. Two fuzzy matchers
+/// would be two answers to "is this the book I already have", and the one that
+/// disagreed would be the one that made the duplicate.
+pub(crate) async fn title_scores_for(
+    storage: &Storage,
+    title: Option<&str>,
+) -> Result<Vec<(f64, Book)>> {
+    let Some(title) = title else {
         return Ok(Vec::new());
     };
     let want = normalize(title);
@@ -615,7 +629,17 @@ async fn title_scores(storage: &Storage, sc: &KoSidecar) -> Result<Vec<(f64, Boo
 /// nothing said and nothing to act on. Offering it as a candidate is what turns
 /// `unmatched` from a dead end into a decision.
 pub async fn match_candidates(storage: &Storage, sc: &KoSidecar) -> Result<Vec<MatchCandidate>> {
-    Ok(title_scores(storage, sc)
+    candidates_for_title(storage, sc.title.as_deref()).await
+}
+
+/// The candidate band for a bare title — the shared half of
+/// [`match_candidates`], for the Goodreads import. See [`title_scores_for`] on
+/// why this is shared rather than reimplemented.
+pub(crate) async fn candidates_for_title(
+    storage: &Storage,
+    title: Option<&str>,
+) -> Result<Vec<MatchCandidate>> {
+    Ok(title_scores_for(storage, title)
         .await?
         .into_iter()
         .filter(|(score, _)| *score >= CANDIDATE_MIN && *score < AUTO_MATCH)

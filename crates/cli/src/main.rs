@@ -153,6 +153,11 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Goodreads CSV, in and out (their API is dead; the file is the interface)
+    Goodreads {
+        #[command(subcommand)]
+        cmd: GoodreadsCmd,
+    },
     /// KOReader integration
     Ko {
         #[command(subcommand)]
@@ -228,6 +233,26 @@ enum RatingCmd {
     Show {
         #[arg(long)]
         scale: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GoodreadsCmd {
+    /// Import a Goodreads export (My Books > Import and export > Export)
+    Import {
+        path: PathBuf,
+        /// Report what would change without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Create a book even for a row that looks like one you already have
+        #[arg(long)]
+        new: bool,
+    },
+    /// Write a Goodreads-importable CSV of the library
+    Export {
+        /// Output file (default: goodreads.csv)
+        #[arg(long, short, default_value = "goodreads.csv")]
+        out: PathBuf,
     },
 }
 
@@ -384,6 +409,12 @@ async fn main() -> Result<()> {
         },
         Cmd::Highlights { book } => commands::book::highlights(&engine, &book).await?,
         Cmd::Merge { src, dst, yes } => commands::book::merge(&engine, &src, &dst, yes).await?,
+        Cmd::Goodreads { cmd } => match cmd {
+            GoodreadsCmd::Import { path, dry_run, new } => {
+                commands::goodreads::import(&engine, &path, dry_run, new).await?
+            }
+            GoodreadsCmd::Export { out } => commands::goodreads::export(&engine, &out).await?,
+        },
         Cmd::Ko { cmd } => match cmd {
             KoCmd::Import { path, dry_run } => {
                 commands::ko::import(&engine, &path, dry_run).await?

@@ -165,6 +165,93 @@ impl Storage {
         Ok(row.try_get("id")?)
     }
 
+    /// Record a reading that already happened, dates and status as given.
+    ///
+    /// The general form of [`Storage::open_reading`], and it exists because an
+    /// *import* knows things `open_reading` cannot express: a reading that is
+    /// already finished, and finished on a day that is not today. Goodreads'
+    /// `Read Count` is the first caller; Calibre will be the second.
+    ///
+    /// `finished_at = None` still means open, so the same
+    /// `idx_readings_one_open` violation surfaces here as
+    /// [`EngineError::InvalidInput`] — one translation, one message, whichever
+    /// door the second open reading came through.
+    pub async fn record_reading(
+        &self,
+        book_id: i64,
+        started_at: Option<i64>,
+        finished_at: Option<i64>,
+        status: &str,
+        source: &str,
+    ) -> Result<i64> {
+        let now = now_unix();
+        let row = sqlx::query(
+            "INSERT INTO readings (book_id, started_at, finished_at, status, source,
+                                   created_at, last_modified)
+             VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(book_id)
+        .bind(started_at)
+        .bind(finished_at)
+        .bind(status)
+        .bind(source)
+        .bind(now)
+        .bind(now)
+        .fetch_one(self.pool())
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => EngineError::InvalidInput(
+                format!("book {book_id} already has an open reading; finish it first"),
+            ),
+            _ => EngineError::from(e),
+        })?;
+        Ok(row.try_get("id")?)
+    }
+
+    /// Every reading of a book that came from one importer, oldest first.
+    ///
+    /// What makes a re-import idempotent: the question an importer has to ask
+    /// is "how many of these did *I* record", not "how many are there" — a
+    /// reading the user opened by hand is not one of ours to count against the
+    /// far side's `Read Count`.
+    pub async fn readings_from_source(&self, book_id: i64, source: &str) -> Result<Vec<Reading>> {
+        let sql = format!(
+            "SELECT {READING_COLUMNS} FROM readings WHERE book_id = ? AND source = ?
+             ORDER BY COALESCE(started_at, created_at) ASC, id ASC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(book_id)
+            .bind(source)
+            .fetch_all(self.pool())
+            .await?;
+        rows.iter().map(row_to_reading).collect()
+    }
+
+    /// Close one reading at a date the caller knows. Returns whether anything
+    /// changed.
+    ///
+    /// Beside [`Storage::finish_reading`], which closes *the open one* at
+    /// `now()` — right for a person pressing a key, wrong for an import
+    /// replaying a date from three years ago.
+    pub async fn close_reading_at(
+        &self,
+        reading_id: i64,
+        finished_at: i64,
+        status: &str,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE readings SET finished_at = ?2, status = ?3, last_modified = ?4
+             WHERE id = ?1 AND (finished_at IS NOT ?2 OR status IS NOT ?3)",
+        )
+        .bind(reading_id)
+        .bind(finished_at)
+        .bind(status)
+        .bind(now_unix())
+        .execute(self.pool())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     /// Close the open reading. Returns false when there was none.
     pub async fn finish_reading(&self, book_id: i64) -> Result<bool> {
         let now = now_unix();

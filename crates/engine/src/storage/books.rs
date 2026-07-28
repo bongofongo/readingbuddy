@@ -410,6 +410,27 @@ impl Storage {
                 .await?
                 .rows_affected() as usize;
 
+        // ---- provenance ----------------------------------------------------
+        // `external_ids` and `book_tags` both cascade on `books`, so a merge
+        // that left them alone would *delete* them with `src` — and losing
+        // `external_ids` is the expensive one: the next Goodreads import would
+        // no longer recognise the row and would recreate the duplicate this
+        // merge just folded in.
+        //
+        // `UPDATE OR IGNORE` for the tags, because their primary key is
+        // `(book_id, tag, source)` and both books being on the same shelf is
+        // ordinary; the losers are dropped by the cascade a moment later.
+        sqlx::query("UPDATE external_ids SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE OR IGNORE book_tags SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?;
+
         // `src` goes before `dst` is updated: isbn_10 and isbn_13 are UNIQUE, so
         // handing `dst` an ISBN `src` still holds would fail the constraint.
         sqlx::query("DELETE FROM books WHERE id = ?")
@@ -468,6 +489,22 @@ impl Storage {
 
         tx.commit().await?;
         Ok(report)
+    }
+
+    /// Backdate a book's `created_at`.
+    ///
+    /// Narrow on purpose: it is for an importer that has *just created* a book
+    /// and knows when the user really added it — Goodreads' `Date Added`. For a
+    /// book we already had, when it arrived here is ours to know and no CSV has
+    /// standing to rewrite it, which is why the caller checks and this function
+    /// does not.
+    pub async fn set_book_created_at(&self, book_id: i64, created_at: i64) -> Result<()> {
+        sqlx::query("UPDATE books SET created_at = ? WHERE id = ?")
+            .bind(created_at)
+            .bind(book_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
     }
 
     /// Delete a book; returns its cover_path (if any) so the caller can

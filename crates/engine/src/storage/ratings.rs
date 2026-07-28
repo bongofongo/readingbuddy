@@ -115,6 +115,18 @@ impl Storage {
     /// Redefining keeps the row's id — a review already rated on it keeps
     /// pointing at the scale it was given on, which is the whole reason the
     /// scale id is stored beside the value.
+    ///
+    /// Creating a scale also makes it the default, which is what "new ratings
+    /// use the scale you just made" means now that the choice is a stored flag
+    /// (migration `0009`) rather than an accident of `created_at` ordering.
+    /// **Redefining an existing scale leaves the flag alone** — the old
+    /// behaviour, for the old reason: changing `default`'s bounds must not yank
+    /// ratings away from a scale the user made afterwards.
+    ///
+    /// Insert and update are told apart before the write rather than by an
+    /// `ON CONFLICT` clause, because the two paths differ in what they do to a
+    /// *different* row: only the insert clears the previous default, and
+    /// `idx_one_default_scale` refuses to let both be set at once.
     pub async fn put_rating_scale(
         &self,
         name: &str,
@@ -127,32 +139,66 @@ impl Storage {
                 "a scale needs min < max and a positive step (got {min}..{max} step {step})"
             )));
         }
-        let row = sqlx::query(
-            "INSERT INTO rating_scales (name, min, max, step, created_at) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT (name) DO UPDATE SET min = excluded.min, max = excluded.max,
-                                              step = excluded.step
-             RETURNING id, name, min, max, step",
-        )
-        .bind(name)
-        .bind(min)
-        .bind(max)
-        .bind(step)
-        .bind(now_unix())
-        .fetch_one(self.pool())
-        .await?;
-        Ok(row_to_scale(&row))
+        let mut tx = self.pool().begin().await?;
+        let existing: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM rating_scales WHERE name = ?")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+        let row = match existing {
+            Some(id) => {
+                sqlx::query(
+                    "UPDATE rating_scales SET min = ?2, max = ?3, step = ?4 WHERE id = ?1
+                     RETURNING id, name, min, max, step",
+                )
+                .bind(id)
+                .bind(min)
+                .bind(max)
+                .bind(step)
+                .fetch_one(&mut *tx)
+                .await?
+            }
+            None => {
+                // Clear first: the partial unique index permits exactly one
+                // `is_default = 1`, so the order is not stylistic.
+                sqlx::query("UPDATE rating_scales SET is_default = 0 WHERE is_default = 1")
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO rating_scales (name, min, max, step, created_at, is_default)
+                     VALUES (?, ?, ?, ?, ?, 1)
+                     RETURNING id, name, min, max, step",
+                )
+                .bind(name)
+                .bind(min)
+                .bind(max)
+                .bind(step)
+                .bind(now_unix())
+                .fetch_one(&mut *tx)
+                .await?
+            }
+        };
+        let scale = row_to_scale(&row);
+        tx.commit().await?;
+        Ok(scale)
     }
 
-    /// The scale a new rating is given on: the most recently *created* one.
+    /// The scale a new rating is given on: the one flagged `is_default`.
     ///
-    /// Deliberately "created", not "modified": redefining `default`'s bounds
-    /// must not yank ratings away from a scale the user made afterwards. A
-    /// migration seeds `default`, so this is never `None` in practice — but a
-    /// caller that deleted every scale gets an honest `None` rather than a
-    /// panic.
+    /// **The flag, never the ordering.** It used to be "the most recently
+    /// created scale", and migration `0009` seeds a `goodreads` scale — which
+    /// under the old rule would have quietly become the scale `rating show` and
+    /// `set_rating` default to, an import feature changing the meaning of two
+    /// commands it has nothing to do with.
+    ///
+    /// There is deliberately **no ordering fallback**: reintroducing one is
+    /// reintroducing exactly that failure. A library with no default at all
+    /// gets an honest `None`, which every caller already reports as "no rating
+    /// scale — `readingbuddy rating scale …`".
     pub async fn active_rating_scale(&self) -> Result<Option<RatingScale>> {
         let row = sqlx::query(
-            "SELECT id, name, min, max, step FROM rating_scales ORDER BY created_at DESC, id DESC LIMIT 1",
+            "SELECT id, name, min, max, step FROM rating_scales WHERE is_default = 1 LIMIT 1",
         )
         .fetch_optional(self.pool())
         .await?;
@@ -299,6 +345,65 @@ mod tests {
 
         s.map_rating(&scale, 4.5, 5).await.unwrap();
         assert_eq!(s.goodreads_for(&scale, 4.5).await.unwrap(), Some(5));
+    }
+
+    /// The trap in item 10, asserted rather than trusted.
+    ///
+    /// Migration `0009` seeds a `goodreads` scale, and it is the newest row in
+    /// the table. Under the old `ORDER BY created_at DESC` rule that made it the
+    /// scale every unqualified rating landed on — a Goodreads import silently
+    /// redefining what `rating show` and `set_rating` mean. The flag is what
+    /// stops it, and this is the test that would notice it coming back.
+    #[tokio::test]
+    async fn seeding_the_goodreads_scale_does_not_move_the_default() {
+        let s = storage().await;
+        let active = s.active_rating_scale().await.unwrap().expect("seeded");
+        assert_eq!(active.name, "default");
+        assert_eq!((active.min, active.max, active.step), (0.0, 5.0, 0.5));
+
+        let goodreads = s
+            .rating_scale_by_name("goodreads")
+            .await
+            .unwrap()
+            .expect("0009 seeds it");
+        assert!(goodreads.id > active.id, "and it really is the newer row");
+        assert_eq!(
+            (goodreads.min, goodreads.max, goodreads.step),
+            (0.0, 5.0, 1.0)
+        );
+
+        // Its map is the identity, so an imported `My Rating` needs no
+        // translation to be exported again.
+        for n in 0..=5u8 {
+            assert_eq!(
+                s.goodreads_for(&goodreads, n as f64).await.unwrap(),
+                Some(n)
+            );
+        }
+    }
+
+    /// The flag has to *move* when the user makes a scale, or `rating scale`
+    /// would stop meaning what it always meant — and it must not move when they
+    /// merely re-bound an existing one.
+    #[tokio::test]
+    async fn a_new_scale_takes_the_default_and_a_redefinition_does_not() {
+        let s = storage().await;
+        let mine = s.put_rating_scale("mine", 0.0, 10.0, 1.0).await.unwrap();
+        assert_eq!(s.active_rating_scale().await.unwrap().unwrap().id, mine.id);
+
+        s.put_rating_scale("default", 0.0, 5.0, 0.25).await.unwrap();
+        assert_eq!(
+            s.active_rating_scale().await.unwrap().unwrap().id,
+            mine.id,
+            "redefining an older scale's bounds must not steal the default back"
+        );
+
+        // Exactly one default, always — the index says so, and so does this.
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM rating_scales WHERE is_default = 1")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     #[tokio::test]

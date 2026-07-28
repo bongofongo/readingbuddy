@@ -59,6 +59,10 @@ sha2 = "0.10"
 # MIT OR Apache-2.0, already inside deny.toml's allow list.
 md-5 = "0.10"
 regex = "1"
+# Goodreads' interface is a CSV file, both directions (their API died in
+# December 2020). Quoting, embedded newlines and CRLF are exactly the parts a
+# hand-rolled splitter gets wrong on the first real export. Unlicense OR MIT.
+csv = "1"
 # The engine emits only — it must never install a subscriber, or it would be
 # deciding I/O policy for its frontends. tracing-subscriber lives in cli/tui.
 tracing = "0.1"

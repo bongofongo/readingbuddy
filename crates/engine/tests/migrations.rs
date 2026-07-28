@@ -15,6 +15,7 @@ static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
 
 const READINGS: i64 = 5;
 const REFLECTION: i64 = 7;
+const GOODREADS: i64 = 9;
 
 /// A connection migrated up to (but not including) `version`.
 async fn migrated_below(version: i64) -> SqliteConnection {
@@ -319,6 +320,73 @@ async fn a_reading_holds_one_reflection_and_one_review() {
             .await
             .expect("notes are unconstrained");
     }
+}
+
+/// The trap in item 10, caught at the level it is actually set: the migration.
+///
+/// `active_rating_scale()` used to be "the newest scale", so seeding a
+/// `goodreads` one would have made it the scale every unqualified rating landed
+/// on. `is_default` back-fills to **whichever scale the old ordering would have
+/// picked** — not to `default` by name — so a library where the user made their
+/// own scale keeps using theirs, and the seeded `goodreads` row takes nothing.
+#[tokio::test]
+async fn the_default_scale_survives_seeding_goodreads() {
+    let mut conn = migrated_below(GOODREADS).await;
+    // A scale the user made after the seeded `default`, which is exactly what
+    // the old ordering rule meant by "active".
+    sqlx::query(
+        "INSERT INTO rating_scales (name, min, max, step, created_at)
+         VALUES ('mine', 0.0, 10.0, 1.0, strftime('%s','now') + 10)",
+    )
+    .execute(&mut conn)
+    .await
+    .expect("insert scale");
+
+    apply(&mut conn, GOODREADS).await;
+
+    let default: String = sqlx::query_scalar("SELECT name FROM rating_scales WHERE is_default = 1")
+        .fetch_one(&mut conn)
+        .await
+        .expect("exactly one default");
+    assert_eq!(default, "mine");
+
+    let goodreads: i64 =
+        sqlx::query_scalar("SELECT is_default FROM rating_scales WHERE name = 'goodreads'")
+            .fetch_one(&mut conn)
+            .await
+            .expect("0009 seeds it");
+    assert_eq!(goodreads, 0, "the newest scale is not the default any more");
+
+    // And the seeded map is the identity, so an imported `My Rating` needs no
+    // translation to be exported again.
+    let mapped: Vec<(f64, i64)> = sqlx::query_as(
+        "SELECT value, goodreads FROM rating_map
+          WHERE scale_id = (SELECT id FROM rating_scales WHERE name = 'goodreads')
+          ORDER BY value",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .expect("map");
+    assert_eq!(mapped.len(), 6);
+    assert!(mapped.iter().all(|(v, g)| *v as i64 == *g));
+}
+
+/// "Exactly one default" is an index, not a convention — the same shape as
+/// `idx_readings_one_open` and for the same reason: two of them is a state no
+/// code should have to defend against.
+#[tokio::test]
+async fn a_second_default_scale_is_refused() {
+    let mut conn = migrated_below(GOODREADS).await;
+    apply(&mut conn, GOODREADS).await;
+
+    let err = sqlx::query("UPDATE rating_scales SET is_default = 1 WHERE name = 'goodreads'")
+        .execute(&mut conn)
+        .await
+        .expect_err("two defaults must be refused");
+    assert!(
+        matches!(&err, sqlx::Error::Database(db) if db.is_unique_violation()),
+        "expected a unique violation, got {err}"
+    );
 }
 
 mod props {

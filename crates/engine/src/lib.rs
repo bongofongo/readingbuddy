@@ -11,6 +11,7 @@ pub mod diagnostic;
 pub mod epub;
 pub mod error;
 pub mod flashcards;
+pub mod goodreads;
 pub mod images;
 pub mod koreader;
 pub mod notes;
@@ -31,6 +32,10 @@ pub use device::{
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
+pub use goodreads::{
+    GoodreadsBookReport, GoodreadsMatch, GoodreadsReport, ImportOptions as GoodreadsImportOptions,
+    TextOutcome, UnmatchedRow,
+};
 pub use koreader::{
     BookImportStats, ImportReport, KoStats, KoStatus, KoSummary, MatchCandidate, MatchMethod,
     PullReport,
@@ -41,8 +46,8 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    BookSort, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord, NoteSearchHit,
-    Rating, RatingScale, Reading, Storage,
+    BookSort, BookTag, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord,
+    NoteSearchHit, Rating, RatingScale, Reading, Storage,
 };
 
 use providers::googlebooks::GoogleBooksProvider;
@@ -577,6 +582,31 @@ impl Engine {
 
     pub async fn citations_for(&self, note_id: i64) -> Result<Vec<Highlight>> {
         self.storage.citations_for(note_id).await
+    }
+
+    // ---- goodreads ---------------------------------------------------------
+
+    /// Import a Goodreads CSV export. `dry_run` reports what would change and
+    /// writes nothing.
+    ///
+    /// Needs items 3, 5 and 7 to be lossless, and all three are in: the
+    /// sidecar-era matcher (so a row finds the book it already is), `readings`
+    /// (so `Read Count` is history rather than a flag), and reviews with
+    /// ratings (so `My Review` and `My Rating` have somewhere true to land).
+    #[tracing::instrument(skip(self), fields(path = %path.display(), dry_run = opts.dry_run))]
+    pub async fn import_goodreads(
+        &self,
+        path: &Path,
+        opts: goodreads::ImportOptions,
+    ) -> Result<GoodreadsReport> {
+        goodreads::import(self, path, opts).await
+    }
+
+    /// Build a Goodreads-importable CSV of the library, plus every honest
+    /// failure along the way. Same shape as [`Engine::export_flashcards`]:
+    /// the payload comes back, the caller owns the file.
+    pub async fn export_goodreads(&self) -> Result<(String, Vec<Diagnostic>)> {
+        goodreads::export(self).await
     }
 
     // ---- flashcards --------------------------------------------------------
