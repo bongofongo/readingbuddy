@@ -260,10 +260,30 @@ Provider enrichment on device pull. Non-numeric rating scales.
 7. Reflection + Review. Both are **notes with a new `kind`** plus side tables for
    the rating, the Goodreads lookup and the citations — because the reflection
    is the graph hub and `note_links` is already the graph. `notes.kind = 'final'`
-   is superseded by `'reflection'`.
-8. Currently-reading home screen; action = open the reflection.
-9. Backlinks pane.
-10. Goodreads CSV in/out.
+   is superseded by `'reflection'`. **Done** (engine + CLI); migration `0007`.
+   Its **TUI half was deferred and never numbered** — see item 8.
+
+   *Items 8–10 are specified in `docs/spec-08-10.md`, one prompt per thread in
+   `docs/prompts/08a`, `08b`, `09a`, `09b`, `10`.*
+8. Currently-reading home screen; action = open the reflection. **Split in two:**
+   8a is the engine query (`list_open_readings`, plus a `NoteRecord`-returning
+   way to open a reflection — `open_reflection` returns a `CreatedNote`, and
+   every editor path in both frontends needs the record), 8b is the screen.
+   - **Erratum: 8b absorbs item 7's deferred TUI half.** The action this item
+     names does not exist — the TUI has no reflection or review surface at all —
+     so item 8 is not implementable without building it, and splitting them means
+     two passes over the same four exhaustive matches in `app.rs`.
+9. Backlinks pane. **Split:** 9a is the engine query plus migration `0008`
+   (`note_links` has no index on `to_note` or `target_title`, so both a backlink
+   query and `write_links`' back-resolution are full scans today); 9b is the
+   pane, which attaches to the **note list** rather than adding a `BookTab`.
+10. Goodreads CSV in/out. Migration `0009`.
+    - **Trap worth recording before it is hit:** `active_rating_scale()` is
+      `ORDER BY created_at DESC LIMIT 1`, so seeding a `goodreads` scale would
+      silently hijack what `rating show` and `set_rating` default to. The item
+      therefore also adds `rating_scales.is_default`.
+    - `Bookshelves` → `book_tags` (inert provenance); Goodreads' `Book Id` →
+      a general `external_ids` table, because Calibre (item 13) needs the same one.
 11. Wired device watcher.
 12. `book_files` + owned files + three-level dedup.
 13. Calibre (i) then (ii).
