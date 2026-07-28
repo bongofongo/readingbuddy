@@ -31,23 +31,31 @@ New `crates/engine/src/partial_md5.rs`:
 pub fn partial_md5(path: &Path) -> Result<String>;
 ```
 
+> **Corrected after this prompt was executed (PR #2).** It said the first offset
+> is 256. It is **0** — see `docs/koreader-format.md` §5, which reproduces three
+> device-written checksums from offset 0 and none from 256. The bullets below are
+> rewritten; the correction is left visible because this is the prompt a thread
+> was actually handed.
+
 `docs/koreader-format.md` §5 quotes `frontend/util.lua:1111-1128`: MD5 over up
-to twelve 1024-byte samples at offsets `1024 << (2*i)` for `i = -1..10` — **256 B,
+to twelve 1024-byte samples at offsets `1024 << (2*i)` for `i = -1..10` — **0,
 1 Ki, 4 Ki, 16 Ki, 64 Ki, 256 Ki, 1 Mi, 4 Mi, 16 Mi, 64 Mi, 256 Mi, 1 Gi**.
 Output is 32-char lowercase hex.
 
 Three details that will be implemented wrong if you do not hold them in mind:
 
-1. **The first offset is 256, not 0.** `lshift(step, 2*i)` with `i = -1` is a
-   right shift in Lua's bit library. The first 256 bytes of a file are never
-   hashed.
+1. **The first offset is 0, not 256.** `lshift` in `util.lua` is LuaJIT's BitOp:
+   32-bit, shift count taken **modulo 32**. `lshift(1024, -2)` is therefore
+   `lshift(1024, 30)` = `2^40` truncated to 32 bits = `0`. It is not an
+   arithmetic shift and a negative count is not a right shift.
 2. **Break on a zero-length read, not a short one.** Lua's `file:read(size)`
    returns the partial string at EOF and that string *is* hashed; the loop ends
    on the *next* iteration when the read returns `nil`. In Rust: read up to 1024
    bytes (looping over short reads), and `break` only when 0 bytes came back.
    A seek past EOF is legal and yields 0 bytes.
-3. **A file under 256 bytes therefore hashes to the MD5 of nothing** —
-   `d41d8cd98f00b204e9800998ecf8427e`. Assert it rather than discover it.
+3. **Only a genuinely empty file hashes to the MD5 of nothing** —
+   `d41d8cd98f00b204e9800998ecf8427e`. Under the 256 misreading every file below
+   256 bytes would have, which is the tell that the misreading is wrong.
 
 Write down in the module doc-comment that this is a **sampling hash, not a
 content hash**: two files identical at those twelve windows collide. That is

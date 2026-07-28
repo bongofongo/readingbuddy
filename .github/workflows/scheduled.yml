@@ -12,6 +12,44 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # The tier-2 corpus, and this job is overdue.
+  #
+  # `corpus/generated` is gitignored, so on a runner every test in
+  # tests/corpus.rs takes its `SKIPPED:` path and passes without asserting
+  # anything. That is not a theoretical hole: it is exactly how the corpus
+  # convergence bug survived — introduced by build item 2, invisible to CI, and
+  # found weeks later only because someone ran `make corpus` by hand.
+  #
+  # It belongs here and not on the PR gate for the usual reason: it downloads
+  # thirty epubs from Project Gutenberg, and Gutenberg being slow or down is not
+  # something a PR author can fix. It also *cannot* run anywhere else — a cloud
+  # agent sandbox cannot reach gutenberg.org at all (the proxy refuses the
+  # CONNECT), so a hosted runner is the only machine that can build this tier.
+  corpus:
+    name: tier-2 corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      # Keyed on the manifest, which carries the ids AND the sha256s — so a
+      # re-issued text changes the key and gets re-fetched rather than being
+      # served stale from the cache and then failing checksum verification.
+      - uses: actions/cache@v4
+        with:
+          path: corpus/epub
+          key: corpus-epub-${{ hashFiles('corpus/manifest.json') }}
+
+      # REQUIRE_FIXTURES is the switch that turns every `SKIPPED:` into a
+      # failure. It is scoped to this job deliberately: set globally it would
+      # fail on `tests/fixtures/koreader/real/`, which is gitignored and is
+      # never present on a runner by design, and on partial_md5.rs's
+      # opportunistic personal_data/ checks.
+      - run: make corpus
+        env:
+          READINGBUDDY_REQUIRE_FIXTURES: "1"
+
   advisories:
     name: security advisories
     runs-on: ubuntu-latest

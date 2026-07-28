@@ -230,22 +230,31 @@ No migration. One new module, one dependency, one hook.
 pub fn partial_md5(path: &Path) -> Result<String>;
 ```
 
+> **Corrected after implementation (PR #2).** This section originally said the
+> first offset is 256. It is **0**, and two of the three bullets below said so
+> wrongly; they are rewritten. The evidence is in `docs/koreader-format.md` §5 —
+> three checksums KOReader itself wrote, all of which reproduce from offset 0 and
+> none of which reproduces from 256. Left visible rather than silently edited,
+> because this is the spec a thread was handed.
+
 From `docs/koreader-format.md` §5, quoting `frontend/util.lua:1111-1128`: MD5
 over up to twelve 1024-byte samples at offsets `1024 << (2*i)` for `i = -1..10`
-— **256 B, 1 Ki, 4 Ki, 16 Ki, 64 Ki, 256 Ki, 1 Mi, 4 Mi, 16 Mi, 64 Mi, 256 Mi,
+— **0, 1 Ki, 4 Ki, 16 Ki, 64 Ki, 256 Ki, 1 Mi, 4 Mi, 16 Mi, 64 Mi, 256 Mi,
 1 Gi**. Output is 32-char lowercase hex.
 
 Three details that get implemented wrong if they are not written down:
 
-- **The first offset is 256, not 0.** `lshift(step, 2*i)` with `i = -1` is a
-  right shift in Lua's bit library. The first 256 bytes of a file are never
-  hashed.
+- **The first offset is 0, not 256.** `lshift` here is LuaJIT's BitOp: 32-bit,
+  and it takes its shift count **modulo 32**. So `lshift(1024, -2)` is
+  `lshift(1024, 30)`, which is `2^40` truncated to 32 bits — that is `0`, not a
+  right shift. Reading `2*i = -2` as `1024 >> 2` gives 256 and is wrong.
 - **Break on a zero-length read, not on a short one.** Lua's `file:read(size)`
   returns the partial string at EOF and that string *is* hashed; the loop ends
   on the next iteration, when the read returns `nil`. In Rust: read up to 1024
   bytes, and `break` only when 0 were read.
-- **A file under 256 bytes therefore hashes to the MD5 of nothing** —
-  `d41d8cd98f00b204e9800998ecf8427e`. Assert it rather than discover it.
+- **Only a genuinely empty file hashes to the MD5 of nothing** —
+  `d41d8cd98f00b204e9800998ecf8427e`. Under the 256 misreading every file below
+  256 bytes would have.
 
 It is a sampling hash, not a content hash: two files identical at those twelve
 windows collide. That is fine for its three jobs (dedup, sidecar↔book matching,

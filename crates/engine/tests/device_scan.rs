@@ -13,29 +13,8 @@ use std::path::{Path, PathBuf};
 use readingbuddy::device::{self, DeviceBook, DeviceState};
 use readingbuddy::{Book, MatchMethod, Storage};
 
-const SYNTHETIC: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/koreader/synthetic"
-);
-
-/// Copy a fixture `.sdr` directory into the fake device and return the path of
-/// the sidecar inside it.
-fn place(device_root: &Path, fixture: &str, as_name: &str) -> PathBuf {
-    let src = Path::new(SYNTHETIC).join(fixture);
-    let dst = device_root.join(as_name);
-    std::fs::create_dir_all(&dst).unwrap();
-    let mut sidecar = None;
-    for entry in std::fs::read_dir(&src).unwrap() {
-        let entry = entry.unwrap();
-        let name = entry.file_name();
-        std::fs::copy(entry.path(), dst.join(&name)).unwrap();
-        let name = name.to_string_lossy().into_owned();
-        if name.starts_with("metadata.") && name.ends_with(".lua") {
-            sidecar = Some(dst.join(name));
-        }
-    }
-    sidecar.unwrap_or_else(|| panic!("{fixture} has no sidecar"))
-}
+mod common;
+use common::{SYNTHETIC, place};
 
 async fn seed(s: &Storage, title: &str) -> i64 {
     s.upsert_book(&Book {

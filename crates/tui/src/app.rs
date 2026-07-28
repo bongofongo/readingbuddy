@@ -2183,33 +2183,114 @@ mod tests {
     /// every measurement we had was of the *pixel* path, because the glyph
     /// path's bytes are produced by ratatui's diff, which the app never sees.
     /// Counting at the backend's writer is what makes it measurable, and this is
-    /// the baseline the hybrid's motion frames have to match.
-    async fn glyph_spin_bytes(w: u16, h: u16, ticks: u32) -> u64 {
+    /// A `CrosstermBackend` whose size comes from the test, not from the OS.
+    ///
+    /// The byte-budget tests below have to use a *real* `CrosstermBackend` —
+    /// counting what ratatui actually puts on the wire is the entire point, and
+    /// `TestBackend` writes no bytes at all. But `CrosstermBackend::size()` is
+    /// an ioctl on the process's terminal, and `redraw` calls `terminal.size()`
+    /// on every frame (`app.rs`, the resize hook that invalidates a transmitted
+    /// image). A fixed `Viewport` does not help: it changes what ratatui asks
+    /// for, not what `redraw` asks for.
+    ///
+    /// So on a machine with no terminal at all — a CI runner, a container — the
+    /// ioctl fails with `NotFound` and the test dies on its first draw. It
+    /// passed for a year only because it had never been run anywhere without a
+    /// tty, which is precisely what widening the CI gate to the workspace
+    /// exposed on the first run.
+    ///
+    /// Everything except `size` and `window_size` delegates, so the bytes being
+    /// counted are still the real terminal's.
+    struct FixedSize<B> {
+        inner: B,
+        size: ratatui::layout::Size,
+    }
+
+    impl<B: Backend> Backend for FixedSize<B> {
+        fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+        where
+            I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+        {
+            self.inner.draw(content)
+        }
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            self.inner.hide_cursor()
+        }
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            self.inner.show_cursor()
+        }
+        fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+            self.inner.get_cursor_position()
+        }
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+            self.inner.set_cursor_position(position)
+        }
+        fn clear(&mut self) -> std::io::Result<()> {
+            self.inner.clear()
+        }
+        fn size(&self) -> std::io::Result<ratatui::layout::Size> {
+            Ok(self.size)
+        }
+        fn window_size(&mut self) -> std::io::Result<ratatui::backend::WindowSize> {
+            Ok(ratatui::backend::WindowSize {
+                columns_rows: self.size,
+                // Zero means "unknown" to every caller in this crate; a pixel
+                // geometry invented here would be a lie the rich path could act
+                // on.
+                pixels: ratatui::layout::Size {
+                    width: 0,
+                    height: 0,
+                },
+            })
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    /// The terminal the byte-budget tests measure through: a real
+    /// `CrosstermBackend` writing into a counted `Vec`, with its size pinned.
+    type CountedTestTerminal = ratatui::Terminal<
+        FixedSize<ratatui::backend::CrosstermBackend<crate::perf::CountingWriter<Vec<u8>>>>,
+    >;
+
+    /// A counted terminal of exactly `w x h`, independent of the machine.
+    fn counted_terminal(w: u16, h: u16) -> (crate::perf::Meter, CountedTestTerminal) {
         use crate::perf::{ByteClass, CountingWriter, Meter};
         use ratatui::backend::CrosstermBackend;
         use ratatui::{TerminalOptions, Viewport};
 
-        let mut app = test_app().await;
-        let book = app.library.first().cloned().expect("seeded book");
-        app.open_book(book).await.expect("open");
-        app.render_mode = RenderMode::Glyph;
-        app.spinning = true;
-
         let meter = Meter::new();
-        let backend = CrosstermBackend::new(CountingWriter::new(
-            Vec::new(),
-            meter.clone(),
-            ByteClass::Text,
-        ));
-        // A fixed viewport, so the terminal never asks the OS for a window size
-        // it does not have in a test process.
-        let mut terminal = ratatui::Terminal::with_options(
+        let backend = FixedSize {
+            inner: CrosstermBackend::new(CountingWriter::new(
+                Vec::new(),
+                meter.clone(),
+                ByteClass::Text,
+            )),
+            size: ratatui::layout::Size {
+                width: w,
+                height: h,
+            },
+        };
+        let terminal = ratatui::Terminal::with_options(
             backend,
             TerminalOptions {
                 viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, w, h)),
             },
         )
         .expect("terminal");
+        (meter, terminal)
+    }
+
+    /// the baseline the hybrid's motion frames have to match.
+    async fn glyph_spin_bytes(w: u16, h: u16, ticks: u32) -> u64 {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        app.render_mode = RenderMode::Glyph;
+        app.spinning = true;
+
+        let (meter, mut terminal) = counted_terminal(w, h);
 
         redraw(&mut terminal, &mut app).expect("first draw");
         let start = meter.snapshot();
@@ -2233,27 +2314,11 @@ mod tests {
     /// `Motif::Off` is a meaningful argument here: it never redraws at all, so
     /// it reads 0 and makes the layer's cost a subtraction.
     async fn ambient_bytes(motif: crate::ambient::Motif, w: u16, h: u16, ticks: u32) -> u64 {
-        use crate::perf::{ByteClass, CountingWriter, Meter};
-        use ratatui::backend::CrosstermBackend;
-        use ratatui::{TerminalOptions, Viewport};
-
         let mut app = test_app().await;
         app.screen = Screen::Menu;
         app.ambient = crate::ambient::Ambient::new(motif);
 
-        let meter = Meter::new();
-        let backend = CrosstermBackend::new(CountingWriter::new(
-            Vec::new(),
-            meter.clone(),
-            ByteClass::Text,
-        ));
-        let mut terminal = ratatui::Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, w, h)),
-            },
-        )
-        .expect("terminal");
+        let (meter, mut terminal) = counted_terminal(w, h);
 
         redraw(&mut terminal, &mut app).expect("first draw");
         let start = meter.snapshot();
@@ -2387,28 +2452,13 @@ mod tests {
         let ticks = 60;
         let glyph = glyph_spin_bytes(50, 26, ticks).await;
 
-        use crate::perf::{ByteClass, CountingWriter, Meter};
-        use ratatui::backend::CrosstermBackend;
-        use ratatui::{TerminalOptions, Viewport};
         let mut app = test_app().await;
         let book = app.library.first().cloned().expect("seeded book");
         app.open_book(book).await.expect("open");
         app.render_mode = RenderMode::Rich;
         app.spinning = true;
 
-        let meter = Meter::new();
-        let backend = CrosstermBackend::new(CountingWriter::new(
-            Vec::new(),
-            meter.clone(),
-            ByteClass::Text,
-        ));
-        let mut terminal = ratatui::Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 50, 26)),
-            },
-        )
-        .expect("terminal");
+        let (meter, mut terminal) = counted_terminal(50, 26);
         redraw(&mut terminal, &mut app).expect("first draw");
         let start = meter.snapshot();
         for _ in 0..ticks {

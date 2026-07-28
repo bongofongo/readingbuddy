@@ -22,3 +22,11 @@ time.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+# The subprocess tests need a sandbox to point --data-dir, XDG_CONFIG_HOME and
+# HOME at. Already a dev-dependency of the engine, so no new crate enters the
+# tree and cargo-deny has nothing new to rule on. Nothing else is needed: the
+# binary is reached through `env!("CARGO_BIN_EXE_readingbuddy")` and driven with
+# `std::process::Command`, so there is no assert_cmd/trycmd here.
+tempfile = "3"
