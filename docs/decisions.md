@@ -347,6 +347,36 @@ detail, 14–16 as constraints to re-plan against.*
       `book_tags` is for shelves.
     - Tier (iii), device push, remains out of scope.
 14. API crate + `readingbuddyd`.
+    - **Done.** `crates/api` (`readingbuddy-api`) holds the surface; `crates/daemon`
+      is the transport and holds no logic — it never names a method. Zero new
+      third-party dependencies: a unix socket with newline-delimited JSON needs
+      a runtime and nothing else, where HTTP would have added a server, a router
+      and a middleware stack for a protocol with one endpoint.
+    - **The domain types stay serde-free.** DTOs with `From<domain>` instead,
+      because deriving `Serialize` on `Book` would pick a wire encoding for
+      `OffsetDateTime` by accident and make every field name a public promise.
+    - `Engine::storage` and `Engine::config` are **private**, with real facade
+      methods for every frontend call site that used to reach through them —
+      ratings-scale admin, readings and highlight listing had no facade method at
+      all. `Engine::storage()` survives behind an `internals` feature for the
+      engine's own `tests/`, and CI grew a plain `cargo check --workspace` to
+      catch production code using it (clippy's `--all-targets` resolves
+      dev-dependencies, so the feature is on there).
+    - `set_google_api_key` had to take `&self`: a transport hands one engine to
+      several connections through an `Arc`, and `&mut self` on a facade is a
+      method no shared owner can call. That moved the live key off `EngineConfig`
+      and behind `Engine::google_api_key()`, so nothing reads the seeded copy.
+    - **Handles do not cross.** `update_note_body(&NoteRecord)`,
+      `delete_note(&NoteRecord)` and `file_path(&BookFile)` become id-taking
+      calls that re-read the row — a client echoing a stale `NoteRecord` back
+      would otherwise write to a path that had moved.
+    - **The mount watcher is deliberately not in the vocabulary**: it is a
+      stream, request/response has no shape for one, and wrapping it as a poll
+      would give the far side a different debounce from the one `watch.rs`
+      guarantees. A subscription is its own design.
+    - Known limit, stated rather than hidden: a path crosses as a `String` via
+      `to_string_lossy`, so a filename that is not valid UTF-8 does not round
+      trip. JSON is UTF-8 and the alternative is base64 on every path.
 15. KOReader plugin + wireless push.
 16. Everything under *Out of scope for now*, plus collections, the Tauri GUI and
     the Mac/iOS companions.
