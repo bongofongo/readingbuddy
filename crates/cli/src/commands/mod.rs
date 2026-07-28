@@ -3,6 +3,8 @@ pub mod cards;
 pub mod config;
 pub mod ko;
 pub mod note;
+pub mod rating;
+pub mod reflect;
 pub mod search;
 
 use anyhow::{Result, bail};

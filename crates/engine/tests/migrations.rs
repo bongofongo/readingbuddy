@@ -14,25 +14,34 @@ use sqlx::{Connection, Row};
 static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
 
 const READINGS: i64 = 5;
+const REFLECTION: i64 = 7;
 
-/// A connection migrated up to (but not including) `0005`.
-async fn before_readings() -> SqliteConnection {
+/// A connection migrated up to (but not including) `version`.
+async fn migrated_below(version: i64) -> SqliteConnection {
     let mut conn = SqliteConnection::connect("sqlite::memory:")
         .await
         .expect("open in-memory db");
     conn.ensure_migrations_table()
         .await
         .expect("migrations table");
-    for m in MIGRATIONS.iter().filter(|m| m.version < READINGS) {
+    for m in MIGRATIONS.iter().filter(|m| m.version < version) {
         conn.apply(m).await.expect("apply migration");
     }
     conn
 }
 
-async fn apply_readings(conn: &mut SqliteConnection) {
-    for m in MIGRATIONS.iter().filter(|m| m.version == READINGS) {
-        conn.apply(m).await.expect("apply 0005");
+async fn apply(conn: &mut SqliteConnection, version: i64) {
+    for m in MIGRATIONS.iter().filter(|m| m.version == version) {
+        conn.apply(m).await.expect("apply migration");
     }
+}
+
+async fn before_readings() -> SqliteConnection {
+    migrated_below(READINGS).await
+}
+
+async fn apply_readings(conn: &mut SqliteConnection) {
+    apply(conn, READINGS).await;
 }
 
 /// Insert a pre-`0005` book straight through the old columns.
@@ -143,6 +152,133 @@ async fn the_one_open_reading_index_exists_after_the_backfill() {
         matches!(&err, sqlx::Error::Database(db) if db.is_unique_violation()),
         "expected a unique violation, got {err}"
     );
+}
+
+/// `0007` rewrites the superseded `final` kind. A vault file is the note's
+/// body, so the rewrite must move the *row* and leave the path alone — a note
+/// whose `file_path` shifted would be a note whose text vanished.
+#[tokio::test]
+async fn old_final_notes_become_reflections_and_keep_their_files() {
+    let mut conn = migrated_below(REFLECTION).await;
+    for (path, title, kind) in [
+        ("unsorted/a.md", "Last thoughts", "final"),
+        ("unsorted/b.md", "A stray idea", "note"),
+        ("unsorted/c.md", "Mid-book", "session"),
+    ] {
+        sqlx::query(
+            "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+             VALUES (?, ?, ?, 0, 0)",
+        )
+        .bind(path)
+        .bind(title)
+        .bind(kind)
+        .execute(&mut conn)
+        .await
+        .expect("insert pre-0007 note");
+    }
+
+    apply(&mut conn, REFLECTION).await;
+
+    let rows = sqlx::query("SELECT file_path, kind, reading_id FROM notes ORDER BY file_path")
+        .fetch_all(&mut conn)
+        .await
+        .expect("select notes");
+    assert_eq!(rows[0].get::<String, _>("kind"), "reflection");
+    assert_eq!(rows[0].get::<String, _>("file_path"), "unsorted/a.md");
+    assert_eq!(rows[0].get::<Option<i64>, _>("reading_id"), None);
+    assert_eq!(rows[1].get::<String, _>("kind"), "note");
+    assert_eq!(rows[2].get::<String, _>("kind"), "session");
+}
+
+/// Several old `final` notes migrate at once, and they all land with
+/// `reading_id IS NULL` — under a plain unique index that would be a violation
+/// and the whole migration would fail on a real library. SQLite treats NULLs as
+/// distinct, which is exactly what makes the partial index usable here.
+#[tokio::test]
+async fn the_rewrite_survives_a_library_full_of_final_notes() {
+    let mut conn = migrated_below(REFLECTION).await;
+    for i in 0..5 {
+        sqlx::query(
+            "INSERT INTO notes (file_path, title, kind, created_at, last_modified)
+             VALUES (?, ?, 'final', 0, 0)",
+        )
+        .bind(format!("unsorted/{i}.md"))
+        .bind(format!("Note {i}"))
+        .execute(&mut conn)
+        .await
+        .expect("insert");
+    }
+    apply(&mut conn, REFLECTION).await;
+
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM notes WHERE kind = 'reflection'")
+        .fetch_one(&mut conn)
+        .await
+        .expect("count");
+    assert_eq!(n, 5);
+}
+
+/// The two partial indexes are the invariant "one reflection and one review per
+/// reading". Asserted here against raw SQL rather than through the engine,
+/// because it is the *index* that has to hold — the engine's accretion path
+/// looks the existing note up and never gets this far.
+#[tokio::test]
+async fn a_reading_holds_one_reflection_and_one_review() {
+    let mut conn = migrated_below(REFLECTION).await;
+    apply(&mut conn, REFLECTION).await;
+
+    let book: i64 = sqlx::query_scalar(
+        "INSERT INTO books (title, created_at, last_modified) VALUES ('t', 0, 0) RETURNING id",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .expect("book");
+    let reading: i64 = sqlx::query_scalar(
+        "INSERT INTO readings (book_id, status, source, created_at, last_modified)
+         VALUES (?, 'reading', 'manual', 0, 0) RETURNING id",
+    )
+    .bind(book)
+    .fetch_one(&mut conn)
+    .await
+    .expect("reading");
+
+    let add = |path: &'static str, kind: &'static str| {
+        sqlx::query(
+            "INSERT INTO notes (reading_id, file_path, title, kind, created_at, last_modified)
+             VALUES (?, ?, ?, ?, 0, 0)",
+        )
+        .bind(reading)
+        .bind(path)
+        .bind(path)
+        .bind(kind)
+    };
+
+    add("a.md", "reflection")
+        .execute(&mut conn)
+        .await
+        .expect("first reflection");
+    add("b.md", "review")
+        .execute(&mut conn)
+        .await
+        .expect("a review is a different kind, so it fits beside it");
+
+    for (path, kind) in [("c.md", "reflection"), ("d.md", "review")] {
+        let err = add(path, kind)
+            .execute(&mut conn)
+            .await
+            .expect_err("a second one of the same kind must be refused");
+        assert!(
+            matches!(&err, sqlx::Error::Database(db) if db.is_unique_violation()),
+            "expected a unique violation for a second {kind}, got {err}"
+        );
+    }
+
+    // Ordinary notes are not constrained: a reading collects as many as it likes.
+    for path in ["e.md", "f.md"] {
+        add(path, "note")
+            .execute(&mut conn)
+            .await
+            .expect("notes are unconstrained");
+    }
 }
 
 mod props {

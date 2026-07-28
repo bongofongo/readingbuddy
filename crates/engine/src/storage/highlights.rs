@@ -171,6 +171,29 @@ pub struct Highlight {
     pub created_at: i64,
 }
 
+/// Every column a [`Highlight`] is built from, and the mapper that builds it.
+///
+/// Shared rather than inlined per query: `citations_for` in [`super::notes`]
+/// returns highlights too, and a second hand-written projection is how the two
+/// drift into disagreeing about what a highlight is.
+pub(super) const HIGHLIGHT_COLUMNS: &str =
+    "id, book_id, text, chapter, page, ko_note, annotation, ko_datetime, source, created_at";
+
+pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
+    Highlight {
+        id: r.get("id"),
+        book_id: r.get("book_id"),
+        text: r.get("text"),
+        chapter: r.get("chapter"),
+        page: r.get("page"),
+        ko_note: r.get("ko_note"),
+        annotation: r.get("annotation"),
+        ko_datetime: r.get("ko_datetime"),
+        source: r.get("source"),
+        created_at: r.get("created_at"),
+    }
+}
+
 /// The device-owned payload columns, and the null-safe test for "the sidecar
 /// disagrees with what we stored".
 ///
@@ -351,30 +374,15 @@ impl Storage {
     }
 
     pub async fn list_highlights(&self, book_id: i64) -> Result<Vec<Highlight>> {
-        let rows = sqlx::query(
-            r#"SELECT id, book_id, text, chapter, page, ko_note, annotation, ko_datetime,
-                      source, created_at
-               FROM highlights WHERE book_id = ?
-               ORDER BY page ASC, ko_datetime ASC"#,
-        )
-        .bind(book_id)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| Highlight {
-                id: r.get("id"),
-                book_id: r.get("book_id"),
-                text: r.get("text"),
-                chapter: r.get("chapter"),
-                page: r.get("page"),
-                ko_note: r.get("ko_note"),
-                annotation: r.get("annotation"),
-                ko_datetime: r.get("ko_datetime"),
-                source: r.get("source"),
-                created_at: r.get("created_at"),
-            })
-            .collect())
+        let sql = format!(
+            "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE book_id = ?
+             ORDER BY page ASC, ko_datetime ASC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(book_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(row_to_highlight).collect())
     }
 }
 

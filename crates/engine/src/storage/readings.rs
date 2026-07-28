@@ -107,6 +107,16 @@ impl Storage {
         row.as_ref().map(row_to_reading).transpose()
     }
 
+    /// One reading by id.
+    pub async fn get_reading(&self, id: i64) -> Result<Option<Reading>> {
+        let sql = format!("SELECT {READING_COLUMNS} FROM readings WHERE id = ?");
+        let row = sqlx::query(&sql)
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(row_to_reading).transpose()
+    }
+
     /// Every reading of a book, oldest first.
     pub async fn list_readings(&self, book_id: i64) -> Result<Vec<Reading>> {
         let sql = format!(

@@ -3,6 +3,7 @@ mod device_books;
 mod flashcards;
 mod highlights;
 mod notes;
+mod ratings;
 mod readings;
 mod sidecar_seen;
 
@@ -12,6 +13,7 @@ pub use flashcards::FlashcardRow;
 pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
 pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit};
+pub use ratings::{Rating, RatingScale};
 pub use readings::{
     Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
 };

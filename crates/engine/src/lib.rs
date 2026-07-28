@@ -41,7 +41,8 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    BookSort, FlashcardRow, Highlight, MergeReport, NoteRecord, NoteSearchHit, Reading, Storage,
+    BookSort, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord, NoteSearchHit,
+    Rating, RatingScale, Reading, Storage,
 };
 
 use providers::googlebooks::GoogleBooksProvider;
@@ -344,8 +345,12 @@ impl Engine {
         Ok(body.trim_end().to_string())
     }
 
-    /// Replace a note's body, preserving its frontmatter header, and reindex
-    /// it in FTS. Used by the in-house editor.
+    /// Replace a note's body, preserving its frontmatter header, and reindex it
+    /// — FTS **and** its wikilink edges. Used by the in-house editor.
+    ///
+    /// Re-indexing the edges is what makes a reflection the hub it is meant to
+    /// be: it is opened empty and written afterwards, so edges computed only at
+    /// creation would leave it with none.
     pub async fn update_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
         let file = self.config.vault_dir.join(&note.file_path);
         let content = std::fs::read_to_string(&file)?;
@@ -353,6 +358,10 @@ impl Engine {
         std::fs::write(&file, format!("{header}{}\n", body.trim_end()))?;
         self.storage
             .refresh_note_body(note.id, &note.title, body)
+            .await?;
+        let links = notes::extract_wikilinks(body);
+        self.storage
+            .set_note_links(note.id, &note.title, &links)
             .await
     }
 
@@ -376,7 +385,198 @@ impl Engine {
         let (_, body) = notes::parse_frontmatter(&content);
         self.storage
             .refresh_note_body(note.id, &note.title, body)
+            .await?;
+        // An outside edit is exactly where a new [[wikilink]] appears, so the
+        // graph has to follow the file here too.
+        let links = notes::extract_wikilinks(body);
+        self.storage
+            .set_note_links(note.id, &note.title, &links)
             .await
+    }
+
+    // ---- reflection + review -----------------------------------------------
+
+    /// Open this reading's reflection, creating it on the first call and
+    /// returning the same note ever after. Private, and the hub of the graph.
+    ///
+    /// `reading_id: None` means the book's current reading — and opens one when
+    /// the book has none, because a reflection is written *mid-book* and that is
+    /// the normal case, not an edge one.
+    pub async fn open_reflection(
+        &self,
+        book_id: i64,
+        reading_id: Option<i64>,
+    ) -> Result<CreatedNote> {
+        self.open_anchored(book_id, reading_id, NoteKind::Reflection)
+            .await
+    }
+
+    /// Open this reading's review: public prose, and the only note kind that
+    /// carries a rating.
+    ///
+    /// **Never derived from the reflection.** A review is a rewrite for a
+    /// different audience, not a subset of private thinking — no `public:`
+    /// frontmatter key, no divider, no shared body.
+    pub async fn open_review(&self, book_id: i64, reading_id: Option<i64>) -> Result<CreatedNote> {
+        self.open_anchored(book_id, reading_id, NoteKind::Review)
+            .await
+    }
+
+    /// The one implementation behind both. They differ in the `kind` they
+    /// carry and in nothing else — which is the point of reusing `notes`
+    /// instead of building a parallel vault.
+    async fn open_anchored(
+        &self,
+        book_id: i64,
+        reading_id: Option<i64>,
+        kind: NoteKind,
+    ) -> Result<CreatedNote> {
+        let book = self
+            .storage
+            .get_book(book_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
+
+        let reading_id = match reading_id {
+            Some(id) => {
+                let reading = self
+                    .storage
+                    .get_reading(id)
+                    .await?
+                    .ok_or_else(|| EngineError::NotFound(format!("reading id {id}")))?;
+                if reading.book_id != book_id {
+                    return Err(EngineError::InvalidInput(format!(
+                        "reading {id} belongs to book {}, not {book_id}",
+                        reading.book_id
+                    )));
+                }
+                id
+            }
+            // `ensure_reading`, not `open_reading`: the current reading is the
+            // one being reflected on, open or not, and a second reading only
+            // ever starts because the user said so (`progress --reread`).
+            None => {
+                let now = time::OffsetDateTime::now_utc().unix_timestamp();
+                self.storage
+                    .ensure_reading(book_id, Some(now), "manual")
+                    .await?
+            }
+        };
+
+        // Accretion is exactly this: the second call finds the first call's
+        // note. The partial unique indexes are what make "the" reflection of a
+        // reading a fact rather than a hope.
+        if let Some(existing) = self
+            .storage
+            .note_for_reading(reading_id, kind.as_str())
+            .await?
+        {
+            let links = self
+                .storage
+                .note_links(existing.id)
+                .await?
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect();
+            return Ok(CreatedNote {
+                id: existing.id,
+                title: existing.title,
+                file: self.config.vault_dir.join(&existing.file_path),
+                links,
+            });
+        }
+
+        let readings = self.storage.list_readings(book_id).await?;
+        let nth = readings
+            .iter()
+            .position(|r| r.id == reading_id)
+            .map(|i| i + 1);
+        let label = match kind {
+            NoteKind::Review => "Review",
+            _ => "Reflection",
+        };
+        // The title is a wikilink target, so a reread's pair must not collide
+        // with the first reading's.
+        let title = match nth {
+            Some(n) if n > 1 => format!("{label}: {} ({n})", book.display_title()),
+            _ => format!("{label}: {}", book.display_title()),
+        };
+
+        notes::create_note(
+            &self.storage,
+            &self.config.vault_dir,
+            Some(&book),
+            NewNoteInput {
+                book_id: Some(book_id),
+                reading_id: Some(reading_id),
+                kind,
+                title: Some(title),
+                body: String::new(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Rate a review on the active scale.
+    ///
+    /// The **raw value and the scale id** are stored, never only what it maps
+    /// to: the Goodreads map is user-editable, so the mapping has to stay
+    /// re-derivable from what the user actually said.
+    pub async fn set_rating(&self, note_id: i64, value: f64) -> Result<()> {
+        let note = self
+            .storage
+            .get_note(note_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("note id {note_id}")))?;
+        // A reflection that wants a private score can have one later; it is not
+        // the same number and must not share this column.
+        if note.kind != NoteKind::Review.as_str() {
+            return Err(EngineError::InvalidInput(format!(
+                "note {note_id} is a {}; a rating belongs to a review",
+                note.kind
+            )));
+        }
+        let scale = self.storage.active_rating_scale().await?.ok_or_else(|| {
+            EngineError::InvalidInput(
+                "no rating scale defined — `readingbuddy rating scale --min --max --step`".into(),
+            )
+        })?;
+        self.storage.set_review_rating(note_id, &scale, value).await
+    }
+
+    /// This review's rating on Goodreads' integer 0–5, `None` when it has no
+    /// rating at all.
+    ///
+    /// A rating the user has never mapped is [`EngineError::UnmappedRating`],
+    /// not a rounded integer: Goodreads takes no halves, and quietly picking one
+    /// would put a number the user never chose on a public shelf.
+    pub async fn goodreads_rating(&self, note_id: i64) -> Result<Option<u8>> {
+        let Some(rating) = self.storage.review_rating(note_id).await? else {
+            return Ok(None);
+        };
+        match self
+            .storage
+            .goodreads_for(&rating.scale, rating.value)
+            .await?
+        {
+            Some(g) => Ok(Some(g)),
+            None => Err(EngineError::UnmappedRating {
+                value: rating.value,
+                scale: rating.scale.name,
+            }),
+        }
+    }
+
+    /// Cite a highlight from a note — by reference, so the citation stays live
+    /// when a device refresh rewrites the highlight's device-owned fields.
+    pub async fn cite(&self, note_id: i64, highlight_id: i64) -> Result<()> {
+        self.storage.add_citation(note_id, highlight_id).await?;
+        Ok(())
+    }
+
+    pub async fn citations_for(&self, note_id: i64) -> Result<Vec<Highlight>> {
+        self.storage.citations_for(note_id).await
     }
 
     // ---- flashcards --------------------------------------------------------
