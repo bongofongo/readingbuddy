@@ -5,7 +5,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
 
 use super::{BookLayout, book_layout, book_rects};
@@ -223,6 +223,9 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
         .find(|(t, _)| *t == app.book_tab)
         .map(|(_, l)| *l)
         .unwrap_or("");
+    // The pane takes the Notes section's place rather than sitting beside it, so
+    // it renames the header too: `‹` still backs out one level, into the list.
+    let label = if app.links.is_some() { "Links" } else { label };
     let [head, content] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -237,6 +240,9 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
             let view = app.view.as_ref().expect("checked");
             draw_info(f, view, content);
         }
+        BookTab::Notes if app.links.is_some() => {
+            draw_links(f, app.links.as_mut().expect("checked"), content);
+        }
         BookTab::Notes => {
             let items: Vec<ListItem> = app
                 .view
@@ -246,7 +252,13 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .map(|n| ListItem::new(note_line(n)))
                 .collect();
-            draw_list(f, app, content, items, "no notes yet — n to write one");
+            draw_list(
+                f,
+                &mut app.tab_state,
+                content,
+                items,
+                "no notes yet — n to write one",
+            );
         }
         BookTab::Highlights => {
             let items: Vec<ListItem> = app
@@ -259,7 +271,7 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
                 .collect();
             draw_list(
                 f,
-                app,
+                &mut app.tab_state,
                 content,
                 items,
                 "no highlights — import from KOReader",
@@ -274,20 +286,91 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .map(|c| ListItem::new(card_line(c)))
                 .collect();
-            draw_list(f, app, content, items, "no flashcards for this book");
+            draw_list(
+                f,
+                &mut app.tab_state,
+                content,
+                items,
+                "no flashcards for this book",
+            );
         }
     }
 }
 
-fn draw_list(f: &mut Frame, app: &mut App, area: Rect, items: Vec<ListItem>, empty: &str) {
+fn draw_list(f: &mut Frame, state: &mut ListState, area: Rect, items: Vec<ListItem>, empty: &str) {
     if items.is_empty() {
-        f.render_widget(Paragraph::new(empty).style(theme::dim()), area);
+        f.render_widget(
+            Paragraph::new(empty)
+                .style(theme::dim())
+                .wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     }
     let list = List::new(items)
         .highlight_style(theme::selected())
         .highlight_symbol("› ");
-    f.render_stateful_widget(list, area, &mut app.tab_state);
+    f.render_stateful_widget(list, area, state);
+}
+
+/// The links pane: the note it is centred on, a count of each direction, then
+/// one row per edge — outbound first, inbound after.
+///
+/// The direction is carried by an **arrow in the text**, not by colour, and a
+/// dangling target says so in words. Both survive the `REVERSED` selection, and
+/// both are what a dump of the buffer can be asserted on; a styled-only
+/// distinction is invisible to the eye that most needs it and to the test.
+fn draw_links(f: &mut Frame, pane: &mut crate::app::LinksPane, area: Rect) {
+    let [head, counts, list] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            pane.note.title.replace('\t', "    "),
+            theme::title(),
+        ))),
+        head,
+    );
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{} out · {} in", pane.out_count(), pane.in_count()),
+            theme::dim(),
+        ))),
+        counts,
+    );
+
+    let items: Vec<ListItem> = pane
+        .rows
+        .iter()
+        .map(|r| ListItem::new(link_line(r)))
+        .collect();
+    draw_list(
+        f,
+        &mut pane.state,
+        list,
+        items,
+        "nothing links here yet — a [[wikilink]] in a note body makes an edge",
+    );
+}
+
+/// One edge as a row. Homogeneous colour, like `note_line`, so a `REVERSED`
+/// selection inverts the whole row uniformly.
+fn link_line(row: &crate::app::LinkRow) -> Line<'static> {
+    use crate::app::LinkRow;
+    let (arrow, title, tail) = match row {
+        LinkRow::Out { title, to: None } => ("→ ", title.clone(), "  (no note yet)"),
+        LinkRow::Out { title, .. } => ("→ ", title.clone(), ""),
+        LinkRow::In(n) => ("← ", n.title.clone(), ""),
+    };
+    Line::from(vec![
+        Span::styled(arrow, theme::primary()),
+        Span::styled(title.replace('\t', "    "), theme::primary()),
+        Span::styled(tail, theme::primary()),
+    ])
 }
 
 /// The kind gutter, one cell wide plus a space.
@@ -426,6 +509,7 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("n", "note"),
         ("e", "reflect"),
         ("w", "review"),
+        ("L", "links"),
         ("d", "delete"),
         ("p", "page"),
         ("f", "finish"),
@@ -485,6 +569,7 @@ mod tests {
                     "n",
                     "e",
                     "w",
+                    "L",
                     "d",
                     "p",
                     "f",
@@ -571,6 +656,47 @@ mod tests {
                 .windows(2)
                 .all(|w| w[0].style == w[1].style)
         );
+    }
+
+    /// The three row shapes, as text. Asserted on the *text* rather than the
+    /// style on purpose: that is what a monochrome terminal shows, what survives
+    /// the `REVERSED` selection, and what a buffer dump can be read for.
+    #[test]
+    fn a_link_row_carries_its_direction_and_says_when_it_dangles() {
+        use crate::app::LinkRow;
+        let flat = |l: Line<'static>| {
+            l.spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        let target = NoteRecord {
+            id: 7,
+            book_id: Some(1),
+            reading_id: None,
+            highlight_id: None,
+            page: None,
+            location: None,
+            file_path: "x.md".into(),
+            title: "Symphony".into(),
+            kind: "note".into(),
+            created_at: None,
+        };
+        assert_eq!(
+            flat(link_line(&LinkRow::Out {
+                title: "Symphony".into(),
+                to: Some(target.clone()),
+            })),
+            "→ Symphony"
+        );
+        assert_eq!(
+            flat(link_line(&LinkRow::Out {
+                title: "Nowhere".into(),
+                to: None,
+            })),
+            "→ Nowhere  (no note yet)"
+        );
+        assert_eq!(flat(link_line(&LinkRow::In(target))), "← Symphony");
     }
 
     #[test]

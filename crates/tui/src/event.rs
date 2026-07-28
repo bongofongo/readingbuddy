@@ -37,6 +37,8 @@ pub enum Action {
     /// Open this reading's review: public prose, and the one note kind that
     /// carries a rating.
     Review,
+    /// Show what links to (and out of) the selected note.
+    Links,
     /// Update the reading page.
     EditProgress,
     /// Toggle the finished flag.
@@ -104,6 +106,16 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
             KeyCode::Char('c') => Some(Action::Quit),
             _ => None,
         };
+    }
+    // Shift-L, before the unshifted map: lowercase `l` is the vim right and has
+    // a real meaning on every list here, so the links pane takes its capital
+    // rather than a letter that stands for nothing. Terminals disagree about
+    // whether a shifted letter arrives already upper-cased, so both spellings
+    // are matched — the one that is not sent costs a comparison.
+    if matches!(key.code, KeyCode::Char('L'))
+        || (matches!(key.code, KeyCode::Char('l')) && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        return Some(Action::Links);
     }
     match key.code {
         KeyCode::Char('q') => Some(Action::Quit),
@@ -245,6 +257,19 @@ mod tests {
                 "reflect was rebound on {screen:?}"
             );
         }
+    }
+
+    /// `L` is the links pane, and taking the capital must not have disturbed
+    /// the lowercase `l` every list uses to step right.
+    #[test]
+    fn shift_l_opens_the_links_pane_and_plain_l_still_moves_right() {
+        assert_eq!(map_key(press(KeyCode::Char('L'))), Some(Action::Links));
+        assert_eq!(
+            map_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::SHIFT)),
+            Some(Action::Links),
+            "a terminal that sends shift+l unshifted still means links"
+        );
+        assert_eq!(map_key(press(KeyCode::Char('l'))), Some(Action::Right));
     }
 
     #[test]
