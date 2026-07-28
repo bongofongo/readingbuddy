@@ -35,3 +35,6 @@ anki.tsv
 
 # The user's own calibre library / personal reading data. Never commit.
 /personal_data
+
+# Parallel-thread git worktrees: full checkouts plus their own target/ dirs.
+/.claude/worktrees

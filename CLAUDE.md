@@ -130,6 +130,19 @@ the rules, and the reasons — the reasons are the part that matters.
   Tier 1 (`gen-synthetic`) is committed and covers *shape*; tier 2
   (`gen-corpus`, gitignored, `make corpus`) covers *scale and realism*. Shape
   coverage must never sit behind a download.
+  Tier 2 emits **one subtree per sidecar layout** — `corpus/generated/modern/`
+  and `.../legacy/` — and that split is load-bearing, not tidiness
+  (`GENERATOR_VERSION = 2`). Both encode the *same* highlight set of the same
+  books, so side by side they share `doc_props.title` (both match one library
+  book) and share `datetime`/`pos0`/`text` (their annotations share an
+  `identity_hash`) while carrying *different* payloads — page `3i` against
+  `7i`, notes only in the legacy one. Import then refreshes every row toward
+  whichever sidecar it read last, for ever: every pass reports `updated`, never
+  `skipped`, and idempotency can never be observed. No device produces that (a
+  mid-migration file carries both layouts in **one** file, where `annotations`
+  wins), so the corpus must not either. `the_whole_corpus_imports_idempotently`
+  imports one tree per pass and asserts `updated == 0` as well as the skip
+  count.
 - **Corpus determinism**: `ChaCha8Rng` only — not `StdRng`, whose algorithm may
   change between `rand` versions. Fixed date epoch, never `now()`. Epubs pinned
   by sha256; output pinned by `corpus.lock.json`.

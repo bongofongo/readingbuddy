@@ -23,6 +23,11 @@ fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/generated")
 }
 
+/// The generator emits one subtree per sidecar layout. Each is a plausible
+/// device library on its own; together they are not (see
+/// `the_whole_corpus_imports_idempotently`).
+const LAYOUTS: [&str; 2] = ["modern", "legacy"];
+
 /// `None` means "not generated"; every test then skips.
 fn sidecars() -> Option<Vec<PathBuf>> {
     let dir = corpus_dir();
@@ -132,110 +137,141 @@ fn every_generated_sidecar_parses() {
     assert!(total_highlights > 0, "the corpus produced no highlights");
 }
 
-/// The idempotency guarantee, over the whole corpus at once rather than one
+/// The idempotency guarantee, over a whole layout tree at once rather than one
 /// fixture at a time — which also exercises importing a many-book library in a
 /// single call.
+///
+/// **One layout per pass, because a device carries one.** The two trees hold
+/// the same annotations of the same books in two encodings with different
+/// payloads (page `3i` against `7i`, notes only in the legacy one). Imported
+/// together they match the same library book and collide on `identity_hash`, so
+/// every pass refreshes every row toward whichever sidecar it read last and
+/// nothing is ever `skipped`. That is import behaving correctly on input no
+/// device can produce; the corpus is laid out so it cannot arise.
 #[tokio::test]
 async fn the_whole_corpus_imports_idempotently() {
-    let found = corpus_or_skip!();
+    let _ = corpus_or_skip!();
 
-    let storage = Storage::connect("sqlite::memory:").await.expect("db");
-    // Seed one book per sidecar so every one of them matches.
-    for path in &found {
-        let src = std::fs::read_to_string(path).unwrap();
-        let Ok(sc) = parse_sidecar(&src) else {
-            continue;
-        };
-        let Some(title) = sc.title.clone() else {
-            continue;
-        };
-        storage
-            .upsert_book(&Book {
-                title: Some(title),
-                authors: sc.authors.clone().into_iter().collect(),
-                ..Default::default()
-            })
-            .await
-            .expect("seed");
-    }
-
-    let dir = corpus_dir();
-    let first = koreader::import(&storage, &dir, false)
-        .await
-        .expect("first corpus import");
-    assert!(
-        !first.imported.is_empty(),
-        "nothing matched; warnings: {:?}",
-        first.warnings
-    );
-
-    let inserted: usize = first.imported.iter().map(|s| s.inserted).sum();
-    let seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
-    assert!(inserted > 0, "corpus import inserted nothing");
-
-    // Snapshot every book's rows before re-importing.
-    let mut before = Vec::new();
-    for s in &first.imported {
-        before.push((s.book_id, storage.list_highlights(s.book_id).await.unwrap()));
-    }
-
-    let second = koreader::import(&storage, &dir, false)
-        .await
-        .expect("second corpus import");
-    for s in &second.imported {
-        assert_eq!(
-            s.inserted, 0,
-            "re-import inserted rows for {}",
-            s.book_title
-        );
-    }
-    let second_skipped: usize = second.imported.iter().map(|s| s.skipped).sum();
-    assert_eq!(
-        seen, second_skipped,
-        "re-import did not skip every entry it saw"
-    );
-
-    for (book_id, rows) in before {
-        let now = storage.list_highlights(book_id).await.unwrap();
-        assert_eq!(
-            rows.len(),
-            now.len(),
-            "row count changed for book {book_id}"
-        );
-        for (a, b) in rows.iter().zip(now.iter()) {
-            assert_eq!(a.text, b.text, "highlight text mutated");
-            assert_eq!(a.page, b.page, "page mutated");
-            assert_eq!(a.ko_datetime, b.ko_datetime, "datetime mutated");
+    for layout in LAYOUTS {
+        let dir = corpus_dir().join(layout);
+        // Loud, not `continue`: a corpus generated before the layout split has
+        // no subtrees at all, and silently covering nothing is exactly the
+        // failure mode the skip rule exists to prevent.
+        let found = koreader::find_sidecars(&dir).unwrap_or_default();
+        if found.is_empty() {
+            skipped(&format!(
+                "corpus/generated/{layout} holds no sidecars (regenerate: `make corpus`)"
+            ));
+            return;
         }
-    }
 
-    eprintln!(
-        "corpus: {inserted} highlights across {} books",
-        first.imported.len()
-    );
+        let storage = Storage::connect("sqlite::memory:").await.expect("db");
+        // Seed one book per sidecar so every one of them matches.
+        for path in &found {
+            let src = std::fs::read_to_string(path).unwrap();
+            let Ok(sc) = parse_sidecar(&src) else {
+                continue;
+            };
+            let Some(title) = sc.title.clone() else {
+                continue;
+            };
+            storage
+                .upsert_book(&Book {
+                    title: Some(title),
+                    authors: sc.authors.clone().into_iter().collect(),
+                    ..Default::default()
+                })
+                .await
+                .expect("seed");
+        }
+
+        let first = koreader::import(&storage, &dir, false)
+            .await
+            .expect("first corpus import");
+        assert!(
+            !first.imported.is_empty(),
+            "{layout}: nothing matched; warnings: {:?}",
+            first.warnings
+        );
+
+        let inserted: usize = first.imported.iter().map(|s| s.inserted).sum();
+        let seen: usize = first.imported.iter().map(|s| s.inserted + s.skipped).sum();
+        assert!(inserted > 0, "{layout}: corpus import inserted nothing");
+
+        // Snapshot every book's rows before re-importing.
+        let mut before = Vec::new();
+        for s in &first.imported {
+            before.push((s.book_id, storage.list_highlights(s.book_id).await.unwrap()));
+        }
+
+        let second = koreader::import(&storage, &dir, false)
+            .await
+            .expect("second corpus import");
+        for s in &second.imported {
+            assert_eq!(
+                s.inserted, 0,
+                "{layout}: re-import inserted rows for {}",
+                s.book_title
+            );
+            // The counter item 2 added, asserted here at scale: identical bytes
+            // must not look like a device edit. Without this the sum below can
+            // be satisfied by rows drifting into `updated` instead.
+            assert_eq!(
+                s.updated, 0,
+                "{layout}: re-import refreshed device fields for {} — the sidecar did not change",
+                s.book_title
+            );
+        }
+        let second_skipped: usize = second.imported.iter().map(|s| s.skipped).sum();
+        assert_eq!(
+            seen, second_skipped,
+            "{layout}: re-import did not skip every entry it saw"
+        );
+
+        for (book_id, rows) in before {
+            let now = storage.list_highlights(book_id).await.unwrap();
+            assert_eq!(
+                rows.len(),
+                now.len(),
+                "{layout}: row count changed for book {book_id}"
+            );
+            for (a, b) in rows.iter().zip(now.iter()) {
+                assert_eq!(a.text, b.text, "{layout}: highlight text mutated");
+                assert_eq!(a.page, b.page, "{layout}: page mutated");
+                assert_eq!(a.ko_datetime, b.ko_datetime, "{layout}: datetime mutated");
+            }
+        }
+
+        eprintln!(
+            "corpus/{layout}: {inserted} highlights across {} books",
+            first.imported.len()
+        );
+    }
 }
 
 /// Both layouts are generated for every book, so the corpus is also a
 /// differential test: the same source text, expressed two ways, must yield the
-/// same highlight *text*.
+/// same highlight *text*. They live in sibling trees (see the idempotency test
+/// for why), so a pair is the same `<slug>.sdr` under each.
 #[test]
 fn the_modern_and_legacy_encodings_agree_on_the_text() {
-    let found = corpus_or_skip!();
+    let _ = corpus_or_skip!();
     let mut compared = 0;
 
-    for modern in found.iter().filter(|p| {
-        p.parent()
-            .and_then(|d| d.file_name())
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with("-modern.sdr"))
-    }) {
+    let Ok(modern_side) = koreader::find_sidecars(&corpus_dir().join("modern")) else {
+        skipped("the modern corpus tree is missing");
+        return;
+    };
+
+    for modern in &modern_side {
         let dir = modern.parent().unwrap();
         let name = dir.file_name().unwrap().to_str().unwrap();
-        let legacy_dir = dir
-            .parent()
-            .unwrap()
-            .join(name.replace("-modern.sdr", "-legacy.sdr"));
-        let legacy = legacy_dir.join("metadata.epub.lua");
+        let legacy = corpus_dir().join("legacy").join(name).join(
+            modern
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("metadata.epub.lua"),
+        );
         if !legacy.is_file() {
             continue;
         }

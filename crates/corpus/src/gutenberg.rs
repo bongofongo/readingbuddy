@@ -14,7 +14,12 @@ use sha2::{Digest, Sha256};
 
 /// Bump deliberately when the *shape* of the output changes. That is the signal
 /// to regenerate goldens; a seed change is not.
-pub const GENERATOR_VERSION: u32 = 1;
+///
+/// 2: the two layouts moved into `modern/` and `legacy/` subtrees. Emitted side
+/// by side they were two sidecars claiming the *same* annotations of the same
+/// book with different payloads, which no device can produce and which import
+/// cannot converge on — see the comment at the write site.
+pub const GENERATOR_VERSION: u32 = 2;
 
 /// Fixed epoch for synthetic reading timestamps. Never `now()` — a clock in the
 /// generator would churn every golden on every run.
@@ -90,17 +95,28 @@ pub fn generate(
         // the two layouts different passages, and the whole point of emitting
         // both is that they are the same content in two encodings — which makes
         // the corpus a differential test of the modern and legacy parsers.
+        //
+        // **The two layouts go in separate trees, and that is not tidiness.**
+        // They share `doc_props.title`, so side by side in one tree both match
+        // the same library book; and they share `datetime`/`pos0`/`text`, so
+        // their annotations share an `identity_hash`. But their payloads differ
+        // — page is `3i` here and `7i` there, and only the legacy one carries
+        // notes. Import would then refresh every row toward whichever sidecar
+        // it read last, every time, for ever: each pass reports `updated`
+        // rather than `skipped` and idempotency can never be observed. No
+        // device produces that (a mid-migration file carries both layouts in
+        // ONE file, where `annotations` wins), so the corpus must not either.
         let hs = highlights(&paras, opts.per_book, &mut rng);
-        for (kind, body) in [
+        for (layout, body) in [
             ("modern", modern_sidecar(&hs, title, author)),
             ("legacy", legacy_sidecar(&hs, title, author)),
         ] {
-            let dir = out.join(format!("{slug}-{kind}.sdr"));
+            let dir = out.join(layout).join(format!("{slug}.sdr"));
             std::fs::create_dir_all(&dir)?;
             let file = dir.join("metadata.epub.lua");
             std::fs::write(&file, &body)?;
             lock.insert(
-                format!("{slug}-{kind}.sdr/metadata.epub.lua"),
+                format!("{layout}/{slug}.sdr/metadata.epub.lua"),
                 hex(&Sha256::digest(body.as_bytes())),
             );
             written += 1;
