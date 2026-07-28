@@ -51,6 +51,15 @@ pub enum EngineError {
         "{value} on the '{scale}' scale has no Goodreads mapping (Goodreads takes integers 0–5, no halves)"
     )]
     UnmappedRating { value: f64, scale: String },
+    /// The platform has no filesystem-notification service to offer, or refused
+    /// to watch the mount directories.
+    ///
+    /// Its own variant because the only sane response is to degrade: an app that
+    /// cannot notice a mount is the app we had yesterday, and every device
+    /// screen, `ko scan` and `ko sync` still works. A caller that treated this
+    /// as a startup failure would be trading a whole app for a convenience.
+    #[error("cannot watch for devices: {0}")]
+    Watch(String),
     /// Last resort. Prefer a specific variant — anything that a caller might
     /// plausibly want to branch on does not belong here.
     #[error("{0}")]
