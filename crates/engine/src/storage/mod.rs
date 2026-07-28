@@ -1,3 +1,4 @@
+mod book_files;
 mod books;
 mod device_books;
 mod flashcards;
@@ -8,6 +9,7 @@ mod ratings;
 mod readings;
 mod sidecar_seen;
 
+pub use book_files::BookFile;
 pub use books::{BookSort, MergeReport};
 pub use device_books::LinkedBy;
 pub use flashcards::FlashcardRow;

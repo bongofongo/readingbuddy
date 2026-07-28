@@ -9,12 +9,13 @@ use std::path::PathBuf;
 use readingbuddy::{Book, Engine, NewNoteInput, NoteKind};
 
 mod common;
-use common::{book, engine};
+use common::{book, engine, write_isbnless_epub};
 
 #[tokio::test]
 async fn open_creates_its_directories_and_migrates() {
     let (tmp, engine) = engine().await;
     assert!(tmp.path().join("database/images").is_dir());
+    assert!(tmp.path().join("database/files").is_dir());
     assert!(tmp.path().join("vault").is_dir());
     // Migrations ran, so the schema is queryable.
     assert!(engine.list_notes(None).await.unwrap().is_empty());
@@ -313,76 +314,6 @@ async fn importing_koreader_from_an_empty_dir_warns_rather_than_failing() {
 }
 
 // ---- device identity (partial_md5) -----------------------------------------
-
-/// A valid, ~2 KB epub with **no ISBN identifier**.
-///
-/// The missing ISBN is the point, not an oversight: `import_epub` looks a found
-/// ISBN up through the providers, and this suite makes no network calls. Built
-/// rather than committed, for the same reason the corpus generator builds its
-/// own — what is inside it stays readable in the diff.
-fn write_isbnless_epub(path: &std::path::Path, title: &str) {
-    use std::io::Write;
-    use zip::write::SimpleFileOptions;
-
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-    // `mimetype` must be first and STORED per the epub spec.
-    zip.start_file(
-        "mimetype",
-        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
-    )
-    .unwrap();
-    zip.write_all(b"application/epub+zip").unwrap();
-
-    let opts = SimpleFileOptions::default();
-    zip.start_file("META-INF/container.xml", opts).unwrap();
-    zip.write_all(
-        br#"<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>
-"#,
-    )
-    .unwrap();
-
-    zip.start_file("OEBPS/content.opf", opts).unwrap();
-    zip.write_all(
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="bookid">urn:uuid:00000000-0000-4000-8000-000000000000</dc:identifier>
-    <dc:title>{title}</dc:title>
-    <dc:creator>A Test Author</dc:creator>
-    <dc:language>en</dc:language>
-  </metadata>
-  <manifest>
-    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
-  </manifest>
-  <spine>
-    <itemref idref="ch1"/>
-  </spine>
-</package>
-"#
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-
-    zip.start_file("OEBPS/ch1.xhtml", opts).unwrap();
-    zip.write_all(
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>
-<body><h1>{title}</h1><p>A single paragraph, so the spine is not empty.</p></body></html>
-"#
-        )
-        .as_bytes(),
-    )
-    .unwrap();
-    zip.finish().unwrap();
-}
 
 /// What a book is linked to, through the public API — `Storage::pool` is
 /// `pub(crate)`, so an integration test reads the mapping the way a frontend

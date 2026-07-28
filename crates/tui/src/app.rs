@@ -2574,6 +2574,7 @@ mod tests {
         let config = EngineConfig {
             db_url: "sqlite::memory:".into(),
             images_dir: tmp.join("images"),
+            files_dir: tmp.join("files"),
             vault_dir: tmp.join("vault"),
             log_dir: tmp.join("logs"),
             google_api_key: None,
