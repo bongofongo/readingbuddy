@@ -264,6 +264,18 @@ connection closes. That asymmetry is the whole of the daemon's judgement.
   on the reply that could never come. The suite hung for six minutes rather than
   failing. Worth remembering as a shape: in a line-delimited protocol, a test
   that forgets the terminator does not fail, it hangs.
+- **CI caught one, and it was a real platform difference.** The overlong-line
+  test passed on macOS and failed on ubuntu with `ECONNRESET`. The cause is not
+  the daemon: a connection closed while bytes are still queued in the receive
+  buffer is *reset* rather than drained, and the RST discards the error reply
+  the client had already been sent. The test was flooding — 9 MiB at a cap of 8
+  — so there was always a megabyte unread at close. Split in two, because the
+  two properties differ in what is actually guaranteed: one sends **exactly**
+  `MAX_LINE + 1` bytes and then stops, so the daemon consumes everything before
+  it decides and the explanatory reply is observable; the other floods and
+  asserts what the cap exists for — the flooder loses its connection and the
+  next client is served normally. Pinning what the flooder receives would be
+  pinning the kernel's behaviour, not ours.
 - `cargo deny check advisories` fails on this branch — yanked `spin 0.9.8` via
   `sqlx-sqlite`. **Pre-existing**: it fails identically on `main` with this
   branch stashed. `licenses`, `bans` and `sources` all pass, and no new crate
@@ -273,7 +285,7 @@ connection closes. That asymmetry is the whole of the daemon's judgement.
 
 - `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked
   -D warnings`, `cargo check --workspace --locked`, `cargo test --workspace` —
-  all green. 39 new tests (18 API unit, 12 API integration, 9 daemon).
+  all green, and confirmed on CI's ubuntu and macOS legs. 40 new tests (18 API unit, 12 API integration, 10 daemon).
 - Everything is offline and headless. The daemon's suite binds real unix sockets
   in tempdirs, so it runs on a CI runner unchanged.
 - **Not verified by machine:** nothing. There is no hardware half to this item —

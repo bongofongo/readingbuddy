@@ -442,14 +442,17 @@ mod tests {
         let (rx, mut tx) = UnixStream::connect(&sock).await.unwrap().into_split();
         let mut reader = BufReader::new(rx);
 
-        let chunk = vec![b' '; 1024 * 1024];
-        // No newline, ever. Nine megabytes is past the cap.
-        for _ in 0..9 {
-            if tx.write_all(&chunk).await.is_err() {
-                break; // the daemon may have closed on us already
-            }
-        }
-        tx.flush().await.ok();
+        // **Exactly** one byte past the cap, and then silence. That is what
+        // makes the explanatory reply observable at all: the daemon consumes
+        // every byte before it decides, so nothing is left unread when it
+        // closes. Overshoot instead — flood it, as `a_flood_costs_the_flooder`
+        // below does — and the close happens with data still in the receive
+        // queue, which on Linux is an RST that discards the reply the client
+        // had already been sent. Two properties, two tests, because one of them
+        // is only guaranteed on a peer that stops talking.
+        let payload = vec![b' '; MAX_LINE + 1];
+        tx.write_all(&payload).await.unwrap();
+        tx.flush().await.unwrap();
 
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
@@ -461,10 +464,41 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // And then the daemon hangs up rather than trying to resynchronise.
+        // And then the daemon hangs up rather than trying to resynchronise:
+        // the rest of that line would otherwise be read as the next call.
         let mut rest = Vec::new();
         reader.read_to_end(&mut rest).await.unwrap();
         assert!(rest.is_empty(), "expected the connection to be closed");
+    }
+
+    /// The property the cap actually exists for: a peer that never sends a
+    /// newline costs itself its connection and costs the daemon nothing.
+    ///
+    /// Asserted by serving somebody else afterwards, rather than by what the
+    /// flooder receives — a connection closed with unread bytes still queued is
+    /// reset rather than drained, so on Linux the flooder's own read fails
+    /// instead of returning the error reply. That is the kernel's call, not the
+    /// daemon's, and pinning it would be pinning the platform.
+    #[tokio::test]
+    async fn a_flood_costs_the_flooder_and_nobody_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (sock, _stop) = spawn(tmp.path()).await;
+        let (_rx, mut tx) = UnixStream::connect(&sock).await.unwrap().into_split();
+
+        let chunk = vec![b' '; 1024 * 1024];
+        for _ in 0..12 {
+            // Once the daemon has given up, our writes start failing. That is
+            // the connection being closed, which is the point.
+            if tx.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+
+        let mut good = Client::connect(&sock).await;
+        assert!(matches!(
+            good.call(Request::ApiVersion).await.outcome,
+            readingbuddy_api::Outcome::Ok { .. }
+        ));
     }
 
     /// Two daemons on one socket would each get an arbitrary half of the
