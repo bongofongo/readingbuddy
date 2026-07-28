@@ -2309,6 +2309,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "readingbuddy-api"
+version = "0.1.0"
+dependencies = [
+ "readingbuddy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "readingbuddy-cli"
 version = "0.1.0"
 dependencies = [
@@ -2348,6 +2360,21 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "readingbuddyd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "readingbuddy",
+ "readingbuddy-api",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

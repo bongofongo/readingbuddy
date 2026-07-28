@@ -1,0 +1,35 @@
+[package]
+name = "readingbuddyd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "readingbuddyd"
+path = "src/main.rs"
+
+[dependencies]
+readingbuddy = { path = "../engine" }
+readingbuddy-api = { path = "../api" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# `net` is the unix socket, `io-util` the line reader, `signal` the shutdown
+# that removes it again. No new third-party crate enters the tree for any of
+# this: a line-delimited JSON socket needs a runtime and nothing else, where an
+# HTTP transport would drag in a server, a router and a middleware stack for a
+# protocol with one endpoint.
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "signal",
+    "sync",
+] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -525,6 +525,12 @@ impl Engine {
         self.storage.book_files(book_id).await
     }
 
+    /// One owned file by its content address. `sha256` is the primary key, so
+    /// this is the whole of "who has these bytes" — at most one book can.
+    pub async fn book_file(&self, sha256: &str) -> Result<Option<BookFile>> {
+        self.storage.book_file(sha256).await
+    }
+
     /// Where a file's bytes are. Derived from the row, never stored — the whole
     /// point of a content address is that the path is not a second fact that can
     /// disagree with the first.

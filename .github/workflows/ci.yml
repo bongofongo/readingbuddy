@@ -60,6 +60,15 @@ jobs:
       # patch release. Without --locked nothing detects that recurring.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Not redundant with the line above, and the difference is the point.
+      # `--all-targets` resolves dev-dependencies, and `crates/tui`'s switch on
+      # the engine's `internals` feature — the door item 14 left open for test
+      # fixtures to reach `Engine::storage()`. Under clippy that door is open
+      # for the shipped binaries too. This is the build where it is shut, so a
+      # frontend that reopens the seam in production code fails here and only
+      # here.
+      - run: cargo check --workspace --locked
+
   test:
     name: tests — ${{ matrix.scope }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
