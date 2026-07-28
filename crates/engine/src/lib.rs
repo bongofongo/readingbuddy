@@ -6,6 +6,7 @@
 pub mod book;
 pub mod config;
 pub mod crash;
+pub mod device;
 pub mod diagnostic;
 pub mod epub;
 pub mod error;
@@ -25,6 +26,9 @@ use reqwest::Client;
 pub use book::{Book, isbn10_to_13, normalize_isbn};
 pub use config::EngineConfig;
 pub use crash::CrashContext;
+pub use device::{
+    DeviceBook, DeviceScan, DeviceState, candidate_mounts, is_koreader_mount, koreader_dir,
+};
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
 pub use koreader::{
@@ -263,6 +267,23 @@ impl Engine {
     #[tracing::instrument(skip(self), fields(path = %sidecar.display()))]
     pub async fn pull_book_from_sidecar(&self, sidecar: &Path) -> Result<PullReport> {
         koreader::import_book_from_sidecar(&self.storage, sidecar).await
+    }
+
+    // ---- device ------------------------------------------------------------
+
+    /// Walk a mounted reader and report the state of every book on it.
+    /// Read-only, and pre-filtered on each sidecar's size and mtime so a
+    /// re-scan does not re-evaluate several hundred Lua files.
+    ///
+    /// Exposed here so a frontend never reaches into [`koreader`] directly.
+    #[tracing::instrument(skip(self), fields(root = %root.display()))]
+    pub async fn scan_device(&self, root: &Path) -> Result<device::DeviceScan> {
+        device::scan_device(&self.storage, root).await
+    }
+
+    /// Pull a selection of the device in: one report per book.
+    pub async fn sync_device(&self, paths: &[PathBuf]) -> Result<Vec<PullReport>> {
+        device::sync_device(&self.storage, paths).await
     }
 
     /// Library books that look like this sidecar's book but not enough to link

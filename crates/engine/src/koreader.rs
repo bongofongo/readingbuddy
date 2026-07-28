@@ -512,7 +512,15 @@ fn collect_sidecars_at(path: &Path, out: &mut Vec<PathBuf>, depth: usize) -> Res
     Ok(())
 }
 
-fn is_sidecar_file(p: &Path) -> bool {
+/// Is this one of KOReader's live sidecar files?
+///
+/// **`metadata.epub.lua.old` is excluded, and that is load-bearing.**
+/// `docsettings.lua:340` writes a backup on every flush, so 9 of 10 real `.sdr`
+/// directories have one — and it is a *previous* state of the same annotations.
+/// Reading it would resurrect highlights the user deleted on the device. The
+/// `.lua` suffix test already refuses it; this doc comment and the tests around
+/// it are what stop the exclusion from being re-lost as an accident.
+pub fn is_sidecar_file(p: &Path) -> bool {
     let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
@@ -522,7 +530,11 @@ fn is_sidecar_file(p: &Path) -> bool {
 /// Match a sidecar to a library book: (a) a recorded `device_books` link on the
 /// sidecar's `partial_md5`, (b) sibling ebook file's ISBN, (c) fuzzy doc_props
 /// title (jaro-winkler >= 0.85 on normalized titles).
-async fn match_book(
+///
+/// Public so [`crate::device`] can show the same verdict a scan's later import
+/// would reach. Only `partial_md5` and `title` are read off `sc`, which is what
+/// lets the scan call this from its cached facts rather than a fresh parse.
+pub async fn match_book(
     storage: &Storage,
     sidecar_path: &Path,
     sc: &KoSidecar,

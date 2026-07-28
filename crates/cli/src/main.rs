@@ -177,6 +177,22 @@ enum KoCmd {
         /// Book selector: id, ISBN, or title fragment
         book: String,
     },
+    /// Show the state of every book on a mounted reader. Read-only
+    Scan {
+        /// The mount to scan. Omitted, a mounted KOReader device is looked for
+        path: Option<PathBuf>,
+    },
+    /// Pull books in from a mounted reader
+    Sync {
+        /// The mount to sync from
+        path: PathBuf,
+        /// Sync everything new or updated
+        #[arg(long)]
+        all: bool,
+        /// Sync one book: part of its title, or its sidecar path. Repeatable
+        #[arg(long = "book")]
+        books: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -278,6 +294,10 @@ async fn main() -> Result<()> {
             }
             KoCmd::Pull { path, new } => commands::ko::pull(&engine, &path, new).await?,
             KoCmd::Link { path, book } => commands::ko::link(&engine, &path, &book).await?,
+            KoCmd::Scan { path } => commands::ko::scan(&engine, path.as_deref()).await?,
+            KoCmd::Sync { path, all, books } => {
+                commands::ko::sync(&engine, &path, all, &books).await?
+            }
         },
         Cmd::Cards { cmd } => match cmd {
             CardsCmd::List { all } => commands::cards::list(&engine, all).await?,
