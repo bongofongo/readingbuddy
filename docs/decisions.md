@@ -292,6 +292,11 @@ Provider enrichment on device pull. Non-numeric rating scales.
    - `backlinks` is a plain `WHERE to_note = ?`, with no dangling-by-title
      union: back-resolution keeps `to_note` complete, and the inbound and
      outbound views have to agree about which edges are still only text.
+   - **Done.** One gap pinned rather than fixed: `notes.title` is not unique, so
+     an edge resolved to one of two same-titled notes dangles again if *that*
+     one is deleted. The fix is write-side (re-resolve on delete) and a read-side
+     item must not paper over it — the pane would then claim an inbound link the
+     linking note denies writing.
 10. Goodreads CSV in/out. Migration `0009`.
     - **Trap worth recording before it is hit:** `active_rating_scale()` is
       `ORDER BY created_at DESC LIMIT 1`, so seeding a `goodreads` scale would
@@ -299,6 +304,17 @@ Provider enrichment on device pull. Non-numeric rating scales.
       therefore also adds `rating_scales.is_default`.
     - `Bookshelves` → `book_tags` (inert provenance); Goodreads' `Book Id` →
       a general `external_ids` table, because Calibre (item 13) needs the same one.
+    - **Done.** One correction it forced: `Read Count > 1` cannot give the earlier
+      readings NULL end dates, because `finished_at IS NULL` *is* what open means
+      and `idx_readings_one_open` permits one per book. `started_at` is NULL
+      instead — that is what is genuinely unknown — and earlier readings close at
+      the date the row carries, a true upper bound rather than an invented date.
+    - Known limit: our export carries no `Exclusive Shelf` column, because
+      Goodreads' importer does not read one. A round trip into a *fresh* library
+      keeps the book and loses the shelf.
+
+*Items 11–16 are laid out in `docs/spec-11-16.md` — 11–13 to prompt-ready
+detail, 14–16 as constraints to re-plan against.*
 11. Wired device watcher.
 12. `book_files` + owned files + three-level dedup.
 13. Calibre (i) then (ii).
