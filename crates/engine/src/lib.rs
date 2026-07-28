@@ -42,7 +42,7 @@ pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     BookSort, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord, NoteSearchHit,
-    Rating, RatingScale, Reading, Storage,
+    OutgoingLink, Rating, RatingScale, Reading, Storage,
 };
 
 use providers::googlebooks::GoogleBooksProvider;
@@ -335,6 +335,25 @@ impl Engine {
 
     pub async fn search_notes(&self, query: &str, limit: i64) -> Result<Vec<NoteSearchHit>> {
         self.storage.search_notes(query, limit).await
+    }
+
+    /// What this note links **out** to: each `[[wikilink]]` its body wrote, and
+    /// the note it resolves to when one exists.
+    ///
+    /// A target with no note is kept as text rather than dropped — a forward
+    /// reference to something not written yet is how a zettelkasten is built,
+    /// and the edge resolves itself the moment that note appears.
+    pub async fn outgoing_links(&self, note_id: i64) -> Result<Vec<OutgoingLink>> {
+        self.storage.outgoing_links(note_id).await
+    }
+
+    /// What links **in** to this note.
+    ///
+    /// The facade had no link method at all before this pair: edges were
+    /// written by `create_note` / `update_note_body` and read only inside
+    /// `open_anchored`, so the graph could be built but never walked.
+    pub async fn backlinks(&self, note_id: i64) -> Result<Vec<NoteRecord>> {
+        self.storage.backlinks(note_id).await
     }
 
     /// The body text of a note (its markdown minus the frontmatter header).

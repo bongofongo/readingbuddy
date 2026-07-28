@@ -44,6 +44,31 @@ pub struct NoteSearchHit {
     pub snippet: String,
 }
 
+/// One outgoing edge, read from the linking note's side.
+///
+/// `to` is `None` for a **dangling** target: a `[[wikilink]]` naming a note that
+/// has not been written yet. That is an ordinary zettelkasten forward reference,
+/// not an error, which is why the raw text is carried beside the resolution
+/// rather than the row being dropped.
+#[derive(Debug, Clone)]
+pub struct OutgoingLink {
+    /// The wikilink target exactly as the body wrote it.
+    pub target_title: String,
+    /// The note it resolves to, when one exists.
+    pub to: Option<NoteRecord>,
+}
+
+/// Prefix a canonical column list with a table alias, so a joined query can
+/// reuse `NOTE_COLUMNS` / `HIGHLIGHT_COLUMNS` instead of spelling out a second
+/// copy that can drift from it.
+fn qualified(columns: &str, alias: &str) -> String {
+    columns
+        .split(", ")
+        .map(|c| format!("{alias}.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> NoteRecord {
     NoteRecord {
         id: r.get("id"),
@@ -307,11 +332,7 @@ impl Storage {
 
     /// The highlights a note cites, in the order a book reads.
     pub async fn citations_for(&self, note_id: i64) -> Result<Vec<Highlight>> {
-        let columns = HIGHLIGHT_COLUMNS
-            .split(", ")
-            .map(|c| format!("h.{c}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let columns = qualified(HIGHLIGHT_COLUMNS, "h");
         let sql = format!(
             "SELECT {columns} FROM citations c JOIN highlights h ON h.id = c.highlight_id
              WHERE c.note_id = ? ORDER BY h.page ASC, h.ko_datetime ASC"
@@ -324,6 +345,10 @@ impl Storage {
     }
 
     /// Outgoing links of a note: (target_title, resolved note id if any).
+    ///
+    /// The cheap half of [`Storage::outgoing_links`], kept because
+    /// `open_anchored` only ever wants the titles a body wrote and has no use
+    /// for the target rows.
     pub async fn note_links(&self, note_id: i64) -> Result<Vec<(String, Option<i64>)>> {
         let rows = sqlx::query("SELECT target_title, to_note FROM note_links WHERE from_note = ?")
             .bind(note_id)
@@ -333,6 +358,72 @@ impl Storage {
             .into_iter()
             .map(|r| (r.get("target_title"), r.get("to_note")))
             .collect())
+    }
+
+    /// Outgoing links of a note, with the target note itself where the edge
+    /// resolves — the half of the graph a body can be read off.
+    ///
+    /// Ordered by `rowid`, which is insertion order, which is the order the
+    /// links appeared in the body: `set_note_links` deletes and rewrites the
+    /// whole set, so it never drifts from what the user wrote.
+    pub async fn outgoing_links(&self, note_id: i64) -> Result<Vec<OutgoingLink>> {
+        let columns = qualified(NOTE_COLUMNS, "n");
+        let sql = format!(
+            "SELECT l.target_title AS target_title, {columns}
+             FROM note_links l LEFT JOIN notes n ON n.id = l.to_note
+             WHERE l.from_note = ? ORDER BY l.rowid"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(note_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| OutgoingLink {
+                target_title: r.get("target_title"),
+                // The join missed, so every other `n.` column is NULL and
+                // `row_to_note` would fail decoding them. Reading `id` as an
+                // `Option` first is what keeps a dangling target a value rather
+                // than an error.
+                to: r.get::<Option<i64>, _>("id").map(|_| row_to_note(r)),
+            })
+            .collect())
+    }
+
+    /// The notes that link **to** this one — "what links here".
+    ///
+    /// A plain `WHERE to_note = ?`, with no dangling-by-title union, and that is
+    /// a decision rather than an omission. Two reasons:
+    ///
+    /// * `write_links` back-resolves every dangling edge naming a title the
+    ///   moment a note with that title is written, so an edge left `NULL` is one
+    ///   whose target genuinely does not exist. Pinned by
+    ///   `a_forward_reference_resolves_when_its_target_is_written`.
+    /// * The two directions have to be the same edge set read from opposite
+    ///   ends. [`Storage::outgoing_links`] reports an unresolved edge as
+    ///   dangling text; a union here would make the same edge read as a real
+    ///   backlink from the other side, and the pane would contradict itself.
+    ///
+    /// The second reason is the one that survives the exception. `notes.title`
+    /// is not unique, so an edge that resolved to one of two same-titled notes
+    /// dangles again if *that* one is deleted, and nothing re-resolves it toward
+    /// the survivor. Both sides then agree it dangles, which is worth more than
+    /// one side guessing —
+    /// `a_title_shared_by_two_notes_is_where_back_resolution_stops`.
+    ///
+    /// Newest first, as `list_notes` orders — with `id` breaking the tie, since
+    /// `created_at` is only second-resolution.
+    pub async fn backlinks(&self, note_id: i64) -> Result<Vec<NoteRecord>> {
+        let columns = qualified(NOTE_COLUMNS, "n");
+        let sql = format!(
+            "SELECT {columns} FROM note_links l JOIN notes n ON n.id = l.from_note
+             WHERE l.to_note = ? ORDER BY n.created_at DESC, n.id DESC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(note_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(row_to_note).collect())
     }
 }
 
