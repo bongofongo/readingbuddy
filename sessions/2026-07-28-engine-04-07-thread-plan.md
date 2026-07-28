@@ -61,11 +61,17 @@ Picks up where item 3 (`881f60f`) left off.
   COLUMN` needs SQLite ≥ 3.35 (sqlx's bundled lib is past it), and every prior
   migration was additive. Must be verified against a *copy* of a real
   `database/app.db`, not only `sqlite::memory:`.
-- **`util.partialMD5`'s first offset is 256, not 0.** `lshift(step, 2*i)` with
-  `i = -1` is a right shift in Lua's bit library, so the first 256 bytes of a
-  file are never hashed — and a file under 256 bytes hashes to the MD5 of
-  nothing, `d41d8cd98f00b204e9800998ecf8427e`. Also: the Lua loop breaks on a
-  `nil` read, not a short one, so a partial read at EOF **is** hashed.
+- ~~**`util.partialMD5`'s first offset is 256, not 0.**~~ **Wrong, and corrected
+  by the implementation (PR #2): the first offset is 0.** `lshift` in `util.lua`
+  is LuaJIT's BitOp, which takes its shift count modulo 32, so `lshift(1024, -2)`
+  is `lshift(1024, 30)` — `2^40` truncated to 32 bits, which is `0`. It is not an
+  arithmetic shift and a negative count is not a right shift. Three checksums
+  KOReader itself wrote reproduce from 0 and none from 256, and only a genuinely
+  *empty* file hashes to the MD5 of nothing. Struck through rather than deleted:
+  this is a handoff document that later threads read, so the correction is worth
+  more than a tidy record. See `docs/koreader-format.md` §5. Still true as
+  written: the Lua loop breaks on a `nil` read, not a short one, so a partial
+  read at EOF **is** hashed.
 - **Pinning `partial_md5` with a golden string would be circular.** The two
   tests that actually prove something are the three KOReader-produced checksums
   recorded in `docs/koreader-format.md` §5, and a property that flipping a byte
