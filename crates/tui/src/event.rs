@@ -46,6 +46,47 @@ pub enum Action {
     EditApiKey,
     /// Cycle the ambient background motif (settings screen).
     CycleAmbient,
+    /// Mark / unmark the selected device row.
+    Mark,
+    /// Bring the marked device rows across (or every syncable one).
+    Sync,
+    /// Link the selected device row to a book already in the library.
+    Link,
+    /// Walk the device again.
+    Rescan,
+}
+
+/// The key map, with the screen's own bindings applied first.
+///
+/// [`map_key`] is deliberately screen-agnostic — the screens interpret the
+/// directions themselves — but the device screen's documented keys (`x` mark,
+/// `l` link, `r` rescan) are three the global map already spends on the book
+/// view (export, right, reset). None of those three mean anything on a device
+/// list, so the screen claims them rather than the actions being renamed into
+/// something that reads wrong on both screens.
+pub fn map_key_on(screen: crate::app::Screen, key: KeyEvent) -> Option<Action> {
+    if screen == crate::app::Screen::Device
+        && let Some(action) = map_device_key(key)
+    {
+        return Some(action);
+    }
+    map_key(key)
+}
+
+/// The device screen's own bindings. Everything it does not claim — `m`, `q`,
+/// the arrows, Enter, Esc — falls through to [`map_key`], so the screen is
+/// never a dead end.
+fn map_device_key(key: KeyEvent) -> Option<Action> {
+    if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('x') => Some(Action::Mark),
+        KeyCode::Char('s') => Some(Action::Sync),
+        KeyCode::Char('l') => Some(Action::Link),
+        KeyCode::Char('r') => Some(Action::Rescan),
+        _ => None,
+    }
 }
 
 pub fn map_key(key: KeyEvent) -> Option<Action> {
@@ -127,6 +168,41 @@ mod tests {
             map_key(press(KeyCode::Char('a'))),
             Some(Action::CycleAmbient)
         );
+    }
+
+    /// The three keys the device screen takes over, and the guarantee that it
+    /// only takes them there.
+    #[test]
+    fn the_device_screen_rebinds_three_keys_and_nothing_else() {
+        use crate::app::Screen;
+        for (code, want) in [
+            (KeyCode::Char('x'), Action::Mark),
+            (KeyCode::Char('s'), Action::Sync),
+            (KeyCode::Char('l'), Action::Link),
+            (KeyCode::Char('r'), Action::Rescan),
+        ] {
+            assert_eq!(map_key_on(Screen::Device, press(code)), Some(want));
+            assert_eq!(
+                map_key_on(Screen::Book, press(code)),
+                map_key(press(code)),
+                "{code:?} was rebound off the device screen"
+            );
+        }
+
+        // Everything else still falls through, so `m` and the arrows work and
+        // the screen cannot become a dead end.
+        for code in [
+            KeyCode::Char('m'),
+            KeyCode::Char('q'),
+            KeyCode::Down,
+            KeyCode::Enter,
+            KeyCode::Esc,
+        ] {
+            assert_eq!(
+                map_key_on(Screen::Device, press(code)),
+                map_key(press(code))
+            );
+        }
     }
 
     #[test]
