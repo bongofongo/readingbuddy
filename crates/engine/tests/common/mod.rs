@@ -45,6 +45,7 @@ pub async fn engine_with_calibre(bin_dir: Option<PathBuf>) -> (tempfile::TempDir
     let config = EngineConfig {
         db_url: "sqlite::memory:".into(),
         images_dir: tmp.path().join("database/images"),
+        files_dir: tmp.path().join("database/files"),
         vault_dir: tmp.path().join("vault"),
         log_dir: tmp.path().join("logs"),
         google_api_key: None,
@@ -145,4 +146,78 @@ pub fn skipped(reason: &str, hint: &str) -> bool {
     }
     eprintln!("SKIPPED: {reason} — {hint}");
     true
+}
+
+/// A valid, ~2 KB epub with **no ISBN identifier**.
+///
+/// The missing ISBN is the point, not an oversight: `import_epub` looks a found
+/// ISBN up through the providers, and this suite makes no network calls. Built
+/// rather than committed, for the same reason the corpus generator builds its
+/// own — what is inside it stays readable in the diff.
+///
+/// Shared rather than copied: `book_files.rs` needs the same file for the same
+/// reason (its create-a-book path goes through `import_epub`), and two epub
+/// builders would be two definitions of what a valid epub is.
+pub fn write_isbnless_epub(path: &std::path::Path, title: &str) {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    // `mimetype` must be first and STORED per the epub spec.
+    zip.start_file(
+        "mimetype",
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+
+    let opts = SimpleFileOptions::default();
+    zip.start_file("META-INF/container.xml", opts).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"#,
+    )
+    .unwrap();
+
+    zip.start_file("OEBPS/content.opf", opts).unwrap();
+    zip.write_all(
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:00000000-0000-4000-8000-000000000000</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>A Test Author</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>
+"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+
+    zip.start_file("OEBPS/ch1.xhtml", opts).unwrap();
+    zip.write_all(
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>
+<body><h1>{title}</h1><p>A single paragraph, so the spine is not empty.</p></body></html>
+"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    zip.finish().unwrap();
 }

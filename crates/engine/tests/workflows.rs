@@ -547,3 +547,57 @@ async fn a_link_the_user_made_by_hand_survives_every_later_scan() {
         );
     }
 }
+
+/// The book arrives from the reader; the file arrives later, from anywhere.
+///
+/// Crosses items 3 and 12, and it catches the thing neither can see alone.
+/// `pull_book_from_sidecar` creates a book with no ISBN — which is exactly the
+/// row `upsert_book` has no key for, so item 5's own test records that
+/// re-importing the same epub makes a *second* book on purpose. Item 12's
+/// import goes through the same matcher instead, so the epub the user later
+/// drags in lands on the book the device already put on the shelf, complete
+/// with its highlights, rather than beside it. Nothing else exercises the
+/// sidecar-created book as the *target* of a file match.
+#[tokio::test]
+async fn a_file_imported_later_lands_on_the_book_the_device_already_created() {
+    let (tmp, engine) = engine().await;
+    let device = tempfile::tempdir().unwrap();
+    let root = device.path().join("KOBOeReader");
+    let sidecar = place(&root, "Pachinko.sdr", "Pachinko.sdr");
+
+    let pulled = engine.pull_book_from_sidecar(&sidecar).await.unwrap();
+    let book = pulled.stats.book_id;
+    assert!(pulled.stats.inserted > 0, "the pull brought highlights in");
+
+    // The epub itself, months later, from a completely different name. It has
+    // no ISBN — a sidecar-created book has none either, so the ISBN rung cannot
+    // be what saves this.
+    let file = tmp.path().join("pachinko-min-jin-lee.epub");
+    common::write_isbnless_epub(&file, "Pachinko");
+    let report = engine
+        .import_file(&file, readingbuddy::FileImportOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(report.book_id, Some(book), "one book, not two");
+    assert_eq!(report.matched_by, Some(readingbuddy::FileMatch::Title));
+    assert_eq!(
+        engine
+            .storage
+            .list_books(100, BookSort::Title)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(engine.book_files(book).await.unwrap().len(), 1);
+    assert!(
+        !engine
+            .storage
+            .list_highlights(book)
+            .await
+            .unwrap()
+            .is_empty(),
+        "and the highlights are still the same book's"
+    );
+}

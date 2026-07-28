@@ -316,6 +316,13 @@ Provider enrichment on device pull. Non-numeric rating scales.
 *Items 11–16 are laid out in `docs/spec-11-16.md` — 11–13 to prompt-ready
 detail, 14–16 as constraints to re-plan against.*
 11. Wired device watcher.
+    - **Done.** `watch.rs`: a debounce over an injected channel of stirs, with
+      `notify` as a thin adapter that is the only untestable part. **Scans,
+      never syncs** — the module holds no `Storage` at all, so "read-only on
+      arrival" is a property of the code rather than a rule about it.
+    - The watcher reports **transitions**; a reader already plugged in when the
+      app starts is seeded, not announced, because `candidate_mounts` is what
+      already answers that question.
 12. `book_files` + owned files + three-level dedup.
 13. Calibre (i) then (ii).
     - **Done.** No migration and no new dependency: `external_ids` was made

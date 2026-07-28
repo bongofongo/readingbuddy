@@ -40,6 +40,10 @@ pub struct MergeReport {
     /// cannot move.
     pub flashcards_dropped: usize,
     pub device_links_moved: usize,
+    /// Owned files repointed at `dst`. No `dropped` twin: `book_files` is keyed
+    /// on the sha256 alone, so the same content cannot already be on both sides
+    /// and a collision is not representable.
+    pub files_moved: usize,
     /// `src`'s cover file, when `dst` already had one of its own and therefore
     /// kept it. The file is now unreferenced; the caller deletes it, the same
     /// contract [`Storage::delete_book`] has.
@@ -326,8 +330,9 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
-    /// Fold `src` into `dst`: move highlights, notes, flashcards, readings and
-    /// device links, fill `dst`'s empty fields from `src`, delete `src`.
+    /// Fold `src` into `dst`: move highlights, notes, flashcards, readings,
+    /// device links and owned files, fill `dst`'s empty fields from `src`,
+    /// delete `src`.
     ///
     /// This exists because the ISBN-less insert path guarantees duplicates
     /// regardless of how good matching gets: `upsert_book` branches
@@ -504,6 +509,22 @@ impl Storage {
                 .execute(&mut *tx)
                 .await?
                 .rows_affected() as usize;
+
+        // ---- owned files ---------------------------------------------------
+        // Same reason as the provenance below: `book_files` cascades on `books`,
+        // so a merge that left it alone would *delete* the rows with `src` — and
+        // the bytes they name would stay on disk, owned by nothing, findable by
+        // nothing, with the book that was folded in showing no files at all.
+        //
+        // A plain `UPDATE`, unlike `book_tags`: the primary key is the sha256,
+        // so `src` and `dst` cannot both hold one file and there is nothing to
+        // ignore.
+        report.files_moved = sqlx::query("UPDATE book_files SET book_id = ? WHERE book_id = ?")
+            .bind(dst)
+            .bind(src)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
 
         // ---- provenance ----------------------------------------------------
         // `external_ids` and `book_tags` both cascade on `books`, so a merge

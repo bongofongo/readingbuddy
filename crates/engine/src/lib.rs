@@ -11,6 +11,7 @@ pub mod device;
 pub mod diagnostic;
 pub mod epub;
 pub mod error;
+pub mod files;
 pub mod flashcards;
 pub mod goodreads;
 pub mod images;
@@ -20,6 +21,7 @@ pub mod partial_md5;
 pub mod providers;
 pub mod search;
 pub mod storage;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 
@@ -34,9 +36,13 @@ pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use device::{
     DeviceBook, DeviceScan, DeviceState, candidate_mounts, is_koreader_mount, koreader_dir,
+    mount_roots, offers_reader,
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
+pub use files::{
+    FileIdentity, FileImportReport, FileMatch, FileOutcome, ImportOptions as FileImportOptions,
+};
 pub use goodreads::{
     GoodreadsBookReport, GoodreadsMatch, GoodreadsReport, ImportOptions as GoodreadsImportOptions,
     TextOutcome, UnmatchedRow,
@@ -51,9 +57,10 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    BookSort, BookTag, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord,
+    BookFile, BookSort, BookTag, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord,
     NoteSearchHit, OutgoingLink, Rating, RatingScale, Reading, Storage,
 };
+pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 
 use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
@@ -75,6 +82,7 @@ pub struct Engine {
 impl Engine {
     pub async fn open(config: EngineConfig) -> Result<Engine> {
         std::fs::create_dir_all(&config.images_dir)?;
+        std::fs::create_dir_all(&config.files_dir)?;
         std::fs::create_dir_all(&config.vault_dir)?;
         if let Some(db_path) = config.db_url.strip_prefix("sqlite://")
             && let Some(parent) = Path::new(db_path).parent()
@@ -215,10 +223,20 @@ impl Engine {
         self.storage.find_books_by_title(selector).await
     }
 
-    /// Delete a book and its cover image file.
+    /// Delete a book, its cover image, and the ebook files it owned.
+    ///
+    /// The rows go by cascade; the bytes are the engine's to remove, the same
+    /// contract the cover has had since the beginning. They are listed *before*
+    /// the delete because after it there is nothing left to list them by — and
+    /// they are safe to remove unconditionally: `book_files` is keyed on the
+    /// sha256 alone, so no other book can be holding this content.
     pub async fn delete_book(&self, id: i64) -> Result<()> {
+        let files = self.storage.book_files(id).await?;
         if let Some(cover) = self.storage.delete_book(id).await? {
             std::fs::remove_file(cover).ok();
+        }
+        for file in &files {
+            std::fs::remove_file(self.file_path(file)).ok();
         }
         Ok(())
     }
@@ -287,6 +305,65 @@ impl Engine {
                 .await?;
         }
         Ok(saved)
+    }
+
+    // ---- owned files -------------------------------------------------------
+
+    /// Take ownership of an ebook file: work out whose it is, copy the bytes
+    /// into the content store, and attach the row.
+    ///
+    /// Creates a book only when nothing in the library plausibly claims the
+    /// file. A near-miss title comes back as [`FileOutcome::Unmatched`] with the
+    /// candidates and **nothing written**, which `FileImportOptions { new: true }`
+    /// overrides — the same refusal-with-a-next-move shape `ko pull` has.
+    #[tracing::instrument(skip(self), fields(path = %path.display(), new = opts.new))]
+    pub async fn import_file(
+        &self,
+        path: &Path,
+        opts: files::ImportOptions,
+    ) -> Result<FileImportReport> {
+        files::import(self, path, opts).await
+    }
+
+    /// Attach a file to a book the caller has already decided on — dedup level
+    /// 2, the epub-and-azw3 case. No matching and no creation.
+    pub async fn add_file_to_book(&self, book_id: i64, path: &Path) -> Result<FileImportReport> {
+        if self.storage.get_book(book_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!("book id {book_id}")));
+        }
+        files::attach(&self.storage, &self.config.files_dir, book_id, path).await
+    }
+
+    /// What a file is and what it looks like a copy of. Read-only — no bytes
+    /// are copied and no row is written, so a frontend can show the answer
+    /// before the user commits to it.
+    pub async fn identify_file(&self, path: &Path) -> Result<FileIdentity> {
+        files::identify(&self.storage, path).await
+    }
+
+    /// The files this book owns.
+    pub async fn book_files(&self, book_id: i64) -> Result<Vec<BookFile>> {
+        self.storage.book_files(book_id).await
+    }
+
+    /// Where a file's bytes are. Derived from the row, never stored — the whole
+    /// point of a content address is that the path is not a second fact that can
+    /// disagree with the first.
+    pub fn file_path(&self, file: &BookFile) -> PathBuf {
+        files::content_path(&self.config.files_dir, &file.sha256, &file.format)
+    }
+
+    /// Give up a file: forget the row and remove the bytes.
+    ///
+    /// Returns false when the sha was not ours, which makes a repeat call a
+    /// no-op rather than an error.
+    pub async fn remove_file(&self, sha256: &str) -> Result<bool> {
+        let Some(file) = self.storage.book_file(sha256).await? else {
+            return Ok(false);
+        };
+        self.storage.delete_book_file(sha256).await?;
+        std::fs::remove_file(self.file_path(&file)).ok();
+        Ok(true)
     }
 
     // ---- koreader ----------------------------------------------------------

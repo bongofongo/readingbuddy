@@ -171,6 +171,35 @@ import being quiet rather than the fields never being set.
   target while the normal build stayed green — the widened gate is what surfaced
   it, exactly as it did the byte-budget bug last session.
 
+## Merging with items 11 and 12
+
+Both landed on `main` (#12, #13) while this ran, so the branch was merged rather
+than fast-forwarded. Two textual conflicts, both from three threads editing the
+same insertion points, and **no semantic one**:
+
+- `crates/engine/Cargo.toml` — tokio's feature list. Resolved to
+  `["time", "sync", "process"]`: `sync` is item 11's watcher channel seam,
+  `process` is this.
+- `CLAUDE.md` — item 12's `files.rs` bullet and this one at the same anchor
+  (kept both, in build-number order), and the `crates/cli` paragraph, where item
+  11 added `ko watch` to the subcommand list and this added
+  `calibre status|convert|import` (merged sentence by sentence rather than
+  taking a side).
+
+**`book_files` and the calibre import deliberately do not meet yet.** Item 12
+gives readingbuddy content-addressed files it *owns*; a calibre import records
+`device_books` identity for calibre's files and copies nothing. That is the
+right split for now — calibre owns the file, per the ownership table, and
+`docs/ux-positioning.md` still has "copy or reference in place?" open — but it
+is the seam where conversion output will eventually need somewhere to live.
+
+Verified on the **merged** tree, not either parent: `make ci` exit 0, and each
+thread's signature tests run individually rather than trusting the aggregate —
+item 11's 11 `watch::` tests, item 12's 15 `files::`/`book_files::` tests plus
+its three workflow stories, item 13's 10 calibre stories, and the `merge_books`
+set carrying both `merging_two_books_carries_their_files_across` (12) and
+`enrich_merges_a_partial_record_exactly_as_the_upsert_does` (13).
+
 ## Deferred
 
 - **Tier (iii), device push** (`calibre-smtp` / `ebook-device`).
