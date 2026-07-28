@@ -6,32 +6,10 @@
 
 use std::path::PathBuf;
 
-use readingbuddy::{Book, Engine, EngineConfig, NewNoteInput, NoteKind};
-use tempfile::TempDir;
+use readingbuddy::{Book, Engine, NewNoteInput, NoteKind};
 
-/// Build a config *literally* rather than via `EngineConfig::rooted_at`, which
-/// reads `GOOGLE_BOOKS_API_KEY` from the ambient environment — that would make
-/// these tests pass or fail depending on the developer's shell.
-async fn engine() -> (TempDir, Engine) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("database/images"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        google_api_key: None,
-    };
-    let engine = Engine::open(config).await.expect("engine opens");
-    (tmp, engine)
-}
-
-fn book(title: &str) -> Book {
-    Book {
-        title: Some(title.into()),
-        authors: vec!["Min Jin Lee".into()],
-        ..Default::default()
-    }
-}
+mod common;
+use common::{book, engine};
 
 #[tokio::test]
 async fn open_creates_its_directories_and_migrates() {

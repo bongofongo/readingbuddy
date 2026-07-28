@@ -2,51 +2,13 @@
 //!
 //! Offline, `sqlite::memory:` plus a `TempDir` vault, and nothing left behind.
 
-use readingbuddy::{Book, Engine, EngineConfig, EngineError, NewHighlight, NewNoteInput, NoteKind};
-use tempfile::TempDir;
+use readingbuddy::{Book, Engine, EngineError, NewNoteInput, NoteKind};
 
-/// Built literally rather than via `EngineConfig::rooted_at`, which reads
-/// `GOOGLE_BOOKS_API_KEY` from the ambient environment — that would make these
-/// pass or fail depending on the developer's shell.
-async fn engine() -> (TempDir, Engine) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config = EngineConfig {
-        db_url: "sqlite::memory:".into(),
-        images_dir: tmp.path().join("database/images"),
-        vault_dir: tmp.path().join("vault"),
-        log_dir: tmp.path().join("logs"),
-        google_api_key: None,
-    };
-    let engine = Engine::open(config).await.expect("engine opens");
-    (tmp, engine)
-}
+mod common;
+use common::{engine, highlight, seed_book};
 
 async fn seeded(engine: &Engine) -> i64 {
-    engine
-        .save_book(&Book {
-            title: Some("Pachinko".into()),
-            authors: vec!["Min Jin Lee".into()],
-            ..Default::default()
-        })
-        .await
-        .expect("save")
-        .id
-        .expect("stored book has id")
-}
-
-fn highlight(text: &str, when: &str) -> NewHighlight {
-    NewHighlight {
-        text: text.into(),
-        chapter: Some("Ch 1".into()),
-        page: Some(12),
-        pos0: Some(format!("/body/p[1]/text().{text}")),
-        pos1: None,
-        ko_datetime: Some(when.into()),
-        ko_datetime_updated: None,
-        color: Some("yellow".into()),
-        note: None,
-        source: "koreader".into(),
-    }
+    seed_book(engine, "Pachinko").await
 }
 
 // ---- accretion ------------------------------------------------------------

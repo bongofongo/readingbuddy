@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use readingbuddy::koreader::{self, parse_sidecar};
 use readingbuddy::{Book, Storage};
 
+mod common;
+
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/generated")
 }
@@ -40,11 +42,7 @@ fn sidecars() -> Option<Vec<PathBuf>> {
 
 /// A skip that cannot hide. Returns true if the caller should bail out.
 fn skipped(reason: &str) -> bool {
-    if std::env::var("READINGBUDDY_REQUIRE_FIXTURES").is_ok() {
-        panic!("REQUIRE_FIXTURES is set but {reason}");
-    }
-    eprintln!("SKIPPED: {reason} — run `make corpus`");
-    true
+    common::skipped(reason, "run `make corpus`")
 }
 
 macro_rules! corpus_or_skip {

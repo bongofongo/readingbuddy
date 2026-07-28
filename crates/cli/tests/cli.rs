@@ -1,0 +1,355 @@
+//! The CLI as a process — the only thing that can observe what the binary
+//! actually does.
+//!
+//! Everything else in this workspace tests the engine. `crates/cli` had tests
+//! in `logging.rs` and nowhere else, so argument parsing, selector resolution,
+//! the confirmation prompts and the "this command must not open the engine"
+//! rules were all enforced by the code alone.
+//!
+//! **Zero new dependencies**: `env!("CARGO_BIN_EXE_readingbuddy")` is set by
+//! cargo for integration tests, and `std::process::Command` does the rest.
+//!
+//! Offline throughout — nothing here searches, and the one import path used
+//! (`ko pull`) reads a committed fixture.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+const BIN: &str = env!("CARGO_BIN_EXE_readingbuddy");
+
+const SYNTHETIC: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../engine/tests/fixtures/koreader/synthetic"
+);
+
+/// A sandboxed invocation of the real binary.
+struct Cli {
+    root: tempfile::TempDir,
+}
+
+struct Out {
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+impl Cli {
+    fn new() -> Cli {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("home")).unwrap();
+        std::fs::create_dir_all(root.path().join("config")).unwrap();
+        std::fs::create_dir_all(root.path().join("data")).unwrap();
+        Cli { root }
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.root.path().join("data")
+    }
+
+    fn try_run(&self, args: &[&str]) -> Out {
+        self.try_run_in(&self.data_dir(), args)
+    }
+
+    /// Every environment pin here is load-bearing, and one of them is a safety
+    /// issue rather than hygiene.
+    fn try_run_in(&self, cwd: &Path, args: &[&str]) -> Out {
+        let out: Output = Command::new(BIN)
+            .args(["--data-dir", self.data_dir().to_str().unwrap()])
+            .args(args)
+            .current_dir(cwd)
+            // An ambient READINGBUDDY_DATA_DIR would silently redirect the whole
+            // suite at the developer's own library.
+            .env_remove("READINGBUDDY_DATA_DIR")
+            // XDG_CONFIG_HOME *and* HOME, because `config_file::config_path`
+            // falls back to `home_dir()/.config` when XDG is unset. With only
+            // one of them pinned, `config set google-api-key` would write the
+            // developer's real key file. A test that can damage the machine it
+            // runs on is not a test.
+            .env("XDG_CONFIG_HOME", self.root.path().join("config"))
+            .env("HOME", self.root.path().join("home"))
+            // clap merges this from the environment, so a developer with a key
+            // exported would make `search` reach the network — and this suite
+            // makes no network calls, ever.
+            .env_remove("GOOGLE_BOOKS_API_KEY")
+            // A developer's RUST_LOG=debug changes stderr out from under the
+            // assertions.
+            .env_remove("RUST_LOG")
+            // Belt and braces: if a regression ever routes one of these through
+            // an editor, `true` exits immediately instead of hanging CI on a vi
+            // that cannot read its terminal.
+            .env("EDITOR", "true")
+            .env("VISUAL", "true")
+            // EOF on stdin. This is also an assertion in its own right — see
+            // `a_destructive_command_declines_when_it_cannot_ask`.
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs");
+        Out {
+            ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> Out {
+        let out = self.try_run(args);
+        assert!(
+            out.ok,
+            "`readingbuddy {}` failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            args.join(" "),
+            out.stdout,
+            out.stderr
+        );
+        out
+    }
+}
+
+impl Out {
+    fn has(&self, needle: &str) -> &Out {
+        assert!(
+            self.stdout.contains(needle) || self.stderr.contains(needle),
+            "expected {needle:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            self.stdout,
+            self.stderr
+        );
+        self
+    }
+
+    fn lacks(&self, needle: &str) -> &Out {
+        assert!(
+            !self.stdout.contains(needle) && !self.stderr.contains(needle),
+            "did not expect {needle:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            self.stdout,
+            self.stderr
+        );
+        self
+    }
+
+    /// The one place these tests are coupled to output *formatting*, and it is
+    /// deliberate: parsing an id out of one command and feeding it to the next
+    /// is what lets everything else assert on the contract *between* commands
+    /// rather than on their wording. `render::book_line` prints `#<id>  …`.
+    fn book_id(&self) -> String {
+        self.stdout
+            .split('#')
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                (!digits.is_empty()).then_some(digits)
+            })
+            .unwrap_or_else(|| panic!("no `#<id>` in output:\n{}", self.stdout))
+    }
+}
+
+/// Copy a committed sidecar fixture into a writable tree.
+fn place(dst_root: &Path, fixture: &str) -> PathBuf {
+    let src = Path::new(SYNTHETIC).join(fixture);
+    let dst = dst_root.join(fixture);
+    std::fs::create_dir_all(&dst).unwrap();
+    let mut sidecar = None;
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        std::fs::copy(entry.path(), dst.join(&name)).unwrap();
+        let n = name.to_string_lossy().into_owned();
+        if n.starts_with("metadata.") && n.ends_with(".lua") {
+            sidecar = Some(dst.join(n));
+        }
+    }
+    sidecar.expect("fixture has a sidecar")
+}
+
+/// The subcommand set is a promise, not a detail — so this one golden is right
+/// where a golden of whole output would be wrong.
+///
+/// Comparing the *names* rather than the help text makes it immune to clap's
+/// formatting and to every cosmetic change, while still failing when a
+/// subcommand appears, vanishes or is renamed without anyone deciding to.
+#[test]
+fn the_subcommand_set_is_what_we_decided() {
+    let cli = Cli::new();
+    let help = cli.run(&["--help"]).stdout;
+
+    // Everything indented by exactly two spaces in clap's Commands block, up to
+    // the first whitespace.
+    let mut found: Vec<&str> = help
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") && !l.trim().is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|name| name.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+
+    let expected = [
+        "add",
+        "cards",
+        "cite",
+        "config",
+        "epub",
+        "help",
+        "highlights",
+        "ko",
+        "list",
+        "merge",
+        "note",
+        "notes",
+        "progress",
+        "rating",
+        "reflect",
+        "repl",
+        "review",
+        "rm",
+        "search",
+        "show",
+    ];
+    assert_eq!(
+        found, expected,
+        "the subcommand set changed. If that was deliberate, update this list \
+         in the same commit — that is the point of it."
+    );
+}
+
+/// `config` must not open the engine, and therefore must not create `database/`.
+///
+/// `CLAUDE.md` states it as a rule and the code respects it, but nothing could
+/// *observe* it: from inside the process the difference between "opened the
+/// engine" and "didn't" is invisible, while from outside it is one directory.
+#[test]
+fn config_never_opens_the_engine() {
+    let cli = Cli::new();
+    let scratch = cli.root.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    cli.try_run_in(&scratch, &["config", "show"]);
+
+    assert!(
+        !scratch.join("database").exists(),
+        "`config` created a database/ in the working directory"
+    );
+    assert!(
+        !cli.data_dir().join("database").exists(),
+        "`config` created a database/ in the data dir"
+    );
+}
+
+/// An empty library says so, and creates its data dir where it was told rather
+/// than where it happened to be run.
+#[test]
+fn an_empty_library_says_so_and_writes_only_where_told() {
+    let cli = Cli::new();
+    let scratch = cli.root.path().join("scratch2");
+    std::fs::create_dir_all(&scratch).unwrap();
+
+    cli.try_run_in(&scratch, &["list"]).has("library is empty");
+
+    assert!(cli.data_dir().join("database/app.db").is_file());
+    assert!(
+        !scratch.join("database").exists(),
+        "--data-dir was ignored and the cwd was used instead"
+    );
+}
+
+/// Pull a book off a fixture sidecar, set progress, read it back.
+///
+/// Three commands agreeing about one book, which is the contract worth pinning:
+/// `ko pull` reports an id, `progress` accepts it, `show` reflects what
+/// `progress` set. It also exercises the offline import path end to end through
+/// the binary — `epub` is unusable here, since a found ISBN goes to the
+/// providers and this suite makes no network calls.
+#[test]
+fn pull_then_progress_then_show_agree_about_the_same_book() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+
+    let listed = cli.run(&["list"]);
+    listed.has("A Rated Book");
+    let id = listed.book_id();
+
+    cli.run(&["progress", &id, "120"]);
+    cli.run(&["show", &id]).has("120").has("A Rated Book");
+}
+
+/// A confirmation prompt reading EOF must decline.
+///
+/// This is the one that would actually hurt. `prompt::confirm` treats anything
+/// but `y`/`yes` as no, so a closed stdin declines — but nothing asserted it,
+/// and the opposite reading (EOF as "assume yes") is a plausible thing for
+/// someone to change while making a command scriptable. It would destroy a
+/// library from a cron job.
+#[test]
+fn a_destructive_command_declines_when_it_cannot_ask() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+    let id = cli.run(&["list"]).book_id();
+
+    cli.run(&["rm", &id]).has("kept.");
+    cli.run(&["list"]).has("A Rated Book");
+
+    // …and with an explicit --yes it goes through, so the guard above is the
+    // prompt declining rather than `rm` being broken.
+    cli.run(&["rm", &id, "--yes"]);
+    cli.run(&["list"]).has("library is empty");
+}
+
+/// `reflect --show` on a book with no reflection must not create one — and, the
+/// part that is easy to get wrong, must not open a *reading* either.
+///
+/// `open_reflection` resolves its anchor through `ensure_reading`, so a
+/// read-only inspection that reached it would quietly start reading a book the
+/// user only looked at. `--show` exists so that opening one is never forced
+/// through an editor, and this is what keeps it read-only.
+///
+/// The second half — actually opening it — is not decoration. Without it the
+/// two `lacks` assertions above would also pass against a `reflect` that did
+/// nothing at all, which is the failure mode a negative assertion invites.
+#[test]
+fn reflect_show_creates_neither_a_note_nor_a_reading() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Unmatched.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+    let id = cli.run(&["list"]).book_id();
+
+    cli.run(&["reflect", &id, "--show"])
+        .has("no reflection yet");
+    cli.run(&["notes"]).lacks("Reflection:");
+    // `show` lists a book's readings; the pull created none, and looking at the
+    // reflection must not either.
+    cli.run(&["show", &id]).lacks("reading 1/1");
+
+    // Now open it for real, and both appear — so the absences above were real.
+    cli.run(&["reflect", &id, "--no-edit"]);
+    cli.run(&["notes"]).has("Reflection:");
+    cli.run(&["show", &id]).has("reading 1/1");
+}
+
+/// A selector that matches nothing is an error, and an under-specified sync
+/// writes nothing and names the flag that would.
+///
+/// Both are stated in `CLAUDE.md` as deliberate behaviour — "an unmatched
+/// `--book` selector is an error, never a silent no-op", and `ko sync` with
+/// neither `--all` nor `--book` "prints what would happen and names the flag
+/// rather than writing forty books unasked".
+#[test]
+fn a_bad_selector_fails_loudly_and_an_underspecified_sync_writes_nothing() {
+    let cli = Cli::new();
+    let bad = cli.try_run(&["show", "zzz-no-such-book"]);
+    assert!(!bad.ok, "an unmatched selector must not exit 0");
+    bad.has("zzz-no-such-book");
+
+    // A mount with one book on it, and a sync that was not told what to do.
+    let device = cli.root.path().join("mount");
+    place(&device, "Gen-Summary.sdr");
+
+    let vague = cli.run(&["ko", "sync", device.to_str().unwrap()]);
+    vague.has("--all");
+    cli.run(&["list"]).has("library is empty");
+}
