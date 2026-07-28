@@ -9,10 +9,7 @@ use anyhow::{Result, bail};
 use readingbuddy::{Engine, RatingScale};
 
 pub async fn scale(engine: &Engine, name: &str, min: f64, max: f64, step: f64) -> Result<()> {
-    let scale = engine
-        .storage
-        .put_rating_scale(name, min, max, step)
-        .await?;
+    let scale = engine.put_rating_scale(name, min, max, step).await?;
     println!(
         "scale '{}': {} .. {} step {}",
         scale.name, scale.min, scale.max, scale.step
@@ -27,18 +24,18 @@ pub async fn scale(engine: &Engine, name: &str, min: f64, max: f64, step: f64) -
 
 pub async fn map(engine: &Engine, name: Option<&str>, value: f64, goodreads: u8) -> Result<()> {
     let scale = resolve_scale(engine, name).await?;
-    engine.storage.map_rating(&scale, value, goodreads).await?;
+    engine.map_rating(&scale, value, goodreads).await?;
     println!("'{}' {value} → goodreads {goodreads}", scale.name);
     Ok(())
 }
 
 pub async fn show(engine: &Engine, name: Option<&str>) -> Result<()> {
-    let scales = engine.storage.list_rating_scales().await?;
+    let scales = engine.rating_scales().await?;
     if scales.is_empty() {
         println!("no rating scales — `readingbuddy rating scale --min 0 --max 5 --step 0.5`");
         return Ok(());
     }
-    let active = engine.storage.active_rating_scale().await?;
+    let active = engine.active_rating_scale().await?;
     for s in scales {
         if name.is_some_and(|n| n != s.name) {
             continue;
@@ -49,7 +46,7 @@ pub async fn show(engine: &Engine, name: Option<&str>) -> Result<()> {
             ""
         };
         println!("{}: {} .. {} step {}{marker}", s.name, s.min, s.max, s.step);
-        let map: Vec<(f64, u8)> = engine.storage.rating_map(s.id).await?;
+        let map: Vec<(f64, u8)> = engine.rating_map(s.id).await?;
         for p in s.points() {
             match map.iter().find(|(v, _)| *v == p) {
                 Some((_, g)) => println!("  {p:>6}  → goodreads {g}"),
@@ -64,11 +61,11 @@ pub async fn show(engine: &Engine, name: Option<&str>) -> Result<()> {
 
 async fn resolve_scale(engine: &Engine, name: Option<&str>) -> Result<RatingScale> {
     match name {
-        Some(n) => match engine.storage.rating_scale_by_name(n).await? {
+        Some(n) => match engine.rating_scale_by_name(n).await? {
             Some(s) => Ok(s),
             None => bail!("no rating scale called '{n}' — `readingbuddy rating show` lists them"),
         },
-        None => match engine.storage.active_rating_scale().await? {
+        None => match engine.active_rating_scale().await? {
             Some(s) => Ok(s),
             None => {
                 bail!("no rating scale — `readingbuddy rating scale --min 0 --max 5 --step 0.5`")
@@ -78,7 +75,7 @@ async fn resolve_scale(engine: &Engine, name: Option<&str>) -> Result<RatingScal
 }
 
 async fn mapped_summary(engine: &Engine, scale: &RatingScale) -> Result<String> {
-    let mapped = engine.storage.rating_map(scale.id).await?.len();
+    let mapped = engine.rating_map(scale.id).await?.len();
     let total = scale.points().len();
     Ok(match total.saturating_sub(mapped) {
         0 => "every point maps to goodreads".to_string(),

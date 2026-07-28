@@ -38,7 +38,7 @@ pub async fn list(engine: &Engine, limit: i64, sort: &str) -> Result<()> {
         "last-modified" | "last_modified" => BookSort::LastModified,
         other => bail!("unknown sort '{other}' (last-modified | title | progress)"),
     };
-    let books = engine.storage.list_books(limit, sort).await?;
+    let books = engine.list_books(limit, sort).await?;
     if books.is_empty() {
         println!("library is empty — try `readingbuddy search` or `readingbuddy epub`");
         return Ok(());
@@ -57,12 +57,12 @@ pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
         println!("  {:<14} {}", "notes", notes.len());
     }
     if let Some(id) = book.id {
-        let highlights = engine.storage.list_highlights(id).await?;
+        let highlights = engine.list_highlights(id).await?;
         if !highlights.is_empty() {
             println!("  {:<14} {}", "highlights", highlights.len());
         }
         // Rereads are first-class, so the history is a list rather than a count.
-        let readings = engine.storage.list_readings(id).await?;
+        let readings = engine.list_readings(id).await?;
         for (i, r) in readings.iter().enumerate() {
             println!("  {}", render::reading_line(r, i + 1, readings.len()));
         }
@@ -95,10 +95,9 @@ pub async fn progress(
         if finished {
             bail!("--reread and --finished contradict each other");
         }
-        engine.storage.reread(id).await?;
+        engine.reread(id).await?;
     }
     let updated = engine
-        .storage
         .update_progress(id, page, finished.then_some(true))
         .await?;
 
@@ -106,8 +105,8 @@ pub async fn progress(
     // Name the reading that was touched, not just the book: with rereads a book
     // carries several, and "progress → p.30" against the wrong one is a silent
     // mistake.
-    let readings = engine.storage.list_readings(id).await?;
-    let touched = engine.storage.active_reading(id).await?;
+    let readings = engine.list_readings(id).await?;
+    let touched = engine.active_reading(id).await?;
     let touched = touched.as_ref().or(readings.last());
     if let Some(r) = touched
         && let Some(nth) = readings.iter().position(|x| x.id == r.id)
@@ -173,7 +172,7 @@ pub async fn merge(
 pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("stored book has id");
-    let hs = engine.storage.list_highlights(id).await?;
+    let hs = engine.list_highlights(id).await?;
     if hs.is_empty() {
         println!(
             "no highlights for {} — try `readingbuddy ko import`",

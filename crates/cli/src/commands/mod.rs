@@ -40,7 +40,7 @@ pub async fn resolve_one(engine: &Engine, selector: &str) -> Result<Book> {
 /// makes you look an id up first.
 pub async fn resolve_note(engine: &Engine, selector: &str) -> Result<NoteRecord> {
     if let Ok(id) = selector.parse::<i64>()
-        && let Some(note) = engine.storage.get_note(id).await?
+        && let Some(note) = engine.get_note(id).await?
     {
         return Ok(note);
     }

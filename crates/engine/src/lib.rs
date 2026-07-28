@@ -24,6 +24,7 @@ pub mod storage;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use reqwest::Client;
 
@@ -66,10 +67,47 @@ use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
 use providers::{MetadataProvider, ProviderBook};
 
+fn build_providers(client: &Client, key: Option<String>) -> Vec<Box<dyn MetadataProvider>> {
+    vec![
+        Box::new(OpenLibraryProvider::new(client.clone())),
+        Box::new(GoogleBooksProvider::new(client.clone(), key)),
+    ]
+}
+
+/// Take a lock, and take it back off a poisoned one.
+///
+/// A panic somewhere else must not turn every later search into a panic here:
+/// the engine is a library, and neither of the two values behind these locks has
+/// an invariant a half-finished write could break — each is replaced wholesale
+/// or not at all.
+fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(|e| e.into_inner())
+}
+
 pub struct Engine {
-    pub storage: Storage,
-    pub config: EngineConfig,
-    providers: Vec<Box<dyn MetadataProvider>>,
+    /// The storage boundary. **Private since item 14** — the facade is what a
+    /// frontend talks to, and `pub storage` was the hole every frontend reached
+    /// through instead. [`Engine::storage`] still exists for the engine's own
+    /// integration tests, but only behind the `internals` feature.
+    storage: Storage,
+    config: EngineConfig,
+    /// The provider list, behind a lock because [`Engine::set_google_api_key`]
+    /// rebuilds it at runtime and item 14 needs that to happen through `&self`.
+    ///
+    /// `Arc` inside the lock rather than a guard held across the await: a
+    /// federated search takes seconds, and a read guard held that long would
+    /// make a key change wait for it. Cloning the `Arc` is one refcount bump
+    /// and the guard is dropped before anything is awaited.
+    providers: RwLock<Arc<Vec<Box<dyn MetadataProvider>>>>,
+    /// The **live** Google Books key. `EngineConfig::google_api_key` is only the
+    /// value it was seeded with — after a `set_google_api_key` the two disagree,
+    /// which is why nothing outside this module may read the config's copy and
+    /// why [`Engine::google_api_key`] is the accessor.
+    google_api_key: RwLock<Option<String>>,
     client: Client,
     /// Which calibre tools this machine has, resolved **once per run**.
     ///
@@ -95,34 +133,86 @@ impl Engine {
             .user_agent(concat!("readingbuddy/", env!("CARGO_PKG_VERSION")))
             .build()?;
         let storage = Storage::connect(&config.db_url).await?;
-        let providers: Vec<Box<dyn MetadataProvider>> = vec![
-            Box::new(OpenLibraryProvider::new(client.clone())),
-            Box::new(GoogleBooksProvider::new(
-                client.clone(),
-                config.google_api_key.clone(),
-            )),
-        ];
+        let key = config.google_api_key.clone();
+        let providers = build_providers(&client, key.clone());
         // Once, here — not once per book on a library import, which would be a
         // PATH sweep per book for an answer that cannot change mid-run.
         let calibre = Calibre::detect(config.calibre_bin_dir.as_deref());
         Ok(Engine {
             storage,
             config,
-            providers,
+            providers: RwLock::new(Arc::new(providers)),
+            google_api_key: RwLock::new(key),
             client,
             calibre,
         })
     }
 
+    // ---- the seam: storage, config, and what is deliberately not exposed ----
+
+    /// The storage boundary, for the engine's **own** integration tests.
+    ///
+    /// Behind a feature so it cannot be a frontend's escape hatch. `tests/` is a
+    /// separate crate, so it cannot reach a `pub(crate)` field, and giving every
+    /// `Storage` method a facade twin purely to satisfy a test would bloat the
+    /// facade with surface no product ever calls — which is the opposite of what
+    /// item 14 is for. The feature is the honest middle: the door exists, and
+    /// only a test build has the key.
+    #[cfg(any(test, feature = "internals"))]
+    #[doc(hidden)]
+    pub fn storage(&self) -> &Storage {
+        &self.storage
+    }
+
+    /// Where the database is. A frontend shows this on a settings screen; it is
+    /// not a handle to anything.
+    pub fn db_url(&self) -> &str {
+        &self.config.db_url
+    }
+
+    pub fn images_dir(&self) -> &Path {
+        &self.config.images_dir
+    }
+
+    pub fn vault_dir(&self) -> &Path {
+        &self.config.vault_dir
+    }
+
+    pub fn files_dir(&self) -> &Path {
+        &self.config.files_dir
+    }
+
+    pub fn log_dir(&self) -> &Path {
+        &self.config.log_dir
+    }
+
+    /// The Google Books key in force **now**, which after a runtime change is
+    /// not the one `EngineConfig` was built with.
+    ///
+    /// Six narrow accessors rather than one `config()` returning `&EngineConfig`
+    /// precisely because of this field: a struct getter would hand out the stale
+    /// copy beside the live one and there would be no way to tell them apart at
+    /// the call site.
+    pub fn google_api_key(&self) -> Option<String> {
+        read(&self.google_api_key).clone()
+    }
+
     /// Swap in a new Google Books API key (or clear it) and rebuild the
     /// provider list so the change is live for the next search — frontends set
     /// this when the user enters a key at runtime.
-    pub fn set_google_api_key(&mut self, key: Option<String>) {
-        self.config.google_api_key = key.clone();
-        self.providers = vec![
-            Box::new(OpenLibraryProvider::new(self.client.clone())),
-            Box::new(GoogleBooksProvider::new(self.client.clone(), key)),
-        ];
+    ///
+    /// `&self`, not `&mut self`: item 14's transport hands the same engine to
+    /// several connections at once through an `Arc`, and `&mut` on the facade is
+    /// a method no shared owner can ever call.
+    pub fn set_google_api_key(&self, key: Option<String>) {
+        *write(&self.google_api_key) = key.clone();
+        *write(&self.providers) = Arc::new(build_providers(&self.client, key));
+    }
+
+    /// The provider list as of this instant. Cloned out of the lock so nothing
+    /// holds a guard across an await.
+    fn providers(&self) -> Arc<Vec<Box<dyn MetadataProvider>>> {
+        read(&self.providers).clone()
     }
 
     // ---- metadata search ---------------------------------------------------
@@ -137,7 +227,8 @@ impl Engine {
             req.isbn =
                 Some(normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.clone()))?);
         }
-        search::federated_search(&self.providers, &req).await
+        let providers = self.providers();
+        search::federated_search(&providers, &req).await
     }
 
     /// Direct edition lookup by ISBN, merging fields across providers.
@@ -145,7 +236,8 @@ impl Engine {
     pub async fn lookup_isbn(&self, raw: &str) -> Result<Option<Book>> {
         let isbn = normalize_isbn(raw).ok_or_else(|| EngineError::InvalidIsbn(raw.to_string()))?;
         let mut found: Vec<ProviderBook> = Vec::new();
-        for p in &self.providers {
+        let providers = self.providers();
+        for p in providers.iter() {
             match p.by_isbn(&isbn).await {
                 Ok(Some(pb)) => found.push(pb),
                 Ok(None) => {}
@@ -175,6 +267,25 @@ impl Engine {
             .get_book(id)
             .await?
             .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
+    }
+
+    /// The library, newest-touched first unless told otherwise.
+    pub async fn list_books(&self, limit: i64, sort: BookSort) -> Result<Vec<Book>> {
+        self.storage.list_books(limit, sort).await
+    }
+
+    /// One book by its internal id. [`Engine::resolve_books`] is what a
+    /// user-typed selector goes through; this is the id path.
+    pub async fn get_book(&self, id: i64) -> Result<Option<Book>> {
+        self.storage.get_book(id).await
+    }
+
+    /// The shelf names another system minted for this book. **Inert
+    /// provenance** — nothing reads these to decide anything, and collections
+    /// are deliberately still deferred (`docs/decisions.md`); they are here so
+    /// that design can be made against real shelf names.
+    pub async fn book_tags(&self, book_id: i64) -> Result<Vec<BookTag>> {
+        self.storage.book_tags(book_id).await
     }
 
     /// What you are reading: one row per **open** reading, most-recently-touched
@@ -252,6 +363,74 @@ impl Engine {
             self.storage.upsert_book(book).await?;
         }
         Ok(Some(path))
+    }
+
+    /// [`Engine::download_cover`] for a book that is already stored.
+    ///
+    /// The `&mut Book` version is the one the CLI's add-flow wants: it is
+    /// holding an unsaved candidate and needs the path written back onto it.
+    /// Every *other* caller has an id and wants the stored row updated — and a
+    /// `&mut` domain type is the shape item 14 names as not crossing a
+    /// transport, since the mutation is the return value.
+    pub async fn fetch_cover(&self, book_id: i64) -> Result<Option<PathBuf>> {
+        let mut book = self
+            .storage
+            .get_book(book_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
+        self.download_cover(&mut book).await
+    }
+
+    // ---- readings ----------------------------------------------------------
+
+    /// Every reading of this book, oldest first. A reread is a row, not a flag,
+    /// so this is a history rather than a count.
+    pub async fn list_readings(&self, book_id: i64) -> Result<Vec<Reading>> {
+        self.storage.list_readings(book_id).await
+    }
+
+    /// One reading by id.
+    pub async fn get_reading(&self, id: i64) -> Result<Option<Reading>> {
+        self.storage.get_reading(id).await
+    }
+
+    /// The book's open reading, if it has one. At most one can exist —
+    /// `idx_readings_one_open` makes that an invariant.
+    pub async fn active_reading(&self, book_id: i64) -> Result<Option<Reading>> {
+        self.storage.active_reading(book_id).await
+    }
+
+    /// Write reading progress and return the book with its projections
+    /// refreshed. Opens a reading when none is open.
+    pub async fn update_progress(
+        &self,
+        book_id: i64,
+        page: Option<i64>,
+        finished: Option<bool>,
+    ) -> Result<Book> {
+        self.storage.update_progress(book_id, page, finished).await
+    }
+
+    /// Close the open reading and start a fresh one. Returns its id.
+    pub async fn reread(&self, book_id: i64) -> Result<i64> {
+        self.storage.reread(book_id).await
+    }
+
+    // ---- highlights --------------------------------------------------------
+
+    /// This book's highlights, device-owned fields and all.
+    pub async fn list_highlights(&self, book_id: i64) -> Result<Vec<Highlight>> {
+        self.storage.list_highlights(book_id).await
+    }
+
+    /// Write **our** annotation on a highlight — the column beside `ko_note`
+    /// that an import never touches.
+    ///
+    /// New surface, and the one genuine gap the facade audit turned up: the
+    /// ownership seam of migration `0004` gave the reader a field of their own
+    /// and then gave no frontend a way to write it.
+    pub async fn set_annotation(&self, highlight_id: i64, annotation: Option<&str>) -> Result<()> {
+        self.storage.set_annotation(highlight_id, annotation).await
     }
 
     // ---- epub import -------------------------------------------------------
@@ -450,6 +629,29 @@ impl Engine {
         self.storage.search_notes(query, limit).await
     }
 
+    /// One note by id.
+    pub async fn get_note(&self, note_id: i64) -> Result<Option<NoteRecord>> {
+        self.storage.get_note(note_id).await
+    }
+
+    /// This reading's note of that kind, if it has one. `kind` is
+    /// [`NoteKind::as_str`]; the pair `idx_one_reflection`/`idx_one_review`
+    /// makes "one of each per reading" an invariant, so this is at most one row.
+    pub async fn note_for_reading(
+        &self,
+        reading_id: i64,
+        kind: &str,
+    ) -> Result<Option<NoteRecord>> {
+        self.storage.note_for_reading(reading_id, kind).await
+    }
+
+    /// Where a note's markdown lives. Derived from the row against the vault
+    /// root — `NoteRecord::file_path` is relative, and every caller that joined
+    /// it by hand had to reach `config.vault_dir` to do so.
+    pub fn note_path(&self, note: &NoteRecord) -> PathBuf {
+        self.config.vault_dir.join(&note.file_path)
+    }
+
     /// What this note links **out** to: each `[[wikilink]]` its body wrote, and
     /// the note it resolves to when one exists.
     ///
@@ -471,7 +673,7 @@ impl Engine {
 
     /// The body text of a note (its markdown minus the frontmatter header).
     pub fn note_body(&self, note: &NoteRecord) -> Result<String> {
-        let file = self.config.vault_dir.join(&note.file_path);
+        let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
         let (_, body) = notes::frontmatter_and_body(&content);
         Ok(body.trim_end().to_string())
@@ -484,7 +686,7 @@ impl Engine {
     /// be: it is opened empty and written afterwards, so edges computed only at
     /// creation would leave it with none.
     pub async fn update_note_body(&self, note: &NoteRecord, body: &str) -> Result<()> {
-        let file = self.config.vault_dir.join(&note.file_path);
+        let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
         let (header, _) = notes::frontmatter_and_body(&content);
         std::fs::write(&file, format!("{header}{}\n", body.trim_end()))?;
@@ -500,7 +702,7 @@ impl Engine {
     /// Delete a note: remove its markdown file from the vault, then its DB row
     /// and FTS entry. A missing file is not an error (the DB row still goes).
     pub async fn delete_note(&self, note: &NoteRecord) -> Result<()> {
-        let file = self.config.vault_dir.join(&note.file_path);
+        let file = self.note_path(note);
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -512,7 +714,7 @@ impl Engine {
     /// Re-read a note file from disk and refresh its FTS body (e.g. after an
     /// external Obsidian edit).
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {
-        let file = self.config.vault_dir.join(&note.file_path);
+        let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
         let (_, body) = notes::parse_frontmatter(&content);
         self.storage
@@ -752,11 +954,74 @@ impl Engine {
         }
     }
 
+    /// This review's rating, raw value and scale both — never only the value,
+    /// which without its scale means nothing.
+    pub async fn review_rating(&self, note_id: i64) -> Result<Option<Rating>> {
+        self.storage.review_rating(note_id).await
+    }
+
+    /// Unrate a review. False when it had no rating, so a repeat call is a
+    /// no-op rather than an error.
+    pub async fn clear_review_rating(&self, note_id: i64) -> Result<bool> {
+        self.storage.clear_review_rating(note_id).await
+    }
+
+    // ---- rating scales -----------------------------------------------------
+    //
+    // Scale admin had no facade at all: `rating scale|map|show` was written
+    // entirely against `engine.storage`, which is three of the reasons item 14
+    // exists in one command.
+
+    /// Define a scale, or redefine an existing one by name. A **new** scale
+    /// becomes the default; redefining one leaves the flag alone.
+    pub async fn put_rating_scale(
+        &self,
+        name: &str,
+        min: f64,
+        max: f64,
+        step: f64,
+    ) -> Result<RatingScale> {
+        self.storage.put_rating_scale(name, min, max, step).await
+    }
+
+    /// Every scale the library knows.
+    pub async fn rating_scales(&self) -> Result<Vec<RatingScale>> {
+        self.storage.list_rating_scales().await
+    }
+
+    /// The scale a new rating is given on — the one flagged `is_default`, with
+    /// deliberately no ordering fallback.
+    pub async fn active_rating_scale(&self) -> Result<Option<RatingScale>> {
+        self.storage.active_rating_scale().await
+    }
+
+    pub async fn rating_scale_by_name(&self, name: &str) -> Result<Option<RatingScale>> {
+        self.storage.rating_scale_by_name(name).await
+    }
+
+    /// What this scale's values mean on Goodreads' integer 0–5. An **explicit
+    /// lookup table**; a point with no entry is reported, never rounded.
+    pub async fn rating_map(&self, scale_id: i64) -> Result<Vec<(f64, u8)>> {
+        self.storage.rating_map(scale_id).await
+    }
+
+    /// Add one entry to that table.
+    pub async fn map_rating(&self, scale: &RatingScale, value: f64, goodreads: u8) -> Result<()> {
+        self.storage.map_rating(scale, value, goodreads).await
+    }
+
+    // ---- citations ---------------------------------------------------------
+
     /// Cite a highlight from a note — by reference, so the citation stays live
     /// when a device refresh rewrites the highlight's device-owned fields.
     pub async fn cite(&self, note_id: i64, highlight_id: i64) -> Result<()> {
         self.storage.add_citation(note_id, highlight_id).await?;
         Ok(())
+    }
+
+    /// Drop a citation. False when it was not there.
+    pub async fn uncite(&self, note_id: i64, highlight_id: i64) -> Result<bool> {
+        self.storage.remove_citation(note_id, highlight_id).await
     }
 
     pub async fn citations_for(&self, note_id: i64) -> Result<Vec<Highlight>> {

@@ -141,7 +141,7 @@ async fn the_recorded_export_lands_where_it_should() {
     // `read`, once, with a date and a review and a rating.
     let pachinko = book(&engine, "Pachinko").await;
     let readings = engine
-        .storage
+        .storage()
         .list_readings(pachinko.id.unwrap())
         .await
         .unwrap();
@@ -154,7 +154,11 @@ async fn the_recorded_export_lands_where_it_should() {
 
     // `Read Count 3` really is three readings.
     let veg = book(&engine, "The Vegetarian").await;
-    let readings = engine.storage.list_readings(veg.id.unwrap()).await.unwrap();
+    let readings = engine
+        .storage()
+        .list_readings(veg.id.unwrap())
+        .await
+        .unwrap();
     assert_eq!(readings.len(), 3, "Read Count 3 means three readings");
     assert!(
         readings.iter().all(|r| r.started_at.is_none()),
@@ -167,7 +171,7 @@ async fn the_recorded_export_lands_where_it_should() {
     // `currently-reading` is an open reading.
     let kokoro = book(&engine, "Kokoro").await;
     let readings = engine
-        .storage
+        .storage()
         .list_readings(kokoro.id.unwrap())
         .await
         .unwrap();
@@ -181,7 +185,7 @@ async fn the_recorded_export_lands_where_it_should() {
     let left = book(&engine, "The Left Hand of Darkness").await;
     assert!(
         engine
-            .storage
+            .storage()
             .list_readings(left.id.unwrap())
             .await
             .unwrap()
@@ -190,7 +194,7 @@ async fn the_recorded_export_lands_where_it_should() {
     assert_eq!(report.books[3].rating, None);
 
     // `Bookshelves` are inert provenance, raw value and all.
-    let tags = engine.storage.book_tags(left.id.unwrap()).await.unwrap();
+    let tags = engine.storage().book_tags(left.id.unwrap()).await.unwrap();
     assert_eq!(
         tags.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>(),
         vec!["sci-fi", "to-read"]
@@ -329,7 +333,7 @@ async fn a_dry_run_writes_nothing() {
     );
     assert!(
         engine
-            .storage
+            .storage()
             .list_books(50, readingbuddy::BookSort::Title)
             .await
             .unwrap()
@@ -413,7 +417,7 @@ async fn a_rating_on_our_own_scale_is_not_overwritten() {
             .any(|d| matches!(d.kind, DiagnosticKind::GoodreadsRatingDiverged { .. }))
     );
     let kept = engine
-        .storage
+        .storage()
         .review_rating(review.id)
         .await
         .unwrap()
@@ -437,7 +441,7 @@ async fn undatable_rereads_are_reported_not_dropped_in_silence() {
 
     let salt = book(&engine, "Salt").await;
     let readings = engine
-        .storage
+        .storage()
         .list_readings(salt.id.unwrap())
         .await
         .unwrap();
@@ -478,8 +482,13 @@ async fn an_unmapped_rating_skips_its_row_and_says_why() {
         "{warnings:?}"
     );
     // And the fix is one command away, so mapping it brings the row back.
-    let scale = engine.storage.active_rating_scale().await.unwrap().unwrap();
-    engine.storage.map_rating(&scale, 4.5, 5).await.unwrap();
+    let scale = engine
+        .storage()
+        .active_rating_scale()
+        .await
+        .unwrap()
+        .unwrap();
+    engine.storage().map_rating(&scale, 4.5, 5).await.unwrap();
     let (csv, warnings) = engine.export_goodreads().await.unwrap();
     assert!(csv.contains("Pachinko"));
     assert!(warnings.is_empty());
@@ -581,14 +590,14 @@ async fn book(engine: &Engine, selector: &str) -> Book {
 async fn snapshot(engine: &Engine) -> Vec<String> {
     let mut out = Vec::new();
     for b in engine
-        .storage
+        .storage()
         .list_books(1000, readingbuddy::BookSort::Title)
         .await
         .unwrap()
     {
         let id = b.id.unwrap();
-        let readings = engine.storage.list_readings(id).await.unwrap();
-        let tags = engine.storage.book_tags(id).await.unwrap();
+        let readings = engine.storage().list_readings(id).await.unwrap();
+        let tags = engine.storage().book_tags(id).await.unwrap();
         let mut notes: Vec<String> = engine
             .list_notes(Some(id))
             .await
