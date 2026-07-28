@@ -54,28 +54,82 @@ jobs:
       # gate that lets a change to `SearchOutcome` break the CLI is not a gate.
       # `-D warnings` lives here rather than in RUSTFLAGS — as an env var it
       # would invalidate the cache against every local build.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      #
+      # `--locked` on both: Cargo.lock is committed, and `epub = "=2.1.4"` is
+      # pinned exactly *because* a lockfile once picked up a breaking change in a
+      # patch release. Without --locked nothing detects that recurring.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
-    name: engine tests (${{ matrix.os }})
+    name: tests — ${{ matrix.scope }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # macOS earns its slot: it's the dev machine, and both C dependencies
-        # (vendored lua54, libsqlite3-sys) build differently there. Free here
-        # because the repo is public; on a private repo these bill at 10x and
-        # should move to the scheduled workflow instead.
-        os: [ubuntu-latest, macos-latest]
+        # Asymmetric on purpose.
+        #
+        # ubuntu runs the WHOLE workspace. The TUI's suite used to be out of
+        # scope here, on the argument that the engine is what this gates — but
+        # that only held while every TUI change was written and run by hand on
+        # the dev machine. It no longer is, and the suite contains
+        # `every_screen_draws_at_every_size`, which is the one thing standing
+        # between a layout bug and a panic in the user's tmux pane. It is
+        # headless (ratatui TestBackend), so it needs nothing a runner lacks.
+        #
+        # macOS stays engine-only. It earns its slot for the two C dependencies
+        # that build differently there (vendored lua54, libsqlite3-sys), not for
+        # layout arithmetic — running the ray tracer twice buys nothing. Free
+        # here because the repo is public; on a private repo these bill at 10x
+        # and should move to the scheduled workflow instead.
+        include:
+          - os: ubuntu-latest
+            scope: whole workspace
+            args: --workspace
+          - os: macos-latest
+            scope: engine
+            args: -p readingbuddy
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
 
-      # Engine only. The TUI's render/layout suite is deliberately out of scope
-      # for this gate; its *compilation* is covered by the clippy job above.
-      - run: cargo nextest run -p readingbuddy
+      - run: cargo nextest run ${{ matrix.args }} --locked
+
+  migrations:
+    name: migrations are append-only
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The diff needs the merge base, which the default shallow clone
+          # does not have.
+          fetch-depth: 0
+
+      # CLAUDE.md's "never edit an applied migration" as a check rather than a
+      # convention. sqlx records a checksum of every migration it has applied, so
+      # editing one in place breaks every database that already ran it — with an
+      # error that names the checksum and not the cause. Parallel branches are
+      # what make this worth mechanising: the rule is easy to keep in one thread
+      # and easy to forget across three.
+      #
+      # M, D and R alike: a migration that is modified, deleted, or renamed is a
+      # migration whose recorded checksum no longer describes it.
+      - name: refuse a modified, deleted or renamed migration
+        run: |
+          changed=$(git diff --diff-filter=MDR --name-only \
+            "${{ github.event.pull_request.base.sha }}...HEAD" \
+            -- crates/engine/migrations/)
+          if [ -n "$changed" ]; then
+            echo "::error::an applied migration was changed, not added:"
+            echo "$changed"
+            echo
+            echo "Add a new numbered migration instead. See CLAUDE.md, Conventions."
+            exit 1
+          fi
+          echo "migrations are append-only in this PR."
 
   deny:
     name: cargo-deny

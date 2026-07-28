@@ -69,6 +69,46 @@ async fn old_book(
     .get("id")
 }
 
+/// Version numbers are a cross-branch resource, and this is the only thing that
+/// notices when two of them collide.
+///
+/// Threads run in parallel, each owning a migration, and each picks its number
+/// from what is on `main` when it starts. Two threads that both pick `0008` do
+/// not conflict in git — the filenames differ past the number — so the collision
+/// arrives as a second migration sharing a version, which sqlx applies in
+/// whatever order the filenames sort in and records under one version. The
+/// symptom lands much later and somewhere else.
+///
+/// Contiguity rather than mere uniqueness, because a *gap* is the same mistake
+/// caught earlier: it means a number was claimed by a branch that has not merged
+/// yet, and merging out of numeric order is what the build order forbids.
+///
+/// One caveat, and it is why this cannot be the *only* guard: `sqlx::migrate!`
+/// is a compile-time macro, and dropping a new `.sql` into the directory does
+/// not on its own invalidate this test binary — so locally the check can appear
+/// to pass until something else forces a rebuild. CI always compiles from a
+/// fresh checkout, and the `migrations` job in `ci.yml` catches the other half
+/// (an *edited* migration) straight from the diff.
+#[test]
+fn migration_versions_are_contiguous_from_one() {
+    let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
+
+    assert!(
+        !versions.is_empty(),
+        "no migrations found — sqlx::migrate! resolved an empty directory"
+    );
+
+    let expected: Vec<i64> = (1..=versions.len() as i64).collect();
+    assert_eq!(
+        versions,
+        expected,
+        "migration versions must be contiguous 1..={}, got {versions:?}. \
+         A duplicate means two branches claimed the same number; a gap means one \
+         claimed a number and has not merged.",
+        versions.len()
+    );
+}
+
 #[tokio::test]
 async fn the_backfill_round_trips_every_shape_of_progress() {
     let mut conn = before_readings().await;

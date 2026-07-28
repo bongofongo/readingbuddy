@@ -110,12 +110,18 @@ fmt-check: ## Verify formatting without writing
 
 check: fmt-check lint test ## Local gate: fmt + lint + whole-workspace test
 
-# What .github/workflows/ci.yml runs, in the same order. `check` above also runs
-# the TUI's suite; CI deliberately does not — the engine is what it gates. Keep
-# the two in step: a change here belongs in the workflow too.
-ci: fmt-check lint test-engine ## Reproduce the CI gate locally
+# What .github/workflows/ci.yml runs, in the same order — which now makes `ci`
+# and `check` the same three steps, since the gate widened to the whole
+# workspace on ubuntu. Kept as a separate target anyway: it is the name people
+# reach for, and the two will diverge again the moment the workflow grows a step
+# that has no local equivalent. Keep them in step — a change here belongs in the
+# workflow too.
+#
+# CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
+# explained in the workflow and is not worth reproducing locally.
+ci: fmt-check lint test ## Reproduce the CI gate locally
 
-test-engine: ## Engine tests only — the suite CI gates on
+test-engine: ## Engine tests only — CI's macOS leg, and the fast inner loop
 	$(RUN) -p readingbuddy
 
 corpus: ## Fetch Gutenberg epubs, generate tier-2 sidecars, run the corpus tests
