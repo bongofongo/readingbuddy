@@ -15,6 +15,7 @@ static MIGRATIONS: Migrator = sqlx::migrate!("./migrations");
 
 const READINGS: i64 = 5;
 const REFLECTION: i64 = 7;
+const NOTE_LINK_INDEX: i64 = 8;
 
 /// A connection migrated up to (but not including) `version`.
 async fn migrated_below(version: i64) -> SqliteConnection {
@@ -318,6 +319,58 @@ async fn a_reading_holds_one_reflection_and_one_review() {
             .execute(&mut conn)
             .await
             .expect("notes are unconstrained");
+    }
+}
+
+/// The plan for one of the two queries `0008` exists for.
+async fn plan(conn: &mut SqliteConnection, sql: &str) -> String {
+    sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .fetch_all(conn)
+        .await
+        .expect("query plan")
+        .iter()
+        .map(|r| r.get::<String, _>("detail"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `0008` adds two indexes and changes nothing else, so the only claim it can
+/// be judged on is that the planner reaches them.
+///
+/// Not ceremony. An index carries a collation and SQLite ignores one that does
+/// not match the comparison's, so the obvious
+/// `CREATE INDEX … ON note_links(target_title)` is BINARY and the
+/// `COLLATE NOCASE` back-resolution in `write_links` scans straight past it —
+/// an index that exists, reads correctly in the schema, and does nothing. The
+/// `before` half is what makes the `after` half evidence rather than a
+/// coincidence.
+#[tokio::test]
+async fn the_note_link_indexes_are_the_plan_the_planner_picks() {
+    // `Storage::backlinks`, and `write_links`' back-resolution.
+    const BACKLINKS: &str = "SELECT from_note FROM note_links WHERE to_note = 1";
+    const RESOLVE: &str = "UPDATE note_links SET to_note = 1 \
+         WHERE to_note IS NULL AND target_title = 'x' COLLATE NOCASE";
+
+    let mut conn = migrated_below(NOTE_LINK_INDEX).await;
+    for sql in [BACKLINKS, RESOLVE] {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains("SCAN"),
+            "before 0008 this must be a scan, or the test proves nothing: {detail}"
+        );
+    }
+
+    apply(&mut conn, NOTE_LINK_INDEX).await;
+
+    for (sql, index) in [
+        (BACKLINKS, "idx_note_links_to"),
+        (RESOLVE, "idx_note_links_target"),
+    ] {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains(index),
+            "expected {index} in the plan, got {detail}"
+        );
     }
 }
 
