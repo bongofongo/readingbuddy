@@ -196,6 +196,64 @@ pub enum InputContext {
     AccentHex,
 }
 
+/// One edge of the note graph, as one row of the links pane.
+///
+/// Both variants are the *same* edge set read from opposite ends — which is the
+/// reason `Storage::backlinks` refuses a dangling-by-title union, and the reason
+/// this enum has two variants rather than one with a direction flag: the two
+/// come from two engine calls and carry different things (an outbound edge may
+/// have no note at all).
+#[derive(Debug, Clone)]
+pub enum LinkRow {
+    /// This note links out. `to` is `None` for a **dangling** target: a
+    /// `[[wikilink]]` naming a note nobody has written. Kept as the text it is —
+    /// a forward reference resolves itself the moment that note exists, and
+    /// dropping it would lose the one thing it is for.
+    Out {
+        /// What to show: the target note's own title when it resolves, else the
+        /// wikilink text exactly as the body wrote it.
+        title: String,
+        to: Option<NoteRecord>,
+    },
+    /// Another note links here.
+    In(NoteRecord),
+}
+
+/// The graph around one note: what it links to, and what links back.
+///
+/// Attached to the Notes list rather than being a fifth `BookTab` — the graph is
+/// consulted while standing on a note (a reflection, most of the time, since
+/// that is the hub), and a tab would have to be entered from somewhere else and
+/// then told which note it meant.
+pub struct LinksPane {
+    /// The note the pane is centred on. Held whole, not by id, so the pane can
+    /// centre on a note that is not in this book's list at all — following a
+    /// link across books is the point of the graph.
+    pub note: NoteRecord,
+    /// Outbound rows first, then inbound. Grouped rather than interleaved, so
+    /// the two directions read as two answers even before the arrows are seen.
+    pub rows: Vec<LinkRow>,
+    pub state: ListState,
+}
+
+impl LinksPane {
+    pub fn out_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| matches!(r, LinkRow::Out { .. }))
+            .count()
+    }
+
+    pub fn in_count(&self) -> usize {
+        self.rows.len() - self.out_count()
+    }
+
+    /// The row the cursor is on, if the pane has any.
+    fn selected(&self) -> Option<&LinkRow> {
+        self.state.selected().and_then(|i| self.rows.get(i))
+    }
+}
+
 /// A composed-but-unsaved note, held while its optional page anchor is asked.
 pub struct PendingNote {
     pub book_id: Option<i64>,
@@ -310,6 +368,10 @@ pub struct App {
     pub status: Option<String>,
     pub input: Option<Input>,
     pub note_editor: Option<NoteDraft>,
+    /// The note graph around the selected note, when `L` has asked for it. It
+    /// replaces the Notes list in the section pane; it is **not** a modal, so it
+    /// is routed by the book view's own handler rather than by `dispatch_key`.
+    pub links: Option<LinksPane>,
     pub pending_note: Option<PendingNote>,
     /// A non-blank draft set aside while its discard is confirmed.
     pub pending_discard: Option<NoteDraft>,
@@ -376,6 +438,7 @@ impl App {
             status: None,
             input: None,
             note_editor: None,
+            links: None,
             pending_note: None,
             pending_discard: None,
             api_key: None,
@@ -447,6 +510,9 @@ impl App {
         self.book_tab = BookTab::Info;
         self.in_section = false;
         self.tab_state.select(None);
+        // A pane left open would show the previous book's graph under this
+        // book's title. Following a link *into* a book re-opens it afterwards.
+        self.links = None;
         self.screen = Screen::Book;
         self.status = None;
         self.dirty = true;
@@ -479,6 +545,11 @@ impl App {
             self.view = Some(self.load_view(book).await?);
             self.clamp_tab_selection();
         }
+        // Every mutation that reaches here can have moved the graph — saving a
+        // note rewrites its edges, and writing one titled for a dangling target
+        // resolves that target from the other side. A pane left as it was would
+        // be showing the answer to a question that has since changed.
+        self.refresh_links().await?;
         Ok(())
     }
 
@@ -689,7 +760,41 @@ impl App {
     /// section (Up/Down move its list, Esc/← returns to the menu). View-wide
     /// actions (note, progress, finish, export, spin) work in either mode.
     async fn handle_book(&mut self, action: Action) -> Result<()> {
+        // The links pane sits *in* the Notes list's place, so it takes the
+        // list's keys while it is open and leaves everything else alone: `n`
+        // still writes a note, `space` still stops the book. It is not a modal
+        // and so is not in `dispatch_key`'s priority chain — Esc backs out of it
+        // exactly one level, into the note list it replaced.
+        if self.links.is_some() {
+            match action {
+                // `ensure_panel` for the same reason the note list needs it: with
+                // the pane dismissed by tab these would otherwise move a cursor
+                // nobody can see.
+                Action::Up => {
+                    self.ensure_panel();
+                    self.step_links(-1);
+                    return Ok(());
+                }
+                Action::Down => {
+                    self.ensure_panel();
+                    self.step_links(1);
+                    return Ok(());
+                }
+                Action::Select | Action::Right => {
+                    self.ensure_panel();
+                    self.follow_link().await?;
+                    return Ok(());
+                }
+                Action::Back | Action::Left | Action::Links => {
+                    self.links = None;
+                    self.status = None;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match action {
+            Action::Links => self.open_links().await?,
             Action::ToggleOptions => self.show_options = !self.show_options,
             Action::Reset => {
                 self.reset_pose();
@@ -1271,8 +1376,169 @@ impl App {
         self.dirty = true;
     }
 
+    // ---- the links pane ----------------------------------------------------
+
+    /// Open the graph around the selected note.
+    ///
+    /// Only from inside the open Notes section: the pane is *about* a note, and
+    /// "which one?" has no answer standing anywhere else. Refusing with the way
+    /// in beats guessing at the most recent note, which would silently show the
+    /// graph of something the user was not looking at.
+    async fn open_links(&mut self) -> Result<()> {
+        let note = (self.book_tab == BookTab::Notes && self.in_section)
+            .then(|| self.selected_note())
+            .flatten();
+        match note {
+            Some(note) => {
+                // Asking for the graph is asking for the pane it draws in.
+                self.ensure_panel();
+                self.show_links_for(note).await
+            }
+            None => {
+                self.status = Some("open Notes and pick one — L then shows its links".into());
+                Ok(())
+            }
+        }
+    }
+
+    /// The note the Notes list is standing on.
+    fn selected_note(&self) -> Option<NoteRecord> {
+        self.tab_state
+            .selected()
+            .and_then(|i| self.view.as_ref().and_then(|v| v.notes.get(i)))
+            .cloned()
+    }
+
+    /// Centre the pane on `note`, reading both directions from the engine.
+    ///
+    /// Two calls, not one: they are the same edge set read from opposite ends,
+    /// and the engine keeps them apart precisely so neither side can claim an
+    /// edge the other denies.
+    async fn show_links_for(&mut self, note: NoteRecord) -> Result<()> {
+        let outgoing = self.engine.outgoing_links(note.id).await?;
+        let inbound = self.engine.backlinks(note.id).await?;
+        let mut rows: Vec<LinkRow> = outgoing
+            .into_iter()
+            .map(|l| LinkRow::Out {
+                // A resolved edge shows the target's own title; a dangling one
+                // has nothing but the text the body wrote, which is exactly what
+                // it is worth showing.
+                title: l
+                    .to
+                    .as_ref()
+                    .map_or_else(|| l.target_title.clone(), |n| n.title.clone()),
+                to: l.to,
+            })
+            .collect();
+        rows.extend(inbound.into_iter().map(LinkRow::In));
+
+        let mut state = ListState::default();
+        if !rows.is_empty() {
+            state.select(Some(0));
+        }
+        self.links = Some(LinksPane { note, rows, state });
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Re-read the open pane's graph after a mutation. A no-op when it is shut.
+    async fn refresh_links(&mut self) -> Result<()> {
+        let Some(note) = self.links.as_ref().map(|p| p.note.clone()) else {
+            return Ok(());
+        };
+        let cursor = self.links.as_ref().and_then(|p| p.state.selected());
+        self.show_links_for(note).await?;
+        // Keep the cursor where it was when the graph is still that long; the
+        // row under it may be a different edge, but jumping to the top on every
+        // save reads as the pane resetting itself.
+        if let (Some(pane), Some(i)) = (self.links.as_mut(), cursor)
+            && i < pane.rows.len()
+        {
+            pane.state.select(Some(i));
+        }
+        Ok(())
+    }
+
+    fn step_links(&mut self, delta: isize) {
+        let Some(pane) = self.links.as_mut() else {
+            return;
+        };
+        let len = pane.rows.len();
+        if len == 0 {
+            return;
+        }
+        let cur = pane.state.selected().unwrap_or(0) as isize;
+        pane.state
+            .select(Some((cur + delta).rem_euclid(len as isize) as usize));
+    }
+
+    /// Enter on a pane row: go to that note, or say why there is none.
+    ///
+    /// A dangling target is not a dead end and is not an error — it is the note
+    /// worth writing next. Saying so is the whole difference between a forward
+    /// reference and a broken link.
+    async fn follow_link(&mut self) -> Result<()> {
+        let Some(row) = self.links.as_ref().and_then(|p| p.selected()).cloned() else {
+            return Ok(());
+        };
+        match row {
+            LinkRow::Out { title, to: None } => {
+                self.status = Some(format!(
+                    "“{title}” has no note yet — write one and this link resolves itself"
+                ));
+                self.dirty = true;
+                Ok(())
+            }
+            LinkRow::Out { to: Some(note), .. } | LinkRow::In(note) => self.goto_note(note).await,
+        }
+    }
+
+    /// Follow the graph to `note`: its book, its row in the Notes list, and the
+    /// pane re-centred on it so the walk can continue.
+    ///
+    /// Crossing into another book is the point rather than an edge case —
+    /// `docs/decisions.md` has book-to-book connection running
+    /// reflection-to-reflection, so a link that could not leave its own book
+    /// would be a link that could not do its job.
+    async fn goto_note(&mut self, note: NoteRecord) -> Result<()> {
+        let here = self.view.as_ref().and_then(|v| v.book.id);
+        if let Some(target_book) = note.book_id
+            && here != Some(target_book)
+            && let Some(book) = self.engine.storage.get_book(target_book).await?
+        {
+            // Clears the pane and the tab state; both are set again below.
+            self.open_book(book).await?;
+        }
+        self.book_tab = BookTab::Notes;
+        self.in_section = true;
+        match self
+            .view
+            .as_ref()
+            .and_then(|v| v.notes.iter().position(|n| n.id == note.id))
+        {
+            Some(i) => {
+                self.tab_state.select(Some(i));
+                self.status = None;
+            }
+            // A note filed under no book (or under one that has since gone) has
+            // no row to stand on. The pane still centres on it — it holds the
+            // record whole — so the graph stays walkable either way.
+            None => {
+                self.status = Some(format!("“{}” is not filed under this book", note.title));
+            }
+        }
+        self.show_links_for(note).await
+    }
+
     /// Ask to delete the highlighted note — only in the open Notes section.
     fn ask_delete_selected_note(&mut self) {
+        // With the pane open the Notes list is not on screen, and after a
+        // cross-book jump its selection is not what the pane is showing either.
+        // `d` would then delete a note the user cannot see.
+        if self.links.is_some() {
+            self.dirty = false;
+            return;
+        }
         if self.book_tab != BookTab::Notes || !self.in_section {
             self.dirty = false;
             return;
@@ -2686,6 +2952,39 @@ mod tests {
             });
             terminal.draw(|f| ui::draw(f, app)).expect("draw editor");
             app.note_editor = None;
+            // With the links pane standing in for the Notes list — populated,
+            // then empty, since the two take different branches and 1x1 is where
+            // either one's arithmetic would go wrong. Hand-built like the
+            // candidate chooser above: the sweep stays synchronous, and what is
+            // being exercised is the layout, not the engine's query.
+            app.book_tab = BookTab::Notes;
+            app.in_section = true;
+            for rows in [
+                vec![
+                    LinkRow::Out {
+                        title: "Symphony".into(),
+                        to: Some(sample_note(2, "Symphony")),
+                    },
+                    LinkRow::Out {
+                        title: "Nowhere".into(),
+                        to: None,
+                    },
+                    LinkRow::In(sample_note(3, "Doctor Eleven")),
+                ],
+                Vec::new(),
+            ] {
+                let mut state = ListState::default();
+                if !rows.is_empty() {
+                    state.select(Some(0));
+                }
+                app.links = Some(LinksPane {
+                    note: sample_note(1, "Hub"),
+                    rows,
+                    state,
+                });
+                terminal.draw(|f| ui::draw(f, app)).expect("draw links");
+            }
+            app.links = None;
             // With the API-key modal open over the settings screen, at each stage.
             app.screen = Screen::Settings;
             for stage in [
@@ -2706,6 +3005,22 @@ mod tests {
                 terminal.draw(|f| ui::draw(f, app)).expect("draw api key");
             }
             app.api_key = None;
+        }
+    }
+
+    /// A note record with nothing but an id and a title — enough for a row.
+    fn sample_note(id: i64, title: &str) -> NoteRecord {
+        NoteRecord {
+            id,
+            book_id: Some(1),
+            reading_id: None,
+            highlight_id: None,
+            page: None,
+            location: None,
+            file_path: format!("book/{id}.md"),
+            title: title.into(),
+            kind: "note".into(),
+            created_at: None,
         }
     }
 
@@ -3131,6 +3446,265 @@ mod tests {
         app.clamp_tab_selection();
         app.handle(Action::Delete).await.expect("highlights d");
         assert!(app.confirm.is_none());
+    }
+
+    // ---- the links pane ----------------------------------------------------
+
+    /// A small graph in the open book, built through the real engine so the
+    /// edges are the ones `write_links` actually resolves.
+    ///
+    /// Order is load-bearing: `Symphony` exists *before* the hub links to it, so
+    /// that edge resolves at insert; `Nowhere` never exists, so its edge stays
+    /// text; `Doctor Eleven` is written last and links back at the hub by title.
+    /// Returns `(hub, symphony, inbound)` note ids.
+    async fn seed_graph(app: &mut App) -> (i64, i64, i64) {
+        let book_id = app.view.as_ref().and_then(|v| v.book.id);
+        let make = async |title: &str, body: &str| {
+            app.engine
+                .create_note(NewNoteInput {
+                    book_id,
+                    title: Some(title.into()),
+                    body: body.into(),
+                    ..NewNoteInput::default()
+                })
+                .await
+                .expect("note")
+                .id
+        };
+        let symphony = make("Symphony", "the travelling orchestra").await;
+        let hub = make("Hub", "See [[Symphony]] and [[Nowhere]].").await;
+        let inbound = make("Doctor Eleven", "Back to [[Hub]].").await;
+        app.reload_view().await.expect("reload");
+        (hub, symphony, inbound)
+    }
+
+    /// Seed the graph, stand on the hub in the Notes list, and press `L`.
+    async fn open_graph_pane(app: &mut App) -> (i64, i64, i64) {
+        let ids = seed_graph(app).await;
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        let i = app
+            .view
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .position(|n| n.id == ids.0)
+            .expect("hub is in the book's notes");
+        app.tab_state.select(Some(i));
+        app.handle(Action::Links).await.expect("open links");
+        ids
+    }
+
+    /// The two directions are two sets, not one list with a flag — and the
+    /// dangling target is in the outbound one rather than dropped.
+    #[tokio::test]
+    async fn the_pane_reads_both_directions_and_keeps_a_dangling_target() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        let (hub, symphony, inbound) = open_graph_pane(&mut app).await;
+
+        let pane = app.links.as_ref().expect("pane open");
+        assert_eq!(pane.note.id, hub);
+        assert_eq!((pane.out_count(), pane.in_count()), (2, 1));
+
+        // Outbound first, in the order the body wrote them.
+        match &pane.rows[0] {
+            LinkRow::Out { title, to: Some(n) } => {
+                assert_eq!(title, "Symphony");
+                assert_eq!(n.id, symphony);
+            }
+            other => panic!("first row is the resolved outbound link, got {other:?}"),
+        }
+        match &pane.rows[1] {
+            LinkRow::Out { title, to: None } => assert_eq!(title, "Nowhere"),
+            other => panic!("the dangling target is kept as text, got {other:?}"),
+        }
+        match &pane.rows[2] {
+            LinkRow::In(n) => assert_eq!(n.id, inbound),
+            other => panic!("inbound comes after outbound, got {other:?}"),
+        }
+    }
+
+    /// Enter on a dangling target says what it is. Doing nothing would make the
+    /// forward reference — the one row that is *about* a note not written yet —
+    /// the only dead end in the view.
+    #[tokio::test]
+    async fn a_dangling_target_names_itself_rather_than_doing_nothing() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        let (hub, _, _) = open_graph_pane(&mut app).await;
+
+        app.handle(Action::Down).await.expect("down"); // onto "Nowhere"
+        app.handle(Action::Select).await.expect("follow");
+
+        let status = app.status.clone().expect("said something");
+        assert!(status.contains("Nowhere"), "{status}");
+        assert_eq!(
+            app.links.as_ref().expect("pane still open").note.id,
+            hub,
+            "a dangling target must not move the pane"
+        );
+    }
+
+    /// Following a resolved edge lands on that note: selected in the list, and
+    /// the pane re-centred so the walk can carry on from there.
+    #[tokio::test]
+    async fn following_a_resolved_link_moves_to_that_note() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        let (hub, symphony, inbound) = open_graph_pane(&mut app).await;
+
+        // Row 0 is the resolved outbound edge.
+        app.handle(Action::Select).await.expect("follow out");
+        let pane = app.links.as_ref().expect("pane open");
+        assert_eq!(pane.note.id, symphony);
+        let selected = app
+            .tab_state
+            .selected()
+            .and_then(|i| app.view.as_ref().unwrap().notes.get(i))
+            .map(|n| n.id);
+        assert_eq!(selected, Some(symphony), "the notes list follows too");
+
+        // Symphony is linked to from the hub and from the book's seeded note,
+        // so walking back inbound is how the graph is read from the other end.
+        let pane = app.links.as_ref().unwrap();
+        assert_eq!(pane.out_count(), 0);
+        assert!(pane.in_count() >= 1);
+        let back: Vec<i64> = pane
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                LinkRow::In(n) => Some(n.id),
+                _ => None,
+            })
+            .collect();
+        assert!(back.contains(&hub), "the hub links here: {back:?}");
+        assert!(!back.contains(&inbound));
+    }
+
+    /// Esc backs out one level — into the note list the pane replaced, not out
+    /// of the section and not out of the book.
+    #[tokio::test]
+    async fn esc_closes_the_pane_back_onto_the_note_list() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        open_graph_pane(&mut app).await;
+
+        app.handle(Action::Back).await.expect("esc");
+        assert!(app.links.is_none());
+        assert!(app.in_section && app.book_tab == BookTab::Notes);
+        assert_eq!(app.screen, Screen::Book);
+
+        // And `L` is a toggle from the other side as well.
+        app.handle(Action::Links).await.expect("reopen");
+        assert!(app.links.is_some());
+        app.handle(Action::Links).await.expect("close");
+        assert!(app.links.is_none());
+
+        // Opening it with the section pane dismissed brings the pane back —
+        // a cursor moving inside a panel nobody can see is a dead end wearing
+        // the costume of a working key.
+        app.layout.panel = false;
+        app.handle(Action::Links).await.expect("open with no panel");
+        assert!(app.links.is_some() && app.layout.panel);
+    }
+
+    /// `L` outside the open Notes section has no note to be about, and says so
+    /// with the way in rather than guessing at one.
+    #[tokio::test]
+    async fn the_pane_refuses_with_a_next_move_when_no_note_is_selected() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+
+        app.book_tab = BookTab::Info;
+        app.in_section = true;
+        app.handle(Action::Links).await.expect("L on Info");
+        assert!(app.links.is_none());
+        assert!(app.status.as_deref().is_some_and(|s| s.contains("Notes")));
+
+        // On the section menu (not entered) it is the same answer.
+        app.status = None;
+        app.book_tab = BookTab::Notes;
+        app.in_section = false;
+        app.handle(Action::Links).await.expect("L on the menu");
+        assert!(app.links.is_none());
+        assert!(app.status.is_some());
+    }
+
+    /// A note with no edges at all still says something. An empty box is the
+    /// shape of a dead end even when nothing is wrong.
+    #[tokio::test]
+    async fn a_note_with_no_links_renders_a_reason_rather_than_a_blank_box() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        let lonely = app
+            .engine
+            .create_note(NewNoteInput {
+                book_id: app.view.as_ref().and_then(|v| v.book.id),
+                title: Some("Alone".into()),
+                body: "no links in this one".into(),
+                ..NewNoteInput::default()
+            })
+            .await
+            .expect("note");
+        app.reload_view().await.expect("reload");
+        let i = app
+            .view
+            .as_ref()
+            .unwrap()
+            .notes
+            .iter()
+            .position(|n| n.id == lonely.id)
+            .expect("in the list");
+        app.book_tab = BookTab::Notes;
+        app.in_section = true;
+        app.tab_state.select(Some(i));
+        app.handle(Action::Links).await.expect("open links");
+
+        assert!(app.links.as_ref().expect("pane").rows.is_empty());
+        assert!(
+            screen_text(&mut app, 110, 32).contains("wikilink"),
+            "the empty pane must explain what makes an edge"
+        );
+    }
+
+    /// The rendered pane, which is where "distinguishable" has to be true: the
+    /// direction is an arrow in the text and the dangling target is words, so
+    /// both survive a `REVERSED` selection and a monochrome terminal.
+    #[tokio::test]
+    async fn the_rendered_pane_distinguishes_the_directions_and_the_dangling_row() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        app.open_book(book).await.expect("open");
+        open_graph_pane(&mut app).await;
+
+        let text = screen_text(&mut app, 110, 32);
+        assert!(text.contains("→ Symphony"), "{text}");
+        assert!(text.contains("→ Nowhere"), "{text}");
+        assert!(text.contains("(no note yet)"), "{text}");
+        assert!(text.contains("← Doctor Eleven"), "{text}");
+        assert!(text.contains("2 out · 1 in"), "{text}");
+        // The section header renames itself, so the pane is not mistaken for the
+        // note list it stands in for.
+        assert!(text.contains("Links"), "{text}");
+    }
+
+    /// The whole rendered buffer as one string, rows joined by newlines.
+    fn screen_text(app: &mut App, w: u16, h: u16) -> String {
+        let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
+        t.draw(|f| ui::draw(f, app)).expect("draw");
+        let buf = t.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[tokio::test]
@@ -3727,23 +4301,39 @@ mod tests {
             (180, 44, false),
         ] {
             app.layout.panel = panel;
-            let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
-            t.draw(|f| ui::draw(f, &mut app)).unwrap();
-            println!("=== {w}x{h} ===");
-            let buf = t.backend().buffer();
-            for y in 0..h {
-                let row: String = (0..w)
-                    .map(|x| {
-                        let s = buf[(x, y)].symbol();
-                        match s {
-                            "▀" | "▄" => '#',
-                            " " => ' ',
-                            _ => s.chars().next().unwrap_or(' '),
-                        }
-                    })
-                    .collect();
-                println!("|{row}|");
-            }
+            print_frame(&mut app, w, h, &format!("{w}x{h}"));
+        }
+
+        // The links pane, in the Notes section's place, over a graph read out of
+        // the real engine rather than hand-built — a dump is only worth looking
+        // at if it is showing what the app would show. Two widths, because the
+        // panel is where a row runs out of room first.
+        rt.block_on(open_graph_pane(&mut app));
+        app.layout.panel = true;
+        for (w, h) in [(110, 32), (44, 26)] {
+            print_frame(&mut app, w, h, &format!("links pane {w}x{h}"));
+        }
+    }
+
+    /// One composed frame as ASCII, with the book's two half-block glyphs
+    /// flattened to `#` so the object reads as a silhouette.
+    fn print_frame(app: &mut App, w: u16, h: u16, label: &str) {
+        let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| ui::draw(f, app)).unwrap();
+        println!("=== {label} ===");
+        let buf = t.backend().buffer();
+        for y in 0..h {
+            let row: String = (0..w)
+                .map(|x| {
+                    let s = buf[(x, y)].symbol();
+                    match s {
+                        "▀" | "▄" => '#',
+                        " " => ' ',
+                        _ => s.chars().next().unwrap_or(' '),
+                    }
+                })
+                .collect();
+            println!("|{row}|");
         }
     }
 
