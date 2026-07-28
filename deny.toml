@@ -31,6 +31,13 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CDLA-Permissive-2.0",
+    # `notify`, the mount watcher's event source. A public-domain dedication
+    # with a permissive fallback licence — strictly *fewer* obligations than
+    # MIT, nothing to reproduce and no notice to carry. Listed rather than
+    # waved through because that is what this file is for: a copyleft or
+    # source-available licence must not arrive with a routine `cargo update`,
+    # and the only way to keep that true is to name every licence that does.
+    "CC0-1.0",
 
     # DELIBERATE EXCEPTION, and the one entry here worth understanding.
     #

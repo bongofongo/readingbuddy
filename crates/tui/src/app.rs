@@ -13,8 +13,8 @@ use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
     Book, BookSort, DeviceBook, DeviceState, Diagnostic, Engine, EngineError, FlashcardRow,
-    Highlight, MatchCandidate, NewNoteInput, NoteKind, NoteRecord, RankedResult, Reading,
-    SearchRequest,
+    Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput, NoteKind, NoteRecord,
+    RankedResult, Reading, SearchRequest,
 };
 
 use crossterm::event::KeyModifiers;
@@ -1133,6 +1133,64 @@ impl App {
                     "device path",
                     &mounts[0].display().to_string(),
                 );
+            }
+        }
+    }
+
+    /// A reader arrived or left while the app was running.
+    ///
+    /// **Scanning, never syncing.** `docs/decisions.md` makes mount → import
+    /// automatic and read-only and everything that writes explicit; a watcher
+    /// that pulled forty books in because a cable was plugged in would be the
+    /// second of those wearing the first one's clothes. So the most this does is
+    /// queue the same read-only walk `r` does, and only when the device screen
+    /// is the thing being looked at.
+    ///
+    /// Everywhere else it is a status line naming the move. Yanking the user
+    /// off the book they are reading because a device was plugged in is the
+    /// other way to get this wrong, and it is worse: `m` is one keypress and an
+    /// interrupted screen is not.
+    pub fn on_mount_event(&mut self, event: MountEvent) {
+        self.dirty = true;
+        match event {
+            MountEvent::Arrived(mount) => {
+                // A prompt asking which device to look at has just been answered
+                // by the world. Closing it is not taking a decision off the
+                // user — it is the decision they were being asked for.
+                let asking = self
+                    .input
+                    .as_ref()
+                    .is_some_and(|i| i.context == InputContext::DevicePath);
+                if asking {
+                    self.input = None;
+                }
+                // Not while another device is on the screen: replacing the list
+                // under the user would lose their marks and their place, and the
+                // reader they were looking at is still plugged in.
+                let looking = self.screen == Screen::Device
+                    && (asking
+                        || self.device_root.is_none()
+                        || self.device_root.as_deref() == Some(mount.as_path()));
+                if looking {
+                    self.start_scan(mount);
+                } else {
+                    self.status = Some(format!(
+                        "reader mounted: {} — m → device to bring anything across",
+                        mount.display()
+                    ));
+                }
+            }
+            MountEvent::Departed(mount) => {
+                if self.device_root.as_deref() == Some(mount.as_path()) {
+                    // The rows describe files that are no longer there, and
+                    // pressing enter on one would fail per row. The root stays,
+                    // so `r` after plugging it back in means something.
+                    self.device.clear();
+                    self.device_marks.clear();
+                    self.device_state.select(None);
+                    self.device_link = None;
+                }
+                self.status = Some(format!("{} was unplugged", mount.display()));
             }
         }
     }
@@ -2428,9 +2486,32 @@ fn wrap_angle(a: f32) -> f32 {
     a
 }
 
-/// The event loop: crossterm events and a 20fps animation tick, redrawing only
-/// when something actually changed.
-pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+/// The next reader to arrive or leave, or never.
+///
+/// Never, rather than `None`, on purpose: a `select!` arm that resolves
+/// immediately and forever is a spin, and a watcher whose source has died is
+/// exactly that. The rest of the app carries on without it — a mount that has to
+/// be found by pressing `r` is what we had yesterday.
+async fn next_mount(watcher: &mut Option<MountWatcher>) -> MountEvent {
+    match watcher {
+        Some(w) => match w.next().await {
+            Some(event) => event,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// The event loop: crossterm events, a 20fps animation tick, and the mount
+/// watcher — redrawing only when something actually changed.
+///
+/// `mounts` is an `Option` because not every machine can watch, and one that
+/// cannot is a machine that still runs the app.
+pub async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    mut mounts: Option<MountWatcher>,
+) -> Result<()> {
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -2458,6 +2539,11 @@ pub async fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
                     app.dirty = true;
                 }
             }
+            // Above the ready-arm, so a device plugged in mid-sync is still
+            // noticed; below the keypress, so it never gets in front of one. The
+            // handler only queues work — the walk itself goes through
+            // `pending_scan` like every other one.
+            event = next_mount(&mut mounts) => app.on_mount_event(event),
             _ = std::future::ready(()), if app.has_deferred() => {}
         }
 
@@ -4582,6 +4668,124 @@ mod tests {
         assert!(app.pending_scan.is_none());
         assert_eq!(app.device.len(), 3);
         assert!(app.device_marks.is_empty(), "stale marks survived a rescan");
+    }
+
+    /// A reader plugged in while the device screen is open refreshes it — and
+    /// does so through `pending_scan`, so the walk still happens after the frame
+    /// that announced it rather than inside the handler.
+    #[tokio::test]
+    async fn a_reader_arriving_refreshes_the_device_screen_it_is_looking_at() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        app.screen = Screen::Device;
+        app.pending_scan = None;
+
+        app.on_mount_event(MountEvent::Arrived(root.clone()));
+        assert_eq!(app.pending_scan.as_deref(), Some(root.as_path()));
+        assert!(app.dirty);
+    }
+
+    /// **The read-only claim, at the frontend end of it.** `docs/decisions.md`
+    /// makes mount → import automatic and read-only and everything that writes
+    /// explicit; the watcher may scan and may not sync. A cable is not consent
+    /// to change the library.
+    #[tokio::test]
+    async fn a_reader_arriving_never_brings_anything_across_by_itself() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        let before = app.library.len();
+        app.screen = Screen::Device;
+
+        app.on_mount_event(MountEvent::Arrived(root));
+        assert!(app.pending_pull.is_none(), "a mount queued a sync");
+        // Drain everything it did queue, and the shelf is still the shelf.
+        while app.pump_deferred().await.expect("pump") {}
+        assert!(app.pending_pull.is_none(), "the scan went on to sync");
+        assert_eq!(app.library.len(), before);
+    }
+
+    /// Somewhere else in the app it is a line, not a screen change. Being pulled
+    /// off the book you are reading because a cable was plugged in is the other
+    /// way to get this wrong, and it is the worse one.
+    #[tokio::test]
+    async fn a_reader_arriving_elsewhere_only_says_so() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        app.screen = Screen::Home;
+        app.pending_scan = None;
+
+        app.on_mount_event(MountEvent::Arrived(root.clone()));
+        assert_eq!(app.screen, Screen::Home, "the screen was taken over");
+        assert!(app.pending_scan.is_none(), "a scan ran unasked");
+        let status = app.status.clone().expect("a status line");
+        assert!(status.contains(&root.display().to_string()));
+        // Never a dead end: the line names the key that gets there.
+        assert!(
+            status.contains('m'),
+            "{status:?} names no way to the device"
+        );
+    }
+
+    /// The path box asks which device to look at. Plugging one in answers it —
+    /// closing the prompt there is not taking the decision away, it *is* the
+    /// decision it was asking for.
+    #[tokio::test]
+    async fn an_arriving_reader_answers_the_path_prompt() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        app.screen = Screen::Device;
+        app.device_root = None;
+        app.pending_scan = None;
+        app.start_input(InputContext::DevicePath, "device path", "");
+
+        app.on_mount_event(MountEvent::Arrived(root.clone()));
+        assert!(app.input.is_none(), "the prompt outlived its own answer");
+        assert_eq!(app.pending_scan.as_deref(), Some(root.as_path()));
+    }
+
+    /// Two readers: the one on the screen keeps the screen. Replacing the list
+    /// would lose the marks and the place, and the device being looked at is
+    /// still plugged in.
+    #[tokio::test]
+    async fn a_second_reader_does_not_take_the_screen_from_the_first() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+        app.pending_scan = None;
+        app.device_marks.insert(1);
+
+        app.on_mount_event(MountEvent::Arrived(PathBuf::from("/Volumes/OtherReader")));
+        assert!(app.pending_scan.is_none(), "the other reader took over");
+        assert_eq!(app.device.len(), 3, "the shown list was replaced");
+        assert!(app.device_marks.contains(&1), "the marks were dropped");
+        assert!(app.status.as_deref().unwrap().contains("OtherReader"));
+    }
+
+    /// Unplugging empties the shelf it was showing: those rows name files that
+    /// are not there, and enter on one would fail per row. The root stays, so
+    /// `r` after plugging it back in still means something.
+    #[tokio::test]
+    async fn unplugging_the_shown_reader_empties_the_shelf_but_keeps_the_root() {
+        let mut app = test_app().await;
+        let root = app.device_root.clone().expect("a root");
+        app.screen = Screen::Device;
+        app.device_marks.insert(0);
+
+        app.on_mount_event(MountEvent::Departed(root.clone()));
+        assert!(app.device.is_empty());
+        assert!(app.device_marks.is_empty());
+        assert_eq!(app.device_state.selected(), None);
+        assert_eq!(app.device_root.as_deref(), Some(root.as_path()));
+        assert!(app.status.as_deref().unwrap().contains("unplugged"));
+    }
+
+    /// Another device leaving does not clear the one on the screen.
+    #[tokio::test]
+    async fn unplugging_a_different_reader_leaves_the_shelf_alone() {
+        let mut app = test_app().await;
+        app.screen = Screen::Device;
+
+        app.on_mount_event(MountEvent::Departed(PathBuf::from("/Volumes/OtherReader")));
+        assert_eq!(app.device.len(), 3);
     }
 
     /// `x` toggles, and the marks address the selected row.

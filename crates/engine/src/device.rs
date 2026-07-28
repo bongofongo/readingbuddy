@@ -92,6 +92,35 @@ pub fn is_koreader_mount(p: &Path) -> bool {
     koreader_dir(p).is_some()
 }
 
+/// The directories this platform mounts removable volumes into, as they exist
+/// on this machine.
+///
+/// Public because [`crate::watch`] watches exactly these, and a watcher looking
+/// at a different set of directories from the one [`candidate_mounts`] walks is
+/// the failure mode where a device is listed but never noticed.
+pub fn mount_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = MOUNT_ROOTS.iter().map(PathBuf::from).collect();
+    if let Ok(user) = std::env::var("USER") {
+        roots.extend(USER_MOUNT_ROOTS.iter().map(|r| Path::new(r).join(&user)));
+    }
+    roots.retain(|r| r.is_dir());
+    roots
+}
+
+/// Would we offer this path as a mounted reader?
+///
+/// [`is_koreader_mount`] plus the symlink rule, in one place because the watcher
+/// and the lister must agree: a volume one of them announces and the other never
+/// lists is a device the user is told about and cannot open.
+pub fn offers_reader(path: &Path) -> bool {
+    // `/Volumes/Macintosh HD` is a symlink to `/` on macOS. Following it would
+    // offer the boot disk as a removable device.
+    let is_link = std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    !is_link && is_koreader_mount(path)
+}
+
 /// Mounted volumes that hold a KOReader install.
 ///
 /// Filtered rather than listed: an unfiltered list of `/Volumes` is something
@@ -99,24 +128,14 @@ pub fn is_koreader_mount(p: &Path) -> bool {
 /// re-apply [`is_koreader_mount`] — including the one that is about to write to
 /// the volume.
 pub fn candidate_mounts() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = MOUNT_ROOTS.iter().map(PathBuf::from).collect();
-    if let Ok(user) = std::env::var("USER") {
-        roots.extend(USER_MOUNT_ROOTS.iter().map(|r| Path::new(r).join(&user)));
-    }
-
     let mut found = Vec::new();
-    for root in roots {
+    for root in mount_roots() {
         let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
         for entry in entries.flatten() {
             let p = entry.path();
-            // `/Volumes/Macintosh HD` is a symlink to `/` on macOS. Following
-            // it would offer the boot disk as a removable device.
-            let is_link = std::fs::symlink_metadata(&p)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false);
-            if !is_link && is_koreader_mount(&p) {
+            if offers_reader(&p) {
                 found.push(p);
             }
         }

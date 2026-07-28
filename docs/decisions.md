@@ -316,18 +316,14 @@ Provider enrichment on device pull. Non-numeric rating scales.
 *Items 11–16 are laid out in `docs/spec-11-16.md` — 11–13 to prompt-ready
 detail, 14–16 as constraints to re-plan against.*
 11. Wired device watcher.
-12. `book_files` + owned files + three-level dedup. Migration `0010`. **Done**
-    (engine only — no CLI or TUI surface yet, and `import_epub` deliberately
-    still does not copy the file, so `rb epub` is unchanged).
-    - `sha256` is the table's **primary key**, which makes level 1 a constraint
-      rather than a check: the same content cannot belong to two books, and two
-      books holding one file means the *books* are duplicates. It also makes
-      `merge_books`' repoint a plain `UPDATE`.
-    - No `partial_md5` column: level 3's middle rung reads the `device_books`
-      mapping that already exists, and a second copy of that value would be a
-      second answer to one question.
-    - Import **refuses to create over a candidate** and reports them, `--new`
-      overriding — the shape `ko pull` already has.
+    - **Done.** `watch.rs`: a debounce over an injected channel of stirs, with
+      `notify` as a thin adapter that is the only untestable part. **Scans,
+      never syncs** — the module holds no `Storage` at all, so "read-only on
+      arrival" is a property of the code rather than a rule about it.
+    - The watcher reports **transitions**; a reader already plugged in when the
+      app starts is seeded, not announced, because `candidate_mounts` is what
+      already answers that question.
+12. `book_files` + owned files + three-level dedup.
 13. Calibre (i) then (ii).
 14. API crate + `readingbuddyd`.
 15. KOReader plugin + wireless push.

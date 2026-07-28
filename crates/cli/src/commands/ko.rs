@@ -131,6 +131,54 @@ pub async fn scan(engine: &Engine, path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Wait for a reader to be plugged in, and scan it when it is. Writes nothing.
+///
+/// This is the headless half of the mount watcher, and the instrument the wired
+/// path is confirmed with on real hardware — the TUI does the same thing behind
+/// a screen, which is one more thing to be wrong when a device does not show up.
+///
+/// **Scans, never syncs**, like everything else on the automatic path: it prints
+/// the command that brings books across rather than running it.
+pub async fn watch(engine: &Engine) -> Result<()> {
+    let mut watcher = readingbuddy::watch_mounts()?;
+
+    let roots = readingbuddy::mount_roots();
+    println!(
+        "watching {} — ctrl-c to stop",
+        roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // A watcher reports changes, so a reader already plugged in would otherwise
+    // make this look like it had failed to notice one.
+    match readingbuddy::candidate_mounts().as_slice() {
+        [] => println!("nothing mounted yet."),
+        mounts => {
+            for mount in mounts {
+                println!("already here: {}", mount.display());
+            }
+            println!("  scan one now: readingbuddy ko scan <path>");
+        }
+    }
+
+    while let Some(event) = watcher.next().await {
+        match event {
+            readingbuddy::MountEvent::Arrived(mount) => {
+                println!();
+                println!("reader mounted: {}", mount.display());
+                scan(engine, Some(&mount)).await?;
+            }
+            readingbuddy::MountEvent::Departed(mount) => {
+                println!();
+                println!("unplugged: {}", mount.display());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Pull a selection of a mounted reader in.
 pub async fn sync(engine: &Engine, path: &Path, all: bool, selectors: &[String]) -> Result<()> {
     let scan = engine.scan_device(path).await?;

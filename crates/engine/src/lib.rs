@@ -20,6 +20,7 @@ pub mod partial_md5;
 pub mod providers;
 pub mod search;
 pub mod storage;
+pub mod watch;
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use device::{
     DeviceBook, DeviceScan, DeviceState, candidate_mounts, is_koreader_mount, koreader_dir,
+    mount_roots, offers_reader,
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
@@ -53,6 +55,7 @@ pub use storage::{
     BookFile, BookSort, BookTag, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord,
     NoteSearchHit, OutgoingLink, Rating, RatingScale, Reading, Storage,
 };
+pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 
 use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
