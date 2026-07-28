@@ -2664,6 +2664,9 @@ mod tests {
             vault_dir: tmp.join("vault"),
             log_dir: tmp.join("logs"),
             google_api_key: None,
+            // The TUI has no calibre surface yet; detection falls through to
+            // `PATH`, which costs two `stat` sweeps and finds nothing to do.
+            calibre_bin_dir: None,
         };
         let engine = Engine::open(config).await.expect("engine");
         let book = engine

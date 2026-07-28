@@ -114,12 +114,33 @@ pub fn normalize(s: &str) -> String {
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
     let mut words: Vec<&str> = cleaned.split_whitespace().collect();
-    if let Some(first) = words.first()
-        && matches!(*first, "the" | "a" | "an")
-    {
+    if words.first().is_some_and(|w| is_article(w)) {
         words.remove(0);
     }
     words.join(" ")
+}
+
+/// The leading articles [`normalize`] drops, as one definition.
+///
+/// **Exactly one is dropped, and that is deliberate**: stripping repeatedly
+/// would take "The A Team" to `"team"` rather than `"a team"`, which would
+/// change what the shared fuzzy matcher considers the same book on every import
+/// path. The consequence is that `normalize` is *not* idempotent on a title
+/// beginning with two articles — pinned rather than papered over by
+/// `normalize_strips_one_article_and_is_otherwise_well_shaped`.
+fn is_article(word: &str) -> bool {
+    matches!(word, "the" | "a" | "an")
+}
+
+/// Whether an already-normalized string still begins with an article. Shares
+/// [`is_article`] with `normalize`, so the property cannot disagree with the
+/// function about what one is.
+#[cfg(test)]
+fn starts_with_article(normalized: &str) -> bool {
+    normalized
+        .split(' ')
+        .next()
+        .is_some_and(|w| !w.is_empty() && is_article(w))
 }
 
 fn fingerprint(book: &Book) -> String {
@@ -549,10 +570,35 @@ mod props {
             prop_assert!(two >= one);
         }
 
+        /// The shape invariants are unconditional; **idempotence is not, and
+        /// claiming it was wrong about the function rather than about the
+        /// input.**
+        ///
+        /// `normalize` strips exactly **one** leading article, deliberately:
+        /// looping the strip would take "The A Team" to `"team"` instead of
+        /// `"a team"`, mangling real titles across all three import paths that
+        /// match on them. So it is idempotent precisely when its own output does
+        /// not itself begin with an article — which is every title that does not
+        /// start with two of them.
+        ///
+        /// Proptest found `"a A "` and said so: `normalize` gives `"a"`, and a
+        /// second pass gives `""`. The property was over-claiming from the
+        /// start; it survived only because the generator rarely produces two
+        /// articles in a row. Weakened to what the function actually promises,
+        /// per `CLAUDE.md` — asserting less beats asserting something false.
         #[test]
-        fn normalize_is_idempotent_and_well_shaped(s in text()) {
+        fn normalize_strips_one_article_and_is_otherwise_well_shaped(s in text()) {
             let once = normalize(&s);
-            prop_assert_eq!(normalize(&once), once.clone());
+            if !starts_with_article(&once) {
+                prop_assert_eq!(normalize(&once), once.clone());
+            } else {
+                // The one case idempotence fails, and it must fail *by exactly
+                // one more article* — never by more, and never by anything else.
+                prop_assert_eq!(
+                    normalize(&once),
+                    once.split_once(' ').map(|(_, rest)| rest).unwrap_or("")
+                );
+            }
             prop_assert!(!once.starts_with(' ') && !once.ends_with(' '), "{:?}", once);
             prop_assert!(!once.contains("  "), "double space in {:?}", once);
             prop_assert!(

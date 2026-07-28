@@ -37,6 +37,18 @@ pub enum EngineError {
     Epub(String),
     #[error("koreader sidecar error: {0}")]
     Sidecar(String),
+    /// Calibre is not installed, or not the half of it this feature needs.
+    ///
+    /// Its own variant because **absent is a first-class answer here**, not a
+    /// failure: `docs/decisions.md` makes calibre feature-detected and never a
+    /// hard dependency, so every caller branches on this to say "that feature
+    /// is not here" rather than printing an error the user is meant to fix.
+    #[error("calibre's `{tool}` is not installed")]
+    CalibreMissing { tool: String },
+    /// A calibre tool ran and failed. `message` is the tail of its stderr —
+    /// calibre is chatty, and the interesting part is at the end.
+    #[error("calibre's `{tool}` failed: {message}")]
+    Calibre { tool: String, message: String },
     #[error("not found: {0}")]
     NotFound(String),
     /// A review is rated, but the user has never said what that value means on

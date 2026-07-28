@@ -24,6 +24,16 @@ pub struct EngineConfig {
     pub log_dir: PathBuf,
     /// Optional Google Books API key (keyless works at lower quota).
     pub google_api_key: Option<String>,
+    /// A directory to look for calibre's command line tools in, **before**
+    /// `PATH` and the known install locations.
+    ///
+    /// Not a setting anyone is asked to fill in — `docs/decisions.md` makes
+    /// calibre feature-detected and never a hard dependency, and detection
+    /// already covers `PATH` plus the places calibre installs itself. This is
+    /// what lets a test point at a directory of fake binaries **without
+    /// mutating `PATH`**, which is process-global and therefore a data race
+    /// with every other test in the same binary.
+    pub calibre_bin_dir: Option<PathBuf>,
 }
 
 impl EngineConfig {
@@ -37,6 +47,7 @@ impl EngineConfig {
             vault_dir: root.join("vault"),
             log_dir: root.join("logs"),
             google_api_key: std::env::var("GOOGLE_BOOKS_API_KEY").ok(),
+            calibre_bin_dir: None,
         }
     }
 }

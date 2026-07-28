@@ -4,6 +4,7 @@
 //! frontend (CLI today, TUI later). Frontends drive it through [`Engine`].
 
 pub mod book;
+pub mod calibre;
 pub mod config;
 pub mod crash;
 pub mod device;
@@ -27,6 +28,10 @@ use std::path::{Path, PathBuf};
 use reqwest::Client;
 
 pub use book::{Book, isbn10_to_13, normalize_isbn};
+pub use calibre::{
+    Calibre, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport,
+    ImportOptions as CalibreImportOptions, UnmatchedCalibreBook,
+};
 pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use device::{
@@ -66,6 +71,12 @@ pub struct Engine {
     pub config: EngineConfig,
     providers: Vec<Box<dyn MetadataProvider>>,
     client: Client,
+    /// Which calibre tools this machine has, resolved **once per run**.
+    ///
+    /// Private, with [`Engine::calibre`] to read it — item 14's complaint is
+    /// that `storage` and `config` are public fields both frontends reach past
+    /// the facade through, and a new subsystem must not add a third.
+    calibre: Calibre,
 }
 
 impl Engine {
@@ -91,11 +102,15 @@ impl Engine {
                 config.google_api_key.clone(),
             )),
         ];
+        // Once, here — not once per book on a library import, which would be a
+        // PATH sweep per book for an answer that cannot change mid-run.
+        let calibre = Calibre::detect(config.calibre_bin_dir.as_deref());
         Ok(Engine {
             storage,
             config,
             providers,
             client,
+            calibre,
         })
     }
 
@@ -771,6 +786,48 @@ impl Engine {
     /// the payload comes back, the caller owns the file.
     pub async fn export_goodreads(&self) -> Result<(String, Vec<Diagnostic>)> {
         goodreads::export(self).await
+    }
+
+    // ---- calibre -----------------------------------------------------------
+
+    /// Which calibre tools this machine has. Feature detection, resolved once
+    /// at [`Engine::open`] — a frontend asks this to decide whether the feature
+    /// exists at all, and must never be told to install anything.
+    pub fn calibre(&self) -> &Calibre {
+        &self.calibre
+    }
+
+    /// Tier (i): convert a book between formats through `ebook-convert`.
+    /// Calibre reads both formats off the two extensions.
+    ///
+    /// Refuses to overwrite unless told: the output path is typed by hand, and
+    /// losing a file is the one outcome with no undo.
+    #[tracing::instrument(skip(self), fields(input = %input.display(), output = %output.display()))]
+    pub async fn convert_ebook(
+        &self,
+        input: &Path,
+        output: &Path,
+        overwrite: bool,
+    ) -> Result<PathBuf> {
+        calibre::convert(&self.calibre, input, output, overwrite).await
+    }
+
+    /// Tier (ii): what a calibre library holds, read-only.
+    pub async fn calibre_library(&self, library: Option<&Path>) -> Result<Vec<CalibreBook>> {
+        calibre::list_library(&self.calibre, library).await
+    }
+
+    /// Tier (ii): import a calibre library. `dry_run` reports what would change
+    /// and writes nothing.
+    ///
+    /// The onboarding win `docs/ux-positioning.md` names: a library the user has
+    /// already curated, with covers, ISBNs and tags, without typing one ISBN.
+    #[tracing::instrument(skip(self), fields(dry_run = opts.dry_run))]
+    pub async fn import_calibre_library(
+        &self,
+        opts: &calibre::ImportOptions,
+    ) -> Result<CalibreReport> {
+        calibre::import(self, opts).await
     }
 
     // ---- flashcards --------------------------------------------------------

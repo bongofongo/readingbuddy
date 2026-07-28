@@ -325,6 +325,27 @@ detail, 14–16 as constraints to re-plan against.*
       already answers that question.
 12. `book_files` + owned files + three-level dedup.
 13. Calibre (i) then (ii).
+    - **Done.** No migration and no new dependency: `external_ids` was made
+      general in `0009` for exactly this, and the matcher, `partial_md5` and
+      `book_tags` were all already here.
+    - Three corrections it forced, all from running calibre 7.26 rather than
+      reading about it: `authors` is a **`&`-joined string** where every other
+      multi-valued field is a JSON array; `pubdate` is **`0101-01-01`** when
+      undated, which taken at face value publishes every such book in the year
+      101; and `calibredb --with-library <typo> list` **creates a library there**
+      and reports `[]` with exit 0, so the path is checked for `metadata.db`
+      before the binary runs.
+    - One engine correction underneath it: `upsert_book`'s no-ISBN branch is a
+      plain insert and ignores `Book::id`, so enriching a book matched by uuid or
+      by file hash needed `Storage::enrich_book`. Both statements are generated
+      from one rule table, since two definitions of "merge a partial record" is
+      how they drift.
+    - **Calibre's rating is not imported**, and that is a decision rather than an
+      omission: a rating anchors to a review, which anchors to a reading, and
+      calibre has no readings. Importing one would mean inventing reading
+      history. Series is dropped for the same shape of reason — no column, and
+      `book_tags` is for shelves.
+    - Tier (iii), device push, remains out of scope.
 14. API crate + `readingbuddyd`.
 15. KOReader plugin + wireless push.
 16. Everything under *Out of scope for now*, plus collections, the Tauri GUI and

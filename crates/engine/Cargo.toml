@@ -24,8 +24,10 @@ regex.workspace = true
 csv.workspace = true
 tracing.workspace = true
 # `sync` is the mount watcher's channel seam; `time` is the provider timeout
-# and the watcher's debounce.
-tokio = { workspace = true, features = ["time", "sync"] }
+# and the watcher's debounce; `process` is how calibre's binaries are run —
+# `ebook-convert` on a large book takes minutes, and blocking the executor for
+# that would stop every other task in the frontend.
+tokio = { workspace = true, features = ["time", "sync", "process"] }
 notify.workspace = true
 
 [dev-dependencies]

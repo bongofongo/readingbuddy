@@ -114,6 +114,105 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
     })
 }
 
+/// How one column merges when a **partial** record arrives.
+///
+/// The three shapes are not stylistic. `title` and the two JSON list columns are
+/// NOT NULL with a sentinel empty value (`''`, `'[]'`), so `COALESCE` would
+/// happily overwrite a real title with an empty string; the rest are nullable
+/// and `NULL` genuinely means "this record does not say".
+#[derive(Clone, Copy)]
+enum Merge {
+    /// NOT NULL text: keep what is there unless the new value is non-empty.
+    NonEmptyText,
+    /// NOT NULL JSON array: keep what is there unless the new value is not `[]`.
+    NonEmptyList,
+    /// Nullable: `COALESCE`, so a missing field never clobbers a known one.
+    Coalesce,
+}
+
+/// **The provider no-clobber merge, defined once.**
+///
+/// Two statements need it — `ON CONFLICT DO UPDATE` in [`Storage::upsert_book`],
+/// and a plain `UPDATE … WHERE id = ?` in [`Storage::enrich_book`] — and they
+/// must not be able to disagree about what "merge a partial record" means. That
+/// is the same rule `DEVICE_FIELDS_DIFFER` and `identity_hash_of` follow: one
+/// formula, both sides through it.
+///
+/// It is emphatically **not** the device merge. A sidecar is the device's
+/// complete state, so a missing note there means the user deleted it and
+/// straight assignment is correct. A provider record — and a `calibredb list`
+/// row, which carries no page count at all — is partial, and missing means
+/// "don't know". `docs/decisions.md`: do not copy one pattern to the other.
+const MERGE_RULES: [(&str, Merge); 16] = [
+    ("title", Merge::NonEmptyText),
+    ("sort_title", Merge::Coalesce),
+    ("authors", Merge::NonEmptyList),
+    ("translators", Merge::NonEmptyList),
+    ("publisher", Merge::Coalesce),
+    ("publish_year", Merge::Coalesce),
+    ("language", Merge::Coalesce),
+    ("isbn_10", Merge::Coalesce),
+    ("isbn_13", Merge::Coalesce),
+    ("openlibrary_key", Merge::Coalesce),
+    ("googlebooks_id", Merge::Coalesce),
+    ("cover_url", Merge::Coalesce),
+    ("cover_path", Merge::Coalesce),
+    ("page_count", Merge::Coalesce),
+    ("description", Merge::Coalesce),
+    ("first_sentence", Merge::Coalesce),
+];
+
+/// The SET clause for [`MERGE_RULES`]. `src` names where the incoming value
+/// comes from, per column: `excluded.title` inside an upsert, `?1` inside an
+/// update. `last_modified` is appended by the caller, since only one of the two
+/// statements binds it positionally.
+fn merge_set(src: impl Fn(usize, &str) -> String) -> String {
+    MERGE_RULES
+        .iter()
+        .enumerate()
+        .map(|(i, (col, rule))| {
+            let new = src(i, col);
+            match rule {
+                Merge::NonEmptyText => {
+                    format!("{col} = CASE WHEN {new} != '' THEN {new} ELSE books.{col} END")
+                }
+                Merge::NonEmptyList => {
+                    format!("{col} = CASE WHEN {new} != '[]' THEN {new} ELSE books.{col} END")
+                }
+                Merge::Coalesce => format!("{col} = COALESCE({new}, books.{col})"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",\n            ")
+}
+
+/// Bind the sixteen [`MERGE_RULES`] columns, in order, to a query.
+///
+/// Shared for the same reason the clause is: the SQL and the binds are one
+/// thing, and a column added to the list without a bind beside it is a runtime
+/// error in a statement nobody reads.
+fn bind_merge_columns<'q>(
+    q: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    book: &Book,
+) -> Result<sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
+    Ok(q.bind(book.title.clone().unwrap_or_default())
+        .bind(book.sort_title.clone())
+        .bind(serde_json::to_string(&book.authors)?)
+        .bind(serde_json::to_string(&book.translators)?)
+        .bind(book.publisher.clone())
+        .bind(book.publish_year)
+        .bind(book.language.clone())
+        .bind(book.isbn_10.clone())
+        .bind(book.isbn_13.clone())
+        .bind(book.openlibrary_key.clone())
+        .bind(book.googlebooks_id.clone())
+        .bind(book.cover_url.clone())
+        .bind(book.cover_path.clone())
+        .bind(book.page_count)
+        .bind(book.description.clone())
+        .bind(book.first_sentence.clone()))
+}
+
 impl Storage {
     /// Insert-or-merge keyed on isbn_10, else isbn_13, else plain insert.
     /// COALESCE(excluded.x, books.x) keeps NULL fields from clobbering
@@ -129,25 +228,10 @@ impl Storage {
     /// state at all. Everything else keeps its `COALESCE` no-clobber — that
     /// pattern is still right for providers, which return partial records.
     pub async fn upsert_book(&self, book: &Book) -> Result<i64> {
-        let set_clause = r#"
-            title           = CASE WHEN excluded.title != '' THEN excluded.title ELSE books.title END,
-            sort_title      = COALESCE(excluded.sort_title,      books.sort_title),
-            authors         = CASE WHEN excluded.authors != '[]' THEN excluded.authors ELSE books.authors END,
-            translators     = CASE WHEN excluded.translators != '[]' THEN excluded.translators ELSE books.translators END,
-            publisher       = COALESCE(excluded.publisher,       books.publisher),
-            publish_year    = COALESCE(excluded.publish_year,    books.publish_year),
-            language        = COALESCE(excluded.language,        books.language),
-            isbn_10         = COALESCE(excluded.isbn_10,         books.isbn_10),
-            isbn_13         = COALESCE(excluded.isbn_13,         books.isbn_13),
-            openlibrary_key = COALESCE(excluded.openlibrary_key, books.openlibrary_key),
-            googlebooks_id  = COALESCE(excluded.googlebooks_id,  books.googlebooks_id),
-            cover_url       = COALESCE(excluded.cover_url,       books.cover_url),
-            cover_path      = COALESCE(excluded.cover_path,      books.cover_path),
-            page_count      = COALESCE(excluded.page_count,      books.page_count),
-            description     = COALESCE(excluded.description,     books.description),
-            first_sentence  = COALESCE(excluded.first_sentence,  books.first_sentence),
-            last_modified   = excluded.last_modified
-        "#;
+        let set_clause = format!(
+            "{},\n            last_modified = excluded.last_modified",
+            merge_set(|_, col| format!("excluded.{col}"))
+        );
 
         let insert = r#"INSERT INTO books (
                 title, sort_title, authors, translators, publisher, publish_year, language,
@@ -164,28 +248,39 @@ impl Storage {
         };
 
         let now = now_unix();
-        let row = sqlx::query(&sql)
-            .bind(book.title.as_deref().unwrap_or(""))
-            .bind(book.sort_title.as_ref())
-            .bind(serde_json::to_string(&book.authors)?)
-            .bind(serde_json::to_string(&book.translators)?)
-            .bind(book.publisher.as_ref())
-            .bind(book.publish_year)
-            .bind(book.language.as_ref())
-            .bind(book.isbn_10.as_ref())
-            .bind(book.isbn_13.as_ref())
-            .bind(book.openlibrary_key.as_ref())
-            .bind(book.googlebooks_id.as_ref())
-            .bind(book.cover_url.as_ref())
-            .bind(book.cover_path.as_ref())
-            .bind(book.page_count)
-            .bind(book.description.as_ref())
-            .bind(book.first_sentence.as_ref())
+        let row = bind_merge_columns(sqlx::query(&sql), book)?
             .bind(now)
             .bind(now)
             .fetch_one(self.pool())
             .await?;
         Ok(row.try_get("id")?)
+    }
+
+    /// Merge a partial record into a book **we have already identified**.
+    ///
+    /// [`Storage::upsert_book`] cannot do this job, and the way it fails is
+    /// silent: its third branch — no `isbn_10`, no `isbn_13` — is a *plain
+    /// unconditional insert*, so handing it a `Book` whose `id` is set creates a
+    /// second row rather than updating the first. That is the same trap
+    /// `import_book_from_sidecar` had to key on `device_books` to avoid, and it
+    /// is exactly the shape a calibre import meets: a book matched by uuid or by
+    /// file hash, carrying no ISBN at all.
+    ///
+    /// Same rules as the upsert, from [`MERGE_RULES`] — the caller has a partial
+    /// record either way, and which statement runs is about *how the book was
+    /// found*, never about what a missing field means.
+    pub async fn enrich_book(&self, book_id: i64, book: &Book) -> Result<()> {
+        // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
+        let sql = format!(
+            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            merge_set(|i, _| format!("?{}", i + 1))
+        );
+        bind_merge_columns(sqlx::query(&sql), book)?
+            .bind(now_unix())
+            .bind(book_id)
+            .execute(self.pool())
+            .await?;
+        Ok(())
     }
 
     pub async fn get_book(&self, id: i64) -> Result<Option<Book>> {
@@ -574,6 +669,116 @@ mod tests {
         assert_eq!(got.description.as_deref(), Some("A sweeping saga."));
         assert_eq!(got.page_count, Some(490));
         assert_eq!(got.authors, vec!["Min Jin Lee".to_string()]);
+    }
+
+    /// The two statements built from [`MERGE_RULES`] must not be able to
+    /// disagree about what merging a partial record means.
+    ///
+    /// The clause is generated once and rendered twice — `excluded.x` inside the
+    /// upsert, `?n` inside the update — so this is the assertion that the second
+    /// rendering is the same rule and not merely similar SQL. Run against the
+    /// same starting row and the same partial update, both must land in exactly
+    /// the same state.
+    #[tokio::test]
+    async fn enrich_merges_a_partial_record_exactly_as_the_upsert_does() {
+        let mut full = sample();
+        full.description = Some("A sweeping saga.".into());
+        full.publisher = Some("Grand Central".into());
+        full.page_count = Some(490);
+
+        // Partial: a new publish year, an empty title, no authors, and nothing
+        // to say about the three fields already set.
+        let partial = Book {
+            title: None,
+            isbn_13: full.isbn_13.clone(),
+            publish_year: Some(2017),
+            language: Some("en".into()),
+            ..Default::default()
+        };
+
+        let by_upsert = {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s.upsert_book(&full).await.unwrap();
+            // Same ISBN, so this takes the ON CONFLICT branch.
+            assert_eq!(s.upsert_book(&partial).await.unwrap(), id);
+            s.get_book(id).await.unwrap().unwrap()
+        };
+        let by_enrich = {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s.upsert_book(&full).await.unwrap();
+            s.enrich_book(id, &partial).await.unwrap();
+            s.get_book(id).await.unwrap().unwrap()
+        };
+
+        for (name, a, b) in [
+            ("title", by_upsert.title.clone(), by_enrich.title.clone()),
+            (
+                "publisher",
+                by_upsert.publisher.clone(),
+                by_enrich.publisher.clone(),
+            ),
+            (
+                "description",
+                by_upsert.description.clone(),
+                by_enrich.description.clone(),
+            ),
+            (
+                "language",
+                by_upsert.language.clone(),
+                by_enrich.language.clone(),
+            ),
+        ] {
+            assert_eq!(a, b, "{name} merged differently");
+        }
+        assert_eq!(by_upsert.authors, by_enrich.authors);
+        assert_eq!(by_upsert.page_count, by_enrich.page_count);
+        assert_eq!(by_upsert.publish_year, by_enrich.publish_year);
+        // …and both actually merged rather than both blanking everything, which
+        // is the way a same-vs-same assertion passes for the wrong reason.
+        assert_eq!(by_enrich.title.as_deref(), Some("Pachinko"));
+        assert_eq!(by_enrich.authors, vec!["Min Jin Lee".to_string()]);
+        assert_eq!(by_enrich.page_count, Some(490));
+        assert_eq!(by_enrich.publish_year, Some(2017));
+    }
+
+    /// The reason `enrich_book` exists at all: `upsert_book`'s third branch is a
+    /// plain unconditional insert, so a `Book` with no ISBN cannot be updated
+    /// through it however its `id` is set.
+    #[tokio::test]
+    async fn enrich_updates_an_isbn_less_book_where_upsert_would_duplicate_it() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(&Book {
+                title: Some("Untitled Draft".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        s.enrich_book(
+            id,
+            &Book {
+                publisher: Some("Self".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(s.list_books(10, BookSort::Title).await.unwrap().len(), 1);
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.publisher.as_deref(), Some("Self"));
+        assert_eq!(got.title.as_deref(), Some("Untitled Draft"));
+
+        // The contrast, so the claim above is observed rather than asserted:
+        // the same partial record through `upsert_book` makes a second row.
+        s.upsert_book(&Book {
+            id: Some(id),
+            publisher: Some("Self".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert_eq!(s.list_books(10, BookSort::Title).await.unwrap().len(), 2);
     }
 
     #[tokio::test]

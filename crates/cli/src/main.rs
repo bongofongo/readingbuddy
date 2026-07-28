@@ -163,6 +163,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: GoodreadsCmd,
     },
+    /// Calibre, if you have it: format conversion and library import
+    Calibre {
+        #[command(subcommand)]
+        cmd: CalibreCmd,
+    },
     /// KOReader integration
     Ko {
         #[command(subcommand)]
@@ -258,6 +263,32 @@ enum GoodreadsCmd {
         /// Output file (default: goodreads.csv)
         #[arg(long, short, default_value = "goodreads.csv")]
         out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CalibreCmd {
+    /// Say which calibre tools are here, and what they enable
+    Status,
+    /// Convert a book to another format (calibre reads both from the extensions)
+    Convert {
+        input: PathBuf,
+        output: PathBuf,
+        /// Overwrite an existing output file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Import the books calibre already holds
+    Import {
+        /// The calibre library to read (default: calibre's own)
+        #[arg(long)]
+        library: Option<PathBuf>,
+        /// Report what would change without writing
+        #[arg(long)]
+        dry_run: bool,
+        /// Create a book even for a row that looks like one you already have
+        #[arg(long)]
+        new: bool,
     },
 }
 
@@ -422,6 +453,19 @@ async fn main() -> Result<()> {
                 commands::goodreads::import(&engine, &path, dry_run, new).await?
             }
             GoodreadsCmd::Export { out } => commands::goodreads::export(&engine, &out).await?,
+        },
+        Cmd::Calibre { cmd } => match cmd {
+            CalibreCmd::Status => commands::calibre::status(&engine).await?,
+            CalibreCmd::Convert {
+                input,
+                output,
+                force,
+            } => commands::calibre::convert(&engine, &input, &output, force).await?,
+            CalibreCmd::Import {
+                library,
+                dry_run,
+                new,
+            } => commands::calibre::import(&engine, library, dry_run, new).await?,
         },
         Cmd::Ko { cmd } => match cmd {
             KoCmd::Import { path, dry_run } => {
