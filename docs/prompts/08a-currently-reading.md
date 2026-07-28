@@ -20,7 +20,14 @@ Build it as a variant of the join that already exists. `BOOK_FROM`
 reading" through a `LEFT JOIN` whose subquery orders by
 `(finished_at IS NULL) DESC, COALESCE(started_at, created_at) DESC`, and
 `BOOK_COLUMNS` projects `current_page` / `finished` / `date_started` /
-`date_finished` off it. Add `WHERE cur.finished_at IS NULL`.
+`date_finished` off it.
+
+> **Corrected after this prompt was executed (PR #5).** It said to add
+> `WHERE cur.finished_at IS NULL`. That is wrong and silently so — the join is a
+> `LEFT JOIN`, so a book with **no reading at all** has every `cur` column NULL
+> and satisfies the predicate, putting the entire library on the home screen.
+> The filter is **`WHERE cur.id IS NOT NULL AND cur.finished_at IS NULL`**,
+> found by writing the empty-library test first.
 
 **Do not write a second join.** One that disagreed with `BOOK_COLUMNS` would put
 `Book`'s four projected fields out of step with the screen displaying them, and
