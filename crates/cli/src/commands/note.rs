@@ -17,6 +17,17 @@ pub struct NoteOpts<'a> {
 
 pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
     let kind: NoteKind = opts.kind.parse()?;
+    // A reflection and a review anchor to a *reading*, and there is one of each
+    // per reading — which is an index, and which this path knows nothing about.
+    // Naming the command that does is the whole of the redirect.
+    if kind.is_anchored() {
+        let sel = opts.book_selector.unwrap_or("<book>");
+        anyhow::bail!(
+            "a {} is opened per reading: `readingbuddy {} {sel}`",
+            kind.as_str(),
+            kind.as_str().replace("reflection", "reflect")
+        );
+    }
     let book = match opts.book_selector {
         Some(sel) => Some(resolve_one(engine, sel).await?),
         None => None,
@@ -43,6 +54,7 @@ pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
     let created = engine
         .create_note(NewNoteInput {
             book_id: book.as_ref().and_then(|b| b.id),
+            reading_id: None,
             highlight_id: opts.highlight,
             page,
             location: opts.location,

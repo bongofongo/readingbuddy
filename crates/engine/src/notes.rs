@@ -14,8 +14,14 @@ pub enum NoteKind {
     Note,
     /// Small reading-session thought.
     Session,
-    /// Final thoughts after finishing a book.
-    Final,
+    /// Private, the hub of the graph: cites highlights, links notes and other
+    /// reflections, and is **openable mid-book** rather than written at the end.
+    /// Supersedes the old `final` (migration `0007` rewrites those rows).
+    Reflection,
+    /// Public: prose for other people, and the only kind that carries a rating.
+    /// Never derived from the reflection — a review is a rewrite for a different
+    /// audience, not a subset of private thinking.
+    Review,
 }
 
 impl NoteKind {
@@ -23,8 +29,16 @@ impl NoteKind {
         match self {
             NoteKind::Note => "note",
             NoteKind::Session => "session",
-            NoteKind::Final => "final",
+            NoteKind::Reflection => "reflection",
+            NoteKind::Review => "review",
         }
+    }
+
+    /// True for the two kinds that anchor to a reading and are opened through
+    /// [`crate::Engine::open_reflection`] / [`crate::Engine::open_review`]
+    /// rather than written like an ordinary note.
+    pub fn is_anchored(&self) -> bool {
+        matches!(self, NoteKind::Reflection | NoteKind::Review)
     }
 }
 
@@ -34,7 +48,10 @@ impl std::str::FromStr for NoteKind {
         match s.to_lowercase().as_str() {
             "note" => Ok(NoteKind::Note),
             "session" => Ok(NoteKind::Session),
-            "final" => Ok(NoteKind::Final),
+            // `final` is what a reflection used to be called, and old vault
+            // files still say it in their frontmatter. Parsed, never written.
+            "reflection" | "final" => Ok(NoteKind::Reflection),
+            "review" => Ok(NoteKind::Review),
             other => Err(EngineError::InvalidInput(format!(
                 "unknown note kind: {other}"
             ))),
@@ -45,6 +62,10 @@ impl std::str::FromStr for NoteKind {
 #[derive(Debug, Default)]
 pub struct NewNoteInput {
     pub book_id: Option<i64>,
+    /// The reading this note belongs to. Always set for a reflection or a
+    /// review; `None` for an ordinary note, which floats free of any one
+    /// reading.
+    pub reading_id: Option<i64>,
     pub highlight_id: Option<i64>,
     /// Device/pdf page the note anchors to (auto-suggested from the book's
     /// current progress by the frontend, editable per note).
@@ -105,6 +126,7 @@ pub fn extract_wikilinks(body: &str) -> Vec<String> {
 
 fn frontmatter(
     book: Option<&Book>,
+    reading_id: Option<i64>,
     highlight_id: Option<i64>,
     page: Option<i64>,
     location: Option<&str>,
@@ -123,6 +145,11 @@ fn frontmatter(
             "book-title: \"{}\"\n",
             b.display_title().replace('"', "'")
         ));
+    }
+    // Beside the book, because it is part of the same anchor: which book, and
+    // which time through it.
+    if let Some(r) = reading_id {
+        fm.push_str(&format!("reading: {r}\n"));
     }
     if let Some(h) = highlight_id {
         fm.push_str(&format!("highlight: {h}\n"));
@@ -255,6 +282,7 @@ pub async fn create_note(
         "{}{}\n",
         frontmatter(
             book,
+            input.reading_id,
             input.highlight_id,
             input.page,
             input.location.as_deref(),
@@ -270,6 +298,7 @@ pub async fn create_note(
         .insert_note(
             crate::storage::NewNoteMeta {
                 book_id: input.book_id,
+                reading_id: input.reading_id,
                 highlight_id: input.highlight_id,
                 page: input.page,
                 location: input.location.as_deref(),
@@ -326,6 +355,7 @@ mod tests {
         };
         let fm = frontmatter(
             Some(&book),
+            Some(11),
             Some(3),
             Some(42),
             Some("Chapter 2"),
@@ -342,6 +372,7 @@ mod tests {
         };
         assert_eq!(get("book"), Some("9781455563937"));
         assert_eq!(get("book-title"), Some("Pachinko"));
+        assert_eq!(get("reading"), Some("11"));
         assert_eq!(get("highlight"), Some("3"));
         assert_eq!(get("page"), Some("42"));
         assert_eq!(get("location"), Some("Chapter 2"));

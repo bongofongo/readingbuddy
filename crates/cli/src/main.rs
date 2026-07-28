@@ -98,7 +98,7 @@ enum Cmd {
         /// Attach to a book (id, ISBN, or title fragment)
         #[arg(long)]
         book: Option<String>,
-        /// note | session | final
+        /// note | session (reflections and reviews have their own commands)
         #[arg(long, default_value = "note")]
         kind: String,
         #[arg(long)]
@@ -124,6 +124,22 @@ enum Cmd {
         /// Full-text query over note bodies
         #[arg(long)]
         search: Option<String>,
+    },
+    /// Open this reading's reflection — private, and it accretes as you read
+    Reflect(ReflectArgs),
+    /// Open this reading's review — public prose, and the rating lives here
+    Review(ReflectArgs),
+    /// Cite a highlight from a note (omit the highlight to list what it cites)
+    Cite {
+        /// Note id (see `notes`)
+        note: i64,
+        /// Highlight id (see `cite <note>` or `highlights`)
+        highlight: Option<i64>,
+    },
+    /// Your rating scale, and what its values mean on Goodreads
+    Rating {
+        #[command(subcommand)]
+        cmd: RatingCmd,
     },
     /// Show a book's highlights
     Highlights { book: String },
@@ -153,6 +169,65 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         cmd: commands::config::ConfigCmd,
+    },
+}
+
+#[derive(clap::Args)]
+struct ReflectArgs {
+    /// Book selector: id, ISBN, or title fragment
+    book: String,
+    /// Which reading, as `show` numbers them (default: the current one)
+    #[arg(long)]
+    reading: Option<usize>,
+    /// Print it and stop, without opening $EDITOR
+    #[arg(long)]
+    show: bool,
+    /// Open it without editing the body
+    #[arg(long)]
+    no_edit: bool,
+    /// Rating on the active scale (`review` only)
+    #[arg(long)]
+    rating: Option<f64>,
+}
+
+impl<'a> From<&'a ReflectArgs> for commands::reflect::ReflectOpts<'a> {
+    fn from(a: &'a ReflectArgs) -> Self {
+        commands::reflect::ReflectOpts {
+            book_selector: &a.book,
+            reading: a.reading,
+            show: a.show,
+            no_edit: a.no_edit,
+            rating: a.rating,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum RatingCmd {
+    /// Define (or redefine) a numeric scale
+    Scale {
+        #[arg(long)]
+        min: f64,
+        #[arg(long)]
+        max: f64,
+        #[arg(long)]
+        step: f64,
+        /// Scale name; new ratings use the most recently created scale
+        #[arg(long, default_value = "default")]
+        name: String,
+    },
+    /// Record what one scale value means on Goodreads' integer 0–5
+    Map {
+        value: f64,
+        /// 0–5, where 0 means unrated
+        goodreads: u8,
+        #[arg(long)]
+        scale: Option<String>,
+    },
+    /// Show the scales and their Goodreads mappings
+    Show {
+        #[arg(long)]
+        scale: Option<String>,
     },
 }
 
@@ -290,6 +365,23 @@ async fn main() -> Result<()> {
         Cmd::Notes { book, search } => {
             commands::note::list_or_search(&engine, book.as_deref(), search.as_deref()).await?
         }
+        Cmd::Reflect(args) => commands::reflect::reflect(&engine, (&args).into()).await?,
+        Cmd::Review(args) => commands::reflect::review(&engine, (&args).into()).await?,
+        Cmd::Cite { note, highlight } => commands::reflect::cite(&engine, note, highlight).await?,
+        Cmd::Rating { cmd } => match cmd {
+            RatingCmd::Scale {
+                min,
+                max,
+                step,
+                name,
+            } => commands::rating::scale(&engine, &name, min, max, step).await?,
+            RatingCmd::Map {
+                value,
+                goodreads,
+                scale,
+            } => commands::rating::map(&engine, scale.as_deref(), value, goodreads).await?,
+            RatingCmd::Show { scale } => commands::rating::show(&engine, scale.as_deref()).await?,
+        },
         Cmd::Highlights { book } => commands::book::highlights(&engine, &book).await?,
         Cmd::Merge { src, dst, yes } => commands::book::merge(&engine, &src, &dst, yes).await?,
         Cmd::Ko { cmd } => match cmd {

@@ -498,6 +498,7 @@ mod tests {
         let mut n = NoteRecord {
             id: 1,
             book_id: Some(1),
+            reading_id: None,
             highlight_id: None,
             page: Some(42),
             location: None,

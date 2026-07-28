@@ -119,7 +119,9 @@ pub async fn progress(
             "\n🎉 finished {}! congratulations.",
             updated.display_title()
         );
-        println!("capture your final thoughts:  readingbuddy note --book {id} --kind final");
+        // Not a task to complete — a place to go. The reflection may well
+        // already be open and half-written; `reflect` reopens it either way.
+        println!("your reflection is here when you want it:  readingbuddy reflect {id}");
     }
     Ok(())
 }

@@ -39,6 +39,18 @@ pub enum EngineError {
     Sidecar(String),
     #[error("not found: {0}")]
     NotFound(String),
+    /// A review is rated, but the user has never said what that value means on
+    /// Goodreads' integer 0–5.
+    ///
+    /// Its own variant rather than `Other` because every caller branches on it:
+    /// an export must skip the row and say why, and the CLI must name the
+    /// command that fixes it. Rounding it silently is the one thing that is not
+    /// allowed — formulas are always wrong at the ends, which is why the map is
+    /// a lookup table in the first place.
+    #[error(
+        "{value} on the '{scale}' scale has no Goodreads mapping (Goodreads takes integers 0–5, no halves)"
+    )]
+    UnmappedRating { value: f64, scale: String },
     /// Last resort. Prefer a specific variant — anything that a caller might
     /// plausibly want to branch on does not belong here.
     #[error("{0}")]

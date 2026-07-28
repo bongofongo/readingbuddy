@@ -924,6 +924,10 @@ impl App {
             .engine
             .create_note(NewNoteInput {
                 book_id,
+                // An ordinary note floats free of any one reading; reflections
+                // and reviews are the anchored pair, and they have no TUI
+                // surface yet.
+                reading_id: None,
                 highlight_id,
                 page,
                 location,
