@@ -121,3 +121,5 @@ Export `partial_md5` from `lib.rs` so item 12 has one implementation to call.
 `make ci` green; the real-file checksums match where the files exist; an epub
 imported here is later matched by `md5` rather than `title`. Run the
 `cargo-tester` agent before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

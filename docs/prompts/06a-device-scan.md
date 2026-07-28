@@ -146,3 +146,5 @@ cannot produce a state.
 `make ci` green; `rb ko scan` against the fixture tree shows all four states;
 the second scan parses nothing; `rb ko sync` pulls a selection with one report
 per book. Run the `cargo-tester` agent before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

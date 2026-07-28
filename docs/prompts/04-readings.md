@@ -155,3 +155,5 @@ intact in `readings`; `rb progress`, `rb progress --reread`,
 `rb list --sort progress`, `rb show` and the TUI's finished-toggle all work;
 goldens regenerated and their diff reviewed. Run the `cargo-tester` agent before
 committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

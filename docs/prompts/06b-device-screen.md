@@ -138,3 +138,5 @@ deliberately, unlike the scan's `link_device_book`. Do not swap them.
 one book, mark several and sync them with visible per-book progress, and link an
 unmatched row to an existing book without leaving the screen. Run the
 `cargo-tester` agent before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

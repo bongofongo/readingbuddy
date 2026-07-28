@@ -78,3 +78,5 @@ otherwise leave it alone.
 `make ci` is green, the `cargo-tester` agent reports clean, and the PR body says
 what changed and what was deliberately left out. CI gates the whole workspace on
 ubuntu now, so a break anywhere shows up on the PR.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.
