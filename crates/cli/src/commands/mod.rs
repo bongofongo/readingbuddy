@@ -1,6 +1,7 @@
 pub mod book;
 pub mod cards;
 pub mod config;
+pub mod goodreads;
 pub mod ko;
 pub mod note;
 pub mod rating;

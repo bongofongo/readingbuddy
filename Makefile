@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic lint fmt fmt-check check ci clean bench bench-box bench-trend perf
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint fmt fmt-check check ci clean bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -135,6 +135,9 @@ corpus-check: ## Corpus tests only (offline; skips loudly if not generated)
 synthetic: ## Regenerate the committed tier-1 hostile fixtures, then the goldens
 	cargo run -p corpus -- gen-synthetic
 	$(MAKE) golden
+
+goodreads: ## Regenerate the committed Goodreads export fixture
+	cargo run -p corpus -- gen-goodreads --seed $(CORPUS_SEED)
 
 clean: ## cargo clean
 	cargo clean

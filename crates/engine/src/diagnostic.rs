@@ -122,6 +122,54 @@ pub enum DiagnosticKind {
     SidecarNotIdentified {
         path: PathBuf,
     },
+
+    // ---- goodreads (migration `0009`) -------------------------------------
+    //
+    // Seven variants rather than one carrying a reason string, for the reason
+    // the module doc gives: a degradation the caller cannot tell apart from
+    // another degradation is a `String` wearing a type. Each of these has a
+    // different next move, and the CLI prints a different one for each.
+    /// A CSV row with nothing to match on (no `Title`). The rest of the file
+    /// still imports — one bad row must not cost the other four hundred.
+    GoodreadsRowSkipped {
+        row: usize,
+    },
+    /// The CSV's review and the review already in the vault disagree. **Ours is
+    /// kept**: the words came from Goodreads, but they live here now, and an
+    /// import overwriting the user's own edit is the one outcome with no undo.
+    GoodreadsReviewDiverged {
+        title: String,
+    },
+    /// The review is already rated on a scale that is not `goodreads`, so the
+    /// CSV's integer was not written. The map is many-to-one and its inverse is
+    /// a guess, so the two numbers cannot even be compared.
+    GoodreadsRatingDiverged {
+        title: String,
+    },
+    /// A row carries a review but describes no reading to anchor it to (it is on
+    /// `to-read`). The prose is kept as a plain note rather than opening a
+    /// reading the user never started.
+    GoodreadsUnanchoredReview {
+        title: String,
+    },
+    /// `Read Count` asked for more readings than the row carries a date to close
+    /// them at. A reading with no end date *is* an open one, and
+    /// `idx_readings_one_open` permits exactly one per book.
+    GoodreadsUndatableRereads {
+        title: String,
+        dropped: usize,
+    },
+    /// Export: this book's rating has no Goodreads mapping, so the row was
+    /// skipped rather than rounded.
+    GoodreadsRatingUnmapped {
+        title: String,
+    },
+    /// Export: Goodreads' importable CSV has no read-count column, so a reread
+    /// exports as its most recent reading only.
+    GoodreadsRereadsDropped {
+        title: String,
+        dropped: usize,
+    },
 }
 
 /// One degradation, carried in-band on a partly-successful result.
@@ -252,6 +300,17 @@ impl fmt::Display for Diagnostic {
             }
             DiagnosticKind::NoSidecarsFound { path } => {
                 write!(f, "no KOReader sidecars found under {}", path.display())
+            }
+            DiagnosticKind::GoodreadsRowSkipped { row } => {
+                write!(f, "row {row}: {}", self.detail)
+            }
+            DiagnosticKind::GoodreadsReviewDiverged { title }
+            | DiagnosticKind::GoodreadsRatingDiverged { title }
+            | DiagnosticKind::GoodreadsUnanchoredReview { title }
+            | DiagnosticKind::GoodreadsUndatableRereads { title, .. }
+            | DiagnosticKind::GoodreadsRatingUnmapped { title }
+            | DiagnosticKind::GoodreadsRereadsDropped { title, .. } => {
+                write!(f, "{title}: {}", self.detail)
             }
         }
     }

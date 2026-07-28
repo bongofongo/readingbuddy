@@ -21,6 +21,7 @@ mlua.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 regex.workspace = true
+csv.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["time"] }
 

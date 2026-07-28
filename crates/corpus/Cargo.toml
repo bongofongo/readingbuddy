@@ -27,3 +27,6 @@ rand_core = "0.9"
 # epub XHTML is well-formed XML, so a pull parser is enough; a full HTML5
 # parser would be a much larger dependency for no gain.
 quick-xml = "0.37"
+# Goodreads fixtures are a CSV file; the generator writes one the same way the
+# engine reads one, and neither borrows the other's code.
+csv.workspace = true

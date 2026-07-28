@@ -189,6 +189,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "cite",
         "config",
         "epub",
+        "goodreads",
         "help",
         "highlights",
         "ko",

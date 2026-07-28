@@ -13,6 +13,7 @@
 //! parsing or normalization to build its fixtures would bake any bug in those
 //! straight into the goldens; the generator stays an independent oracle.
 
+mod goodreads;
 mod gutenberg;
 mod synthetic;
 
@@ -27,11 +28,33 @@ struct Cli {
     cmd: Cmd,
 }
 
+// The shared `Gen` prefix is the point, not an accident: `gen-synthetic`,
+// `gen-goodreads` and `gen-corpus` are the CLI's own vocabulary for "write
+// fixtures", and renaming the variants to please the lint would rename the
+// commands people type.
+#[allow(clippy::enum_variant_names)]
 #[derive(Subcommand)]
 enum Cmd {
     /// Write the committed tier-1 hostile fixtures.
     GenSynthetic {
         /// Fixture root; defaults to the engine's `tests/fixtures/koreader`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Write the committed Goodreads export fixture.
+    ///
+    /// Beside the hand-authored files in `.../goodreads/recorded/`, which are a
+    /// recording of Goodreads' own dialect and are the documented exception to
+    /// "fixtures are generated". This one covers volume and variety instead.
+    GenGoodreads {
+        /// PRNG seed. ChaCha8, so the same seed is the same file for ever.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// How many rows.
+        #[arg(long, default_value_t = 40)]
+        books: usize,
+        /// Output dir; defaults to the engine's
+        /// `tests/fixtures/goodreads/generated`.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -61,6 +84,16 @@ fn main() -> std::io::Result<()> {
             let written = synthetic::generate(&root)?;
             println!("wrote {written} fixture files under {}", root.display());
             println!("now run `make golden` to record their expected behaviour");
+            Ok(())
+        }
+        Cmd::GenGoodreads { seed, books, out } => {
+            let out = out.unwrap_or_else(goodreads::default_out);
+            let n = goodreads::generate(&out, &goodreads::Options { seed, books })?;
+            println!(
+                "wrote {n} rows (v{}, seed {seed}) to {}/library.csv",
+                goodreads::GENERATOR_VERSION,
+                out.display()
+            );
             Ok(())
         }
         Cmd::GenCorpus {
