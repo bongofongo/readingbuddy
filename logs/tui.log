@@ -1,0 +1,8 @@
+2026-07-28T10:47:50.784281Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-28T10:47:50.796715Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-28T10:49:02.642443Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-28T10:49:02.646732Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-28T10:49:26.779106Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-28T10:49:26.783087Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-28T10:49:29.954534Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-28T10:49:29.958366Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
