@@ -229,7 +229,18 @@ Provider enrichment on device pull. Non-numeric rating scales.
      text; neither covers a *device library*.
 2. Highlight ownership seam — `ko_note`/`annotation`, device-field refresh,
    `updated` counter, `last_seen_ko_note`, new fixture, three-way test.
-3. `import_book_from_sidecar` + link/merge — offline, no enrichment.
+   **Done**; migration `0004_highlight_ownership.sql`. One correction it
+   produced: `last_seen_ko_note` is seeded by the *insert* as well as the
+   refresh — a row with a `ko_note` and a NULL `last_seen_ko_note` would tell
+   the future two-way sync that the device had never said anything, which is
+   the one thing that column exists to prevent.
+3. `import_book_from_sidecar` + link/merge — offline, no enrichment. **Done.**
+   Three things it settled: `UnmatchedSidecar` carries its candidates and its
+   device key, so "unmatched" is a decision rather than a report; `link_sidecar`
+   needs a *repointing* device-link write (`set_device_link`) that a library
+   scan must never use; and `merge_books` lives in `storage/` rather than
+   `koreader.rs`, since folding two books together is not the reader's business
+   and all SQL belongs behind that boundary.
 4. `readings` table + progress migration.
 5. `partialMD5` + the device→book mapping table.
 6. Device screen — per-book state, single pull, then multi-select and sync-all.

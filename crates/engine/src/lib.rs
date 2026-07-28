@@ -26,12 +26,17 @@ pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use error::{EngineError, Result};
-pub use koreader::{ImportReport, KoStats, KoStatus, KoSummary, MatchMethod};
+pub use koreader::{
+    BookImportStats, ImportReport, KoStats, KoStatus, KoSummary, MatchCandidate, MatchMethod,
+    PullReport,
+};
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
-pub use storage::{BookSort, FlashcardRow, Highlight, NoteRecord, NoteSearchHit, Storage};
+pub use storage::{
+    BookSort, FlashcardRow, Highlight, MergeReport, NoteRecord, NoteSearchHit, Storage,
+};
 
 use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
@@ -232,6 +237,45 @@ impl Engine {
     #[tracing::instrument(skip(self), fields(path = %path.display()))]
     pub async fn import_koreader(&self, path: &Path, dry_run: bool) -> Result<ImportReport> {
         koreader::import(&self.storage, path, dry_run).await
+    }
+
+    /// Pull a book in from the reader: create it from the sidecar's own
+    /// metadata, then import its highlights. Offline — no provider enrichment.
+    #[tracing::instrument(skip(self), fields(path = %sidecar.display()))]
+    pub async fn pull_book_from_sidecar(&self, sidecar: &Path) -> Result<PullReport> {
+        koreader::import_book_from_sidecar(&self.storage, sidecar).await
+    }
+
+    /// Library books that look like this sidecar's book but not enough to link
+    /// unasked.
+    pub async fn sidecar_candidates(&self, sidecar: &Path) -> Result<Vec<MatchCandidate>> {
+        let sc = koreader::parse_sidecar(&std::fs::read_to_string(sidecar)?)?;
+        koreader::match_candidates(&self.storage, &sc).await
+    }
+
+    /// Record that this sidecar is that book, so it is never re-guessed.
+    pub async fn link_sidecar(&self, sidecar: &Path, book_id: i64) -> Result<String> {
+        let sc = koreader::parse_sidecar(&std::fs::read_to_string(sidecar)?)?;
+        let Some(md5) = sc.partial_md5 else {
+            return Err(EngineError::InvalidInput(format!(
+                "{} has no partial_md5_checksum, so there is nothing to link it by",
+                sidecar.display()
+            )));
+        };
+        koreader::link_sidecar(&self.storage, &md5, book_id).await?;
+        Ok(md5)
+    }
+
+    /// Fold one book into another, deleting `src`. Removes `src`'s cover file
+    /// when `dst` kept its own — storage reports the orphan, the caller (this)
+    /// owns the filesystem.
+    pub async fn merge_books(&self, src: i64, dst: i64) -> Result<MergeReport> {
+        let report = self.storage.merge_books(src, dst).await?;
+        if let Some(cover) = &report.orphaned_cover {
+            // Same resolution as `delete_book`: the stored path as written.
+            std::fs::remove_file(cover).ok();
+        }
+        Ok(report)
     }
 
     // ---- notes -------------------------------------------------------------

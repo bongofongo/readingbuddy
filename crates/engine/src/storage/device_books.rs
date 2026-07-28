@@ -72,6 +72,50 @@ impl Storage {
         .await?;
         Ok(())
     }
+
+    /// Point a device file at a book, overwriting whatever it pointed at
+    /// before.
+    ///
+    /// The sharp edge that [`Storage::link_device_book`] deliberately does not
+    /// have. A scan must never repoint a mapping — it would relabel the user's
+    /// own decision as a guess — but an explicit link *is* the decision, and it
+    /// has to be able to correct a bad automatic one. Keep the two methods
+    /// distinct: collapsing them would make every library scan a repointer.
+    pub async fn set_device_link(
+        &self,
+        partial_md5: &str,
+        book_id: i64,
+        linked_by: LinkedBy,
+    ) -> Result<()> {
+        let now = now_unix();
+        sqlx::query(
+            r#"INSERT INTO device_books (partial_md5, book_id, linked_by, first_seen, last_seen)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(partial_md5) DO UPDATE SET
+                   book_id   = excluded.book_id,
+                   linked_by = excluded.linked_by,
+                   last_seen = excluded.last_seen"#,
+        )
+        .bind(partial_md5)
+        .bind(book_id)
+        .bind(linked_by.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Every device file linked to a book. Used by the merge to carry mappings
+    /// across, and by callers that want to show what a book is linked to.
+    pub async fn device_links_for_book(&self, book_id: i64) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT partial_md5 FROM device_books WHERE book_id = ? ORDER BY partial_md5",
+        )
+        .bind(book_id)
+        .fetch_all(self.pool())
+        .await?)
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +171,38 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(by, "manual");
+    }
+
+    /// The distinction between the two link methods, stated as a test: a scan
+    /// may not repoint, an explicit link must be able to.
+    #[tokio::test]
+    async fn only_an_explicit_link_repoints_a_mapping() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let first = seed(&s, "Pachinko").await;
+        let second = seed(&s, "Pachinko (the other copy)").await;
+
+        s.link_device_book("abc", first, LinkedBy::Auto)
+            .await
+            .unwrap();
+        s.link_device_book("abc", second, LinkedBy::Auto)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.find_book_by_partial_md5("abc").await.unwrap().unwrap().id,
+            Some(first),
+            "a scan must not repoint"
+        );
+
+        s.set_device_link("abc", second, LinkedBy::Manual)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.find_book_by_partial_md5("abc").await.unwrap().unwrap().id,
+            Some(second),
+            "an explicit link must be able to correct a bad guess"
+        );
+        assert_eq!(s.device_links_for_book(second).await.unwrap(), ["abc"]);
+        assert!(s.device_links_for_book(first).await.unwrap().is_empty());
     }
 
     /// The mapping is meaningless without its book, and a dangling row would

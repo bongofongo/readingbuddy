@@ -4,7 +4,7 @@ mod flashcards;
 mod highlights;
 mod notes;
 
-pub use books::BookSort;
+pub use books::{BookSort, MergeReport};
 pub use device_books::LinkedBy;
 pub use flashcards::FlashcardRow;
 pub use highlights::{Highlight, NewHighlight};

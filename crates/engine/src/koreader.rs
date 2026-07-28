@@ -29,6 +29,20 @@ const LUA_INSTRUCTION_BUDGET: u32 = 5_000_000;
 /// symlink cycle, which is otherwise an unbounded recursion.
 const MAX_LIBRARY_DEPTH: usize = 32;
 
+/// Jaro-winkler similarity at or above which a sidecar title is linked to a
+/// library book with no questions asked.
+///
+/// `const`, not config, for the same reason `PROVIDER_TIMEOUT` is: a knob here
+/// would be a knob on what "the same book" means, and the only honest way to
+/// test either value is against a fixed one.
+const AUTO_MATCH: f64 = 0.85;
+
+/// Below this a title match is noise, not a candidate. The band between the two
+/// is what [`match_candidates`] returns: too weak to link silently, too strong
+/// to throw away, which is exactly the case where a variant title used to
+/// become a duplicate with nothing said.
+const CANDIDATE_MIN: f64 = 0.60;
+
 /// Parsed KOReader `.sdr` sidecar (`metadata.epub.lua` etc.).
 #[derive(Debug, Default)]
 pub struct KoSidecar {
@@ -36,6 +50,12 @@ pub struct KoSidecar {
     pub authors: Option<String>,
     pub language: Option<String>,
     pub partial_md5: Option<String>,
+    /// Root `doc_pages`. The reader's own page count, and on a sidecar with no
+    /// `stats` block the only one there is — which is the common case for the
+    /// books item 3 has to create, since `stats` is residue from the pre-DB
+    /// statistics plugin. Equal to `stats.pages` in current files, but they have
+    /// been seen to diverge by one across a re-render, so they are kept apart.
+    pub doc_pages: Option<i64>,
     /// Root `percent_finished`, 0.0..=1.0.
     pub percent_finished: Option<f64>,
     /// The device's own status/rating/review.
@@ -171,6 +191,7 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
 
     let mut sidecar = KoSidecar {
         partial_md5: get_str(&root, "partial_md5_checksum"),
+        doc_pages: get_int(&root, "doc_pages"),
         percent_finished: get_f64(&root, "percent_finished"),
         // `summary`, `stats` and `percent_finished` are DocSettings *root*
         // keys, written by subsystems that never look at the annotations
@@ -350,6 +371,11 @@ pub enum MatchMethod {
     Isbn,
     /// Fuzzy jaro-winkler match on the normalized `doc_props.title`.
     Title,
+    /// Nothing matched, so the book was created from the sidecar's own
+    /// metadata. Only [`import_book_from_sidecar`] produces this — an ordinary
+    /// import still reports the sidecar as unmatched rather than inventing a
+    /// book behind the user's back.
+    New,
 }
 
 impl std::fmt::Display for MatchMethod {
@@ -358,8 +384,20 @@ impl std::fmt::Display for MatchMethod {
             MatchMethod::Md5 => write!(f, "md5"),
             MatchMethod::Isbn => write!(f, "isbn"),
             MatchMethod::Title => write!(f, "title"),
+            MatchMethod::New => write!(f, "new"),
         }
     }
+}
+
+/// A library book that looks like it might be this sidecar's, but not enough to
+/// link without asking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchCandidate {
+    pub book_id: i64,
+    pub title: String,
+    /// Jaro-winkler similarity of the normalized titles, in
+    /// `CANDIDATE_MIN..AUTO_MATCH`.
+    pub score: f64,
 }
 
 #[derive(Debug)]
@@ -367,6 +405,16 @@ pub struct BookImportStats {
     pub book_id: i64,
     pub book_title: String,
     pub inserted: usize,
+    /// Rows already present whose **device-owned** payload (`ko_note`, `color`,
+    /// `chapter`, `page`) the sidecar disagreed with, and which were refreshed
+    /// toward the device. Ours — `annotation` — is never in this count.
+    ///
+    /// It exists because without it a note edited on the device is reported as
+    /// `skipped`, indistinguishable from "already had it, identical". Silence
+    /// looked exactly like success.
+    pub updated: usize,
+    /// Present and identical. Narrower than it used to be: what would now be
+    /// counted as `updated` used to land here.
     pub skipped: usize,
     pub flashcards: usize,
     pub matched_by: MatchMethod,
@@ -386,6 +434,27 @@ pub struct BookImportStats {
 pub struct UnmatchedSidecar {
     pub path: PathBuf,
     pub title: Option<String>,
+    /// The sidecar's root `partial_md5_checksum`, so a caller can act on this
+    /// entry — `link_sidecar` it to an existing book — without reopening and
+    /// re-parsing the file it was just told about.
+    pub partial_md5: Option<String>,
+    /// Library books in the ambiguous band. Empty is the ordinary case; a
+    /// non-empty list is the difference between "unmatched" and "unmatched, and
+    /// here is what it probably is".
+    pub candidates: Vec<MatchCandidate>,
+}
+
+/// The result of pulling one book in from the reader.
+///
+/// Not a bare [`BookImportStats`]: a pull can degrade — a sidecar with no
+/// `partial_md5_checksum` imports but cannot be made idempotent — and a typed
+/// diagnostic needs somewhere to travel. Not an [`ImportReport`] either, whose
+/// `Vec` would make every caller index `[0]` for a function that handles
+/// exactly one book.
+#[derive(Debug)]
+pub struct PullReport {
+    pub stats: BookImportStats,
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Find sidecar lua files under `path`: accepts a `metadata.*.lua` file, a
@@ -485,28 +554,67 @@ async fn match_book(
         }
     }
 
+    let mut scored = title_scores(storage, sc).await?;
+    if scored.first().is_some_and(|(s, _)| *s >= AUTO_MATCH) {
+        return Ok(Some((scored.remove(0).1, MatchMethod::Title)));
+    }
+    Ok(None)
+}
+
+/// Every library book scored against the sidecar's title, best first.
+///
+/// One scan shared by [`match_book`] and [`match_candidates`], because the two
+/// answers have to come from the same ordering: a book the auto-match rejected
+/// showing up as a candidate is the whole point, and a book it accepted showing
+/// up as one as well would be an invitation to link what is already linked.
+async fn title_scores(storage: &Storage, sc: &KoSidecar) -> Result<Vec<(f64, Book)>> {
     let Some(title) = &sc.title else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let want = normalize(title);
     if want.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let mut best: Option<(f64, Book)> = None;
-    for book in storage
+    let mut scored: Vec<(f64, Book)> = storage
         .list_books(10_000, crate::storage::BookSort::LastModified)
         .await?
-    {
-        let have = normalize(book.title.as_deref().unwrap_or(""));
-        if have.is_empty() {
-            continue;
-        }
-        let sim = jaro_winkler(&want, &have);
-        if sim >= 0.85 && best.as_ref().is_none_or(|(s, _)| sim > *s) {
-            best = Some((sim, book));
-        }
-    }
-    Ok(best.map(|(_, b)| (b, MatchMethod::Title)))
+        .into_iter()
+        .filter_map(|book| {
+            let have = normalize(book.title.as_deref().unwrap_or(""));
+            if have.is_empty() {
+                return None;
+            }
+            Some((jaro_winkler(&want, &have), book))
+        })
+        .collect();
+    // `total_cmp` rather than `partial_cmp().unwrap()`: a NaN here would panic
+    // mid-import. Ties break on book id so the order is deterministic and a
+    // caller showing "the best candidate" shows the same one twice running.
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    Ok(scored)
+}
+
+/// Library books in the ambiguous band, best first.
+///
+/// Above [`AUTO_MATCH`] the caller has already matched; below [`CANDIDATE_MIN`]
+/// it is noise. What is left is the case the matcher used to swallow: a variant
+/// title — a subtitle dropped, a translator's spelling, "The" gained or lost —
+/// that quietly became a second copy of a book already on the shelf, with
+/// nothing said and nothing to act on. Offering it as a candidate is what turns
+/// `unmatched` from a dead end into a decision.
+pub async fn match_candidates(storage: &Storage, sc: &KoSidecar) -> Result<Vec<MatchCandidate>> {
+    Ok(title_scores(storage, sc)
+        .await?
+        .into_iter()
+        .filter(|(score, _)| *score >= CANDIDATE_MIN && *score < AUTO_MATCH)
+        .filter_map(|(score, book)| {
+            Some(MatchCandidate {
+                book_id: book.id?,
+                title: book.display_title().to_string(),
+                score,
+            })
+        })
+        .collect())
 }
 
 /// Import all sidecars under `path`. Idempotent: re-running inserts nothing
@@ -549,9 +657,16 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
             }
         };
         let Some((book, matched_by)) = match_book(storage, &sidecar_path, &sc).await? else {
+            // Unmatched is a state to act on, not a dead end: carry the
+            // near-misses and the device key so the caller can link this
+            // sidecar to a book, or pull it in as a new one, without going back
+            // to the file.
+            let candidates = match_candidates(storage, &sc).await?;
             report.unmatched.push(UnmatchedSidecar {
                 path: sidecar_path,
                 title: sc.title,
+                partial_md5: sc.partial_md5,
+                candidates,
             });
             continue;
         };
@@ -572,78 +687,281 @@ pub async fn import(storage: &Storage, path: &Path, dry_run: bool) -> Result<Imp
                 .await?;
         }
 
-        let summary = sc.summary.as_ref();
-        let status = summary.and_then(|s| s.status.clone());
-        if let Some(KoStatus::Other(value)) = &status {
-            tracing::warn!(
-                path = %sidecar_path.display(),
-                status = %value,
-                "unknown KOReader status; imported as-is"
-            );
-            report.warnings.push(Diagnostic::unknown_device_status(
-                sidecar_path.clone(),
-                value,
-            ));
-        }
-
-        let mut stats = BookImportStats {
+        let target = ImportTarget {
             book_id,
             book_title: book.display_title().to_string(),
-            inserted: 0,
-            skipped: 0,
-            flashcards: 0,
             matched_by,
-            percent_finished: sc.percent_finished,
-            status,
-            rating: summary.and_then(|s| s.rating),
         };
-        for h in &sc.highlights {
-            if dry_run {
-                if storage.highlight_exists(book_id, h).await? {
-                    stats.skipped += 1;
-                } else {
-                    stats.inserted += 1;
-                    if single_word(&h.text).is_some() {
-                        stats.flashcards += 1;
-                    }
-                }
-                continue;
-            }
-            match storage.insert_highlight(book_id, h).await? {
-                None => stats.skipped += 1,
-                Some(highlight_id) => {
-                    stats.inserted += 1;
-                    if let Some(word) = single_word(&h.text) {
-                        let context = h.note.as_deref().or(h.chapter.as_deref());
-                        if storage
-                            .insert_flashcard(book_id, Some(highlight_id), &word, context)
-                            .await?
-                        {
-                            stats.flashcards += 1;
-                        }
-                    }
-                }
-            }
-        }
-        // `summary.note` is the user's review — private reading, the same class
-        // as highlight text and note bodies. It is deliberately absent from
-        // every field here and must never rise above `trace!`. Status, rating
-        // and progress are device state, not prose, and are fine to log.
-        tracing::info!(
-            book_id,
-            inserted = stats.inserted,
-            skipped = stats.skipped,
-            flashcards = stats.flashcards,
-            matched_by = %stats.matched_by,
-            status = stats.status.as_ref().map(|s| s.to_string()),
-            rating = stats.rating,
-            percent_finished = stats.percent_finished,
+        let stats = import_into(
+            storage,
+            target,
+            &sc,
+            &sidecar_path,
             dry_run,
-            "imported sidecar"
-        );
+            &mut report.warnings,
+        )
+        .await?;
         report.imported.push(stats);
     }
     Ok(report)
+}
+
+/// Which book a parsed sidecar is about to be written into, and how that was
+/// decided. Bundled so [`import_into`] keeps a readable arity.
+struct ImportTarget {
+    book_id: i64,
+    book_title: String,
+    matched_by: MatchMethod,
+}
+
+/// Write one parsed sidecar's highlights into an already-chosen book.
+///
+/// The single place the insert/refresh/skip decision is made. `import` and
+/// [`import_book_from_sidecar`] differ only in how they pick the book, and
+/// letting them differ in how they *count* would put the two paths' goldens
+/// quietly out of step.
+async fn import_into(
+    storage: &Storage,
+    target: ImportTarget,
+    sc: &KoSidecar,
+    sidecar_path: &Path,
+    dry_run: bool,
+    warnings: &mut Vec<Diagnostic>,
+) -> Result<BookImportStats> {
+    let ImportTarget {
+        book_id,
+        book_title,
+        matched_by,
+    } = target;
+
+    let summary = sc.summary.as_ref();
+    let status = summary.and_then(|s| s.status.clone());
+    if let Some(KoStatus::Other(value)) = &status {
+        tracing::warn!(
+            path = %sidecar_path.display(),
+            status = %value,
+            "unknown KOReader status; imported as-is"
+        );
+        warnings.push(Diagnostic::unknown_device_status(
+            sidecar_path.to_path_buf(),
+            value,
+        ));
+    }
+
+    let mut stats = BookImportStats {
+        book_id,
+        book_title,
+        inserted: 0,
+        updated: 0,
+        skipped: 0,
+        flashcards: 0,
+        matched_by,
+        percent_finished: sc.percent_finished,
+        status,
+        rating: summary.and_then(|s| s.rating),
+    };
+    for h in &sc.highlights {
+        if dry_run {
+            if storage.highlight_exists(book_id, h).await? {
+                // A preview that reported a device edit as "already known"
+                // would disagree with the import it is previewing, which is
+                // the one thing a dry run must not do.
+                if storage.device_fields_differ(book_id, h).await? {
+                    stats.updated += 1;
+                } else {
+                    stats.skipped += 1;
+                }
+            } else {
+                stats.inserted += 1;
+                if single_word(&h.text).is_some() {
+                    stats.flashcards += 1;
+                }
+            }
+            continue;
+        }
+        match storage.insert_highlight(book_id, h).await? {
+            // Already present. KOReader owns `ko_note`/`color`/`chapter`/
+            // `page`, so the sidecar wins on those — and only a row that
+            // genuinely changed counts as `updated`.
+            None => {
+                if storage.refresh_device_fields(book_id, h).await? {
+                    stats.updated += 1;
+                } else {
+                    stats.skipped += 1;
+                }
+            }
+            Some(highlight_id) => {
+                stats.inserted += 1;
+                if let Some(word) = single_word(&h.text) {
+                    let context = h.note.as_deref().or(h.chapter.as_deref());
+                    if storage
+                        .insert_flashcard(book_id, Some(highlight_id), &word, context)
+                        .await?
+                    {
+                        stats.flashcards += 1;
+                    }
+                }
+            }
+        }
+    }
+    // `summary.note` is the user's review — private reading, the same class
+    // as highlight text and note bodies. It is deliberately absent from
+    // every field here and must never rise above `trace!`. Status, rating
+    // and progress are device state, not prose, and are fine to log.
+    tracing::info!(
+        book_id,
+        inserted = stats.inserted,
+        updated = stats.updated,
+        skipped = stats.skipped,
+        flashcards = stats.flashcards,
+        matched_by = %stats.matched_by,
+        status = stats.status.as_ref().map(|s| s.to_string()),
+        rating = stats.rating,
+        percent_finished = stats.percent_finished,
+        dry_run,
+        "imported sidecar"
+    );
+    Ok(stats)
+}
+
+// ---- pull, link, merge -------------------------------------------------------
+
+/// Create a book from a sidecar's own metadata and import its highlights.
+///
+/// The verb the device screen is built around, and until now the engine had no
+/// support for it at all: an unmatched sidecar was reported and dropped, so
+/// getting a book off the reader meant adding it by title or ISBN first and
+/// then importing.
+///
+/// **Fully offline.** No provider enrichment — deferred by decision. Title,
+/// authors, page count and language come from the sidecar's `stats` block,
+/// falling back to `doc_props` and `doc_pages`; the book has no ISBN, cover or
+/// description, and the user enriches it later via search and then merges.
+///
+/// **Idempotency cannot come from `upsert_book`.** That branches
+/// isbn_10 → isbn_13 → plain unconditional insert, and a sidecar-seeded book has
+/// neither ISBN — so it takes the third branch every time and a second pull
+/// would create a second book. The guard is `device_books` keyed on
+/// `partial_md5`: known → reuse that book, unknown → create and record the
+/// mapping.
+pub async fn import_book_from_sidecar(storage: &Storage, sidecar: &Path) -> Result<PullReport> {
+    // Unlike a library scan, this is one file the user pointed at deliberately.
+    // Degrading to a warning would leave them with a success message and no
+    // book, so an unreadable or unparsable sidecar is an error here.
+    let src = std::fs::read_to_string(sidecar)?;
+    let sc = parse_sidecar(&src)?;
+
+    let mut warnings = Vec::new();
+    let (book_id, matched_by) = match sc.partial_md5.as_deref() {
+        Some(md5) => match storage.find_book_by_partial_md5(md5).await? {
+            Some(book) => {
+                let id = book
+                    .id
+                    .ok_or_else(|| EngineError::Other("linked book has no id".into()))?;
+                (id, MatchMethod::Md5)
+            }
+            None => {
+                let id = storage.upsert_book(&book_from_sidecar(&sc)).await?;
+                storage.link_device_book(md5, id, LinkedBy::Auto).await?;
+                (id, MatchMethod::New)
+            }
+        },
+        None => {
+            // Nothing to key a mapping on, so this pull cannot be made
+            // idempotent. Import anyway — refusing a file the user chose is a
+            // dead end — but say so: the duplicate would otherwise appear
+            // silently, on some later pull, with no way to connect it back.
+            tracing::warn!(
+                path = %sidecar.display(),
+                "sidecar has no partial_md5_checksum; the pulled book cannot be de-duplicated"
+            );
+            warnings.push(Diagnostic::sidecar_not_identified(sidecar.to_path_buf()));
+            (
+                storage.upsert_book(&book_from_sidecar(&sc)).await?,
+                MatchMethod::New,
+            )
+        }
+    };
+
+    let book_title = storage
+        .get_book(book_id)
+        .await?
+        .map(|b| b.display_title().to_string())
+        .unwrap_or_default();
+    let target = ImportTarget {
+        book_id,
+        book_title,
+        matched_by,
+    };
+    let stats = import_into(storage, target, &sc, sidecar, false, &mut warnings).await?;
+    Ok(PullReport { stats, warnings })
+}
+
+/// The book a sidecar describes, as far as the sidecar knows.
+///
+/// `stats` first, then `doc_props`: the two agree on current devices, but
+/// `stats` is the block the statistics plugin wrote and carries `pages`, which
+/// `doc_props` has no equivalent for.
+fn book_from_sidecar(sc: &KoSidecar) -> Book {
+    let stats = sc.stats.as_ref();
+    let pick = |from_stats: Option<&String>, from_props: Option<&String>| {
+        from_stats
+            .or(from_props)
+            .map(|s| s.as_str())
+            .and_then(meaningful)
+            .map(str::to_string)
+    };
+    Book {
+        title: pick(stats.and_then(|s| s.title.as_ref()), sc.title.as_ref()),
+        authors: split_authors(
+            stats
+                .and_then(|s| s.authors.as_deref())
+                .or(sc.authors.as_deref()),
+        ),
+        language: pick(
+            stats.and_then(|s| s.language.as_ref()),
+            sc.language.as_ref(),
+        ),
+        page_count: stats.and_then(|s| s.pages).or(sc.doc_pages),
+        ..Default::default()
+    }
+}
+
+/// KOReader writes the literal string `N/A` where it has no value — seen on
+/// `stats.series`, and nothing stops it appearing elsewhere. A book titled
+/// "N/A" is worse than a book with no title.
+fn meaningful(s: &str) -> Option<&str> {
+    let s = s.trim();
+    (!s.is_empty() && !s.eq_ignore_ascii_case("n/a")).then_some(s)
+}
+
+/// KOReader joins multiple authors with a newline, the same way it joins
+/// `doc_props.identifiers`.
+fn split_authors(raw: Option<&str>) -> Vec<String> {
+    raw.map(|s| {
+        s.lines()
+            .filter_map(meaningful)
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Record a sidecar↔book decision so it is never re-guessed.
+///
+/// Linked as `Manual`, and it repoints: this is the user resolving an ambiguity
+/// the matcher could not, which includes correcting a link the matcher got
+/// wrong. A library scan must never do either — see
+/// [`Storage::set_device_link`].
+pub async fn link_sidecar(storage: &Storage, partial_md5: &str, book_id: i64) -> Result<()> {
+    // Checked rather than left to the foreign key so the caller gets "no such
+    // book" instead of a raw constraint violation.
+    if storage.get_book(book_id).await?.is_none() {
+        return Err(EngineError::NotFound(format!("book id {book_id}")));
+    }
+    storage
+        .set_device_link(partial_md5, book_id, LinkedBy::Manual)
+        .await
 }
 
 #[cfg(test)]
@@ -1058,6 +1376,267 @@ return {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // ---- pull from device --------------------------------------------------
+
+    /// `<dir>/<name>.sdr/metadata.epub.lua`, returning the sidecar's path.
+    fn sdr(dir: &Path, name: &str, src: &str) -> PathBuf {
+        let d = dir.join(format!("{name}.sdr"));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("metadata.epub.lua");
+        std::fs::write(&f, src).unwrap();
+        f
+    }
+
+    /// The dead end this item exists to remove: before, a sidecar whose book was
+    /// not already in the library was reported and dropped.
+    #[tokio::test]
+    async fn pulling_an_unmatched_sidecar_creates_the_book_from_its_own_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = sdr(tmp.path(), "1Q84", DEVICE_STATE);
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+
+        let report = import_book_from_sidecar(&s, &path).await.unwrap();
+        assert!(report.warnings.is_empty());
+        assert_eq!(report.stats.matched_by, MatchMethod::New);
+        assert_eq!(report.stats.inserted, 1);
+
+        let book = s.get_book(report.stats.book_id).await.unwrap().unwrap();
+        assert_eq!(book.title.as_deref(), Some("1Q84"));
+        assert_eq!(book.authors, ["Haruki Murakami"]);
+        assert_eq!(book.language.as_deref(), Some("en"));
+        assert_eq!(book.page_count, Some(2177));
+        // Offline by decision: no provider is consulted, so there is nothing an
+        // ISBN or a cover could have come from.
+        assert_eq!(book.isbn_13, None);
+        assert_eq!(book.cover_path, None);
+
+        assert_eq!(s.list_highlights(book.id.unwrap()).await.unwrap().len(), 1);
+        assert_eq!(
+            s.device_links_for_book(book.id.unwrap()).await.unwrap(),
+            ["a5b01da92a68bbbb6d88c12483cf3b56"],
+            "the mapping is what makes a second pull a no-op"
+        );
+    }
+
+    /// `upsert_book` cannot supply this: it branches isbn_10 → isbn_13 → plain
+    /// unconditional insert, and a sidecar-seeded book has neither ISBN, so it
+    /// takes the third branch every single time. The guard has to be
+    /// `device_books`.
+    #[tokio::test]
+    async fn pulling_the_same_sidecar_twice_makes_one_book_not_two() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = sdr(tmp.path(), "1Q84", DEVICE_STATE);
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+
+        let first = import_book_from_sidecar(&s, &path).await.unwrap();
+        let second = import_book_from_sidecar(&s, &path).await.unwrap();
+
+        assert_eq!(second.stats.book_id, first.stats.book_id);
+        assert_eq!(second.stats.matched_by, MatchMethod::Md5);
+        assert_eq!(second.stats.inserted, 0);
+        let books: i64 = sqlx::query_scalar("SELECT count(*) FROM books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(books, 1);
+    }
+
+    /// No `partial_md5_checksum` means no mapping key, so this one pull cannot
+    /// be made idempotent. Import anyway — refusing a file the user pointed at
+    /// is a dead end — but say so in a typed diagnostic, because otherwise the
+    /// duplicate turns up much later with nothing connecting it to this moment.
+    #[tokio::test]
+    async fn a_sidecar_with_no_md5_still_imports_and_says_it_cannot_be_deduped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = sdr(tmp.path(), "Pachinko", MODERN_WITHOUT_MD5);
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+
+        let report = import_book_from_sidecar(&s, &path).await.unwrap();
+        assert_eq!(report.stats.inserted, 2, "the highlights still land");
+        assert!(
+            report.warnings.iter().any(|d| matches!(
+                d.kind,
+                crate::diagnostic::DiagnosticKind::SidecarNotIdentified { .. }
+            )),
+            "expected the not-identified diagnostic, got {:?}",
+            report.warnings
+        );
+
+        // And the consequence the diagnostic warns about is real, not
+        // hypothetical: pull again and you get a second book.
+        import_book_from_sidecar(&s, &path).await.unwrap();
+        let books: i64 = sqlx::query_scalar("SELECT count(*) FROM books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(books, 2);
+    }
+
+    /// The band, from both edges. Above `AUTO_MATCH` the caller already
+    /// matched, below `CANDIDATE_MIN` it is noise; what is left is the variant
+    /// title that used to become a duplicate in silence.
+    #[tokio::test]
+    async fn match_candidates_returns_the_near_miss_and_nothing_else() {
+        use crate::book::Book;
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for title in [
+            // Above AUTO_MATCH: the caller has matched on this already, so
+            // offering it would be offering to link what is linked.
+            "Pachinko",
+            // The near miss — a subtitle the library carries and the device
+            // does not. This is the shape that used to become a duplicate.
+            "Pachinko: A Novel of Korea and Japan",
+            // Noise, far below CANDIDATE_MIN.
+            "The Brothers Karamazov",
+        ] {
+            s.upsert_book(&Book {
+                title: Some(title.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+
+        let sc = parse_sidecar(MODERN).unwrap();
+        let got = match_candidates(&s, &sc).await.unwrap();
+        let titles: Vec<&str> = got.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, ["Pachinko: A Novel of Korea and Japan"]);
+        assert!(got[0].score >= CANDIDATE_MIN && got[0].score < AUTO_MATCH);
+    }
+
+    /// A recorded link is a decision, so `match_book` must honour it and the
+    /// pull must not create a second book behind it.
+    #[tokio::test]
+    async fn linking_a_sidecar_makes_the_next_pull_find_the_book_we_chose() {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = sdr(tmp.path(), "1Q84", DEVICE_STATE);
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let book_id = s
+            .upsert_book(&Book {
+                // Nothing like the sidecar's title: only the recorded link can
+                // connect the two.
+                title: Some("Nineteen Eighty-Four Times Two".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        link_sidecar(&s, "a5b01da92a68bbbb6d88c12483cf3b56", book_id)
+            .await
+            .unwrap();
+
+        let report = import_book_from_sidecar(&s, &path).await.unwrap();
+        assert_eq!(report.stats.book_id, book_id);
+        assert_eq!(report.stats.matched_by, MatchMethod::Md5);
+        let books: i64 = sqlx::query_scalar("SELECT count(*) FROM books")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(books, 1, "the link must prevent the duplicate");
+
+        // And an ordinary library import finds it the same way.
+        let bulk = import(&s, tmp.path(), false).await.unwrap();
+        assert_eq!(bulk.imported[0].matched_by, MatchMethod::Md5);
+        assert!(bulk.unmatched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn linking_to_a_book_that_does_not_exist_is_not_found_not_a_constraint_error() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        assert!(matches!(
+            link_sidecar(&s, "abc", 9999).await,
+            Err(EngineError::NotFound(_))
+        ));
+    }
+
+    /// Unmatched has to carry enough to act on, or the caller is back to
+    /// re-parsing the file it was just handed.
+    #[tokio::test]
+    async fn an_unmatched_sidecar_reports_its_candidates_and_its_device_key() {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        sdr(tmp.path(), "Pachinko", MODERN);
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        s.upsert_book(&Book {
+            title: Some("Pachinko: A Novel of Korea and Japan".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let report = import(&s, tmp.path(), false).await.unwrap();
+        assert_eq!(report.unmatched.len(), 1);
+        let u = &report.unmatched[0];
+        assert_eq!(
+            u.partial_md5.as_deref(),
+            Some("0d6ba6c47caf63b8b3d1a2b3c4d5e6f7")
+        );
+        assert_eq!(u.candidates.len(), 1);
+        assert_eq!(
+            u.candidates[0].title,
+            "Pachinko: A Novel of Korea and Japan"
+        );
+    }
+
+    /// A pull is one file the user chose. Degrading to a warning would hand
+    /// them a success message and no book.
+    #[tokio::test]
+    async fn a_pull_of_an_unparsable_sidecar_errors_rather_than_degrading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = sdr(tmp.path(), "Bad", "return 42");
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        assert!(matches!(
+            import_book_from_sidecar(&s, &path).await,
+            Err(EngineError::Sidecar(_))
+        ));
+    }
+
+    /// KOReader writes the literal `N/A` where it has no value, and joins
+    /// multiple authors with a newline. A book titled "N/A" would be worse than
+    /// a book with no title at all.
+    #[test]
+    fn sidecar_metadata_is_cleaned_before_it_becomes_a_book() {
+        let sc = parse_sidecar(
+            "return { [\"doc_props\"] = { [\"title\"] = \"Two Authors\",
+                       [\"authors\"] = \"Ann Writer\\nBo Writer\", [\"language\"] = \"N/A\" },
+                       [\"doc_pages\"] = 311 }",
+        )
+        .unwrap();
+        let book = book_from_sidecar(&sc);
+        assert_eq!(book.authors, ["Ann Writer", "Bo Writer"]);
+        assert_eq!(book.language, None, "\"N/A\" is not a language");
+        assert_eq!(
+            book.page_count,
+            Some(311),
+            "doc_pages is the only page count a stats-less sidecar has"
+        );
+    }
+
+    /// Byte-for-byte `MODERN` minus its `partial_md5_checksum` line.
+    const MODERN_WITHOUT_MD5: &str = r#"
+return {
+    ["annotations"] = {
+        [1] = {
+            ["datetime"] = "2026-01-05 21:14:08",
+            ["pageno"] = 42,
+            ["pos0"] = "/body/DocFragment[8]/body/p[12]/text().0",
+            ["text"] = "History has failed us, but no matter.",
+        },
+        [2] = {
+            ["datetime"] = "2026-01-06 08:02:11",
+            ["pageno"] = 55,
+            ["pos0"] = "/body/DocFragment[9]/body/p[4]/text().10",
+            ["text"] = "pachinko",
+        },
+    },
+    ["doc_props"] = { ["title"] = "Pachinko", ["authors"] = "Min Jin Lee" },
+}
+"#;
 
     // ---- hostile input ----------------------------------------------------
     //
