@@ -9,7 +9,7 @@ use crate::diagnostic::Diagnostic;
 use crate::error::{EngineError, Result};
 use crate::flashcards::single_word;
 use crate::search::normalize;
-use crate::storage::{LinkedBy, NewHighlight, Storage};
+use crate::storage::{LinkedBy, NewHighlight, Storage, ko_datetime_to_unix};
 
 /// Instructions a sidecar chunk may execute before it is killed.
 ///
@@ -418,13 +418,13 @@ pub struct BookImportStats {
     pub skipped: usize,
     pub flashcards: usize,
     pub matched_by: MatchMethod,
-    /// The device's reading state, reported but **not persisted**.
+    /// The device's reading state, as the sidecar reported it.
     ///
-    /// `readings` (build item 4) is where status, rating and progress belong,
-    /// and `books`' progress columns are about to move there — parking these on
-    /// `books` now would only have to be undone. Carrying them in the report
-    /// means the parse is exercised end to end and visible in the goldens
-    /// rather than being dead code until item 4 lands.
+    /// Persisted since migration `0005`, onto the reading rather than the book —
+    /// `readings.ko_status`/`ko_percent`/`ko_rating`, the device-owned mirror.
+    /// These fields stay in the report because they are what the caller prints,
+    /// and because the goldens assert them: without them the four device-state
+    /// fixtures would be green while parsing nothing.
     pub percent_finished: Option<f64>,
     pub status: Option<KoStatus>,
     pub rating: Option<i64>,
@@ -816,6 +816,10 @@ async fn import_into(
             }
         }
     }
+    if !dry_run {
+        persist_device_state(storage, book_id, sc, &stats).await?;
+    }
+
     // `summary.note` is the user's review — private reading, the same class
     // as highlight text and note bodies. It is deliberately absent from
     // every field here and must never rise above `trace!`. Status, rating
@@ -834,6 +838,69 @@ async fn import_into(
         "imported sidecar"
     );
     Ok(stats)
+}
+
+/// Mirror the sidecar's reading state onto a reading, and attribute the
+/// highlights we just imported.
+///
+/// **An import opens a reading only when the sidecar carries device state** — a
+/// status, a rating or a `percent_finished`. A sidecar with none of those says
+/// nothing about whether the book was ever read, so it opens nothing and its
+/// highlights stay unattributed, which is a state that can be acted on rather
+/// than a guess that cannot be undone. The reading starts at the **earliest
+/// `datetime` seen**: KOReader does not record when a book was opened, and the
+/// first annotation is the earliest moment we can prove the user was in it.
+///
+/// It opens one only when the book has *no* reading — see
+/// [`Storage::ensure_reading`]. "None open" would mean a `complete` sidecar
+/// added a reading on every re-import, and import is the one path whose contract
+/// is idempotency.
+///
+/// Never called under `dry_run` — the rule `link_device_book` already follows.
+async fn persist_device_state(
+    storage: &Storage,
+    book_id: i64,
+    sc: &KoSidecar,
+    stats: &BookImportStats,
+) -> Result<()> {
+    if stats.status.is_none() && stats.percent_finished.is_none() && stats.rating.is_none() {
+        return Ok(());
+    }
+
+    let started = sc
+        .highlights
+        .iter()
+        .filter_map(|h| h.ko_datetime.as_deref())
+        .filter_map(ko_datetime_to_unix)
+        .min();
+    storage.ensure_reading(book_id, started, "koreader").await?;
+
+    storage
+        .set_device_state(
+            book_id,
+            stats.status.as_ref(),
+            stats.percent_finished,
+            stats.rating,
+        )
+        .await?;
+
+    // Ours tracks theirs, but is not the same field: `complete` on the device
+    // closes the reading, `abandoned` marks it without closing it (an abandoned
+    // book is one you might still pick up), `reading` says nothing new, and an
+    // unrecognised status leaves ours entirely alone — the `UnknownDeviceStatus`
+    // diagnostic has already fired for it.
+    match &stats.status {
+        Some(KoStatus::Complete) => {
+            storage.finish_reading(book_id).await?;
+        }
+        Some(KoStatus::Abandoned) => {
+            storage.abandon_reading(book_id).await?;
+        }
+        Some(KoStatus::Reading) | Some(KoStatus::Other(_)) | None => {}
+    }
+
+    storage.attribute_highlights(book_id).await?;
+    Ok(())
 }
 
 // ---- pull, link, merge -------------------------------------------------------
@@ -1308,6 +1375,222 @@ return {
             .await
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    // ---- the device's reading state, persisted ---------------------------
+
+    /// Import `src` into a fresh library holding one book called `title`.
+    async fn import_one(src: &str, title: &str, dry_run: bool) -> (Storage, i64) {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sdr = tmp.path().join(format!("{title}.sdr"));
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua"), src).unwrap();
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(&Book {
+                title: Some(title.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        import(&s, tmp.path(), dry_run).await.unwrap();
+        (s, id)
+    }
+
+    /// A sidecar carrying `summary` and `percent_finished`, with one annotation
+    /// at `when` so there is something to attribute and something to start the
+    /// reading from.
+    fn sidecar_with_status(status: &str, when: &str) -> String {
+        format!(
+            r#"
+return {{
+    ["annotations"] = {{
+        [1] = {{
+            ["datetime"] = "{when}",
+            ["pos0"] = "/body/DocFragment[1]/body/p[1]/text().0",
+            ["pos1"] = "/body/DocFragment[1]/body/p[1]/text().9",
+            ["text"] = "a passage",
+        }},
+    }},
+    ["doc_props"] = {{ ["title"] = "1Q84" }},
+    ["percent_finished"] = 0.5,
+    ["summary"] = {{ ["status"] = "{status}", ["rating"] = 4 }},
+}}
+"#
+        )
+    }
+
+    /// The whole of what item 4 added to the import, in one pass: a reading is
+    /// opened, the device's own state is mirrored onto it, and the highlights
+    /// land inside its window.
+    #[tokio::test]
+    async fn an_import_opens_a_reading_and_mirrors_the_device() {
+        let (s, id) = import_one(DEVICE_STATE, "1Q84", false).await;
+
+        let readings = s.list_readings(id).await.unwrap();
+        assert_eq!(readings.len(), 1);
+        let r = &readings[0];
+        assert_eq!(r.source, "koreader");
+        assert_eq!(r.ko_status.as_deref(), Some("complete"));
+        assert_eq!(r.ko_percent, Some(0.99770326136886));
+        assert_eq!(r.ko_rating, Some(5));
+        // KOReader never records when a book was *opened*, so the earliest
+        // annotation is the earliest moment we can prove the user was in it.
+        assert_eq!(
+            r.started_at,
+            crate::storage::ko_datetime_to_unix("2026-07-04 15:34:12")
+        );
+        // `complete` closes it.
+        assert!(r.finished_at.is_some());
+        assert_eq!(r.status, crate::storage::STATUS_FINISHED);
+
+        let attributed: Option<i64> =
+            sqlx::query_scalar("SELECT reading_id FROM highlights WHERE book_id = ?")
+                .bind(id)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(attributed, Some(r.id));
+
+        // And the projection the render layer reads.
+        let b = s.get_book(id).await.unwrap().unwrap();
+        assert!(b.finished);
+    }
+
+    /// Each status maps as the spec says, and — the part worth pinning — an
+    /// unrecognised one leaves *ours* alone while still mirroring theirs. The
+    /// `UnknownDeviceStatus` diagnostic is what tells the user about it; a
+    /// status we invented from `tbr` would be a guess with no way back.
+    #[tokio::test]
+    async fn every_device_status_maps_as_specified() {
+        for (device, ours, closed) in [
+            ("reading", crate::storage::STATUS_READING, false),
+            ("abandoned", crate::storage::STATUS_ABANDONED, false),
+            ("complete", crate::storage::STATUS_FINISHED, true),
+            ("tbr", crate::storage::STATUS_READING, false),
+        ] {
+            let src = sidecar_with_status(device, "2026-01-05 21:14:08");
+            let (s, id) = import_one(&src, "1Q84", false).await;
+            let r = &s.list_readings(id).await.unwrap()[0];
+            assert_eq!(r.status, ours, "device status {device}");
+            assert_eq!(
+                r.finished_at.is_some(),
+                closed,
+                "device status {device} closed the reading wrongly"
+            );
+            // Theirs is mirrored verbatim either way — that is the whole point
+            // of a device-owned column.
+            assert_eq!(r.ko_status.as_deref(), Some(device));
+            assert_eq!(r.ko_rating, Some(4));
+        }
+    }
+
+    /// An abandoned reading stays open. Closing it would make picking the book
+    /// up again a *reread* rather than the continuation it is.
+    #[tokio::test]
+    async fn abandoned_marks_the_reading_without_closing_it() {
+        let src = sidecar_with_status("abandoned", "2026-01-05 21:14:08");
+        let (s, id) = import_one(&src, "1Q84", false).await;
+        assert!(s.active_reading(id).await.unwrap().is_some());
+    }
+
+    /// A sidecar that says nothing about reading state opens nothing. Opening a
+    /// reading on the strength of a highlight alone would claim the user read a
+    /// book their device never said they had.
+    #[tokio::test]
+    async fn a_sidecar_with_no_device_state_opens_no_reading() {
+        let (s, id) = import_one(MODERN, "Pachinko", false).await;
+        assert!(s.list_readings(id).await.unwrap().is_empty());
+        let unattributed: Option<i64> =
+            sqlx::query_scalar("SELECT reading_id FROM highlights WHERE book_id = ? LIMIT 1")
+                .bind(id)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(unattributed, None, "unattributed is correct, not a gap");
+    }
+
+    /// A dry run reports; it must not write. Reading state is a write.
+    #[tokio::test]
+    async fn a_dry_run_persists_no_reading_state() {
+        let (s, id) = import_one(DEVICE_STATE, "1Q84", true).await;
+        assert!(s.list_readings(id).await.unwrap().is_empty());
+    }
+
+    /// Re-importing must not add a reading. `complete` is the case that gets
+    /// this wrong: it *closes* the reading it just opened, so a rule of "open
+    /// one when none is open" grows the history by one on every single import —
+    /// silently, and worst for the books the user actually finished.
+    #[tokio::test]
+    async fn re_importing_never_adds_a_reading() {
+        use crate::book::Book;
+
+        for status in ["reading", "abandoned", "complete"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let sdr = tmp.path().join("1Q84.sdr");
+            std::fs::create_dir_all(&sdr).unwrap();
+            let src = sidecar_with_status(status, "2026-01-05 21:14:08");
+            std::fs::write(sdr.join("metadata.epub.lua"), &src).unwrap();
+
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&Book {
+                    title: Some("1Q84".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+
+            import(&s, tmp.path(), false).await.unwrap();
+            let first = s.list_readings(id).await.unwrap();
+            assert_eq!(first.len(), 1, "device status {status}");
+            import(&s, tmp.path(), false).await.unwrap();
+            import(&s, tmp.path(), false).await.unwrap();
+            assert_eq!(
+                s.list_readings(id).await.unwrap(),
+                first,
+                "device status {status} grew the reading history"
+            );
+        }
+    }
+
+    /// The user reread it and said so. The device cannot know that — its sidecar
+    /// is per-file and a reread appends to the same one — so the import must
+    /// write to the reading that is open, not resurrect the closed one.
+    #[tokio::test]
+    async fn an_import_after_a_reread_writes_to_the_open_reading() {
+        use crate::book::Book;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sdr = tmp.path().join("1Q84.sdr");
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(
+            sdr.join("metadata.epub.lua"),
+            sidecar_with_status("complete", "2026-01-05 21:14:08"),
+        )
+        .unwrap();
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(&Book {
+                title: Some("1Q84".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        import(&s, tmp.path(), false).await.unwrap();
+
+        let second = s.reread(id).await.unwrap();
+        import(&s, tmp.path(), false).await.unwrap();
+
+        let readings = s.list_readings(id).await.unwrap();
+        assert_eq!(readings.len(), 2, "the reread is the user's, not ours");
+        let touched = readings.iter().find(|r| r.id == second).expect("reread");
+        assert_eq!(touched.ko_status.as_deref(), Some("complete"));
+        assert!(touched.finished_at.is_some(), "complete closes it again");
     }
 
     /// Every flush writes a `metadata.*.lua.old` beside the live file — 9 of

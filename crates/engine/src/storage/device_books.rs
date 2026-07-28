@@ -3,7 +3,7 @@
 //! Keyed on the sidecar's root `partial_md5_checksum`. See
 //! `docs/koreader-format.md` §2.1 for why it is that value and not `stats.md5`.
 
-use super::books::{BOOK_COLUMNS, row_to_book};
+use super::books::{BOOK_COLUMNS, BOOK_FROM, row_to_book};
 use super::{Storage, now_unix};
 use crate::book::Book;
 use crate::error::Result;
@@ -30,13 +30,13 @@ impl LinkedBy {
 impl Storage {
     /// The book a device file is already linked to, if any.
     ///
-    /// A subquery rather than a join so `BOOK_COLUMNS` can be reused verbatim —
-    /// a join would need every column prefixed, which is a second copy of the
+    /// A subquery rather than a second join so `BOOK_COLUMNS`/`BOOK_FROM` are
+    /// reused verbatim — spelling the select out here is a second copy of the
     /// list waiting to drift from the first.
     pub async fn find_book_by_partial_md5(&self, partial_md5: &str) -> Result<Option<Book>> {
         let sql = format!(
-            "SELECT {BOOK_COLUMNS} FROM books
-             WHERE id = (SELECT book_id FROM device_books WHERE partial_md5 = ?)"
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM}
+             WHERE books.id = (SELECT book_id FROM device_books WHERE partial_md5 = ?)"
         );
         let row = sqlx::query(&sql)
             .bind(partial_md5)

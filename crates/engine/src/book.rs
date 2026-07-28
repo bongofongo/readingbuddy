@@ -21,9 +21,21 @@ pub struct Book {
     pub page_count: Option<i64>,
     pub description: Option<String>,
     pub first_sentence: Option<String>,
+    /// Reading state, as a **read-only projection of the current reading** —
+    /// the open one if there is one, else the most recent. Since migration
+    /// `0005` these are not `books` columns and
+    /// [`Storage::upsert_book`](crate::Storage::upsert_book) ignores them;
+    /// [`Storage::update_progress`](crate::Storage::update_progress) is the
+    /// writer. They stay on `Book` because that is what left every render call
+    /// site — `render.rs`, `progress_tag`, `progress_text`, the note page
+    /// auto-anchor — untouched by the move.
     pub current_page: Option<i64>,
+    /// True when the current reading's status is `finished`. See
+    /// [`Book::current_page`].
     pub finished: bool,
+    /// The current reading's `started_at`. See [`Book::current_page`].
     pub date_started: Option<i64>,
+    /// The current reading's `finished_at`. See [`Book::current_page`].
     pub date_finished: Option<i64>,
     pub created_at: Option<OffsetDateTime>,
     pub last_modified: Option<OffsetDateTime>,
