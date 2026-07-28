@@ -74,3 +74,5 @@ reflection-to-reflection rather than note-to-note.
 `make ci` is green, the `cargo-tester` agent reports clean, and `rb links` has
 been run by hand on two notes that point at each other. The PR body says what
 changed and what was deliberately left out.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

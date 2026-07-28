@@ -155,3 +155,5 @@ All `sqlite::memory:`, all offline.
 review carries a rating on a user-defined scale that maps to a Goodreads
 integer, and an unmapped value reports rather than rounds; a `[[wikilink]]` from
 a reflection to a note resolves. Run the `cargo-tester` agent before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

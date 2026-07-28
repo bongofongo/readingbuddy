@@ -61,3 +61,5 @@ CI runs the whole workspace on ubuntu now, so this suite gates the PR.
 carries the ASCII dumps from
 `cargo test -p readingbuddy-tui -- --ignored --nocapture print_layout print_lists`.
 Say what changed and what was deliberately left out.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

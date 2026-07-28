@@ -138,3 +138,5 @@ updating that list in the same commit is the point of it.
 import the fixture CSV, `rb show` a reread book and confirm it names three
 readings, then export and diff against the input. The PR body says what changed
 and what was deliberately left out.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

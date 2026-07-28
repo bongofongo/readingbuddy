@@ -111,3 +111,5 @@ All `sqlite::memory:`, all offline.
 `unmatched` is an actionable state instead of a dead end; pulling the same
 device twice creates one book; `make ci` is green. Run the `cargo-tester` agent
 before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.

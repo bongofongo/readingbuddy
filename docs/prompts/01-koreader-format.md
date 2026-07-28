@@ -90,3 +90,5 @@ gets baked into the goldens. Four new cases, each with a golden: `Summary.sdr`,
 `docs/koreader-format.md` answers the `datetime` question with evidence; the
 four fixtures and goldens are committed; `partial_md5` matching works end to
 end; `make ci` is green. Run the `cargo-tester` agent before committing.
+
+> **Note on `cargo-tester`.** If you are a subagent, you cannot launch it — subagents cannot spawn subagents. Run its procedure directly instead: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace`. That is `make check`. Say which you ran.
