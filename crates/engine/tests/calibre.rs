@@ -235,7 +235,7 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     assert_eq!(pachinko.files_linked, 2, "every format, not just the epub");
 
     let book = engine
-        .storage
+        .storage()
         .get_book(pachinko.book_id.unwrap())
         .await
         .unwrap()
@@ -248,19 +248,19 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     // collide — every cover in a calibre library is called `cover.jpg`.
     let cover = PathBuf::from(book.cover_path.expect("a cover path"));
     assert!(cover.is_file());
-    assert!(cover.starts_with(&engine.config.images_dir));
+    assert!(cover.starts_with(engine.images_dir()));
     assert_eq!(std::fs::read(&cover).unwrap(), b"jpegbytes");
 
     // Provenance: calibre's uuid, and the shelves as it wrote them.
     assert_eq!(
         engine
-            .storage
+            .storage()
             .book_for_external_id("calibre", "c47437a8-d73c-4719-838d-ff362479bf63")
             .await
             .unwrap(),
         pachinko.book_id
     );
-    let tags = engine.storage.book_tags(book.id.unwrap()).await.unwrap();
+    let tags = engine.storage().book_tags(book.id.unwrap()).await.unwrap();
     assert_eq!(
         tags.iter().map(|t| t.tag.as_str()).collect::<Vec<_>>(),
         ["fiction", "korean-lit"]
@@ -273,7 +273,7 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
         .find(|b| b.title == "Station Eleven")
         .unwrap();
     let se_book = engine
-        .storage
+        .storage()
         .get_book(se.book_id.unwrap())
         .await
         .unwrap()
@@ -334,7 +334,7 @@ async fn importing_the_same_library_twice_changes_nothing() {
     assert_eq!(first_pachinko.files_linked, 1);
     assert_eq!(
         engine
-            .storage
+            .storage()
             .list_books(100, readingbuddy::BookSort::Title)
             .await
             .unwrap()
@@ -380,7 +380,7 @@ async fn an_existing_book_is_matched_by_isbn_and_never_duplicated() {
     assert_eq!(matched.matched_by, CalibreMatch::Isbn);
 
     let after = engine
-        .storage
+        .storage()
         .get_book(existing.id.unwrap())
         .await
         .unwrap()
@@ -480,7 +480,7 @@ async fn a_dry_run_reports_the_same_thing_and_writes_nothing() {
     assert!(report.books.iter().all(|b| b.book_id.is_none()));
     assert_eq!(
         engine
-            .storage
+            .storage()
             .list_books(100, readingbuddy::BookSort::Title)
             .await
             .unwrap()
@@ -488,8 +488,7 @@ async fn a_dry_run_reports_the_same_thing_and_writes_nothing() {
         0
     );
     let images = engine
-        .config
-        .images_dir
+        .images_dir()
         .read_dir()
         .map(|d| d.count())
         .unwrap_or(0);
@@ -559,7 +558,7 @@ async fn calibres_files_are_identified_so_the_device_can_find_them_later() {
     )
     .unwrap();
     let found = engine
-        .storage
+        .storage()
         .find_book_by_partial_md5(&md5)
         .await
         .unwrap()

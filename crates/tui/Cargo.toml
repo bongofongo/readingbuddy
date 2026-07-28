@@ -38,3 +38,10 @@ libc.workspace = true
 # Only to assert that a kitty placeholder cell measures one column wide — if it
 # ever measured two, ratatui's buffer diff would skip every second cell.
 unicode-width = "0.2"
+# `test_app` seeds a highlight and a flashcard directly, and both are write
+# paths the facade deliberately does **not** have: a highlight comes off a
+# device and a flashcard is derived from one, so inventing `Engine::add_*` to
+# make a fixture compile would be adding product surface no product asked for.
+# The `internals` feature is the door item 14 left for exactly this. It is a
+# dev-dependency, so the shipped binary never has it.
+readingbuddy = { path = "../engine", features = ["internals"] }

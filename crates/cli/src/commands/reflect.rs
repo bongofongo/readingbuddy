@@ -40,7 +40,7 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
         bail!("a rating belongs to a review — try `readingbuddy review {book_id} --rating …`");
     }
 
-    let readings = engine.storage.list_readings(book_id).await?;
+    let readings = engine.list_readings(book_id).await?;
     let reading_id = match opts.reading {
         Some(nth) => Some(nth_reading(&readings, nth)?),
         None => None,
@@ -57,15 +57,11 @@ async fn run(engine: &Engine, opts: ReflectOpts<'_>, kind: NoteKind) -> Result<(
         NoteKind::Review => engine.open_review(book_id, reading_id).await?,
         _ => engine.open_reflection(book_id, reading_id).await?,
     };
-    let record = engine
-        .storage
-        .get_note(note.id)
-        .await?
-        .expect("just opened");
+    let record = engine.get_note(note.id).await?.expect("just opened");
 
     // Name the reading, not just the book: with rereads a book carries several,
     // and each gets its own pair.
-    let readings = engine.storage.list_readings(book_id).await?;
+    let readings = engine.list_readings(book_id).await?;
     if let Some(rid) = record.reading_id
         && let Some(i) = readings.iter().position(|r| r.id == rid)
     {
@@ -126,7 +122,7 @@ async fn show_only(
             .map(|r| r.id)
     });
     let existing = match current {
-        Some(rid) => engine.storage.note_for_reading(rid, kind.as_str()).await?,
+        Some(rid) => engine.note_for_reading(rid, kind.as_str()).await?,
         None => None,
     };
     let Some(record) = existing else {
@@ -145,7 +141,7 @@ async fn show_only(
         "#{} “{}” -> {}",
         record.id,
         record.title,
-        engine.config.vault_dir.join(&record.file_path).display()
+        engine.vault_dir().join(&record.file_path).display()
     );
     print_body(&body);
     Ok(())
@@ -186,7 +182,7 @@ fn nth_reading(readings: &[Reading], nth: usize) -> Result<i64> {
 /// highlight's text-adjacent device fields, and "which highlights did I use?"
 /// stays a query.
 pub async fn cite(engine: &Engine, note_id: i64, highlight_id: Option<i64>) -> Result<()> {
-    let Some(note) = engine.storage.get_note(note_id).await? else {
+    let Some(note) = engine.get_note(note_id).await? else {
         bail!("no note #{note_id} — try `readingbuddy notes`");
     };
     if let Some(hid) = highlight_id {

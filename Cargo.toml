@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/cli", "crates/tui", "crates/corpus"]
+members = ["crates/engine", "crates/api", "crates/daemon", "crates/cli", "crates/tui", "crates/corpus"]
 # cargo-fuzz needs nightly and a sanitizer flag; leaving it in would break
 # `cargo build --workspace` on stable. (fuzz/Cargo.toml also carries its own
 # empty [workspace] — belt and braces.)

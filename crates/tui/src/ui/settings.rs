@@ -14,15 +14,19 @@ use crate::render3d::caps::Passthrough;
 use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
-    let cfg = &app.engine.config;
-    let key = match cfg.google_api_key.as_deref() {
-        Some(k) => format!("set  {}", mask(k)),
+    // Through the facade's accessors, not `engine.config` — and for the key that
+    // is the only correct source, not a tidier one. `g` sets a key at runtime
+    // through `set_google_api_key`, which since item 14 writes the engine's own
+    // live copy; `EngineConfig` still carries whatever the app started with, so
+    // reading it here would show "not set" a keystroke after the user set one.
+    let key = match app.engine.google_api_key() {
+        Some(k) => format!("set  {}", mask(&k)),
         None => "not set (keyless, lower quota)".to_string(),
     };
     let rows = [
-        ("database", cfg.db_url.clone()),
-        ("images", cfg.images_dir.display().to_string()),
-        ("vault", cfg.vault_dir.display().to_string()),
+        ("database", app.engine.db_url().to_string()),
+        ("images", app.engine.images_dir().display().to_string()),
+        ("vault", app.engine.vault_dir().display().to_string()),
         ("google key", key.to_string()),
         ("glyph set", format!("{:?}", app.params.glyphs)),
         ("ambient", app.ambient.motif.label().to_string()),

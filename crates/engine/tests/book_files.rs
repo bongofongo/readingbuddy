@@ -54,7 +54,7 @@ fn files_dir(tmp: &tempfile::TempDir) -> PathBuf {
 
 async fn library_size(engine: &Engine) -> usize {
     engine
-        .storage
+        .storage()
         .list_books(1000, readingbuddy::BookSort::Title)
         .await
         .unwrap()
@@ -123,7 +123,7 @@ async fn an_imported_file_records_the_identity_the_device_will_use() {
         .unwrap();
     let md5 = readingbuddy::partial_md5(&src).unwrap();
     let linked = engine
-        .storage
+        .storage()
         .find_book_by_partial_md5(&md5)
         .await
         .unwrap()
@@ -314,7 +314,7 @@ async fn level_3_matches_on_the_device_identity_next() {
         .unwrap();
     let md5 = readingbuddy::partial_md5(&file).unwrap();
     engine
-        .storage
+        .storage()
         .link_device_book(
             &md5,
             existing.id.unwrap(),
@@ -411,7 +411,7 @@ async fn an_unrecognised_file_becomes_a_book_when_there_is_nothing_to_confuse_it
         .unwrap();
     assert!(report.created_book);
     let book = engine
-        .storage
+        .storage()
         .get_book(report.book_id.unwrap())
         .await
         .unwrap()
@@ -433,7 +433,7 @@ async fn a_format_we_cannot_read_is_still_ours_to_keep() {
         .unwrap();
     assert_eq!(report.outcome, FileOutcome::Stored);
     let book = engine
-        .storage
+        .storage()
         .get_book(report.book_id.unwrap())
         .await
         .unwrap()
@@ -537,7 +537,7 @@ async fn deleting_a_book_removes_the_files_it_owned() {
     assert!(stored_files(&files_dir(&tmp)).is_empty());
     assert!(
         engine
-            .storage
+            .storage()
             .book_file(&report.sha256)
             .await
             .unwrap()

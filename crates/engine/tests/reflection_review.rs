@@ -22,7 +22,7 @@ async fn opening_a_reflection_twice_returns_the_same_note_and_file() {
 
     let first = engine.open_reflection(book, None).await.unwrap();
     assert!(first.file.exists());
-    let record = engine.storage.get_note(first.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(first.id).await.unwrap().unwrap();
     engine
         .update_note_body(&record, "Sunja's dignity, chapter by chapter.")
         .await
@@ -45,12 +45,19 @@ async fn opening_a_reflection_twice_returns_the_same_note_and_file() {
 async fn a_reflection_opens_a_reading_when_the_book_has_none() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
-    assert!(engine.storage.list_readings(book).await.unwrap().is_empty());
+    assert!(
+        engine
+            .storage()
+            .list_readings(book)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let note = engine.open_reflection(book, None).await.unwrap();
-    let readings = engine.storage.list_readings(book).await.unwrap();
+    let readings = engine.storage().list_readings(book).await.unwrap();
     assert_eq!(readings.len(), 1);
-    let record = engine.storage.get_note(note.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(note.id).await.unwrap().unwrap();
     assert_eq!(record.reading_id, Some(readings[0].id));
     assert_eq!(record.kind, "reflection");
 }
@@ -62,17 +69,17 @@ async fn a_finished_book_reflects_on_the_reading_it_just_finished() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     engine
-        .storage
+        .storage()
         .update_progress(book, Some(490), Some(true))
         .await
         .unwrap();
-    let readings = engine.storage.list_readings(book).await.unwrap();
+    let readings = engine.storage().list_readings(book).await.unwrap();
 
     let note = engine.open_reflection(book, None).await.unwrap();
-    let record = engine.storage.get_note(note.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(note.id).await.unwrap().unwrap();
     assert_eq!(record.reading_id, Some(readings[0].id));
     assert_eq!(
-        engine.storage.list_readings(book).await.unwrap().len(),
+        engine.storage().list_readings(book).await.unwrap().len(),
         1,
         "reflecting on a finished book must not start a reread"
     );
@@ -89,7 +96,7 @@ async fn a_reread_gets_its_own_pair_and_the_first_survives() {
     let first_reflection = engine.open_reflection(book, None).await.unwrap();
     let first_review = engine.open_review(book, None).await.unwrap();
     let record = engine
-        .storage
+        .storage()
         .get_note(first_reflection.id)
         .await
         .unwrap()
@@ -99,12 +106,12 @@ async fn a_reread_gets_its_own_pair_and_the_first_survives() {
         .await
         .unwrap();
     engine
-        .storage
+        .storage()
         .update_progress(book, Some(490), Some(true))
         .await
         .unwrap();
 
-    engine.storage.reread(book).await.unwrap();
+    engine.storage().reread(book).await.unwrap();
     let second_reflection = engine.open_reflection(book, None).await.unwrap();
     let second_review = engine.open_review(book, None).await.unwrap();
 
@@ -115,7 +122,7 @@ async fn a_reread_gets_its_own_pair_and_the_first_survives() {
     // first reading's or a link would resolve to whichever came first.
     assert_ne!(second_reflection.title, first_reflection.title);
 
-    let readings = engine.storage.list_readings(book).await.unwrap();
+    let readings = engine.storage().list_readings(book).await.unwrap();
     assert_eq!(readings.len(), 2);
     let notes = engine.list_notes(Some(book)).await.unwrap();
     assert_eq!(notes.len(), 4);
@@ -141,7 +148,7 @@ async fn an_explicit_reading_must_belong_to_the_book() {
         .id
         .unwrap();
     let stray = engine
-        .storage
+        .storage()
         .open_reading(other, Some(1), "manual")
         .await
         .unwrap();
@@ -169,12 +176,12 @@ async fn a_reflection_and_a_review_never_share_a_body() {
     assert_ne!(reflection.file, review.file);
 
     let r_rec = engine
-        .storage
+        .storage()
         .get_note(reflection.id)
         .await
         .unwrap()
         .unwrap();
-    let v_rec = engine.storage.get_note(review.id).await.unwrap().unwrap();
+    let v_rec = engine.storage().get_note(review.id).await.unwrap().unwrap();
     engine
         .update_note_body(&r_rec, "Private: it made me think about my mother.")
         .await
@@ -202,7 +209,7 @@ async fn the_vault_file_records_the_kind_and_the_reading() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     let note = engine.open_reflection(book, None).await.unwrap();
-    let record = engine.storage.get_note(note.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(note.id).await.unwrap().unwrap();
 
     let content = std::fs::read_to_string(&note.file).unwrap();
     assert!(content.contains("kind: reflection"), "{content}");
@@ -225,7 +232,7 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
 
     let reflection = engine.open_reflection(book, None).await.unwrap();
     let record = engine
-        .storage
+        .storage()
         .get_note(reflection.id)
         .await
         .unwrap()
@@ -240,7 +247,7 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
         .await
         .unwrap();
 
-    let links = engine.storage.note_links(reflection.id).await.unwrap();
+    let links = engine.storage().note_links(reflection.id).await.unwrap();
     assert_eq!(links.len(), 2);
     assert!(links.iter().all(|(_, to)| to.is_none()), "both dangle yet");
 
@@ -254,7 +261,7 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
         })
         .await
         .unwrap();
-    let links = engine.storage.note_links(reflection.id).await.unwrap();
+    let links = engine.storage().note_links(reflection.id).await.unwrap();
     assert_eq!(
         links.iter().find(|(t, _)| t == "Han").unwrap().1,
         Some(han.id)
@@ -273,7 +280,7 @@ async fn wikilinks_from_a_reflection_land_in_the_graph_and_back_resolve() {
         .unwrap();
     let other_reflection = engine.open_reflection(other, None).await.unwrap();
     assert_eq!(other_reflection.title, "Reflection: 1Q84");
-    let links = engine.storage.note_links(reflection.id).await.unwrap();
+    let links = engine.storage().note_links(reflection.id).await.unwrap();
     assert_eq!(
         links
             .iter()
@@ -291,19 +298,19 @@ async fn rewriting_a_body_replaces_its_edges_rather_than_adding_to_them() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     let note = engine.open_reflection(book, None).await.unwrap();
-    let record = engine.storage.get_note(note.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(note.id).await.unwrap().unwrap();
 
     engine
         .update_note_body(&record, "See [[Han]] and [[Diaspora]].")
         .await
         .unwrap();
-    assert_eq!(engine.storage.note_links(note.id).await.unwrap().len(), 2);
+    assert_eq!(engine.storage().note_links(note.id).await.unwrap().len(), 2);
 
     engine
         .update_note_body(&record, "See [[Han]].")
         .await
         .unwrap();
-    let links = engine.storage.note_links(note.id).await.unwrap();
+    let links = engine.storage().note_links(note.id).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].0, "Han");
 }
@@ -315,7 +322,7 @@ async fn a_reflection_is_searchable() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     let note = engine.open_reflection(book, None).await.unwrap();
-    let record = engine.storage.get_note(note.id).await.unwrap().unwrap();
+    let record = engine.storage().get_note(note.id).await.unwrap().unwrap();
     engine
         .update_note_body(&record, "The register shifts at the boarding house.")
         .await
@@ -335,7 +342,7 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
     let (_tmp, engine) = engine().await;
     let book = seeded(&engine).await;
     let hid = engine
-        .storage
+        .storage()
         .insert_highlight(
             book,
             &highlight("History has failed us", "2026-01-05 21:14:08"),
@@ -356,7 +363,7 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
     refreshed.color = Some("blue".into());
     assert!(
         engine
-            .storage
+            .storage()
             .refresh_device_fields(book, &refreshed)
             .await
             .unwrap()
@@ -376,7 +383,12 @@ async fn citations_survive_a_device_refresh_and_cascade_on_delete() {
         "citations must cascade rather than dangle"
     );
     assert!(
-        engine.storage.get_note(review.id).await.unwrap().is_some(),
+        engine
+            .storage()
+            .get_note(review.id)
+            .await
+            .unwrap()
+            .is_some(),
         "the review itself survives its book, as every note does"
     );
 }
@@ -419,12 +431,17 @@ async fn an_unmapped_value_reports_rather_than_rounds() {
 
     // The raw value is what was stored, so the user's own decision changes what
     // it exports as — without touching the review.
-    let scale = engine.storage.active_rating_scale().await.unwrap().unwrap();
-    engine.storage.map_rating(&scale, 4.5, 5).await.unwrap();
+    let scale = engine
+        .storage()
+        .active_rating_scale()
+        .await
+        .unwrap()
+        .unwrap();
+    engine.storage().map_rating(&scale, 4.5, 5).await.unwrap();
     assert_eq!(engine.goodreads_rating(review.id).await.unwrap(), Some(5));
 
     let stored = engine
-        .storage
+        .storage()
         .review_rating(review.id)
         .await
         .unwrap()
@@ -458,13 +475,13 @@ async fn a_rating_must_sit_on_the_scale() {
     ));
 
     engine
-        .storage
+        .storage()
         .put_rating_scale("tenths", 0.0, 10.0, 0.1)
         .await
         .unwrap();
     engine.set_rating(review.id, 7.3).await.unwrap();
     let stored = engine
-        .storage
+        .storage()
         .review_rating(review.id)
         .await
         .unwrap()

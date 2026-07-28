@@ -5,6 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# The `Engine::storage` escape hatch, for tests only.
+#
+# `tests/` is a separate crate, so it cannot reach a `pub(crate)` field — and
+# item 14 made the field private precisely so no frontend could. A feature is
+# how the engine's own suite keeps the access without handing it to anyone else,
+# and the self dev-dependency below is how a package turns its own feature on
+# for its own test targets. A frontend that wrote `engine.storage()` in
+# production code would still fail `cargo check --workspace`, which is why CI
+# runs one.
+internals = []
+
 [dependencies]
 reqwest.workspace = true
 serde.workspace = true
@@ -31,6 +43,9 @@ tokio = { workspace = true, features = ["time", "sync", "process"] }
 notify.workspace = true
 
 [dev-dependencies]
+# A package depending on itself, which cargo permits for dev-dependencies and
+# which is the only way to switch a feature on for one's own `tests/`.
+readingbuddy = { path = ".", features = ["internals"] }
 tempfile = "3"
 proptest = "1"
 # Test payloads for `partial_md5` are generated, never committed as a binary.

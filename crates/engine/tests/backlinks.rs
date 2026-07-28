@@ -31,8 +31,8 @@ async fn inbound_and_outbound_are_different_sets_and_a_self_link_counts_once() {
 
     let a = engine.open_reflection(pachinko, None).await.unwrap();
     let b = engine.open_reflection(millionaires, None).await.unwrap();
-    let a_rec = engine.storage.get_note(a.id).await.unwrap().unwrap();
-    let b_rec = engine.storage.get_note(b.id).await.unwrap().unwrap();
+    let a_rec = engine.storage().get_note(a.id).await.unwrap().unwrap();
+    let b_rec = engine.storage().get_note(b.id).await.unwrap().unwrap();
 
     // A points at B *and* at itself; B points only at A.
     engine
@@ -174,7 +174,7 @@ async fn deleting_the_target_leaves_the_link_as_text() {
         .unwrap();
     assert_eq!(engine.backlinks(target.id).await.unwrap().len(), 1);
 
-    let target_rec = engine.storage.get_note(target.id).await.unwrap().unwrap();
+    let target_rec = engine.storage().get_note(target.id).await.unwrap().unwrap();
     engine.delete_note(&target_rec).await.unwrap();
 
     let out = engine.outgoing_links(source.id).await.unwrap();
@@ -256,7 +256,7 @@ async fn a_title_shared_by_two_notes_is_where_back_resolution_stops() {
         "an ambiguous title resolves to one of them, and it is the older"
     );
 
-    let first_rec = engine.storage.get_note(first.id).await.unwrap().unwrap();
+    let first_rec = engine.storage().get_note(first.id).await.unwrap().unwrap();
     engine.delete_note(&first_rec).await.unwrap();
 
     let out = engine.outgoing_links(source.id).await.unwrap();
@@ -286,7 +286,7 @@ async fn a_rewritten_body_drops_the_backlink_it_no_longer_writes() {
 
     let a = engine.open_reflection(pachinko, None).await.unwrap();
     let b = engine.open_reflection(millionaires, None).await.unwrap();
-    let a_rec = engine.storage.get_note(a.id).await.unwrap().unwrap();
+    let a_rec = engine.storage().get_note(a.id).await.unwrap().unwrap();
 
     engine
         .update_note_body(&a_rec, &format!("Twenty years earlier: [[{}]].", b.title))

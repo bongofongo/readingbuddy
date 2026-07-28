@@ -460,7 +460,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     let cover_width = |b: &Book| -> u32 {
         b.cover_path
             .as_deref()
-            .and_then(|p| render3d::resolve_cover(&engine.config.images_dir, p))
+            .and_then(|p| render3d::resolve_cover(engine.images_dir(), p))
             .and_then(|p| image::image_dimensions(p).ok())
             .map(|(w, _)| w)
             .unwrap_or(0)
@@ -468,10 +468,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     let book = match &cli.book {
         Some(sel) => resolve_book(&engine, sel).await?,
         None => {
-            let library = engine
-                .storage
-                .list_books(200, BookSort::LastModified)
-                .await?;
+            let library = engine.list_books(200, BookSort::LastModified).await?;
             library
                 .iter()
                 .max_by_key(|b| cover_width(b))
@@ -878,7 +875,6 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
     let book = match &cli.book {
         Some(sel) => resolve_book(engine, sel).await?,
         None => engine
-            .storage
             .list_books(1, BookSort::LastModified)
             .await?
             .into_iter()
@@ -895,7 +891,7 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
         .transpose()?
         .unwrap_or((50, 26));
 
-    let mut scene = Scene::new(engine.config.images_dir.clone());
+    let mut scene = Scene::new(engine.images_dir().to_path_buf());
     let mut params = RenderParams::default();
     let mut out = stdout();
     let id = render3d::kitty::image_id();
@@ -975,7 +971,6 @@ async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
     let book = match cli.book.as_deref() {
         Some(s) => resolve_book(engine, s).await?,
         None => engine
-            .storage
             .list_books(1, BookSort::LastModified)
             .await?
             .into_iter()
@@ -998,7 +993,7 @@ async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
         params.pose.pitch = pitch.trim().parse().context("bad pitch")?;
     }
 
-    let mut scene = Scene::new(engine.config.images_dir.clone());
+    let mut scene = Scene::new(engine.images_dir().to_path_buf());
     let fb = scene.frame(&book, w, h, params);
     if let Some(path) = &cli.dump_png {
         render3d::blit::to_png(fb, params.glyphs, path)?;

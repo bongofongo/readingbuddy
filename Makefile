@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint fmt fmt-check check ci clean bench bench-box bench-trend perf
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -102,13 +102,22 @@ perf: ## Cost + wire-rate sweeps, both renderers (release, ignored tests)
 lint: ## Clippy across the workspace (warnings are errors, same as CI)
 	cargo clippy --workspace --all-targets -- -D warnings
 
+# NOT subsumed by `lint`, and the difference is load-bearing. `--all-targets`
+# resolves dev-dependencies, and `crates/tui`'s dev-dependencies switch on the
+# engine's `internals` feature — so under clippy the `Engine::storage()` escape
+# hatch exists for every target in the graph, including the shipped binaries.
+# This is the build in which it does not, which makes it the only thing standing
+# between item 14's closed seam and a frontend quietly reopening it.
+build-check: ## Build the shipped targets only — the `internals` feature must not be needed
+	cargo check --workspace --locked
+
 fmt: ## Format all crates
 	cargo fmt --all
 
 fmt-check: ## Verify formatting without writing
 	cargo fmt --all --check
 
-check: fmt-check lint test ## Local gate: fmt + lint + whole-workspace test
+check: fmt-check lint build-check test ## Local gate: fmt + lint + workspace build + test
 
 # What .github/workflows/ci.yml runs, in the same order — which now makes `ci`
 # and `check` the same three steps, since the gate widened to the whole
@@ -119,7 +128,7 @@ check: fmt-check lint test ## Local gate: fmt + lint + whole-workspace test
 #
 # CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
 # explained in the workflow and is not worth reproducing locally.
-ci: fmt-check lint test ## Reproduce the CI gate locally
+ci: fmt-check lint build-check test ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only — CI's macOS leg, and the fast inner loop
 	$(RUN) -p readingbuddy

@@ -1,0 +1,22 @@
+[package]
+name = "readingbuddy-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Deliberately thin. This crate is what iOS links **in-process** — it has no
+# daemon to talk to and never will — so it must not drag in a socket, a runtime
+# flavour or a CLI parser. Those belong to `crates/daemon`, which is the
+# transport and nothing else.
+[dependencies]
+readingbuddy = { path = "../engine" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+# The DTO tests build a `Book` with real timestamps, which is the only way to
+# assert that the seam turns an `OffsetDateTime` into unix seconds and back.
+time.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

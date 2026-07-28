@@ -53,7 +53,7 @@ async fn a_book_pulled_off_the_device_reflects_on_the_reading_the_import_opened(
 
     // The sidecar carried `summary` + `percent_finished`, so the import opened a
     // reading and mirrored the device's state onto it.
-    let readings = engine.storage.list_readings(book).await.unwrap();
+    let readings = engine.storage().list_readings(book).await.unwrap();
     assert_eq!(readings.len(), 1, "the import opened exactly one reading");
     assert_eq!(readings[0].ko_status.as_deref(), Some("complete"));
     assert_eq!(readings[0].source, "koreader");
@@ -61,7 +61,7 @@ async fn a_book_pulled_off_the_device_reflects_on_the_reading_the_import_opened(
     // …and the reflection anchors to *that* reading rather than minting another.
     let reflection = engine.open_reflection(book, None).await.unwrap();
     let record = engine
-        .storage
+        .storage()
         .get_note(reflection.id)
         .await
         .unwrap()
@@ -72,14 +72,14 @@ async fn a_book_pulled_off_the_device_reflects_on_the_reading_the_import_opened(
         "the reflection must attach to the reading the import opened, not a new one"
     );
     assert_eq!(
-        engine.storage.list_readings(book).await.unwrap().len(),
+        engine.storage().list_readings(book).await.unwrap().len(),
         1,
         "reflecting must not start a second reading"
     );
 
     // A review of the same reading, with a rating, and a citation of a real
     // imported highlight — the full item 7 surface over device-sourced data.
-    let highlights = engine.storage.list_highlights(book).await.unwrap();
+    let highlights = engine.storage().list_highlights(book).await.unwrap();
     assert_eq!(highlights.len(), 1);
     let review = engine.open_review(book, None).await.unwrap();
     engine.cite(review.id, highlights[0].id).await.unwrap();
@@ -121,7 +121,7 @@ async fn a_device_note_edit_reaches_us_through_the_cache_and_spares_everything_o
         .await
         .unwrap();
     let book = engine
-        .storage
+        .storage()
         .list_books(10, BookSort::LastModified)
         .await
         .unwrap()[0]
@@ -129,14 +129,14 @@ async fn a_device_note_edit_reaches_us_through_the_cache_and_spares_everything_o
         .unwrap();
 
     // Attach everything of ours that a careless refresh would take with it.
-    let highlights = engine.storage.list_highlights(book).await.unwrap();
+    let highlights = engine.storage().list_highlights(book).await.unwrap();
     let target = highlights
         .iter()
         .find(|h| h.text.starts_with("History has failed us"))
         .expect("the opening line is in the fixture");
     let before_id = target.id;
     engine
-        .storage
+        .storage()
         .set_annotation(before_id, Some("mine, and the device may not touch it"))
         .await
         .unwrap();
@@ -186,7 +186,7 @@ async fn a_device_note_edit_reaches_us_through_the_cache_and_spares_everything_o
         .await
         .unwrap();
 
-    let after = engine.storage.list_highlights(book).await.unwrap();
+    let after = engine.storage().list_highlights(book).await.unwrap();
     let refreshed = after.iter().find(|h| h.id == before_id).expect(
         "the row must be updated in place — notes.highlight_id and \
          flashcards.highlight_id are foreign keys",
@@ -215,7 +215,12 @@ async fn a_device_note_edit_reaches_us_through_the_cache_and_spares_everything_o
         "a citation reads through to the live row"
     );
 
-    let note = engine.storage.get_note(anchored.id).await.unwrap().unwrap();
+    let note = engine
+        .storage()
+        .get_note(anchored.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         note.highlight_id,
         Some(before_id),
@@ -290,7 +295,7 @@ async fn merging_a_duplicate_keeps_both_reflections_and_every_citation() {
     let dst = seed_book(&engine, "Pachinko").await;
     let dst_reflection = engine.open_reflection(dst, None).await.unwrap();
     let dst_record = engine
-        .storage
+        .storage()
         .get_note(dst_reflection.id)
         .await
         .unwrap()
@@ -309,7 +314,7 @@ async fn merging_a_duplicate_keeps_both_reflections_and_every_citation() {
     let src = pulled.stats.book_id;
     assert_ne!(src, dst);
 
-    let src_highlights = engine.storage.list_highlights(src).await.unwrap();
+    let src_highlights = engine.storage().list_highlights(src).await.unwrap();
     assert!(
         !src_highlights.is_empty(),
         "the fixture carries annotations"
@@ -321,7 +326,7 @@ async fn merging_a_duplicate_keeps_both_reflections_and_every_citation() {
         .unwrap();
     let src_reflection = engine.open_reflection(src, None).await.unwrap();
     let src_record = engine
-        .storage
+        .storage()
         .get_note(src_reflection.id)
         .await
         .unwrap()
@@ -398,7 +403,7 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
 
     let a = engine.open_reflection(pachinko, None).await.unwrap();
     let b = engine.open_reflection(other, None).await.unwrap();
-    let a_rec = engine.storage.get_note(a.id).await.unwrap().unwrap();
+    let a_rec = engine.storage().get_note(a.id).await.unwrap().unwrap();
 
     engine
         .update_note_body(
@@ -411,7 +416,7 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
         .await
         .unwrap();
 
-    let links = engine.storage.note_links(a.id).await.unwrap();
+    let links = engine.storage().note_links(a.id).await.unwrap();
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].0, b.title);
     assert_eq!(
@@ -433,7 +438,7 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
         .await
         .unwrap();
     assert!(
-        engine.storage.note_links(a.id).await.unwrap().is_empty(),
+        engine.storage().note_links(a.id).await.unwrap().is_empty(),
         "a deleted wikilink must leave the graph too"
     );
     assert!(
@@ -462,7 +467,7 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
 
     let a = engine.open_reflection(pachinko, None).await.unwrap();
     let b = engine.open_reflection(other, None).await.unwrap();
-    let a_rec = engine.storage.get_note(a.id).await.unwrap().unwrap();
+    let a_rec = engine.storage().get_note(a.id).await.unwrap().unwrap();
 
     // Write straight to the vault file, exactly as another editor would —
     // frontmatter preserved, body replaced.
@@ -494,7 +499,7 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
     let hits = engine.search_notes("antechamber", 10).await.unwrap();
     assert!(hits.iter().any(|h| h.note.id == a.id), "the index followed");
 
-    let links = engine.storage.note_links(a.id).await.unwrap();
+    let links = engine.storage().note_links(a.id).await.unwrap();
     assert_eq!(links.len(), 1, "and so did the graph");
     assert_eq!(links[0].1, Some(b.id));
 }
@@ -583,7 +588,7 @@ async fn a_file_imported_later_lands_on_the_book_the_device_already_created() {
     assert_eq!(report.matched_by, Some(readingbuddy::FileMatch::Title));
     assert_eq!(
         engine
-            .storage
+            .storage()
             .list_books(100, BookSort::Title)
             .await
             .unwrap()
@@ -593,7 +598,7 @@ async fn a_file_imported_later_lands_on_the_book_the_device_already_created() {
     assert_eq!(engine.book_files(book).await.unwrap().len(), 1);
     assert!(
         !engine
-            .storage
+            .storage()
             .list_highlights(book)
             .await
             .unwrap()

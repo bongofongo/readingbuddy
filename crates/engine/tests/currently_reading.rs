@@ -26,7 +26,7 @@ async fn the_facade_lists_what_is_open_and_nothing_else() {
     );
 
     engine
-        .storage
+        .storage()
         .update_progress(pachinko, Some(120), None)
         .await
         .unwrap();
@@ -39,7 +39,7 @@ async fn the_facade_lists_what_is_open_and_nothing_else() {
     assert!(!open.iter().any(|(b, _)| b.id == Some(kokoro)));
 
     engine
-        .storage
+        .storage()
         .update_progress(pachinko, None, Some(true))
         .await
         .unwrap();
@@ -47,7 +47,7 @@ async fn the_facade_lists_what_is_open_and_nothing_else() {
 
     // A reread is how a finished book comes back, and it comes back as its own
     // reading rather than the closed one the book still projects.
-    let second = engine.storage.reread(pachinko).await.unwrap();
+    let second = engine.storage().reread(pachinko).await.unwrap();
     let open = engine.currently_reading(20).await.unwrap();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].1.id, second);
@@ -62,13 +62,13 @@ async fn the_book_and_its_reading_are_the_same_reading() {
     let (_tmp, engine) = engine().await;
     let book_id = seed_book(&engine, "Pachinko").await;
     engine
-        .storage
+        .storage()
         .update_progress(book_id, Some(490), Some(true))
         .await
         .unwrap();
-    engine.storage.reread(book_id).await.unwrap();
+    engine.storage().reread(book_id).await.unwrap();
     engine
-        .storage
+        .storage()
         .update_progress(book_id, Some(40), None)
         .await
         .unwrap();
@@ -134,7 +134,7 @@ async fn the_review_twin_is_its_own_note() {
     );
     // Two notes on one reading, and the two openings did not start two readings.
     assert_eq!(engine.list_notes(Some(book)).await.unwrap().len(), 2);
-    assert_eq!(engine.storage.list_readings(book).await.unwrap().len(), 1);
+    assert_eq!(engine.storage().list_readings(book).await.unwrap().len(), 1);
 }
 
 /// A reflection opened from the home screen must not start a reread of a book
@@ -145,13 +145,13 @@ async fn opening_from_a_finished_book_does_not_reopen_it() {
     let (_tmp, engine) = engine().await;
     let book = seed_book(&engine, "Pachinko").await;
     engine
-        .storage
+        .storage()
         .update_progress(book, Some(490), Some(true))
         .await
         .unwrap();
 
     let record = engine.open_reflection_record(book, None).await.unwrap();
-    let readings = engine.storage.list_readings(book).await.unwrap();
+    let readings = engine.storage().list_readings(book).await.unwrap();
     assert_eq!(readings.len(), 1);
     assert_eq!(record.reading_id, Some(readings[0].id));
     assert!(

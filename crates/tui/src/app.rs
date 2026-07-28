@@ -453,7 +453,7 @@ pub struct App {
 
 impl App {
     pub async fn new(engine: Engine) -> Result<App> {
-        let scene = Scene::new(engine.config.images_dir.clone());
+        let scene = Scene::new(engine.images_dir().to_path_buf());
         let mut app = App {
             engine,
             // The front door is what you are reading, not a list of commands.
@@ -528,11 +528,7 @@ impl App {
     }
 
     pub async fn refresh_library(&mut self) -> Result<()> {
-        self.library = self
-            .engine
-            .storage
-            .list_books(200, BookSort::LastModified)
-            .await?;
+        self.library = self.engine.list_books(200, BookSort::LastModified).await?;
         if !self.library.is_empty() && self.library_state.selected().is_none() {
             self.library_state.select(Some(0));
         }
@@ -594,7 +590,7 @@ impl App {
         let (notes, highlights, cards) = match book.id {
             Some(id) => (
                 self.engine.list_notes(Some(id)).await?,
-                self.engine.storage.list_highlights(id).await?,
+                self.engine.list_highlights(id).await?,
                 self.engine.list_flashcards_for_book(id).await?,
             ),
             None => (Vec::new(), Vec::new(), Vec::new()),
@@ -612,7 +608,7 @@ impl App {
         let Some(id) = self.view.as_ref().and_then(|v| v.book.id) else {
             return Ok(());
         };
-        if let Some(book) = self.engine.storage.get_book(id).await? {
+        if let Some(book) = self.engine.get_book(id).await? {
             self.view = Some(self.load_view(book).await?);
             self.clamp_tab_selection();
         }
@@ -1757,7 +1753,7 @@ impl App {
         let here = self.view.as_ref().and_then(|v| v.book.id);
         if let Some(target_book) = note.book_id
             && here != Some(target_book)
-            && let Some(book) = self.engine.storage.get_book(target_book).await?
+            && let Some(book) = self.engine.get_book(target_book).await?
         {
             // Clears the pane and the tab state; both are set again below.
             self.open_book(book).await?;
@@ -1970,7 +1966,6 @@ impl App {
         };
         let finished = self.view.as_ref().is_some_and(|v| v.book.finished);
         self.engine
-            .storage
             .update_progress(id, None, Some(!finished))
             .await?;
         self.reload_view().await?;
@@ -1991,13 +1986,8 @@ impl App {
             self.status = Some("no unexported cards".into());
             return Ok(());
         }
-        let dir = self
-            .engine
-            .config
-            .vault_dir
-            .parent()
-            .unwrap_or(&self.engine.config.vault_dir)
-            .to_path_buf();
+        let vault = self.engine.vault_dir();
+        let dir = vault.parent().unwrap_or(vault).to_path_buf();
         let out = dir.join("flashcards.tsv");
         std::fs::write(&out, tsv)?;
         self.status = Some(format!("exported {count} cards -> {}", out.display()));
@@ -2344,10 +2334,7 @@ impl App {
         };
         match text.parse::<i64>() {
             Ok(page) => {
-                self.engine
-                    .storage
-                    .update_progress(id, Some(page), None)
-                    .await?;
+                self.engine.update_progress(id, Some(page), None).await?;
                 self.reload_view().await?;
                 // Progress opens a reading when the book had none, so a page
                 // typed here is what puts a book on the home shelf.
@@ -2684,13 +2671,12 @@ mod tests {
         // `0005` — setting `current_page` on the `Book` above would be silently
         // ignored and every progress-bearing layout would render blank.
         engine
-            .storage
             .update_progress(id, Some(120), None)
             .await
             .expect("seed progress");
         // Seed one of each so the tab lists render with content.
         engine
-            .storage
+            .storage()
             .insert_highlight(
                 id,
                 &readingbuddy::storage::NewHighlight {
@@ -2709,7 +2695,7 @@ mod tests {
             .await
             .expect("highlight");
         engine
-            .storage
+            .storage()
             .insert_flashcard(id, None, "insufficient", Some("ch1"))
             .await
             .expect("card");
@@ -3719,7 +3705,7 @@ mod tests {
         app.clamp_tab_selection();
 
         let note = app.view.as_ref().unwrap().notes[0].clone();
-        let path = app.engine.config.vault_dir.join(&note.file_path);
+        let path = app.engine.vault_dir().join(&note.file_path);
         let original = std::fs::read_to_string(&path).unwrap();
         assert!(original.contains("page: 120"));
 
@@ -3760,7 +3746,7 @@ mod tests {
         app.clamp_tab_selection();
 
         let note = app.view.as_ref().unwrap().notes[0].clone();
-        let path = app.engine.config.vault_dir.join(&note.file_path);
+        let path = app.engine.vault_dir().join(&note.file_path);
         let original = std::fs::read_to_string(&path).unwrap();
 
         // Open the editor (loads the saved body), then Esc immediately.
@@ -3792,11 +3778,7 @@ mod tests {
         app.clamp_tab_selection();
         let before = app.view.as_ref().unwrap().notes.len();
         assert_eq!(before, 1);
-        let path = app
-            .engine
-            .config
-            .vault_dir
-            .join(&app.view.as_ref().unwrap().notes[0].file_path);
+        let path = app.engine.note_path(&app.view.as_ref().unwrap().notes[0]);
         assert!(path.exists());
 
         // `d` asks; declining keeps the note and its file.
@@ -4259,7 +4241,6 @@ mod tests {
         // Finishing closes the reading, which is the ordinary way this screen
         // empties.
         app.engine
-            .storage
             .update_progress(id, None, Some(true))
             .await
             .expect("finish");

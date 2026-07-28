@@ -246,12 +246,12 @@ async fn export_flashcards_marks_what_it_exported() {
     let id = saved.id.unwrap();
 
     engine
-        .storage
+        .storage()
         .insert_flashcard(id, None, "pachinko", Some("a game"))
         .await
         .unwrap();
     engine
-        .storage
+        .storage()
         .insert_flashcard(id, None, "hanko", None)
         .await
         .unwrap();
@@ -320,7 +320,11 @@ async fn importing_koreader_from_an_empty_dir_warns_rather_than_failing() {
 /// would. `linked_by` is not on this surface at all; that it survives a scan
 /// unrelabelled is `device_books.rs`'s own test.
 async fn links_for(engine: &Engine, book_id: i64) -> Vec<String> {
-    engine.storage.device_links_for_book(book_id).await.unwrap()
+    engine
+        .storage()
+        .device_links_for_book(book_id)
+        .await
+        .unwrap()
 }
 
 /// The whole point of item 5: an epub imported here already carries the file
@@ -336,7 +340,7 @@ async fn importing_an_epub_records_the_identity_koreader_will_use() {
     let md5 = readingbuddy::partial_md5(&path).unwrap();
 
     let linked = engine
-        .storage
+        .storage()
         .find_book_by_partial_md5(&md5)
         .await
         .unwrap()
@@ -382,7 +386,7 @@ async fn importing_does_not_repoint_a_link_the_user_made() {
         .await
         .unwrap();
     engine
-        .storage
+        .storage()
         .set_device_link(
             &md5,
             chosen.id.unwrap(),
@@ -395,7 +399,7 @@ async fn importing_does_not_repoint_a_link_the_user_made() {
 
     assert_eq!(links_for(&engine, chosen.id.unwrap()).await, [md5.as_str()]);
     let created = engine
-        .storage
+        .storage()
         .find_book_by_partial_md5(&md5)
         .await
         .unwrap()
