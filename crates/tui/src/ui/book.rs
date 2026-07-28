@@ -290,10 +290,30 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect, items: Vec<ListItem>, emp
     f.render_stateful_widget(list, area, &mut app.tab_state);
 }
 
-/// A note row: anchor tag (page / location / highlight) + title. Homogeneous
-/// color + `·` separator so a REVERSED selection inverts uniformly.
+/// The kind gutter, one cell wide plus a space.
+///
+/// A reflection and a review live in this same list rather than in two section
+/// tabs of their own — the section menu is about *collections* of things, and a
+/// singleton tab holding one note is the wrong shape for a thing there is
+/// exactly one of. So the list has to say which row is which, and `kind` is a
+/// column `NoteRecord` has always carried and never displayed.
+///
+/// Solid is private, hollow is public: a reflection is yours, a review is
+/// written for other people. A gutter rather than a word because the note's own
+/// title already says "Reflection: <book>", and repeating it in the same row
+/// would push every title off a shrink-wrapped pane for no information at all.
+fn kind_mark(kind: &str) -> &'static str {
+    match kind {
+        "reflection" => "◆ ",
+        "review" => "◇ ",
+        _ => "  ",
+    }
+}
+
+/// A note row: kind gutter, anchor tag (page / location / highlight), title.
+/// Homogeneous color + `·` separator so a REVERSED selection inverts uniformly.
 fn note_line(n: &NoteRecord) -> Line<'static> {
-    let mut spans = Vec::new();
+    let mut spans = vec![Span::styled(kind_mark(&n.kind), theme::primary())];
     let tag = anchor_tag(n);
     if !tag.is_empty() {
         spans.push(Span::styled(tag, theme::primary()));
@@ -404,6 +424,8 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
     let expanded: &[(&str, &str)] = &[
         ("esc/b/←", "back"),
         ("n", "note"),
+        ("e", "reflect"),
+        ("w", "review"),
         ("d", "delete"),
         ("p", "page"),
         ("f", "finish"),
@@ -461,6 +483,8 @@ mod tests {
                 vec![
                     "esc/b/←",
                     "n",
+                    "e",
+                    "w",
                     "d",
                     "p",
                     "f",
@@ -514,6 +538,39 @@ mod tests {
         n.location = None;
         n.highlight_id = Some(9);
         assert_eq!(anchor_tag(&n), "↳hl");
+    }
+
+    /// The Notes list is where a reflection and a review are told apart from
+    /// the ordinary notes beside them — the alternative was two section tabs
+    /// holding one item each.
+    #[test]
+    fn a_reflection_and_a_review_are_marked_in_the_notes_list() {
+        let note = |kind: &str| NoteRecord {
+            id: 1,
+            book_id: Some(1),
+            reading_id: None,
+            highlight_id: None,
+            page: None,
+            location: None,
+            file_path: "x.md".into(),
+            title: "Reflection: Station Eleven".into(),
+            kind: kind.into(),
+            created_at: None,
+        };
+        let first = |n| note_line(&n).spans[0].content.to_string();
+        assert_eq!(first(note("reflection")), "◆ ");
+        assert_eq!(first(note("review")), "◇ ");
+        // An ordinary note keeps the column, so the titles stay in one line.
+        assert_eq!(first(note("note")), "  ");
+
+        // Every span is the same style, so a REVERSED selection inverts the
+        // whole row uniformly rather than leaving the gutter behind.
+        assert!(
+            note_line(&note("reflection"))
+                .spans
+                .windows(2)
+                .all(|w| w[0].style == w[1].style)
+        );
     }
 
     #[test]
