@@ -19,6 +19,7 @@ async-trait.workspace = true
 strsim.workspace = true
 mlua.workspace = true
 sha2.workspace = true
+md-5.workspace = true
 regex.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["time"] }
@@ -26,6 +27,16 @@ tokio = { workspace = true, features = ["time"] }
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
+# Test payloads for `partial_md5` are generated, never committed as a binary.
+# ChaCha8 specifically, per the corpus rule: StdRng's algorithm is explicitly
+# permitted to change between `rand` versions, which is how a "deterministic"
+# fixture quietly stops being deterministic.
+rand_chacha = "0.9"
+rand_core = "0.9"
+# Builds the ISBN-less epub that `engine_facade.rs` imports. It has to be built
+# rather than committed *and* it has to lack an ISBN: `import_epub` looks a
+# found ISBN up through the providers, and the suite makes no network calls.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 wiremock = "0.6"
 # For the redaction test's capturing layer only. The engine itself must never
 # depend on a subscriber.

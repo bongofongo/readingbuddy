@@ -418,7 +418,7 @@ add has to be inferred from which keys are present, never read.
 
 ---
 
-## 5. `util.partialMD5` — for item 12, not this one
+## 5. `util.partialMD5` — implemented in `crates/engine/src/partial_md5.rs`
 
 `frontend/util.lua:1111-1128`:
 
@@ -443,11 +443,29 @@ function util.partialMD5(filepath)
 end
 ```
 
-MD5 over up to twelve 1024-byte samples taken at offsets `1024 << (2*i)` for
-`i = -1..10` — that is 256, 1 Ki, 4 Ki, 16 Ki, 64 Ki, 256 Ki, 1 Mi, 4 Mi, 16 Mi,
-64 Mi, 256 Mi, 1 Gi. It stops at the first offset that reads nothing, so a small
-file contributes fewer samples. Note the first offset is `1024 >> 2 = 256`, not
-0: the first 256 bytes of the file are never hashed.
+MD5 over up to twelve 1024-byte samples taken at offsets `lshift(1024, 2*i)` for
+`i = -1..10` — that is **0**, 1 Ki, 4 Ki, 16 Ki, 64 Ki, 256 Ki, 1 Mi, 4 Mi,
+16 Mi, 64 Mi, 256 Mi, 1 Gi. It stops at the first offset that reads nothing, so a
+small file contributes fewer samples.
+
+**The first offset is 0, and an earlier draft of this section said 256.** That
+correction is the one thing here worth remembering. `lshift` is LuaJIT's BitOp,
+which works on 32-bit integers and takes the shift count **modulo 32**: it is
+not an arithmetic shift, and a negative count is not a right shift. So
+`lshift(1024, -2)` is `lshift(1024, 30)`, which is `2^40` truncated to 32 bits —
+`0`. Reading `2*i = -2` as `1024 >> 2` gives 256, which is wrong, and wrong in a
+way nothing catches until a checksum disagrees.
+
+Settled by the device itself, not by re-reading the Lua: the three checksums
+recorded in this document — `8cb32bca81b36ca0816851073e5661d3`,
+`a5b01da92a68bbbb6d88c12483cf3b56`, `25dc3d7e5bd746db64267cff902d3edd` — all
+reproduce from offset 0 over the files KOReader computed them from, and none
+reproduces from 256. `partial_md5::tests::agrees_with_the_device` is that check,
+kept.
+
+A corollary of the first window starting at 0: only a genuinely **empty** file
+hashes to the MD5 of nothing (`d41d8cd98f00b204e9800998ecf8427e`). Under the
+256 misreading, every file below 256 bytes would have.
 
 Cheap and stable, but it is a sampling hash, not a content hash — two files
 identical at those twelve windows collide. That is fine for its three jobs
