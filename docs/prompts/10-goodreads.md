@@ -58,9 +58,16 @@ Five things that will be got wrong if they are not held in mind:
    with no reading at all**. That last one is the honest encoding, and it is why
    `to-read` needs no collection to live in.
 4. **`Read Count > 1` means that many readings**, `source = 'goodreads'`. Only the
-   most recent carries `Date Read`; the rest get NULL dates. Inventing dates for
-   the earlier ones would be worse than admitting we do not have them — the same
-   argument that leaves `reading_id` NULL on unattributable highlights.
+   most recent carries `Date Read`. Inventing dates for the earlier ones would be
+   worse than admitting we do not have them — the same argument that leaves
+   `reading_id` NULL on unattributable highlights.
+
+   > **Corrected after this prompt was executed (PR #8).** It said "the rest get
+   > NULL dates". That is not representable: `finished_at IS NULL` is what *open*
+   > means and `idx_readings_one_open` allows one per book, so N−1 of them is a
+   > constraint violation. `started_at` is NULL instead — that is what is really
+   > unknown — and earlier readings close at the date the row carries, a true
+   > upper bound rather than an invented date.
 5. **`My Rating` is stored raw, against the `goodreads` scale.** It is an integer
    0–5 where 0 means unrated. *Never reverse the `rating_map`* to guess an
    equivalent on the user's own scale: the map is many-to-one, so its inverse is a

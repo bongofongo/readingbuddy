@@ -193,6 +193,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "help",
         "highlights",
         "ko",
+        "links",
         "list",
         "merge",
         "note",
@@ -330,6 +331,48 @@ fn reflect_show_creates_neither_a_note_nor_a_reading() {
     cli.run(&["reflect", &id, "--no-edit"]);
     cli.run(&["notes"]).has("Reflection:");
     cli.run(&["show", &id]).has("reading 1/1");
+}
+
+/// `links` reads the graph in both directions, and says so about the half that
+/// is not there yet.
+///
+/// The first note's `[[Han]]` is written before any note called Han exists — a
+/// forward reference, which the engine back-resolves when the target appears.
+/// That is the property `Storage::backlinks` is a plain `WHERE to_note = ?`
+/// because of, and this is it observed from outside the process: if
+/// back-resolution ever stopped happening, the inbound half of the *first*
+/// note's output would silently go empty.
+///
+/// The dangling `[[Noa]]` is the other half of the contract: a target with no
+/// note is printed as the text it is, never dropped. A note you have not
+/// written yet is a place to go, not an error.
+#[test]
+fn links_reads_both_directions_and_prints_a_dangling_target_as_text() {
+    let cli = Cli::new();
+
+    cli.run(&["note", "Her whole life is [[Han]].", "--title", "Sunja"]);
+    cli.run(&[
+        "note",
+        "Grief with no bottom. Cf. [[Sunja]], and [[Noa]] later.",
+        "--title",
+        "Han",
+    ]);
+
+    // By title, which is what a wikilink names — and the forward reference
+    // resolved, so it is a real edge in both directions.
+    cli.run(&["links", "Sunja"])
+        .has("links out:")
+        .has("“Han”")
+        .has("links in:");
+
+    let han = cli.run(&["links", "Han"]);
+    han.has("“Sunja”");
+    han.has("“Noa”").has("text");
+
+    // Nothing resolves to Noa, so it is not a note at all.
+    let missing = cli.try_run(&["links", "Noa"]);
+    assert!(!missing.ok, "a selector matching no note must not exit 0");
+    missing.has("no note matches");
 }
 
 /// A selector that matches nothing is an error, and an under-specified sync

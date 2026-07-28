@@ -14,8 +14,15 @@ No TUI — the pane is thread 9b.
 
 ```sql
 CREATE INDEX idx_note_links_to     ON note_links(to_note);
-CREATE INDEX idx_note_links_target ON note_links(target_title);
+CREATE INDEX idx_note_links_target ON note_links(target_title COLLATE NOCASE);
 ```
+
+> **Corrected after this prompt was executed (PR #7).** It gave the second index
+> without a collation. `write_links` back-resolves with
+> `target_title = ? COLLATE NOCASE`, and SQLite will not use an index whose
+> collation differs from the comparison's — so the BINARY version leaves the plan
+> at `SCAN note_links` and the migration buys nothing. Judge an indexes-only
+> migration on `EXPLAIN QUERY PLAN`, never on the index existing.
 
 Indexes only, no shape change. `note_links` has neither today
 (`crates/engine/migrations/0001_init.sql:57-62`), so a backlink query is a full

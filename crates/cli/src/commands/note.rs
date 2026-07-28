@@ -1,7 +1,7 @@
 use anyhow::Result;
 use readingbuddy::{Engine, NewNoteInput, NoteKind};
 
-use super::resolve_one;
+use super::{resolve_note, resolve_one};
 use crate::prompt;
 
 pub struct NoteOpts<'a> {
@@ -115,6 +115,46 @@ pub async fn list_or_search(
             anchor(&n),
             n.file_path
         );
+    }
+    Ok(())
+}
+
+/// What one note links to, and what links back to it.
+///
+/// Both directions in one view, because a backlink is only interesting beside
+/// the link that made it — and dangling targets are printed as the text they
+/// are rather than dropped. A `[[wikilink]]` naming a note nobody has written
+/// yet is an ordinary forward reference; hiding it would turn "the note I
+/// haven't written" into a dead end, which is the one thing this app is not
+/// allowed to be.
+pub async fn links(engine: &Engine, selector: &str) -> Result<()> {
+    let note = resolve_note(engine, selector).await?;
+    println!("#{} “{}”  ({})", note.id, note.title, note.file_path);
+
+    println!("links out:");
+    let outgoing = engine.outgoing_links(note.id).await?;
+    if outgoing.is_empty() {
+        println!("  (none — a [[wikilink]] in the body makes one)");
+    }
+    for link in outgoing {
+        match link.to {
+            Some(t) => println!("  → #{:<4} “{}”", t.id, t.title),
+            // Text, not an error: it resolves itself the moment that note is
+            // written, and until then it is a note worth writing.
+            None => println!(
+                "  → “{}”  (text — no note by that title yet)",
+                link.target_title
+            ),
+        }
+    }
+
+    println!("links in:");
+    let inbound = engine.backlinks(note.id).await?;
+    if inbound.is_empty() {
+        println!("  (nothing links here yet)");
+    }
+    for n in inbound {
+        println!("  ← #{:<4} “{}”", n.id, n.title);
     }
     Ok(())
 }

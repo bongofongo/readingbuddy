@@ -277,6 +277,13 @@ Provider enrichment on device pull. Non-numeric rating scales.
    (`note_links` has no index on `to_note` or `target_title`, so both a backlink
    query and `write_links`' back-resolution are full scans today); 9b is the
    pane, which attaches to the **note list** rather than adding a `BookTab`.
+   - **Erratum, measured while building 9a:** the `target_title` index has to be
+     declared `COLLATE NOCASE`. Back-resolution compares `COLLATE NOCASE`, and
+     SQLite will not use an index whose collation differs — a bare
+     `ON note_links(target_title)` exists, reads right, and is never used.
+   - `backlinks` is a plain `WHERE to_note = ?`, with no dangling-by-title
+     union: back-resolution keeps `to_note` complete, and the inbound and
+     outbound views have to agree about which edges are still only text.
 10. Goodreads CSV in/out. Migration `0009`.
     - **Trap worth recording before it is hit:** `active_rating_scale()` is
       `ORDER BY created_at DESC LIMIT 1`, so seeding a `goodreads` scale would

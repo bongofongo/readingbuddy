@@ -125,6 +125,11 @@ enum Cmd {
         #[arg(long)]
         search: Option<String>,
     },
+    /// Show what a note links to, and what links back to it
+    Links {
+        /// Note selector: id, or part of its title
+        note: String,
+    },
     /// Open this reading's reflection — private, and it accretes as you read
     Reflect(ReflectArgs),
     /// Open this reading's review — public prose, and the rating lives here
@@ -390,6 +395,7 @@ async fn main() -> Result<()> {
         Cmd::Notes { book, search } => {
             commands::note::list_or_search(&engine, book.as_deref(), search.as_deref()).await?
         }
+        Cmd::Links { note } => commands::note::links(&engine, &note).await?,
         Cmd::Reflect(args) => commands::reflect::reflect(&engine, (&args).into()).await?,
         Cmd::Review(args) => commands::reflect::review(&engine, (&args).into()).await?,
         Cmd::Cite { note, highlight } => commands::reflect::cite(&engine, note, highlight).await?,

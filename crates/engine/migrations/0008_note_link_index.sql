@@ -1,0 +1,31 @@
+-- Two indexes on `note_links`. No shape change.
+--
+-- `note_links` has had neither since `0001_init.sql`, and both directions of
+-- the graph are now read rather than only written:
+--
+--   * `to_note` — "what links here". `Storage::backlinks` is the query the
+--     reflection pane (item 9b) opens with, and without this index answering it
+--     means scanning every edge in the vault.
+--
+--   * `target_title` — `write_links`' back-resolution, which runs on *every*
+--     note insert and every body rewrite: `UPDATE note_links SET to_note = ?
+--     WHERE to_note IS NULL AND target_title = ? COLLATE NOCASE`. That write is
+--     what keeps `to_note` complete once a forward reference's target finally
+--     appears, and therefore what lets `backlinks` be a plain `WHERE to_note = ?`
+--     with no dangling-by-title union.
+--
+-- **`COLLATE NOCASE` on the second one is load-bearing, not decoration.** An
+-- index carries a collation, and SQLite will only use one whose collation
+-- matches the comparison's. `target_title` is a plain TEXT column, so a bare
+-- `CREATE INDEX … ON note_links(target_title)` is BINARY and the NOCASE
+-- comparison above cannot reach it — the index would exist, look right in the
+-- schema, and every back-resolution would still scan the table. Measured with
+-- `EXPLAIN QUERY PLAN`, and pinned by
+-- `the_note_link_indexes_are_the_plan_the_planner_picks` in
+-- `tests/migrations.rs`, because "the index is used" is the only claim a
+-- migration made entirely of indexes can be judged on.
+--
+-- Neither is unique: several notes may link to the same target, and a note may
+-- link to several.
+CREATE INDEX idx_note_links_to     ON note_links(to_note);
+CREATE INDEX idx_note_links_target ON note_links(target_title COLLATE NOCASE);

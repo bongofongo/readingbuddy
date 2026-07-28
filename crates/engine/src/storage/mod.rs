@@ -13,7 +13,7 @@ pub use device_books::LinkedBy;
 pub use flashcards::FlashcardRow;
 pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
-pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit};
+pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit, OutgoingLink};
 pub use provenance::BookTag;
 pub use ratings::{Rating, RatingScale};
 pub use readings::{

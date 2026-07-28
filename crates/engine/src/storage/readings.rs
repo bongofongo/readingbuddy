@@ -10,6 +10,7 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
+use super::books::{BOOK_COLUMNS, BOOK_FROM, row_to_book};
 use super::{Storage, now_unix};
 use crate::book::Book;
 use crate::error::{EngineError, Result};
@@ -47,20 +48,51 @@ pub struct Reading {
 pub(super) const READING_COLUMNS: &str = "id, book_id, started_at, finished_at, status, source, current_page, \
      ko_status, ko_percent, ko_rating, created_at, last_modified";
 
+/// What [`Storage::list_open_readings`] renames the reading's columns to.
+///
+/// Six of the twelve — `id`, `book_id`, `current_page`, `status`, `created_at`,
+/// `last_modified` — are names `BOOK_COLUMNS` also projects, so joining the two
+/// into one row means renaming one side of the collision.
+const JOINED_READING_PREFIX: &str = "r_";
+
+/// `READING_COLUMNS`, qualified by a table alias and prefixed.
+///
+/// Derived from the one list rather than spelled out a second time: a
+/// hand-written rename list is a second copy of the columns waiting to drift
+/// from the first, and a column added to `Reading` but forgotten here would
+/// surface as a decode error at runtime rather than a compile error.
+fn reading_columns_as(alias: &str, prefix: &str) -> String {
+    READING_COLUMNS
+        .split(',')
+        .map(|c| {
+            let c = c.trim();
+            format!("{alias}.{c} AS {prefix}{c}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn row_to_reading(row: &SqliteRow) -> Result<Reading> {
+    row_to_reading_prefixed(row, "")
+}
+
+/// One mapping for both the bare `SELECT {READING_COLUMNS}` shape and the
+/// joined, prefixed one.
+fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<Reading> {
+    let col = |name: &str| format!("{prefix}{name}");
     Ok(Reading {
-        id: row.try_get("id")?,
-        book_id: row.try_get("book_id")?,
-        started_at: row.try_get("started_at")?,
-        finished_at: row.try_get("finished_at")?,
-        status: row.try_get("status")?,
-        source: row.try_get("source")?,
-        current_page: row.try_get("current_page")?,
-        ko_status: row.try_get("ko_status")?,
-        ko_percent: row.try_get("ko_percent")?,
-        ko_rating: row.try_get("ko_rating")?,
-        created_at: row.try_get("created_at")?,
-        last_modified: row.try_get("last_modified")?,
+        id: row.try_get(col("id").as_str())?,
+        book_id: row.try_get(col("book_id").as_str())?,
+        started_at: row.try_get(col("started_at").as_str())?,
+        finished_at: row.try_get(col("finished_at").as_str())?,
+        status: row.try_get(col("status").as_str())?,
+        source: row.try_get(col("source").as_str())?,
+        current_page: row.try_get(col("current_page").as_str())?,
+        ko_status: row.try_get(col("ko_status").as_str())?,
+        ko_percent: row.try_get(col("ko_percent").as_str())?,
+        ko_rating: row.try_get(col("ko_rating").as_str())?,
+        created_at: row.try_get(col("created_at").as_str())?,
+        last_modified: row.try_get(col("last_modified").as_str())?,
     })
 }
 
@@ -128,6 +160,55 @@ impl Storage {
             .fetch_all(self.pool())
             .await?;
         rows.iter().map(row_to_reading).collect()
+    }
+
+    /// Every book with an **open** reading, most-recently-touched first.
+    ///
+    /// This is the home screen's query. It is deliberately the *same* join
+    /// `BOOK_COLUMNS`/`BOOK_FROM` already resolve `Book`'s four progress
+    /// projections through, plus `WHERE cur.finished_at IS NULL` — a second join
+    /// written to the same intent would be free to disagree with the first, and
+    /// a home screen whose progress bar came from a different reading than
+    /// `Book::current_page` would look right while being wrong.
+    ///
+    /// `BOOK_FROM`'s subquery orders `(finished_at IS NULL) DESC` first, so
+    /// where a book has an open reading `cur` **is** that reading, and the
+    /// `WHERE` is a filter on the joined row rather than a second search for it.
+    ///
+    /// **`cur.id IS NOT NULL` is load-bearing, not belt-and-braces.** The join
+    /// is a `LEFT JOIN`, so a book with no reading at all still produces a row —
+    /// with every `cur` column NULL, which satisfies `finished_at IS NULL` on
+    /// its own. Filtering on that alone listed the whole library as currently
+    /// being read, the empty state included.
+    ///
+    /// Sorted by the later of the book's and the reading's `last_modified`:
+    /// reading the book bumps `books.last_modified` (`update_progress` does it
+    /// explicitly), but a device sync writes `readings.last_modified` alone
+    /// (`set_device_state`), so either stamp on its own would leave a book you
+    /// just read on the reader sitting at the bottom of the list.
+    ///
+    /// **An abandoned reading is an open reading and appears here.** `status`
+    /// is on the returned [`Reading`], so a frontend can say so; dropping the
+    /// row instead would make a book you might pick up unreachable from the one
+    /// screen that lists what you are reading, and there is no other place it
+    /// would show up.
+    pub async fn list_open_readings(&self, limit: i64) -> Result<Vec<(Book, Reading)>> {
+        let reading = reading_columns_as("cur", JOINED_READING_PREFIX);
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS}, {reading} {BOOK_FROM}
+             WHERE cur.id IS NOT NULL AND cur.finished_at IS NULL
+             ORDER BY MAX(books.last_modified, cur.last_modified) DESC, books.id DESC
+             LIMIT ?"
+        );
+        let rows = sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row_to_book(row)?,
+                    row_to_reading_prefixed(row, JOINED_READING_PREFIX)?,
+                ))
+            })
+            .collect()
     }
 
     /// Open a reading. Returns its id.
@@ -521,6 +602,175 @@ mod tests {
         (s, id)
     }
 
+    async fn add(s: &Storage, title: &str) -> i64 {
+        s.upsert_book(&Book {
+            title: Some(title.into()),
+            page_count: Some(300),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Hand-set the two stamps `list_open_readings` sorts on.
+    ///
+    /// They are unix *seconds*, so two writes in one test tie and the ordering
+    /// would be decided by the tie-break instead of by the thing under test.
+    /// `None` leaves that side alone, which is how the device-sync case (the
+    /// reading moved, the book did not) is expressed.
+    async fn touched_at(s: &Storage, book_id: i64, book: Option<i64>, reading: Option<i64>) {
+        if let Some(t) = book {
+            sqlx::query("UPDATE books SET last_modified = ? WHERE id = ?")
+                .bind(t)
+                .bind(book_id)
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
+        if let Some(t) = reading {
+            sqlx::query("UPDATE readings SET last_modified = ? WHERE book_id = ?")
+                .bind(t)
+                .bind(book_id)
+                .execute(s.pool())
+                .await
+                .unwrap();
+        }
+    }
+
+    /// What the home screen lists: books with a reading still open. A finished
+    /// one drops off, a reread brings it back, and a book nobody has started is
+    /// never there at all.
+    #[tokio::test]
+    async fn open_readings_are_the_ones_still_open() {
+        let (s, pachinko) = seeded().await;
+        let unread = add(&s, "Kokoro").await;
+
+        assert!(
+            s.list_open_readings(10).await.unwrap().is_empty(),
+            "a library nobody has opened is not a currently-reading list"
+        );
+
+        s.update_progress(pachinko, Some(120), None).await.unwrap();
+        let open = s.list_open_readings(10).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].0.id, Some(pachinko));
+        assert_eq!(open[0].1.current_page, Some(120));
+        assert!(
+            !open.iter().any(|(b, _)| b.id == Some(unread)),
+            "a book with no reading has nothing open"
+        );
+
+        s.update_progress(pachinko, None, Some(true)).await.unwrap();
+        assert!(
+            s.list_open_readings(10).await.unwrap().is_empty(),
+            "finishing it takes it off the list"
+        );
+
+        // A reread is a new reading, and it is the new one that must come back
+        // — not the finished one the book's projections would still show if the
+        // filter had been written against `books` instead of `cur`.
+        let second = s.reread(pachinko).await.unwrap();
+        let open = s.list_open_readings(10).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].1.id, second);
+        assert_eq!(open[0].1.current_page, None);
+    }
+
+    /// The anti-drift assertion. `Book`'s four progress fields are projections
+    /// of the current reading, and this query returns the reading beside them —
+    /// so if it ever grows a join of its own that resolves "current" differently,
+    /// the two sides of one row will disagree here first.
+    #[tokio::test]
+    async fn the_projections_agree_with_the_reading_beside_them() {
+        let (s, id) = seeded().await;
+        // A finished reading first, so "current" and "open" are genuinely
+        // different rows for this book and picking the wrong one is visible.
+        s.update_progress(id, Some(490), Some(true)).await.unwrap();
+        s.reread(id).await.unwrap();
+        s.update_progress(id, Some(40), None).await.unwrap();
+
+        let open = s.list_open_readings(10).await.unwrap();
+        assert_eq!(open.len(), 1);
+        let (book, reading) = &open[0];
+
+        assert_eq!(book.current_page, reading.current_page);
+        assert_eq!(book.date_started, reading.started_at);
+        assert_eq!(book.date_finished, reading.finished_at);
+        assert_eq!(book.finished, reading.status == STATUS_FINISHED);
+        // And the same four values `get_book` reports, which is what every
+        // other surface in the app renders from.
+        let elsewhere = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(book.id, elsewhere.id);
+        assert_eq!(book.current_page, elsewhere.current_page);
+        assert_eq!(book.finished, elsewhere.finished);
+        assert_eq!(book.date_started, elsewhere.date_started);
+        assert_eq!(book.date_finished, elsewhere.date_finished);
+    }
+
+    /// Most-recently-touched first, and "touched" has to mean either stamp: a
+    /// device sync writes the reading's `last_modified` and never the book's, so
+    /// sorting on `books.last_modified` alone would leave a book you read on the
+    /// reader this morning at the bottom of the list.
+    #[tokio::test]
+    async fn ordering_is_most_recently_touched() {
+        let (s, first) = seeded().await;
+        let second = add(&s, "Kokoro").await;
+        let third = add(&s, "Snow Country").await;
+        for id in [first, second, third] {
+            s.update_progress(id, Some(10), None).await.unwrap();
+        }
+
+        touched_at(&s, first, Some(300), Some(300)).await;
+        touched_at(&s, second, Some(100), Some(100)).await;
+        touched_at(&s, third, Some(200), Some(200)).await;
+        let order: Vec<i64> = s
+            .list_open_readings(10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|(b, _)| b.id.unwrap())
+            .collect();
+        assert_eq!(order, vec![first, third, second]);
+
+        // The reading moves, the book does not. This is exactly what
+        // `set_device_state` does.
+        touched_at(&s, second, None, Some(900)).await;
+        let order: Vec<i64> = s
+            .list_open_readings(10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|(b, _)| b.id.unwrap())
+            .collect();
+        assert_eq!(order, vec![second, first, third]);
+    }
+
+    /// An abandoned reading is still open — `abandon_reading` deliberately does
+    /// not stamp `finished_at` — so it is listed, carrying the status that says
+    /// so. Filtering it out here would make a book you might pick up unreachable
+    /// from the one screen that lists what you are reading.
+    #[tokio::test]
+    async fn an_abandoned_reading_is_still_listed_and_says_so() {
+        let (s, id) = seeded().await;
+        s.update_progress(id, Some(60), None).await.unwrap();
+        assert!(s.abandon_reading(id).await.unwrap());
+
+        let open = s.list_open_readings(10).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].1.status, STATUS_ABANDONED);
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_honoured() {
+        let (s, first) = seeded().await;
+        let second = add(&s, "Kokoro").await;
+        for id in [first, second] {
+            s.update_progress(id, Some(10), None).await.unwrap();
+        }
+        assert_eq!(s.list_open_readings(1).await.unwrap().len(), 1);
+        assert_eq!(s.list_open_readings(0).await.unwrap().len(), 0);
+    }
+
     /// The invariant is an index, not a convention — and it must reach the
     /// caller as something branchable, not a raw sqlx constraint error.
     #[tokio::test]
@@ -810,6 +1060,62 @@ mod props {
                 prop_assert_eq!(book.current_page, current.current_page);
                 prop_assert_eq!(book.finished, current.status == STATUS_FINISHED);
                 prop_assert_eq!(book.date_finished, current.finished_at);
+                Ok(())
+            })?;
+        }
+
+        /// A book is on the currently-reading list **exactly when**
+        /// [`Storage::active_reading`] finds it something open — and the row
+        /// carries that same reading.
+        ///
+        /// A property because the rule is a biconditional over the whole
+        /// library, and the two ways to get it wrong are opposite: the `LEFT
+        /// JOIN` makes a book with *no* reading look open (every `cur` column
+        /// NULL satisfies `finished_at IS NULL`, which listed the entire library
+        /// once already), while a filter written against `books` rather than
+        /// `cur` would drop a reread. Books are stepped independently so the
+        /// generated sequences put the library in mixed states rather than
+        /// marching it through one.
+        #[test]
+        fn the_open_list_is_exactly_the_books_with_an_open_reading(
+            steps in proptest::collection::vec((0usize..3, 0u8..3), 1..16),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let s = Storage::connect("sqlite::memory:").await.unwrap();
+                let mut ids = Vec::new();
+                for n in 0..3 {
+                    ids.push(s.upsert_book(&Book {
+                        title: Some(format!("book {n}")), ..Default::default()
+                    }).await.unwrap());
+                }
+
+                for (which, step) in &steps {
+                    let id = ids[*which];
+                    match step {
+                        0 => { s.update_progress(id, Some(10), None).await.unwrap(); }
+                        1 => { s.update_progress(id, None, Some(true)).await.unwrap(); }
+                        _ => { s.reread(id).await.unwrap(); }
+                    }
+                }
+
+                let listed = s.list_open_readings(10).await.unwrap();
+                for id in &ids {
+                    let active = s.active_reading(*id).await.unwrap();
+                    let row = listed.iter().find(|(b, _)| b.id == Some(*id));
+                    match (active, row) {
+                        (Some(a), Some((_, r))) => prop_assert_eq!(a.id, r.id),
+                        (None, None) => {}
+                        (a, r) => prop_assert!(
+                            false,
+                            "book {} listed as {:?} but active is {:?} after {:?}",
+                            id, r.map(|(_, r)| r.id), a.map(|a| a.id), steps
+                        ),
+                    }
+                }
                 Ok(())
             })?;
         }
