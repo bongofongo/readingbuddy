@@ -333,3 +333,163 @@ async fn importing_koreader_from_an_empty_dir_warns_rather_than_failing() {
             .starts_with("no KOReader sidecars found under")
     );
 }
+
+// ---- device identity (partial_md5) -----------------------------------------
+
+/// A valid, ~2 KB epub with **no ISBN identifier**.
+///
+/// The missing ISBN is the point, not an oversight: `import_epub` looks a found
+/// ISBN up through the providers, and this suite makes no network calls. Built
+/// rather than committed, for the same reason the corpus generator builds its
+/// own — what is inside it stays readable in the diff.
+fn write_isbnless_epub(path: &std::path::Path, title: &str) {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    // `mimetype` must be first and STORED per the epub spec.
+    zip.start_file(
+        "mimetype",
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    zip.write_all(b"application/epub+zip").unwrap();
+
+    let opts = SimpleFileOptions::default();
+    zip.start_file("META-INF/container.xml", opts).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"#,
+    )
+    .unwrap();
+
+    zip.start_file("OEBPS/content.opf", opts).unwrap();
+    zip.write_all(
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:uuid:00000000-0000-4000-8000-000000000000</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>A Test Author</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>
+"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+
+    zip.start_file("OEBPS/ch1.xhtml", opts).unwrap();
+    zip.write_all(
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>
+<body><h1>{title}</h1><p>A single paragraph, so the spine is not empty.</p></body></html>
+"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    zip.finish().unwrap();
+}
+
+/// What a book is linked to, through the public API — `Storage::pool` is
+/// `pub(crate)`, so an integration test reads the mapping the way a frontend
+/// would. `linked_by` is not on this surface at all; that it survives a scan
+/// unrelabelled is `device_books.rs`'s own test.
+async fn links_for(engine: &Engine, book_id: i64) -> Vec<String> {
+    engine.storage.device_links_for_book(book_id).await.unwrap()
+}
+
+/// The whole point of item 5: an epub imported here already carries the file
+/// identity the device will name it by, so its sidecar matches on `md5` rather
+/// than on a fuzzy title guess.
+#[tokio::test]
+async fn importing_an_epub_records_the_identity_koreader_will_use() {
+    let (tmp, engine) = engine().await;
+    let path = tmp.path().join("offline.epub");
+    write_isbnless_epub(&path, "A Book With No ISBN");
+
+    let saved = engine.import_epub(&path).await.unwrap();
+    let md5 = readingbuddy::partial_md5(&path).unwrap();
+
+    let linked = engine
+        .storage
+        .find_book_by_partial_md5(&md5)
+        .await
+        .unwrap()
+        .expect("the imported epub must be reachable by its device identity");
+    assert_eq!(linked.id, saved.id);
+    assert_eq!(links_for(&engine, saved.id.unwrap()).await, [md5]);
+}
+
+/// Re-importing writes no second mapping. (It does create a second *book* —
+/// an ISBN-less epub has no upsert key, which is exactly the duplicate
+/// `Storage::merge_books` exists to fold back in. The mapping must not follow
+/// it, or the sidecar would silently start pointing at the newer copy.)
+#[tokio::test]
+async fn re_importing_the_same_epub_writes_one_mapping() {
+    let (tmp, engine) = engine().await;
+    let path = tmp.path().join("offline.epub");
+    write_isbnless_epub(&path, "A Book With No ISBN");
+
+    let first = engine.import_epub(&path).await.unwrap();
+    let second = engine.import_epub(&path).await.unwrap();
+    assert_ne!(first.id, second.id, "no ISBN means no upsert key");
+
+    let md5 = readingbuddy::partial_md5(&path).unwrap();
+    assert_eq!(links_for(&engine, first.id.unwrap()).await, [md5]);
+    assert!(
+        links_for(&engine, second.id.unwrap()).await.is_empty(),
+        "the mapping must stay on the copy it was first recorded against"
+    );
+}
+
+/// A manual link is the user's decision. Importing the file again is a scan,
+/// and a scan must never repoint it or relabel it as a guess — which is why
+/// the hook calls `link_device_book` and not `set_device_link`.
+#[tokio::test]
+async fn importing_does_not_repoint_a_link_the_user_made() {
+    let (tmp, engine) = engine().await;
+    let path = tmp.path().join("offline.epub");
+    write_isbnless_epub(&path, "A Book With No ISBN");
+    let md5 = readingbuddy::partial_md5(&path).unwrap();
+
+    let chosen = engine
+        .save_book(&book("The Copy The User Chose"))
+        .await
+        .unwrap();
+    engine
+        .storage
+        .set_device_link(
+            &md5,
+            chosen.id.unwrap(),
+            readingbuddy::storage::LinkedBy::Manual,
+        )
+        .await
+        .unwrap();
+
+    engine.import_epub(&path).await.unwrap();
+
+    assert_eq!(links_for(&engine, chosen.id.unwrap()).await, [md5.as_str()]);
+    let created = engine
+        .storage
+        .find_book_by_partial_md5(&md5)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(created.id, chosen.id, "a scan must not repoint");
+}

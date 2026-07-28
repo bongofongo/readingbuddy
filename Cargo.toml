@@ -54,6 +54,10 @@ async-trait = "0.1"
 strsim = "0.11"
 mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
 sha2 = "0.10"
+# KOReader's `util.partialMD5` is MD5 and nothing else, so agreeing with the
+# device means MD5. RustCrypto, sibling of `sha2` above, same `digest` traits —
+# MIT OR Apache-2.0, already inside deny.toml's allow list.
+md-5 = "0.10"
 regex = "1"
 # The engine emits only — it must never install a subscriber, or it would be
 # deciding I/O policy for its frontends. tracing-subscriber lives in cli/tui.

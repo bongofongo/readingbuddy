@@ -2184,8 +2184,11 @@ dependencies = [
  "async-trait",
  "epub",
  "futures",
+ "md-5",
  "mlua",
  "proptest",
+ "rand_chacha 0.9.0",
+ "rand_core 0.9.5",
  "regex",
  "reqwest",
  "serde",
@@ -2201,6 +2204,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+ "zip 2.4.2",
 ]
 
 [[package]]

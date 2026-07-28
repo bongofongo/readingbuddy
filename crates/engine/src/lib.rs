@@ -13,6 +13,7 @@ pub mod flashcards;
 pub mod images;
 pub mod koreader;
 pub mod notes;
+pub mod partial_md5;
 pub mod providers;
 pub mod search;
 pub mod storage;
@@ -31,6 +32,7 @@ pub use koreader::{
     PullReport,
 };
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
+pub use partial_md5::partial_md5;
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
@@ -226,7 +228,24 @@ impl Engine {
         if let Some(cover) = epub::extract_cover(path, &self.config.images_dir)? {
             book.cover_path = Some(cover.display().to_string());
         }
-        self.save_book(&book).await
+        let saved = self.save_book(&book).await?;
+
+        // Record the file's KOReader identity now, while we are holding the
+        // file. The payoff arrives later and elsewhere: when this book's
+        // sidecar comes off the device, `match_book` takes its `md5` branch and
+        // links it outright, instead of guessing at the title — and that branch
+        // is the only one that works when KOReader is configured to keep
+        // sidecars in `dir` or `hash` mode, away from the book.
+        //
+        // `link_device_book`, never `set_device_link`: this is a scan, and a
+        // scan must not relabel a link the user made by hand.
+        if let Some(id) = saved.id {
+            let md5 = partial_md5::partial_md5(path)?;
+            self.storage
+                .link_device_book(&md5, id, storage::LinkedBy::Auto)
+                .await?;
+        }
+        Ok(saved)
     }
 
     // ---- koreader ----------------------------------------------------------
