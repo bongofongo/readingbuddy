@@ -55,6 +55,16 @@ pub enum Screen {
     Settings,
     /// The mounted reader's own shelf: one row per book on the device.
     Device,
+    /// The calibre library's own shelf, in the same shape as [`Screen::Device`]
+    /// and for the same reason: calibre is another system that owns books, and
+    /// the way to meet one is to be shown its shelf rather than a dialog that
+    /// imports all of it or none.
+    Calibre,
+    /// A Goodreads CSV, previewed before it is applied — and the place the
+    /// library is exported from. Not a shelf: a CSV is a *file*, and the whole
+    /// of it lands or none does, because the engine matches a row against the
+    /// library rather than the other way round.
+    Goodreads,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,12 +78,14 @@ pub enum MenuItem {
     AddIsbn,
     ImportKo,
     Device,
+    Calibre,
+    Goodreads,
     Cards,
     Settings,
     Quit,
 }
 
-pub const MENU: [(MenuItem, &str, &str); 10] = [
+pub const MENU: [(MenuItem, &str, &str); 12] = [
     (
         MenuItem::Home,
         "Currently reading",
@@ -108,6 +120,16 @@ pub const MENU: [(MenuItem, &str, &str); 10] = [
         MenuItem::Device,
         "Device",
         "the shelf on your mounted reader",
+    ),
+    (
+        MenuItem::Calibre,
+        "Calibre",
+        "the shelf in your calibre library",
+    ),
+    (
+        MenuItem::Goodreads,
+        "Goodreads",
+        "read a CSV export, or write one",
     ),
     (
         MenuItem::Cards,
@@ -186,6 +208,160 @@ impl DeviceRow {
     }
 }
 
+/// One row of the calibre shelf: a book calibre holds, and what importing it
+/// would (or did) do here.
+///
+/// The same shape as [`DeviceRow`] and for the same reasons — the state is kept
+/// as the engine computed it so `l` can reach the candidate band, and `notices`
+/// exists because one shared status line cannot say which of four hundred books
+/// had the unreadable cover.
+pub struct CalibreRow {
+    /// calibre's own row id. The join key between the listing and the dry run,
+    /// and what `only` takes to import this row alone.
+    pub calibre_id: i64,
+    /// calibre's uuid, when it has one. `None` is the row
+    /// `CalibreRowNotIdentified` warns about, and the row `l` must refuse.
+    pub uuid: Option<String>,
+    pub title: String,
+    pub authors: Vec<String>,
+    pub state: CalibreRowState,
+    /// What the last import of *this* row reported, if it has been imported.
+    pub note: Option<String>,
+    pub notices: Vec<Diagnostic>,
+}
+
+impl CalibreRow {
+    /// Is there anything an import of this row would do?
+    ///
+    /// `Candidates` is deliberately **not** syncable: that row is a question, and
+    /// `s` answering it by creating a duplicate is exactly what the candidate
+    /// band exists to prevent. `n` is the answer, one row at a time.
+    pub fn is_importable(&self) -> bool {
+        matches!(
+            self.state,
+            CalibreRowState::New | CalibreRowState::Linked { .. }
+        )
+    }
+
+    pub fn authors_line(&self) -> Option<String> {
+        (!self.authors.is_empty()).then(|| self.authors.join(", "))
+    }
+}
+
+/// What the dry run said about one calibre row.
+///
+/// The vocabulary is the device screen's wherever it can be — `New` and
+/// `Unreadable` mean here what they mean there. `Unchanged`/`Updated` have no
+/// analogue: a calibre import re-enriches every matched book, so "nothing would
+/// change" is not a thing the report claims.
+pub enum CalibreRowState {
+    /// Already ours, on the rung that found it.
+    ///
+    /// Deliberately carries no `book_id`: nothing on this screen navigates into
+    /// the book, and a field held "in case" is a field the next reader has to
+    /// work out the absence of a use for. The report has it when one is wanted.
+    Linked {
+        matched_by: readingbuddy::CalibreMatch,
+        /// What a fresh import would add — tags, a cover, file identities. Zero
+        /// across the board is an honest "nothing new".
+        tags: usize,
+        cover: bool,
+        files: usize,
+    },
+    /// Not here yet; importing would create it.
+    New,
+    /// In the candidate band. A decision, not a dead end: `l` links it to one of
+    /// these, `n` says it is none of them.
+    Candidates(Vec<MatchCandidate>),
+    /// calibre gave us nothing to match on — a row with no title. Carries the
+    /// engine's own diagnostic rather than a re-worded one.
+    Unreadable(Diagnostic),
+}
+
+impl CalibreRowState {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CalibreRowState::Linked { .. } => "in library",
+            CalibreRowState::New => "new",
+            CalibreRowState::Candidates(_) => "maybe",
+            CalibreRowState::Unreadable(_) => "unreadable",
+        }
+    }
+}
+
+/// A Goodreads CSV as the dry run described it, before anything is written.
+///
+/// Held whole rather than flattened into the status line because that is the
+/// screen: the counts, what each matched book would gain, and — the part that
+/// needs a cursor on it — the rows the importer will not guess about.
+pub struct GoodreadsPreview {
+    pub path: PathBuf,
+    /// Rows read from the file, which is not `rows.len()`: a row the importer
+    /// skipped outright appears only in `warnings`.
+    pub read: usize,
+    pub rows: Vec<GoodreadsPreviewRow>,
+    pub warnings: Vec<Diagnostic>,
+    /// False once the import has actually been applied, so the screen stops
+    /// offering to apply it twice and says what it did instead.
+    pub dry_run: bool,
+    pub state: ListState,
+}
+
+impl GoodreadsPreview {
+    pub fn unmatched(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| matches!(r, GoodreadsPreviewRow::Unmatched { .. }))
+            .count()
+    }
+
+    pub fn would_create(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r,
+                    GoodreadsPreviewRow::Book {
+                        matched_by: readingbuddy::GoodreadsMatch::New,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    pub fn selected(&self) -> Option<&GoodreadsPreviewRow> {
+        self.state.selected().and_then(|i| self.rows.get(i))
+    }
+}
+
+/// One line of the Goodreads preview.
+///
+/// Two variants rather than a state field, because the two carry different
+/// things: a matched row has outcomes, an unmatched one has candidates and a
+/// decision to make.
+pub enum GoodreadsPreviewRow {
+    Book {
+        title: String,
+        matched_by: readingbuddy::GoodreadsMatch,
+        readings: usize,
+        shelves: usize,
+        rating: Option<u8>,
+        review: readingbuddy::TextOutcome,
+        private_notes: readingbuddy::TextOutcome,
+    },
+    Unmatched {
+        /// The row's line in the CSV, so "go and look at it" is possible.
+        row: usize,
+        title: String,
+        authors: Vec<String>,
+        /// Goodreads' `Book Id`. `None` for the eight-column importer format —
+        /// including our own export — and those rows cannot be linked.
+        external_id: Option<String>,
+        candidates: Vec<MatchCandidate>,
+    },
+}
+
 /// The candidate chooser opened by `l` on an unmatched row.
 ///
 /// It offers exactly the band the engine already computed
@@ -193,12 +369,31 @@ impl DeviceRow {
 /// candidates is that unmatched is a decision rather than a dead end, and
 /// re-deriving a different list here would quietly disagree with the CLI.
 pub struct LinkPicker {
-    /// The sidecar being linked. Held by path so a rescan underneath cannot
-    /// leave the picker pointing at a different row.
-    pub path: PathBuf,
+    /// What is being linked, held by the far side's own durable key so a rescan
+    /// underneath cannot leave the picker pointing at a different row.
+    pub target: LinkTarget,
     pub title: String,
     pub candidates: Vec<MatchCandidate>,
     pub state: ListState,
+}
+
+/// Which foreign record a [`LinkPicker`] is about.
+///
+/// One picker for all three importers rather than three near-identical modals:
+/// the widget, the key handling and the candidate band are the same, and the
+/// only thing that differs is the engine call underneath. Three copies would be
+/// three places for the band to drift.
+///
+/// Each variant carries the key its own importer matches on, which is *not*
+/// interchangeable: a sidecar is keyed by the file it was parsed from, calibre by
+/// a uuid (never its per-library `id`, which is reused after a delete), and a
+/// Goodreads row by its `Book Id`. A row with no such key cannot be linked at
+/// all, which is why the picker is never opened for one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    Sidecar(PathBuf),
+    Calibre { uuid: String, calibre_id: i64 },
+    Goodreads { external_id: String },
 }
 
 /// What an open text input is collecting, so `commit` knows what to do.
@@ -223,6 +418,20 @@ pub enum InputContext {
     ReviewRating,
     /// A `#RRGGBB` accent color typed on the settings screen.
     AccentHex,
+    /// A calibre library directory. Empty is meaningful here and nowhere else:
+    /// it means calibre's own configured library, which is the whole point of
+    /// feature detection — the user chose it once, in calibre.
+    CalibreLibrary,
+    /// The path of a Goodreads CSV export to read.
+    GoodreadsPath,
+    /// Where to write the Goodreads CSV. Pre-filled, because the answer is
+    /// almost always the default.
+    GoodreadsOut,
+    /// The two halves of a conversion, asked in turn. The input is held in
+    /// `pending_convert` while the output is typed — the same "ask after" shape
+    /// as a note's page anchor.
+    ConvertInput,
+    ConvertOutput,
 }
 
 /// One edge of the note graph, as one row of the links pane.
@@ -283,6 +492,110 @@ impl LinksPane {
     }
 }
 
+/// One queued calibre row import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalibreImport {
+    pub calibre_id: i64,
+    /// The `--new` escape hatch, per row: create the book even though it landed
+    /// in the candidate band.
+    pub create_ambiguous: bool,
+}
+
+/// One queued read of a Goodreads CSV.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoodreadsJob {
+    pub path: PathBuf,
+    /// False is the dry run — the preview. True writes.
+    pub apply: bool,
+    pub create_ambiguous: bool,
+}
+
+/// Join one calibre row against the dry run that described the library.
+///
+/// A row appears in exactly one of three places, and the third is the reason this
+/// is not a lookup into `report.books`: a row calibre gave no title is in neither
+/// list and survives only as a warning, so its absence *is* its state. Deriving
+/// the shelf from the report alone would drop it silently.
+fn calibre_state_for(calibre_id: i64, report: &readingbuddy::CalibreReport) -> CalibreRowState {
+    if let Some(b) = report.books.iter().find(|b| b.calibre_id == calibre_id) {
+        return match b.matched_by {
+            readingbuddy::CalibreMatch::New => CalibreRowState::New,
+            matched_by => CalibreRowState::Linked {
+                matched_by,
+                tags: b.tags_added,
+                cover: b.cover,
+                files: b.files_linked,
+            },
+        };
+    }
+    if let Some(u) = report.unmatched.iter().find(|u| u.calibre_id == calibre_id) {
+        return CalibreRowState::Candidates(u.candidates.clone());
+    }
+    // Neither list: the import skipped it and said why. Its own diagnostic, never
+    // a re-worded one — `Diagnostic`'s `Display` is user-visible output.
+    let warning = report.warnings.iter().find(|w| {
+        matches!(
+            w.kind,
+            readingbuddy::DiagnosticKind::CalibreRowSkipped { calibre_id: id } if id == calibre_id
+        )
+    });
+    match warning {
+        Some(d) => CalibreRowState::Unreadable(d.clone()),
+        // Not skipped, not matched, not offered. Nothing claims to know what this
+        // is, so the row says exactly that rather than guessing at "new".
+        None => CalibreRowState::Unreadable(Diagnostic {
+            kind: readingbuddy::DiagnosticKind::CalibreRowSkipped { calibre_id },
+            severity: readingbuddy::Severity::Warning,
+            detail: "calibre listed it but the import had nothing to say about it".to_string(),
+        }),
+    }
+}
+
+/// Why a calibre read produced nothing.
+///
+/// **An absent calibre is not a failure**, and `docs/decisions.md` says so in as
+/// many words: it is feature-detected, so absence is a first-class answer rather
+/// than something the user is being asked to fix. Wrapping `CalibreMissing` in
+/// "couldn't read the library:" would frame it as one — so it gets its own
+/// wording, which reports and prescribes nothing. Everything else genuinely did
+/// fail and keeps the engine's own message, a mistyped `--library` included.
+fn describe_calibre_failure(e: &EngineError) -> String {
+    match e {
+        EngineError::CalibreMissing { .. } => {
+            "calibre's library tools aren't on this machine".to_string()
+        }
+        e => format!("couldn't read the library: {e}"),
+    }
+}
+
+/// What an import of one calibre row would add, in words.
+///
+/// Mirrors the CLI's `book_line` — a count of zero across the board is "nothing
+/// new", which is the honest answer for a library imported twice and the one the
+/// engine went out of its way to be able to give.
+pub(crate) fn calibre_gains(tags: usize, cover: bool, files: usize) -> String {
+    let mut parts = Vec::new();
+    if tags > 0 {
+        parts.push(match tags {
+            1 => "1 tag".to_string(),
+            n => format!("{n} tags"),
+        });
+    }
+    if cover {
+        parts.push("cover".to_string());
+    }
+    if files > 0 {
+        parts.push(match files {
+            1 => "1 file identified".to_string(),
+            n => format!("{n} files identified"),
+        });
+    }
+    if parts.is_empty() {
+        parts.push("nothing new".to_string());
+    }
+    parts.join(", ")
+}
+
 /// A composed-but-unsaved note, held while its optional page anchor is asked.
 pub struct PendingNote {
     pub book_id: Option<i64>,
@@ -328,6 +641,16 @@ pub enum Confirm {
     /// Declining leaves the shelf exactly as it was — which is why this is a
     /// question and not a status line naming a key nobody bound.
     SearchOnline(String),
+    /// A conversion whose output file already exists.
+    ///
+    /// The CLI names `--force` here; a TUI has no flags, and the honest
+    /// equivalent of a flag you have to type again is a question. Losing a file
+    /// is the one outcome in this app with no undo, which is why it is asked
+    /// rather than done and why every key but `y` means no.
+    OverwriteConversion {
+        input: PathBuf,
+        output: PathBuf,
+    },
 }
 
 /// What an open in-house editor will do on save.
@@ -451,8 +774,26 @@ pub struct App {
     pub device_marks: HashSet<usize>,
     /// The root the last scan walked, so `r` knows what to walk again.
     pub device_root: Option<PathBuf>,
-    /// The open candidate chooser, if `l` is mid-decision.
-    pub device_link: Option<LinkPicker>,
+    /// The open candidate chooser, if `l` is mid-decision — on any of the three
+    /// screens that can offer one. Shared rather than one field per screen: only
+    /// one can be open at a time, and the handler is the same.
+    pub link_picker: Option<LinkPicker>,
+    /// The calibre library's books, as the last scan found them.
+    pub calibre: Vec<CalibreRow>,
+    pub calibre_state: ListState,
+    /// Rows marked with `x`, by index into `calibre`. Cleared by every scan, for
+    /// the same reason the device's are: an index is only meaningful against the
+    /// list it was made on.
+    pub calibre_marks: HashSet<usize>,
+    /// The library the last scan read. `None` is calibre's own default library
+    /// and is a real answer, not a missing one — so this cannot double as "have
+    /// we scanned yet", which `calibre_scanned` is for.
+    pub calibre_library: Option<PathBuf>,
+    pub calibre_scanned: bool,
+    /// The Goodreads CSV as the dry run described it, when one has been read.
+    pub goodreads: Option<GoodreadsPreview>,
+    /// A conversion's input path, held while its output path is typed.
+    pub pending_convert: Option<PathBuf>,
     /// A device root awaiting its (blocking) walk. Drained by the event loop
     /// *after* it has drawn the frame that says "scanning…" — the same
     /// deferred-work shape as `pending_verify`.
@@ -461,6 +802,16 @@ pub struct App {
     /// redraw between. A `for` loop here would freeze the draw loop and the
     /// 20fps ticker for the whole sync and show no progress at all.
     pub pending_pull: Option<VecDeque<PathBuf>>,
+    /// A calibre library awaiting its (blocking) read. `Some(None)` is a scan of
+    /// calibre's *default* library, which is why this is not an `Option<PathBuf>`
+    /// like `pending_scan`: the inner `None` is an answer.
+    pub pending_calibre: Option<Option<PathBuf>>,
+    /// calibre rows awaiting their import, drained one per loop iteration. Each
+    /// carries whether it is the `n` escape hatch, because that is a per-row
+    /// decision and a queue of ids could not express it.
+    pub pending_calibre_import: Option<VecDeque<CalibreImport>>,
+    /// A Goodreads CSV awaiting its read. `apply` false is the dry run.
+    pub pending_goodreads: Option<GoodreadsJob>,
     pub dirty: bool,
     pub quit: bool,
     /// Pitch the nod oscillates around; the yaw just keeps turning.
@@ -515,9 +866,19 @@ impl App {
             device_state: ListState::default(),
             device_marks: HashSet::new(),
             device_root: None,
-            device_link: None,
+            link_picker: None,
+            calibre: Vec::new(),
+            calibre_state: ListState::default(),
+            calibre_marks: HashSet::new(),
+            calibre_library: None,
+            calibre_scanned: false,
+            goodreads: None,
+            pending_convert: None,
             pending_scan: None,
             pending_pull: None,
+            pending_calibre: None,
+            pending_calibre_import: None,
+            pending_goodreads: None,
             dirty: true,
             quit: false,
             base_pitch: Pose::default().pitch,
@@ -746,7 +1107,7 @@ impl App {
             && self.api_key.is_none()
             // The candidate chooser is a modal like the others: while a decision
             // is open the background stops drifting behind it.
-            && self.device_link.is_none()
+            && self.link_picker.is_none()
     }
 
     /// Advance the idle animations. Returns true when something moved.
@@ -874,6 +1235,8 @@ impl App {
             (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
 
             (Screen::Device, action) => self.handle_device(action).await?,
+            (Screen::Calibre, action) => self.handle_calibre(action).await?,
+            (Screen::Goodreads, action) => self.handle_goodreads(action).await?,
 
             (Screen::Book, action) => self.handle_book(action).await?,
 
@@ -1167,6 +1530,8 @@ impl App {
             MenuItem::AddIsbn => self.start_input(InputContext::IsbnAdd, "isbn", ""),
             MenuItem::ImportKo => self.start_input(InputContext::KoPath, "koreader path", ""),
             MenuItem::Device => self.open_device(),
+            MenuItem::Calibre => self.open_calibre(),
+            MenuItem::Goodreads => self.open_goodreads(),
             MenuItem::Cards => {
                 let n = self.engine.list_flashcards(false).await?.len();
                 self.status = Some(format!(
@@ -1191,7 +1556,7 @@ impl App {
     /// at besides.
     fn open_device(&mut self) {
         self.screen = Screen::Device;
-        self.device_link = None;
+        self.link_picker = None;
         let mut mounts = readingbuddy::candidate_mounts();
         match mounts.len() {
             1 => self.start_scan(mounts.remove(0)),
@@ -1271,7 +1636,7 @@ impl App {
                     self.device.clear();
                     self.device_marks.clear();
                     self.device_state.select(None);
-                    self.device_link = None;
+                    self.link_picker = None;
                 }
                 self.status = Some(format!("{} was unplugged", mount.display()));
             }
@@ -1336,7 +1701,7 @@ impl App {
     /// Device-screen keys. The candidate chooser, when open, takes the
     /// directions and Enter for itself; everything else is the list.
     async fn handle_device(&mut self, action: Action) -> Result<()> {
-        if self.device_link.is_some() {
+        if self.link_picker.is_some() {
             return self.handle_link_picker(action).await;
         }
         match action {
@@ -1532,11 +1897,19 @@ impl App {
             );
             return;
         }
+        let target = LinkTarget::Sidecar(row.book.path.clone());
+        let title = row.book.display_title();
+        self.open_picker(target, title, candidates);
+    }
+
+    /// Open the chooser on a candidate band. One entry point for all three
+    /// screens, so the band that reaches the user cannot differ by screen.
+    fn open_picker(&mut self, target: LinkTarget, title: String, candidates: Vec<MatchCandidate>) {
         let mut state = ListState::default();
         state.select(Some(0));
-        self.device_link = Some(LinkPicker {
-            path: row.book.path.clone(),
-            title: row.book.display_title(),
+        self.link_picker = Some(LinkPicker {
+            target,
+            title,
             candidates,
             state,
         });
@@ -1544,7 +1917,7 @@ impl App {
     }
 
     async fn handle_link_picker(&mut self, action: Action) -> Result<()> {
-        let Some(picker) = self.device_link.as_mut() else {
+        let Some(picker) = self.link_picker.as_mut() else {
             return Ok(());
         };
         let len = picker.candidates.len() as isize;
@@ -1557,7 +1930,7 @@ impl App {
                     .select(Some((cur + delta).rem_euclid(len.max(1)) as usize));
             }
             Action::Back | Action::Left => {
-                self.device_link = None;
+                self.link_picker = None;
                 self.status = Some("left it unlinked".into());
             }
             Action::Select | Action::Right => self.commit_link().await?,
@@ -1568,12 +1941,13 @@ impl App {
 
     /// Record the user's choice, then bring the book across.
     ///
-    /// `Engine::link_sidecar` writes the mapping as `Manual` — it *repoints*,
-    /// unlike the scan's own `link_device_book`, which must never relabel a
-    /// decision the user made. Importing straight afterwards is what stops
-    /// linking from looking like a key that did nothing.
+    /// All three link calls *repoint* — unlike the scans' own `link_device_book`,
+    /// which must never relabel a decision the user made. Importing straight
+    /// afterwards is what stops linking from looking like a key that did nothing;
+    /// that is the whole reason a link is followed by work rather than by a
+    /// status line, on every one of the three screens.
     async fn commit_link(&mut self) -> Result<()> {
-        let Some(picker) = self.device_link.take() else {
+        let Some(picker) = self.link_picker.take() else {
             return Ok(());
         };
         let Some(candidate) = picker
@@ -1583,31 +1957,690 @@ impl App {
         else {
             return Ok(());
         };
-        match self
-            .engine
-            .link_sidecar(&picker.path, candidate.book_id)
-            .await
-        {
-            Ok(_) => {
-                self.status = Some(format!(
-                    "linked {} → {} · bringing it across…",
-                    picker.title, candidate.title
-                ));
-                if let Some(row) = self.row_for_mut(&picker.path) {
-                    row.book.book_id = Some(candidate.book_id);
-                }
-                self.queue_pull(vec![picker.path.clone()]);
+        let title = candidate.title.clone();
+        let book_id = candidate.book_id;
+
+        let linked = match &picker.target {
+            LinkTarget::Sidecar(path) => self.engine.link_sidecar(path, book_id).await.map(|_| ()),
+            LinkTarget::Calibre { uuid, .. } => self.engine.link_calibre_book(uuid, book_id).await,
+            LinkTarget::Goodreads { external_id } => {
+                self.engine.link_goodreads_row(external_id, book_id).await
             }
-            Err(e) => self.status = Some(format!("could not link it: {e}")),
+        };
+        if let Err(e) = linked {
+            self.status = Some(format!("could not link it: {e}"));
+            return Ok(());
+        }
+        self.status = Some(format!(
+            "linked {} → {title} · bringing it across…",
+            picker.title
+        ));
+
+        match &picker.target {
+            LinkTarget::Sidecar(path) => {
+                if let Some(row) = self.row_for_mut(path) {
+                    row.book.book_id = Some(book_id);
+                }
+                self.queue_pull(vec![path.clone()]);
+            }
+            LinkTarget::Calibre { calibre_id, .. } => {
+                // The row is no longer a question, so it stops being one on
+                // screen before the import that proves it.
+                if let Some(row) = self.calibre_row_mut(*calibre_id) {
+                    row.state = CalibreRowState::Linked {
+                        matched_by: readingbuddy::CalibreMatch::Uuid,
+                        tags: 0,
+                        cover: false,
+                        files: 0,
+                    };
+                }
+                self.queue_calibre_import(vec![CalibreImport {
+                    calibre_id: *calibre_id,
+                    create_ambiguous: false,
+                }]);
+            }
+            LinkTarget::Goodreads { .. } => {
+                // A CSV has no single-row import: the whole file matches against
+                // the library or none of it does. So the link is recorded and the
+                // preview re-run, which is what makes the row move out of
+                // "unmatched" in front of the user.
+                if let Some(path) = self.goodreads.as_ref().map(|p| p.path.clone()) {
+                    self.queue_goodreads(GoodreadsJob {
+                        path,
+                        apply: false,
+                        create_ambiguous: false,
+                    });
+                    self.status = Some(format!(
+                        "linked {} → {title} · reading the file again…",
+                        picker.title
+                    ));
+                }
+            }
         }
         Ok(())
+    }
+
+    // ---- the calibre shelf -------------------------------------------------
+
+    /// Open the calibre screen.
+    ///
+    /// Feature detection is checked *here* and the screen is still opened when
+    /// calibre is absent: `docs/decisions.md` says an absent calibre is reported
+    /// and never prescribed, and a menu row that silently does nothing is worse
+    /// than a screen that explains itself. So the empty state is the report.
+    fn open_calibre(&mut self) {
+        self.screen = Screen::Calibre;
+        self.link_picker = None;
+        self.status = None;
+        if !self.engine.calibre().can_read_library() {
+            // Reported, not prescribed. Nothing here names a thing to install.
+            self.status = Some("calibre's library tools aren't on this machine".into());
+            return;
+        }
+        if !self.calibre_scanned {
+            self.start_calibre_scan(self.calibre_library.clone());
+        }
+    }
+
+    fn start_calibre_scan(&mut self, library: Option<PathBuf>) {
+        self.status = Some(match &library {
+            Some(p) => format!("reading {}…", p.display()),
+            None => "reading your calibre library…".to_string(),
+        });
+        self.pending_calibre = Some(library);
+        self.dirty = true;
+    }
+
+    /// Read the calibre library. Called by the event loop, not a key handler —
+    /// `calibredb list` on a real library takes seconds, and doing it inline
+    /// would stop the draw loop and the ticker for all of them.
+    ///
+    /// **Two calls, joined on `calibre_id`.** The listing is the shelf (it alone
+    /// carries authors, the uuid, and the rows the importer skips); the dry run is
+    /// the state. Deriving the shelf from the dry run alone would silently drop
+    /// every row calibre gave no title — the rows that most need to be visible.
+    pub async fn finish_calibre_scan(&mut self, library: Option<PathBuf>) -> Result<()> {
+        self.dirty = true;
+        let books = match self.engine.calibre_library(library.as_deref()).await {
+            Ok(books) => books,
+            Err(e) => {
+                self.status = Some(describe_calibre_failure(&e));
+                return Ok(());
+            }
+        };
+        let report = match self
+            .engine
+            .import_calibre_library(&readingbuddy::CalibreImportOptions {
+                library: library.clone(),
+                dry_run: true,
+                create_ambiguous: false,
+                only: Vec::new(),
+            })
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                self.status = Some(describe_calibre_failure(&e));
+                return Ok(());
+            }
+        };
+
+        self.calibre_marks.clear();
+        self.calibre = books
+            .into_iter()
+            .map(|cb| {
+                let state = calibre_state_for(cb.calibre_id, &report);
+                let title = cb.display_title().to_string();
+                CalibreRow {
+                    calibre_id: cb.calibre_id,
+                    uuid: cb.uuid,
+                    title,
+                    authors: cb.authors,
+                    state,
+                    note: None,
+                    notices: Vec::new(),
+                }
+            })
+            .collect();
+        self.calibre_state
+            .select((!self.calibre.is_empty()).then_some(0));
+        self.calibre_library = library;
+        self.calibre_scanned = true;
+
+        let importable = self.calibre.iter().filter(|r| r.is_importable()).count();
+        let undecided = self
+            .calibre
+            .iter()
+            .filter(|r| matches!(r.state, CalibreRowState::Candidates(_)))
+            .count();
+        self.status = Some(if self.calibre.is_empty() {
+            "that library holds no books".to_string()
+        } else {
+            format!(
+                "{} book(s) in calibre · {importable} to bring across · {undecided} to decide about",
+                self.calibre.len()
+            )
+        });
+        Ok(())
+    }
+
+    fn selected_calibre(&self) -> Option<&CalibreRow> {
+        self.calibre_state
+            .selected()
+            .and_then(|i| self.calibre.get(i))
+    }
+
+    fn calibre_row_mut(&mut self, calibre_id: i64) -> Option<&mut CalibreRow> {
+        self.calibre.iter_mut().find(|r| r.calibre_id == calibre_id)
+    }
+
+    fn toggle_calibre_mark(&mut self) {
+        let Some(i) = self.calibre_state.selected() else {
+            return;
+        };
+        if !self.calibre_marks.remove(&i) {
+            self.calibre_marks.insert(i);
+        }
+    }
+
+    /// Import the selected row. `create_ambiguous` is the `n` key: the answer to
+    /// a candidate band, taken one row at a time.
+    fn import_selected_calibre(&mut self, create_ambiguous: bool) {
+        let Some(row) = self.selected_calibre() else {
+            return;
+        };
+        if let CalibreRowState::Unreadable(d) = &row.state {
+            self.status = Some(format!("calibre gave us nothing to go on — {}", d.detail));
+            return;
+        }
+        if matches!(row.state, CalibreRowState::Candidates(_)) && !create_ambiguous {
+            // The refusal-with-a-next-move shape, and it names both moves: this
+            // row looks like a book already here, so importing it silently is how
+            // a duplicate appears.
+            self.status = Some(format!(
+                "{} looks like one you have — l to link it, n if it isn't",
+                row.title
+            ));
+            return;
+        }
+        let (calibre_id, title) = (row.calibre_id, row.title.clone());
+        self.status = Some(format!("bringing {title} across…"));
+        self.queue_calibre_import(vec![CalibreImport {
+            calibre_id,
+            create_ambiguous,
+        }]);
+    }
+
+    /// Every marked row, or — with nothing marked — everything importable.
+    ///
+    /// A `Candidates` row is never swept up by either: it is a question, and `s`
+    /// answering it by creating a duplicate is what the band exists to prevent.
+    fn sync_calibre_marked(&mut self) {
+        let chosen: Vec<CalibreImport> = if self.calibre_marks.is_empty() {
+            self.calibre
+                .iter()
+                .filter(|r| r.is_importable())
+                .map(|r| CalibreImport {
+                    calibre_id: r.calibre_id,
+                    create_ambiguous: false,
+                })
+                .collect()
+        } else {
+            let mut marks: Vec<usize> = self.calibre_marks.iter().copied().collect();
+            marks.sort_unstable();
+            marks
+                .into_iter()
+                .filter_map(|i| self.calibre.get(i))
+                .filter(|r| r.is_importable())
+                .map(|r| CalibreImport {
+                    calibre_id: r.calibre_id,
+                    create_ambiguous: false,
+                })
+                .collect()
+        };
+        if chosen.is_empty() {
+            self.status = Some("nothing to bring across — mark a row with x".into());
+            return;
+        }
+        self.status = Some(format!("bringing {} book(s) across…", chosen.len()));
+        self.queue_calibre_import(chosen);
+    }
+
+    fn queue_calibre_import(&mut self, jobs: Vec<CalibreImport>) {
+        // See `queue_pull`: an emptied queue left as `Some` spins the loop.
+        if jobs.is_empty() {
+            return;
+        }
+        self.pending_calibre_import
+            .get_or_insert_with(VecDeque::new)
+            .extend(jobs);
+        self.dirty = true;
+    }
+
+    fn next_calibre_import(&mut self) -> Option<CalibreImport> {
+        let next = self
+            .pending_calibre_import
+            .as_mut()
+            .and_then(|q| q.pop_front());
+        if self
+            .pending_calibre_import
+            .as_ref()
+            .is_some_and(|q| q.is_empty())
+        {
+            self.pending_calibre_import = None;
+        }
+        next
+    }
+
+    /// Import **one** calibre row, so a four-hundred-book library redraws between
+    /// books instead of freezing.
+    pub async fn finish_calibre_import(&mut self, job: CalibreImport) -> Result<()> {
+        self.dirty = true;
+        let left = self.pending_calibre_import.as_ref().map_or(0, |q| q.len());
+        let report = match self
+            .engine
+            .import_calibre_library(&readingbuddy::CalibreImportOptions {
+                library: self.calibre_library.clone(),
+                dry_run: false,
+                create_ambiguous: job.create_ambiguous,
+                only: vec![job.calibre_id],
+            })
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                let msg = format!("import failed: {e}");
+                if let Some(row) = self.calibre_row_mut(job.calibre_id) {
+                    row.note = Some(msg.clone());
+                }
+                self.status = Some(msg);
+                return Ok(());
+            }
+        };
+
+        let warnings = report.warnings.clone();
+        let line = match report.books.first() {
+            Some(b) => {
+                let gained = calibre_gains(b.tags_added, b.cover, b.files_linked);
+                let line = format!("{}: {gained} (matched by {})", b.title, b.matched_by);
+                if let Some(row) = self.calibre_row_mut(b.calibre_id) {
+                    row.note = Some(line.clone());
+                    row.notices = warnings;
+                    row.state = CalibreRowState::Linked {
+                        matched_by: b.matched_by,
+                        // It has just been imported, so a fresh import would add
+                        // nothing. The next scan re-derives this properly.
+                        tags: 0,
+                        cover: false,
+                        files: 0,
+                    };
+                }
+                line
+            }
+            // The row landed in the band and `n` was not pressed, or calibre no
+            // longer has it. Either way the report says so rather than the screen
+            // silently doing nothing.
+            None => {
+                let line = match report.unmatched.first() {
+                    Some(u) => format!("{} is still undecided — l to link, n if it's new", u.title),
+                    None => "calibre no longer has that row — r to look again".to_string(),
+                };
+                if let Some(row) = self.calibre_row_mut(job.calibre_id) {
+                    row.note = Some(line.clone());
+                    row.notices = warnings;
+                }
+                line
+            }
+        };
+
+        if let Some(i) = self
+            .calibre
+            .iter()
+            .position(|r| r.calibre_id == job.calibre_id)
+        {
+            self.calibre_marks.remove(&i);
+        }
+        self.status = Some(if left > 0 {
+            format!("{line}  ·  {left} to go")
+        } else {
+            line
+        });
+        if self.pending_calibre_import.is_none() {
+            self.refresh_library().await?;
+        }
+        Ok(())
+    }
+
+    /// Offer the candidate band for the selected calibre row.
+    fn open_calibre_link(&mut self) {
+        let Some(row) = self.selected_calibre() else {
+            return;
+        };
+        let candidates = match &row.state {
+            CalibreRowState::Candidates(c) => c.clone(),
+            _ => {
+                self.status = Some(format!(
+                    "{} isn't waiting on a decision — enter brings it across",
+                    row.title
+                ));
+                return;
+            }
+        };
+        // calibre ids are per-library and reused after a delete, so a row with no
+        // uuid has nothing durable to link by. Saying so beats writing a link that
+        // silently means a different book after the next calibre delete.
+        let Some(uuid) = row.uuid.clone() else {
+            self.status = Some(format!(
+                "{} has no calibre uuid, so a link wouldn't survive — n imports it as new",
+                row.title
+            ));
+            return;
+        };
+        let (calibre_id, title) = (row.calibre_id, row.title.clone());
+        self.open_picker(LinkTarget::Calibre { uuid, calibre_id }, title, candidates);
+    }
+
+    async fn handle_calibre(&mut self, action: Action) -> Result<()> {
+        if self.link_picker.is_some() {
+            return self.handle_link_picker(action).await;
+        }
+        match action {
+            Action::Up => self.step_calibre(-1),
+            Action::Down => self.step_calibre(1),
+            Action::Back => self.screen = Screen::Menu,
+            Action::Select => self.import_selected_calibre(false),
+            Action::CreateAnyway => self.import_selected_calibre(true),
+            Action::Mark => self.toggle_calibre_mark(),
+            Action::Sync => self.sync_calibre_marked(),
+            Action::Link => self.open_calibre_link(),
+            Action::Rescan => self.start_calibre_scan(self.calibre_library.clone()),
+            Action::Convert => {
+                self.start_input(InputContext::ConvertInput, "convert — file to read", "")
+            }
+            Action::Query => {
+                let initial = self
+                    .calibre_library
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                self.start_input(
+                    InputContext::CalibreLibrary,
+                    "calibre library (empty = yours)",
+                    &initial,
+                )
+            }
+            _ => self.dirty = false,
+        }
+        Ok(())
+    }
+
+    fn step_calibre(&mut self, delta: isize) {
+        if self.calibre.is_empty() {
+            return;
+        }
+        let len = self.calibre.len() as isize;
+        let cur = self.calibre_state.selected().unwrap_or(0) as isize;
+        self.calibre_state
+            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+    }
+
+    // ---- conversion ---------------------------------------------------------
+
+    /// Run `ebook-convert`, refusing to overwrite unless the question has been
+    /// answered. The engine reports the existing output as `InvalidInput`, and
+    /// there is no typed variant for it — so the string is matched here, exactly
+    /// as the CLI does, rather than inventing a second answer to the same
+    /// question.
+    async fn run_convert(&mut self, input: PathBuf, output: PathBuf, overwrite: bool) {
+        match self.engine.convert_ebook(&input, &output, overwrite).await {
+            Ok(path) => self.status = Some(format!("wrote {}", path.display())),
+            Err(EngineError::CalibreMissing { tool }) => {
+                // Reported, never prescribed.
+                self.status = Some(format!(
+                    "converting needs calibre's `{tool}`, which isn't here"
+                ))
+            }
+            Err(EngineError::InvalidInput(m)) if m.contains("already exists") => {
+                self.confirm = Some(Confirm::OverwriteConversion { input, output });
+            }
+            Err(e) => self.status = Some(format!("couldn't convert it: {e}")),
+        }
+    }
+
+    // ---- the goodreads file -------------------------------------------------
+
+    fn open_goodreads(&mut self) {
+        self.screen = Screen::Goodreads;
+        self.link_picker = None;
+        self.status = None;
+    }
+
+    fn start_goodreads(&mut self, job: GoodreadsJob) {
+        self.status = Some(if job.apply {
+            format!("bringing {} across…", job.path.display())
+        } else {
+            format!("reading {}…", job.path.display())
+        });
+        self.pending_goodreads = Some(job);
+        self.dirty = true;
+    }
+
+    fn queue_goodreads(&mut self, job: GoodreadsJob) {
+        self.pending_goodreads = Some(job);
+        self.dirty = true;
+    }
+
+    /// Read a Goodreads CSV — as a preview, or for real. Called by the event
+    /// loop: a large export is thousands of rows against the matcher.
+    pub async fn finish_goodreads(&mut self, job: GoodreadsJob) -> Result<()> {
+        self.dirty = true;
+        let report = match self
+            .engine
+            .import_goodreads(
+                &job.path,
+                readingbuddy::GoodreadsImportOptions {
+                    dry_run: !job.apply,
+                    create_ambiguous: job.create_ambiguous,
+                },
+            )
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                self.status = Some(format!("couldn't read it: {e}"));
+                return Ok(());
+            }
+        };
+
+        let mut rows: Vec<GoodreadsPreviewRow> = report
+            .books
+            .into_iter()
+            .map(|b| GoodreadsPreviewRow::Book {
+                title: b.title,
+                matched_by: b.matched_by,
+                readings: b.readings_added,
+                shelves: b.tags_added,
+                rating: b.rating,
+                review: b.review,
+                private_notes: b.private_notes,
+            })
+            .collect();
+        // Undecided rows last, where a cursor looking for something to do finds
+        // them — they are the only rows with a decision attached.
+        rows.extend(
+            report
+                .unmatched
+                .into_iter()
+                .map(|u| GoodreadsPreviewRow::Unmatched {
+                    row: u.row,
+                    title: u.title,
+                    authors: u.authors,
+                    external_id: u.external_id,
+                    candidates: u.candidates,
+                }),
+        );
+
+        let mut state = ListState::default();
+        state.select((!rows.is_empty()).then_some(0));
+        let preview = GoodreadsPreview {
+            path: job.path.clone(),
+            read: report.rows,
+            rows,
+            warnings: report.warnings,
+            dry_run: report.dry_run,
+            state,
+        };
+        let (created, undecided) = (preview.would_create(), preview.unmatched());
+        self.status = Some(if report.dry_run {
+            format!(
+                "{} row(s) read · {created} would be new · {undecided} to decide about · s brings it across",
+                preview.read
+            )
+        } else {
+            format!(
+                "{} row(s) read · {created} created · {undecided} to decide about",
+                preview.read
+            )
+        });
+        self.goodreads = Some(preview);
+        if job.apply {
+            self.refresh_library().await?;
+        }
+        Ok(())
+    }
+
+    /// Write the library as a Goodreads-importable CSV.
+    ///
+    /// Awaited inline rather than deferred: this is a query over the library and
+    /// a file write, not several hundred sidecars. The dropped rows are reported
+    /// because silent truncation looks like data loss on the far side.
+    async fn export_goodreads(&mut self, out: PathBuf) {
+        let (csv, warnings) = match self.engine.export_goodreads().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.status = Some(format!("couldn't build the file: {e}"));
+                return;
+            }
+        };
+        let rows = readingbuddy::goodreads::row_count(&csv);
+        if rows == 0 {
+            self.status = Some("nothing to export yet — the library is empty".into());
+            return;
+        }
+        if let Err(e) = std::fs::write(&out, csv) {
+            self.status = Some(format!("couldn't write {}: {e}", out.display()));
+            return;
+        }
+        // The dropped rows are the point of the warning count: an unmapped
+        // rating skips its row, and a reread exports only its latest reading.
+        let dropped = match warnings.len() {
+            0 => String::new(),
+            n => format!(" · {n} row(s) left out"),
+        };
+        self.status = Some(format!(
+            "{rows} book(s) → {}{dropped} · Goodreads: My Books › Import and export",
+            out.display()
+        ));
+        if let Some(preview) = &mut self.goodreads {
+            preview.warnings = warnings;
+        }
+    }
+
+    fn open_goodreads_link(&mut self) {
+        let Some(preview) = &self.goodreads else {
+            return;
+        };
+        let Some(GoodreadsPreviewRow::Unmatched {
+            title,
+            external_id,
+            candidates,
+            ..
+        }) = preview.selected()
+        else {
+            self.status = Some("stand on a row that says “maybe” — those are the decisions".into());
+            return;
+        };
+        if candidates.is_empty() {
+            self.status =
+                Some("nothing in the library looks like it — n brings it in as new".into());
+            return;
+        }
+        // Our own export carries no `Book Id` column, so this is the ordinary
+        // case for a round trip rather than an edge one. Saying so beats
+        // recording a link keyed on a title.
+        let Some(external_id) = external_id.clone() else {
+            self.status = Some(format!(
+                "that row has no Goodreads id, so a link couldn't be recorded — n imports {title} as new"
+            ));
+            return;
+        };
+        let (title, candidates) = (title.clone(), candidates.clone());
+        self.open_picker(LinkTarget::Goodreads { external_id }, title, candidates);
+    }
+
+    async fn handle_goodreads(&mut self, action: Action) -> Result<()> {
+        if self.link_picker.is_some() {
+            return self.handle_link_picker(action).await;
+        }
+        match action {
+            Action::Up => self.step_goodreads(-1),
+            Action::Down => self.step_goodreads(1),
+            Action::Back => self.screen = Screen::Menu,
+            Action::Query => self.start_input(InputContext::GoodreadsPath, "goodreads csv", ""),
+            // `x` keeps its global meaning here, which is why the screen does not
+            // rebind it: export is exactly what `x` means everywhere else.
+            Action::Export => {
+                self.start_input(InputContext::GoodreadsOut, "write csv to", "goodreads.csv")
+            }
+            Action::Sync | Action::CreateAnyway => match self.goodreads.as_ref() {
+                Some(p) => {
+                    let job = GoodreadsJob {
+                        path: p.path.clone(),
+                        apply: true,
+                        create_ambiguous: action == Action::CreateAnyway,
+                    };
+                    self.start_goodreads(job);
+                }
+                None => self.status = Some("no file yet — / to pick one".into()),
+            },
+            Action::Link => self.open_goodreads_link(),
+            Action::Rescan => match self.goodreads.as_ref().map(|p| p.path.clone()) {
+                Some(path) => self.start_goodreads(GoodreadsJob {
+                    path,
+                    apply: false,
+                    create_ambiguous: false,
+                }),
+                None => self.start_input(InputContext::GoodreadsPath, "goodreads csv", ""),
+            },
+            _ => self.dirty = false,
+        }
+        Ok(())
+    }
+
+    fn step_goodreads(&mut self, delta: isize) {
+        let Some(preview) = &mut self.goodreads else {
+            return;
+        };
+        if preview.rows.is_empty() {
+            return;
+        }
+        let len = preview.rows.len() as isize;
+        let cur = preview.state.selected().unwrap_or(0) as isize;
+        preview
+            .state
+            .select(Some(((cur + delta).rem_euclid(len)) as usize));
     }
 
     // ---- deferred work -----------------------------------------------------
 
     /// Is there work waiting that the loop must not block on `select!` for?
     pub fn has_deferred(&self) -> bool {
-        self.pending_verify.is_some() || self.pending_scan.is_some() || self.pending_pull.is_some()
+        self.pending_verify.is_some()
+            || self.pending_scan.is_some()
+            || self.pending_pull.is_some()
+            || self.pending_calibre.is_some()
+            || self.pending_calibre_import.is_some()
+            || self.pending_goodreads.is_some()
     }
 
     /// Do **one** unit of deferred work, and say whether anything was done.
@@ -1629,6 +2662,18 @@ impl App {
         }
         if let Some(path) = self.next_pull() {
             self.finish_pull(&path).await?;
+            return Ok(true);
+        }
+        if let Some(library) = self.pending_calibre.take() {
+            self.finish_calibre_scan(library).await?;
+            return Ok(true);
+        }
+        if let Some(job) = self.next_calibre_import() {
+            self.finish_calibre_import(job).await?;
+            return Ok(true);
+        }
+        if let Some(job) = self.pending_goodreads.take() {
+            self.finish_goodreads(job).await?;
             return Ok(true);
         }
         Ok(false)
@@ -2303,6 +3348,17 @@ impl App {
             Some(Confirm::SearchOnline(query)) => {
                 self.status = Some(format!("nothing in the library matching “{query}”"));
             }
+            // The second attempt, now that the question has been answered. It
+            // goes through `run_convert` again rather than a direct engine call,
+            // so there is one path to a conversion and not two.
+            Some(Confirm::OverwriteConversion { input, output }) if yes => {
+                self.run_convert(input, output, true).await;
+            }
+            // Declining names the file that was kept, because "kept." alone does
+            // not say which of the two paths survived.
+            Some(Confirm::OverwriteConversion { output, .. }) => {
+                self.status = Some(format!("kept {}", output.display()));
+            }
             // Any other decline just keeps things as they were.
             Some(_) => self.status = Some("kept.".into()),
             None => {}
@@ -2367,6 +3423,15 @@ impl App {
         if context == InputContext::ReviewRating {
             return self.commit_rating(text).await;
         }
+        // And for the calibre library, where **empty is an answer**: it means
+        // calibre's own configured library. Falling into the empty check below
+        // would make "use mine" indistinguishable from changing one's mind.
+        if context == InputContext::CalibreLibrary {
+            self.screen = Screen::Calibre;
+            let library = (!text.is_empty()).then(|| PathBuf::from(&text));
+            self.start_calibre_scan(library);
+            return Ok(());
+        }
         if text.is_empty() {
             if context == InputContext::SearchQuery && self.search_results.is_empty() {
                 self.screen = Screen::Menu;
@@ -2393,7 +3458,37 @@ impl App {
                 Some(rgb) => self.set_accent_rgb(rgb),
                 None => self.status = Some(format!("not a #RRGGBB color: {text}")),
             },
-            InputContext::NotePage | InputContext::ReviewRating => {
+            InputContext::GoodreadsPath => {
+                self.screen = Screen::Goodreads;
+                self.start_goodreads(GoodreadsJob {
+                    path: PathBuf::from(text),
+                    // A preview first, always. Writing a whole shelf because a
+                    // path was typed is the refusal-with-a-next-move this shape
+                    // exists to avoid.
+                    apply: false,
+                    create_ambiguous: false,
+                });
+            }
+            InputContext::GoodreadsOut => self.export_goodreads(PathBuf::from(text)).await,
+            InputContext::ConvertInput => {
+                let input = PathBuf::from(&text);
+                // Suggest the same name with no extension, so only the format has
+                // to be typed. calibre reads the target format off the extension,
+                // which is why the output is a path and not a picklist.
+                let suggestion = input.with_extension("").display().to_string();
+                self.pending_convert = Some(input);
+                self.start_input(
+                    InputContext::ConvertOutput,
+                    "convert — file to write (the extension picks the format)",
+                    &suggestion,
+                );
+            }
+            InputContext::ConvertOutput => {
+                if let Some(input) = self.pending_convert.take() {
+                    self.run_convert(input, PathBuf::from(text), false).await;
+                }
+            }
+            InputContext::NotePage | InputContext::ReviewRating | InputContext::CalibreLibrary => {
                 unreachable!("handled above")
             }
         }
@@ -3373,6 +4468,8 @@ mod tests {
                 Screen::Search,
                 Screen::Settings,
                 Screen::Device,
+                Screen::Calibre,
+                Screen::Goodreads,
             ] {
                 app.screen = screen;
                 for tab in [
@@ -3421,8 +4518,8 @@ mod tests {
             // marked — both are overlay/gutter arithmetic that 1x1 tests.
             app.screen = Screen::Device;
             app.device_marks.insert(0);
-            app.device_link = Some(LinkPicker {
-                path: PathBuf::from("/mnt/Piranesi.sdr/metadata.epub.lua"),
+            app.link_picker = Some(LinkPicker {
+                target: LinkTarget::Sidecar(PathBuf::from("/mnt/Piranesi.sdr/metadata.epub.lua")),
                 title: "Piranesi".into(),
                 candidates: vec![MatchCandidate {
                     book_id: 1,
@@ -3432,7 +4529,7 @@ mod tests {
                 state: ListState::default(),
             });
             terminal.draw(|f| ui::draw(f, app)).expect("draw link");
-            app.device_link = None;
+            app.link_picker = None;
             app.device_marks.clear();
             // With the note editor open over the book view.
             app.screen = Screen::Book;
@@ -3500,7 +4597,170 @@ mod tests {
                 terminal.draw(|f| ui::draw(f, app)).expect("draw api key");
             }
             app.api_key = None;
+
+            // The calibre shelf, populated and with a row marked. Hand-built for
+            // the same reason the candidate chooser above is: the sweep stays
+            // synchronous, and what is under test is the layout, not calibre —
+            // which CI does not have anyway.
+            app.screen = Screen::Calibre;
+            app.calibre = sample_calibre_rows();
+            app.calibre_state.select(Some(0));
+            app.calibre_marks.insert(0);
+            terminal.draw(|f| ui::draw(f, app)).expect("draw calibre");
+            // And its own candidate chooser, which is the shared widget reached
+            // through a different `LinkTarget`.
+            app.link_picker = Some(LinkPicker {
+                target: LinkTarget::Calibre {
+                    uuid: "c47437a8".into(),
+                    calibre_id: 3,
+                },
+                title: "The Dispossessed".into(),
+                candidates: vec![MatchCandidate {
+                    book_id: 1,
+                    title: "The Dispossessed: An Ambiguous Utopia".into(),
+                    score: 0.78,
+                }],
+                state: ListState::default(),
+            });
+            terminal
+                .draw(|f| ui::draw(f, app))
+                .expect("draw calibre link");
+            app.link_picker = None;
+            app.calibre_marks.clear();
+            app.calibre.clear();
+            app.calibre_state.select(None);
+            // The calibre screen with nothing on it takes a different branch —
+            // the empty state — and it is the one that wraps prose at 1x1.
+            terminal
+                .draw(|f| ui::draw(f, app))
+                .expect("draw empty calibre");
+
+            // The Goodreads preview, populated and empty.
+            app.screen = Screen::Goodreads;
+            app.goodreads = Some(sample_goodreads_preview());
+            terminal.draw(|f| ui::draw(f, app)).expect("draw goodreads");
+            app.goodreads = None;
+            terminal
+                .draw(|f| ui::draw(f, app))
+                .expect("draw empty goodreads");
+
+            // The overwrite question, which is the only confirm carrying paths and
+            // so the only one whose prompt length is data-driven.
+            app.confirm = Some(Confirm::OverwriteConversion {
+                input: PathBuf::from("/books/in.epub"),
+                output: PathBuf::from("/books/out.azw3"),
+            });
+            terminal
+                .draw(|f| ui::draw(f, app))
+                .expect("draw overwrite confirm");
+            app.confirm = None;
         }
+    }
+
+    /// One calibre row in each of the four states, so a draw covers every branch
+    /// of `ui::calibre::detail` and `state_style`.
+    fn sample_calibre_rows() -> Vec<CalibreRow> {
+        let row = |calibre_id: i64, title: &str, state: CalibreRowState| CalibreRow {
+            calibre_id,
+            uuid: Some(format!("uuid-{calibre_id}")),
+            title: title.into(),
+            authors: vec!["Ursula K. Le Guin".into()],
+            state,
+            note: None,
+            notices: Vec::new(),
+        };
+        vec![
+            row(1, "Piranesi", CalibreRowState::New),
+            row(
+                2,
+                "Gödel, Escher, Bach",
+                CalibreRowState::Linked {
+                    matched_by: readingbuddy::CalibreMatch::Uuid,
+                    tags: 2,
+                    cover: true,
+                    files: 1,
+                },
+            ),
+            row(
+                3,
+                "The Dispossessed",
+                CalibreRowState::Candidates(vec![MatchCandidate {
+                    book_id: 1,
+                    title: "The Dispossessed: An Ambiguous Utopia".into(),
+                    score: 0.78,
+                }]),
+            ),
+            row(
+                4,
+                "(untitled)",
+                CalibreRowState::Unreadable(Diagnostic {
+                    kind: readingbuddy::DiagnosticKind::CalibreRowSkipped { calibre_id: 4 },
+                    severity: readingbuddy::Severity::Warning,
+                    detail: "no title, so there is nothing to match on".into(),
+                }),
+            ),
+        ]
+    }
+
+    /// A preview with one row of each kind, including an undecided row with no
+    /// Goodreads id — the case our own export produces.
+    fn sample_goodreads_preview() -> GoodreadsPreview {
+        let mut state = ListState::default();
+        state.select(Some(0));
+        GoodreadsPreview {
+            path: PathBuf::from("/downloads/goodreads_library_export.csv"),
+            read: 3,
+            rows: vec![
+                GoodreadsPreviewRow::Book {
+                    title: "Pachinko".into(),
+                    matched_by: readingbuddy::GoodreadsMatch::Isbn,
+                    readings: 1,
+                    shelves: 2,
+                    rating: Some(5),
+                    review: readingbuddy::TextOutcome::Written,
+                    private_notes: readingbuddy::TextOutcome::Absent,
+                },
+                GoodreadsPreviewRow::Book {
+                    title: "The Vegetarian".into(),
+                    matched_by: readingbuddy::GoodreadsMatch::New,
+                    readings: 3,
+                    shelves: 1,
+                    rating: None,
+                    review: readingbuddy::TextOutcome::KeptOurs,
+                    private_notes: readingbuddy::TextOutcome::Written,
+                },
+                GoodreadsPreviewRow::Unmatched {
+                    row: 4,
+                    title: "Kokoro".into(),
+                    authors: vec!["Natsume Sōseki".into()],
+                    external_id: None,
+                    candidates: vec![MatchCandidate {
+                        book_id: 2,
+                        title: "Kokoro: A Novel".into(),
+                        score: 0.71,
+                    }],
+                },
+            ],
+            warnings: Vec::new(),
+            dry_run: true,
+            state,
+        }
+    }
+
+    /// A fresh directory under the system temp dir, unique per call.
+    ///
+    /// `tempfile` is not a dependency of this crate and is not worth becoming one
+    /// for three tests — `test_app` already builds its temp paths this way, and
+    /// the counter is what keeps two tests in the same process apart.
+    fn scratch(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("readingbuddy-tui-{tag}-{}-{n}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
     }
 
     /// A note record with nothing but an id and a title — enough for a row.
@@ -4189,7 +5449,6 @@ mod tests {
     }
 
     /// The whole rendered buffer as one string, rows joined by newlines.
-
     fn screen_text(app: &mut App, w: u16, h: u16) -> String {
         let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
         t.draw(|f| ui::draw(f, app)).expect("draw");
@@ -4854,7 +6113,7 @@ mod tests {
         // The fixture's own band is empty (nothing in the library is close), so
         // `l` says so rather than opening an empty chooser.
         app.handle(Action::Link).await.expect("link");
-        assert!(app.device_link.is_none());
+        assert!(app.link_picker.is_none());
         assert!(
             app.status
                 .as_deref()
@@ -4872,10 +6131,10 @@ mod tests {
             }],
         };
         app.handle(Action::Link).await.expect("link");
-        assert!(app.device_link.is_some(), "the chooser opened");
+        assert!(app.link_picker.is_some(), "the chooser opened");
 
         app.handle(Action::Select).await.expect("commit link");
-        assert!(app.device_link.is_none());
+        assert!(app.link_picker.is_none());
         assert_eq!(app.device[piranesi].book.book_id, Some(book_id));
         assert_eq!(
             app.pending_pull.as_ref().map(|q| q.len()),
@@ -4893,8 +6152,8 @@ mod tests {
     async fn the_candidate_chooser_can_be_left_alone() {
         let mut app = test_app().await;
         app.screen = Screen::Device;
-        app.device_link = Some(LinkPicker {
-            path: app.device[0].book.path.clone(),
+        app.link_picker = Some(LinkPicker {
+            target: LinkTarget::Sidecar(app.device[0].book.path.clone()),
             title: "Piranesi".into(),
             candidates: vec![MatchCandidate {
                 book_id: 1,
@@ -4910,7 +6169,7 @@ mod tests {
         assert!((0..40).all(|_| !app.tick()));
 
         app.handle(Action::Back).await.expect("esc");
-        assert!(app.device_link.is_none());
+        assert!(app.link_picker.is_none());
         assert!(app.pending_pull.is_none());
         assert_eq!(app.screen, Screen::Device, "esc left the screen entirely");
     }
@@ -5192,6 +6451,12 @@ mod tests {
 
         // A marked row, so the gutter shows in the dump too.
         app.device_marks.insert(1);
+        // The two import shelves, with one row of every state each, so the dump
+        // shows what the state column and the hints actually look like.
+        app.calibre = sample_calibre_rows();
+        app.calibre_state.select(Some(0));
+        app.calibre_marks.insert(1);
+        app.goodreads = Some(sample_goodreads_preview());
 
         let (w, h) = (96u16, 16u16);
         // The device screen twice: the shelf, then the candidate chooser over
@@ -5205,14 +6470,16 @@ mod tests {
             (Screen::Search, false, false),
             (Screen::Device, false, false),
             (Screen::Device, true, false),
+            (Screen::Calibre, false, false),
+            (Screen::Goodreads, false, false),
         ] {
             app.screen = screen;
             let held = empty.then(|| std::mem::take(&mut app.reading));
             if linking {
                 let mut state = ListState::default();
                 state.select(Some(1));
-                app.device_link = Some(LinkPicker {
-                    path: app.device[1].book.path.clone(),
+                app.link_picker = Some(LinkPicker {
+                    target: LinkTarget::Sidecar(app.device[1].book.path.clone()),
                     title: app.device[1].book.display_title(),
                     candidates: vec![
                         MatchCandidate {
@@ -5258,6 +6525,9 @@ mod tests {
             if let Some(rows) = held {
                 app.reading = rows;
             }
+            // The chooser is per-iteration. Left standing it draws over every
+            // later screen in the dump, which is how this aid stops being one.
+            app.link_picker = None;
         }
     }
 
@@ -5466,5 +6736,454 @@ mod tests {
         assert!((a - 0.5).abs() < 1e-4, "{a}");
         let b = wrap_angle(-std::f32::consts::TAU - 0.5);
         assert!((b + 0.5).abs() < 1e-4, "{b}");
+    }
+
+    // ---- the calibre shelf --------------------------------------------------
+
+    /// Both new menu rows reach their screens. Found by identity rather than by
+    /// index, since `MENU` grew and a literal index is a test that passes for the
+    /// wrong reason after the next row is added.
+    #[tokio::test]
+    async fn the_menu_opens_the_two_import_screens() {
+        for (item, screen) in [
+            (MenuItem::Calibre, Screen::Calibre),
+            (MenuItem::Goodreads, Screen::Goodreads),
+        ] {
+            let mut app = test_app().await;
+            app.screen = Screen::Menu;
+            app.menu_index = menu_row(item);
+            app.handle(Action::Select).await.expect("open");
+            assert_eq!(app.screen, screen);
+        }
+    }
+
+    /// **An absent calibre is a screen that explains itself, not a menu row that
+    /// does nothing** — and a present one reads the library without being asked
+    /// twice.
+    ///
+    /// Branches on detection rather than assuming either, because `test_app` leaves
+    /// `calibre_bin_dir` unset and detection then falls through to `PATH`: the
+    /// developer's machine has calibre and CI does not, so an assertion picking one
+    /// is a test that passes in one place and fails in the other. The absent
+    /// branch's *wording* is pinned separately as a pure function in
+    /// `ui::calibre`, which is the same split the CLI's
+    /// `an_absent_calibre_is_reported_and_never_prescribed` makes and for the same
+    /// reason.
+    #[tokio::test]
+    async fn opening_the_calibre_screen_reads_the_library_or_says_why_not() {
+        let mut app = test_app().await;
+        app.handle(Action::Menu).await.expect("menu");
+        app.menu_index = menu_row(MenuItem::Calibre);
+        app.handle(Action::Select).await.expect("open calibre");
+
+        assert_eq!(app.screen, Screen::Calibre);
+        if app.engine.calibre().can_read_library() {
+            assert!(
+                app.pending_calibre.is_some(),
+                "with calibre here, opening the screen queues the read"
+            );
+        } else {
+            assert!(
+                app.pending_calibre.is_none(),
+                "nothing to read, so nothing was queued"
+            );
+            let said = app.status.clone().unwrap_or_default();
+            assert!(said.contains("calibre"), "{said}");
+            // Reported, never prescribed — `docs/decisions.md` names this rule,
+            // and it is the sort that erodes by helpfulness.
+            for forbidden in ["install", "download", "brew", "http"] {
+                assert!(!said.to_lowercase().contains(forbidden), "{said}");
+            }
+        }
+    }
+
+    /// An absent calibre reached through `r` is **reported, not framed as a
+    /// failure**. `docs/decisions.md` says absence is a first-class answer, so
+    /// "couldn't read the library: …" would be the wrong sentence — and a genuine
+    /// failure still has to read as one. A pure function, because on a machine
+    /// with calibre the first branch is unreachable from outside the process.
+    #[test]
+    fn an_absent_calibre_is_not_reported_as_a_failure() {
+        let absent = describe_calibre_failure(&EngineError::CalibreMissing {
+            tool: "calibredb".into(),
+        });
+        assert!(!absent.contains("couldn't"), "{absent}");
+        for forbidden in ["install", "download", "brew", "http", ".com", "you need"] {
+            assert!(!absent.to_lowercase().contains(forbidden), "{absent}");
+        }
+
+        // A mistyped library path *is* a failure and keeps the engine's words —
+        // including the reason calibredb is never run against it.
+        let real = describe_calibre_failure(&EngineError::InvalidInput(
+            "/typo has no metadata.db, so it is not a calibre library".into(),
+        ));
+        assert!(real.contains("couldn't read the library"), "{real}");
+        assert!(real.contains("metadata.db"), "{real}");
+    }
+
+    /// The shelf's own keys queue work rather than doing it inline, and the
+    /// selection is queued whole — the same claim
+    /// `a_sync_drains_one_book_per_iteration` makes about the device.
+    #[tokio::test]
+    async fn a_calibre_sync_queues_the_selection_and_drains_one_row_at_a_time() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre = sample_calibre_rows();
+        app.calibre_state.select(Some(0));
+        // A directory with no `metadata.db`, so the engine refuses *before*
+        // calibredb runs. That keeps this hermetic on both machines — it neither
+        // needs calibre nor reads the developer's own library — and the claim
+        // under test is the queue draining one row per pump, which it does whether
+        // each import succeeds or reports.
+        app.calibre_library = Some(scratch("nolib"));
+
+        app.handle(Action::Sync).await.expect("sync");
+        // Two importable rows: `New` and `Linked`. The candidate row and the
+        // unreadable one are deliberately left out.
+        assert_eq!(
+            app.pending_calibre_import.as_ref().map(|q| q.len()),
+            Some(2)
+        );
+        assert!(app.has_deferred());
+
+        app.pump_deferred().await.expect("pump");
+        assert_eq!(
+            app.pending_calibre_import.as_ref().map(|q| q.len()),
+            Some(1)
+        );
+        app.pump_deferred().await.expect("pump");
+        assert!(
+            app.pending_calibre_import.is_none(),
+            "an emptied queue must not be left as Some — the loop would spin"
+        );
+    }
+
+    /// `s` never sweeps up a row that is a question. That is the whole point of
+    /// the candidate band: a silent import there is how the duplicate appears.
+    #[tokio::test]
+    async fn a_calibre_sync_leaves_the_undecided_rows_alone() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre = sample_calibre_rows();
+        app.calibre_state.select(Some(0));
+        app.handle(Action::Sync).await.expect("sync");
+
+        let queued: Vec<i64> = app
+            .pending_calibre_import
+            .as_ref()
+            .expect("a queue")
+            .iter()
+            .map(|j| j.calibre_id)
+            .collect();
+        assert!(
+            !queued.contains(&3),
+            "the candidate row was swept up: {queued:?}"
+        );
+        assert!(
+            !queued.contains(&4),
+            "the unreadable row was swept up: {queued:?}"
+        );
+        assert!(queued.iter().all(|j| !matches!(j, 3 | 4)));
+    }
+
+    /// Enter on a row that looks like a book already here **refuses, and names
+    /// both moves**. The same refusal-with-a-next-move shape `ko pull` has.
+    #[tokio::test]
+    async fn enter_on_an_undecided_calibre_row_refuses_and_names_both_moves() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre = sample_calibre_rows();
+        // Row 3 is the one in the candidate band.
+        app.calibre_state.select(Some(2));
+
+        app.handle(Action::Select).await.expect("enter");
+        assert!(
+            app.pending_calibre_import.is_none(),
+            "nothing may be created behind the user's back"
+        );
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains("l to link"), "{said}");
+        assert!(said.contains('n'), "{said}");
+
+        // And `n` is that move: it queues the row with the escape hatch set.
+        app.handle(Action::CreateAnyway).await.expect("n");
+        let job = app
+            .pending_calibre_import
+            .as_ref()
+            .and_then(|q| q.front())
+            .expect("queued");
+        assert_eq!(job.calibre_id, 3);
+        assert!(job.create_ambiguous, "n is the --new escape hatch");
+    }
+
+    /// A row calibre gave no uuid cannot be linked, and says so rather than
+    /// recording a link keyed on an id calibre reuses after a delete.
+    #[tokio::test]
+    async fn a_calibre_row_without_a_uuid_is_not_offered_a_link() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre = sample_calibre_rows();
+        app.calibre[2].uuid = None;
+        app.calibre_state.select(Some(2));
+
+        app.handle(Action::Link).await.expect("l");
+        assert!(app.link_picker.is_none(), "no picker without an identity");
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains("uuid"), "{said}");
+        assert!(said.contains('n'), "the next move is still named: {said}");
+    }
+
+    /// Linking a calibre row records the choice and then imports it — a link that
+    /// only wrote a row would look like a key that did nothing.
+    #[tokio::test]
+    async fn linking_a_calibre_row_records_it_and_then_imports() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre = sample_calibre_rows();
+        app.calibre_state.select(Some(2));
+        let book_id = app.library[0].id.expect("a book");
+        app.calibre[2].state = CalibreRowState::Candidates(vec![MatchCandidate {
+            book_id,
+            title: app.library[0].title.clone().unwrap_or_default(),
+            score: 0.78,
+        }]);
+
+        app.handle(Action::Link).await.expect("l");
+        assert!(app.link_picker.is_some(), "the chooser opened");
+        app.handle(Action::Select).await.expect("choose");
+        assert!(app.link_picker.is_none(), "and closed");
+
+        // The link is in `external_ids`, so a later import matches by uuid.
+        assert_eq!(
+            app.engine
+                .storage()
+                .book_for_external_id("calibre", "uuid-3")
+                .await
+                .expect("query"),
+            Some(book_id)
+        );
+        // And the row stopped being a question before the import that proves it.
+        assert!(matches!(
+            app.calibre[2].state,
+            CalibreRowState::Linked { .. }
+        ));
+        assert!(
+            app.pending_calibre_import.is_some(),
+            "the import was queued"
+        );
+    }
+
+    /// `/` asks for a library, and **an empty answer means calibre's own** —
+    /// which is the one place in the app where empty is a decision rather than a
+    /// change of mind.
+    #[tokio::test]
+    async fn an_empty_library_path_means_calibres_own() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.calibre_library = Some(PathBuf::from("/somewhere/else"));
+
+        app.handle(Action::Query).await.expect("/");
+        assert!(app.input.is_some(), "the box opened");
+        app.commit_input(InputContext::CalibreLibrary, String::new())
+            .await
+            .expect("empty enter");
+
+        assert_eq!(app.screen, Screen::Calibre);
+        assert_eq!(
+            app.pending_calibre,
+            Some(None),
+            "an empty path queues a scan of calibre's default library"
+        );
+    }
+
+    // ---- conversion ---------------------------------------------------------
+
+    /// A conversion refuses to overwrite, and the refusal is a **question** — a
+    /// TUI has no `--force` to name, and losing a file is the one outcome here
+    /// with no undo.
+    #[tokio::test]
+    async fn a_conversion_over_an_existing_file_asks_first() {
+        let mut app = test_app().await;
+        let dir = scratch("convert");
+        let input = dir.join("in.epub");
+        let output = dir.join("out.azw3");
+        std::fs::write(&input, b"epub").unwrap();
+        std::fs::write(&output, b"already here").unwrap();
+
+        app.run_convert(input.clone(), output.clone(), false).await;
+        match &app.confirm {
+            Some(Confirm::OverwriteConversion { output: o, .. }) => assert_eq!(o, &output),
+            other => panic!("expected the overwrite question, got {other:?}"),
+        }
+        // Declining names the file that survived, not a bare "kept."
+        app.resolve_confirm(false).await.expect("decline");
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            b"already here",
+            "declining must not touch the file"
+        );
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains("out.azw3"), "{said}");
+    }
+
+    /// `c` opens the first of the two path prompts, and answering it opens the
+    /// second with the input remembered — the same "ask after" shape a note's page
+    /// anchor uses.
+    #[tokio::test]
+    async fn converting_asks_for_both_paths_in_turn() {
+        let mut app = test_app().await;
+        app.screen = Screen::Calibre;
+        app.handle(Action::Convert).await.expect("c");
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::ConvertInput)
+        );
+
+        app.commit_input(InputContext::ConvertInput, "/books/in.epub".into())
+            .await
+            .expect("input path");
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::ConvertOutput)
+        );
+        assert_eq!(app.pending_convert, Some(PathBuf::from("/books/in.epub")));
+    }
+
+    // ---- the goodreads file -------------------------------------------------
+
+    /// The screen opens on nothing and is still not a dead end: both directions
+    /// are reachable, and neither happens by itself.
+    #[tokio::test]
+    async fn the_goodreads_screen_opens_empty_and_writes_nothing_by_itself() {
+        let mut app = test_app().await;
+        app.screen = Screen::Menu;
+        app.menu_index = menu_row(MenuItem::Goodreads);
+        app.handle(Action::Select).await.expect("open");
+
+        assert_eq!(app.screen, Screen::Goodreads);
+        assert!(app.goodreads.is_none());
+        assert!(!app.has_deferred(), "opening the screen reads no file");
+
+        // `s` with no file says what to press rather than doing nothing.
+        app.handle(Action::Sync).await.expect("s");
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains('/'), "{said}");
+    }
+
+    /// **A typed path previews; it never writes.** The whole shape of this screen
+    /// is the dry run first — writing a shelf because a path was typed is the
+    /// thing `--dry-run` exists to prevent.
+    #[tokio::test]
+    async fn a_typed_csv_path_previews_before_it_writes() {
+        let mut app = test_app().await;
+        let csv = concat!(
+            "Title,Author,ISBN,My Rating,Date Read,Date Added,Bookshelves,Review\n",
+            "Pachinko,Min Jin Lee,,4,2019/03/12,2018/12/01,,\n"
+        );
+        let path = scratch("csv").join("export.csv");
+        std::fs::write(&path, csv).unwrap();
+
+        app.screen = Screen::Goodreads;
+        app.handle(Action::Query).await.expect("/");
+        app.commit_input(InputContext::GoodreadsPath, path.display().to_string())
+            .await
+            .expect("path");
+
+        let job = app.pending_goodreads.clone().expect("queued");
+        assert!(!job.apply, "a typed path must preview, never write");
+        let before = app.library.len();
+        while app.pump_deferred().await.expect("pump") {}
+
+        let preview = app.goodreads.as_ref().expect("a preview");
+        assert!(preview.dry_run);
+        assert_eq!(preview.read, 1);
+        assert_eq!(
+            app.library.len(),
+            before,
+            "a preview must not change the library"
+        );
+
+        // And `s` is the move that does write it.
+        app.handle(Action::Sync).await.expect("s");
+        assert_eq!(app.pending_goodreads.as_ref().map(|j| j.apply), Some(true));
+        while app.pump_deferred().await.expect("pump") {}
+        assert!(!app.goodreads.as_ref().expect("preview").dry_run);
+        assert_eq!(app.library.len(), before + 1, "now it landed");
+    }
+
+    /// A row with no Goodreads `Book Id` cannot be linked — which is every row of
+    /// the eight-column importer format, including our own export. It says so and
+    /// names the move it does have.
+    #[tokio::test]
+    async fn a_goodreads_row_without_an_id_is_not_offered_a_link() {
+        let mut app = test_app().await;
+        app.screen = Screen::Goodreads;
+        app.goodreads = Some(sample_goodreads_preview());
+        // Row 2 is the undecided one, and its `external_id` is None.
+        app.goodreads.as_mut().unwrap().state.select(Some(2));
+
+        app.handle(Action::Link).await.expect("l");
+        assert!(app.link_picker.is_none());
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains("Goodreads id"), "{said}");
+        assert!(said.contains('n'), "the next move is still named: {said}");
+    }
+
+    /// Standing on a matched row, `l` says where the decisions are instead of
+    /// silently doing nothing.
+    #[tokio::test]
+    async fn linking_a_matched_goodreads_row_explains_itself() {
+        let mut app = test_app().await;
+        app.screen = Screen::Goodreads;
+        app.goodreads = Some(sample_goodreads_preview());
+        app.goodreads.as_mut().unwrap().state.select(Some(0));
+
+        app.handle(Action::Link).await.expect("l");
+        assert!(app.link_picker.is_none());
+        assert!(app.status.is_some(), "a key that does nothing must say so");
+    }
+
+    /// Export writes the file and says where it went — and reports what it left
+    /// out, because silent truncation looks like data loss on the far side.
+    #[tokio::test]
+    async fn exporting_writes_the_csv_and_names_where_it_went() {
+        let mut app = test_app().await;
+        let out = scratch("export").join("goodreads.csv");
+
+        app.screen = Screen::Goodreads;
+        app.handle(Action::Export).await.expect("x");
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::GoodreadsOut)
+        );
+        app.commit_input(InputContext::GoodreadsOut, out.display().to_string())
+            .await
+            .expect("write");
+
+        let written = std::fs::read_to_string(&out).expect("the file exists");
+        assert!(written.starts_with("Title,Author,ISBN"), "{written}");
+        let said = app.status.clone().unwrap_or_default();
+        assert!(said.contains("goodreads.csv"), "{said}");
+    }
+
+    /// Neither shelf greets you with a tally of what you have not done.
+    /// `docs/decisions.md` bans task-completion framing by name, and an import
+    /// screen is exactly where a "32 books not imported" badge would want to live.
+    /// Asserted against the drawn buffer, like `the_home_screen_greets_you_with_no_numbers`.
+    #[tokio::test]
+    async fn the_import_screens_show_no_badge_of_what_is_undone() {
+        let mut app = test_app().await;
+        app.status = None;
+
+        for screen in [Screen::Calibre, Screen::Goodreads] {
+            app.screen = screen;
+            let text = screen_text(&mut app, 90, 20);
+            for line in text.lines() {
+                assert!(
+                    !line.chars().any(|c| c.is_ascii_digit()),
+                    "{screen:?} put a number on an empty shelf: {line:?}"
+                );
+            }
+        }
     }
 }

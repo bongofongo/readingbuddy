@@ -32,6 +32,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         ("ambient", app.ambient.motif.label().to_string()),
         ("renderer", format!("{:?}", app.render_mode).to_lowercase()),
         ("terminal", describe_caps(&app.caps)),
+        ("calibre", describe_calibre(app.engine.calibre())),
     ];
 
     let mut lines = vec![
@@ -114,6 +115,30 @@ fn describe_caps(caps: &Caps) -> String {
         );
     }
     parts.join(", ")
+}
+
+/// What calibre this machine has, and therefore which features exist.
+///
+/// Feature detection is otherwise invisible — the calibre screen would just be
+/// empty and the convert key would just report absence — which is the whole
+/// reason `calibre status` exists on the CLI. This is that, in one line.
+///
+/// **Reported, never prescribed.** `docs/decisions.md` makes calibre
+/// feature-detected and says absence is a first-class answer, not a failure to
+/// fix: with neither tool present this says so and names nothing to install. The
+/// rule is asserted below rather than just written down, because it is the sort
+/// that erodes by helpfulness — the CLI's own
+/// `an_absent_calibre_is_reported_and_never_prescribed` makes the same check.
+///
+/// **Two tools, not one flag**: a half install degrades to the half that works,
+/// so the line says which half rather than collapsing to "calibre: no".
+fn describe_calibre(cal: &readingbuddy::Calibre) -> String {
+    match (cal.can_convert(), cal.can_read_library()) {
+        (true, true) => "converting and library import".to_string(),
+        (true, false) => "converting only".to_string(),
+        (false, true) => "library import only".to_string(),
+        (false, false) => "not on this machine".to_string(),
+    }
 }
 
 /// Show a secret without revealing it: `AIza…f3Qk` (first/last 4 chars),

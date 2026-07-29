@@ -2,7 +2,9 @@
 
 pub mod apikey;
 pub mod book;
+pub mod calibre;
 pub mod device;
+pub mod goodreads;
 pub mod home;
 pub mod input;
 pub mod library;
@@ -13,7 +15,8 @@ pub mod textedit;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::widgets::{Borders, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap};
 
 use crate::app::{App, Screen};
 use crate::theme;
@@ -291,6 +294,162 @@ pub fn list_box(area: Rect, content: u16, rows: u16) -> Rect {
     centered(area, width, height)
 }
 
+/// How much of a shelf row's right-hand detail is shown.
+///
+/// A parser's own error text runs to a couple of hundred characters and carries a
+/// file path; unclipped, one unreadable row sets the width of the whole
+/// shrink-wrapped box and pushes every real row's title off the far side.
+///
+/// Raised from the device screen's original 56 when the calibre and Goodreads
+/// shelves started composing an **action hint** after a data-derived title
+/// (`maybe “…” (71%) — l to link, n if not`). At 56 the clip ate the hint, which
+/// is the one part of a row that must survive: a row whose next move has been
+/// truncated away is the dead end this whole shape exists to avoid. The real guard
+/// on box width was always [`LIST_MAX_COLS`]; this only stops one row setting it.
+pub(crate) const DETAIL_MAX: usize = 72;
+
+/// `maybe “<title>” (71%) — <hint>`, the line an undecided row shows.
+///
+/// **The title is clipped to whatever the hint leaves**, not to a constant of its
+/// own. The hint is fixed-length wording naming the row's next move; the title is
+/// data of unbounded length. Budgeting the title against a second constant is how
+/// the two silently add up past [`DETAIL_MAX`] and the *hint* gets truncated — a
+/// row that says what it might be and nothing about what to do, which is the dead
+/// end the candidate band exists to avoid. So the arithmetic is done rather than
+/// guessed at, and the title is what gives way.
+pub(crate) fn candidate_hint(title: &str, score: f64, hint: &str) -> String {
+    let pct = format!("{:.0}", score * 100.0);
+    // The line with an empty title: everything that is not negotiable.
+    let fixed = format!("maybe “” ({pct}%) — {hint}").chars().count();
+    // A floor, so a hint longer than the whole budget clips the title to
+    // something rather than to nothing. The caller's own clip still bounds the
+    // result in that case.
+    let budget = DETAIL_MAX.saturating_sub(fixed).max(8);
+    format!(
+        "maybe “{}” ({pct}%) — {hint}",
+        clip(title.to_string(), budget)
+    )
+}
+
+pub(crate) fn clip(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s;
+    }
+    // `max - 1`, so the ellipsis is inside the budget rather than one past it.
+    s.chars()
+        .take(max - 1)
+        .chain(std::iter::once('…'))
+        .collect()
+}
+
+/// One shelf row's frame: the box, shrink-wrapped around its own rows with the
+/// key bar in the bottom border, and the empty-state paragraph when there are
+/// none.
+///
+/// Shared by the device, calibre and Goodreads screens. The key bar counts toward
+/// the width because the screen is only "not a dead end" if the keys are on
+/// screen, and the zero-size guard is what survives the 1×1 sweep in
+/// `every_screen_draws_at_every_size`.
+///
+/// Returns `false` when it has already drawn an empty state, i.e. when the caller
+/// has no list to render.
+pub(crate) fn shelf_frame(
+    f: &mut Frame,
+    area: Rect,
+    title: String,
+    keys: Line<'static>,
+    rows: &[Line<'static>],
+    empty_hint: &str,
+) -> Option<(Rect, Block<'static>)> {
+    let widest = rows
+        .iter()
+        .map(|l| l.width() as u16)
+        .max()
+        .unwrap_or(empty_hint.chars().count() as u16)
+        .max(title.chars().count() as u16)
+        .max(keys.width() as u16);
+    let area = list_box(area, widest, rows.len() as u16);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::dim())
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(title, theme::accent()))
+        .title_bottom(keys.centered());
+
+    if rows.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        // A `Block` on a 1×1 pane has no inside at all, and `Paragraph` into a
+        // zero rect is what panics.
+        if inner.width > 0 && inner.height > 0 {
+            f.render_widget(
+                Paragraph::new(empty_hint.to_string())
+                    .style(theme::dim())
+                    .wrap(Wrap { trim: true }),
+                inner,
+            );
+        }
+        return None;
+    }
+    Some((area, block))
+}
+
+/// The candidate chooser: the engine's own band, offered as a choice.
+///
+/// One widget for all three importers — the band, the keys and the shape are the
+/// same, and only the engine call behind `enter` differs (see
+/// [`crate::app::LinkTarget`]). Three copies is three places for the band to
+/// drift from what the CLI offers.
+pub(crate) fn link_picker(f: &mut Frame, picker: &mut crate::app::LinkPicker, area: Rect) {
+    let selected = picker.state.selected();
+    let rows: Vec<Line> = picker
+        .candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            // Same rule as every other list here: the reverse is scoped to the
+            // title, so the similarity score stays legible instead of the row
+            // becoming a solid bar.
+            let title = if Some(i) == selected {
+                theme::primary().patch(theme::selected())
+            } else {
+                theme::primary()
+            };
+            Line::from(vec![
+                Span::styled(c.title.clone(), title),
+                Span::styled(format!("  {:.0}%", c.score * 100.0), theme::dim()),
+            ])
+        })
+        .collect();
+    let widest = rows.iter().map(|r| r.width() as u16).max().unwrap_or(20);
+    let title = format!(" link “{}” to ", picker.title);
+    let width = widest
+        .max(title.chars().count() as u16)
+        .saturating_add(LIST_CHROME);
+    let box_area = centered(area, width, rows.len() as u16 + 2);
+    f.render_widget(ratatui::widgets::Clear, box_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::accent())
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(title, theme::accent()))
+        .title_bottom(
+            Line::from(vec![
+                Span::styled(" enter", theme::key()),
+                Span::styled(" link  ", theme::dim()),
+                Span::styled("esc", theme::key()),
+                Span::styled(" leave it ", theme::dim()),
+            ])
+            .centered(),
+        );
+    let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
+    let list = List::new(items).block(block).highlight_symbol("› ");
+    f.render_stateful_widget(list, box_area, &mut picker.state);
+}
+
 /// Carve `area` into (object, panel, panel-border-side) for an orientation and
 /// the user's divider bias. The border side is the divider rule — it sits on
 /// the panel edge facing the object.
@@ -380,6 +539,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Search => search::draw(f, app, body),
         Screen::Settings => settings::draw(f, app, body),
         Screen::Device => device::draw(f, app, body),
+        Screen::Calibre => calibre::draw(f, app, body),
+        Screen::Goodreads => goodreads::draw(f, app, body),
     }
 
     if let Some(msg) = &status_line {
@@ -422,6 +583,12 @@ fn confirm_prompt(app: &App) -> Option<String> {
         // searched yet.
         crate::app::Confirm::SearchOnline(q) => {
             format!("nothing in the library matching “{q}” — search online?  y / n")
+        }
+        // Names the file that would be lost, not the one being written: the
+        // output is what the answer decides the fate of, and losing a file is the
+        // one thing here with no undo.
+        crate::app::Confirm::OverwriteConversion { output, .. } => {
+            format!("{} already exists — overwrite it?  y / n", output.display())
         }
     })
 }
@@ -794,5 +961,36 @@ mod tests {
         assert_eq!(r, Rect::new(0, 0, 10, 4));
         let r = centered(Rect::new(0, 0, 20, 10), 10, 4);
         assert_eq!(r, Rect::new(5, 3, 10, 4));
+    }
+
+    /// The candidate line stays inside its budget however long the title is, and
+    /// the **hint** is never what gives way. Asserted as a property over lengths
+    /// rather than one example, because the failure mode was two constants that
+    /// each looked fine and added up past the budget together.
+    #[test]
+    fn a_candidate_hint_is_bounded_and_keeps_its_move() {
+        for len in [0usize, 1, 5, 30, 60, 200] {
+            let title = "x".repeat(len);
+            for hint in ["l to link, n if not", "no Goodreads id, so n if not"] {
+                let line = candidate_hint(&title, 0.715, hint);
+                assert!(
+                    line.chars().count() <= DETAIL_MAX,
+                    "len {len} / {hint:?} overflowed: {} chars",
+                    line.chars().count()
+                );
+                assert!(line.ends_with(hint), "the move was clipped: {line}");
+                assert!(line.contains("(72%)"), "the score went missing: {line}");
+            }
+        }
+    }
+
+    /// `clip` keeps the ellipsis *inside* the budget rather than one past it —
+    /// otherwise every clipped row is one column wider than the box was sized for.
+    #[test]
+    fn clip_counts_its_own_ellipsis() {
+        assert_eq!(clip("abcdef".into(), 6), "abcdef");
+        let clipped = clip("abcdefgh".into(), 6);
+        assert_eq!(clipped.chars().count(), 6);
+        assert!(clipped.ends_with('…'));
     }
 }

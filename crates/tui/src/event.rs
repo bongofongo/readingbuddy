@@ -61,30 +61,57 @@ pub enum Action {
     Link,
     /// Walk the device again.
     Rescan,
+    /// Bring a row in as a **new** book even though it looks like one already
+    /// here — the `--new` escape hatch `ko pull`, `goodreads import` and
+    /// `calibre import` all carry, as a key.
+    ///
+    /// Its own action rather than a modifier on [`Action::Select`]: the refusal
+    /// is the default and the override has to be a separate, deliberate
+    /// keystroke, or the guard is decoration.
+    CreateAnyway,
+    /// Convert a book between formats through calibre.
+    Convert,
 }
 
 /// The key map, with the screen's own bindings applied first.
 ///
 /// [`map_key`] is deliberately screen-agnostic — the screens interpret the
-/// directions themselves — but the device screen's documented keys (`x` mark,
-/// `l` link, `r` rescan) are three the global map already spends on the book
-/// view (export, right, reset). None of those three mean anything on a device
-/// list, so the screen claims them rather than the actions being renamed into
-/// something that reads wrong on both screens.
+/// directions themselves — but the three import shelves' documented keys (`x`
+/// mark, `l` link, `r` rescan, `n` create-anyway, `c` convert) are ones the global
+/// map already spends on the book view (export, right, reset, new note,
+/// nothing). None of them mean anything on a list of somebody else's books, so
+/// those screens claim them rather than the global actions being renamed into
+/// something that reads wrong on every screen.
+///
+/// **Each screen claims its own set, not one shared table.** They overlap by four
+/// keys and differ by two, and the differences are the point: `n` is the global
+/// `NewNote` and only the two screens with an ambiguous-row escape hatch have
+/// anything better to do with it, while `x` stays `Export` on the Goodreads screen
+/// because that is the one place a Goodreads CSV is written.
 pub fn map_key_on(screen: crate::app::Screen, key: KeyEvent) -> Option<Action> {
-    if screen == crate::app::Screen::Device
-        && let Some(action) = map_device_key(key)
-    {
-        return Some(action);
-    }
-    map_key(key)
+    use crate::app::Screen;
+    let claimed = match screen {
+        Screen::Device => map_device_key(key),
+        Screen::Calibre => map_calibre_key(key),
+        Screen::Goodreads => map_goodreads_key(key),
+        _ => None,
+    };
+    claimed.or_else(|| map_key(key))
+}
+
+/// Is this key a plain letter, i.e. one a screen may claim at all?
+///
+/// Release events and anything with Control held are the global map's business —
+/// `ctrl-c` in particular must never be shadowed by a screen.
+fn claimable(key: KeyEvent) -> bool {
+    key.kind != KeyEventKind::Release && !key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// The device screen's own bindings. Everything it does not claim — `m`, `q`,
 /// the arrows, Enter, Esc — falls through to [`map_key`], so the screen is
 /// never a dead end.
 fn map_device_key(key: KeyEvent) -> Option<Action> {
-    if key.kind == KeyEventKind::Release || key.modifiers.contains(KeyModifiers::CONTROL) {
+    if !claimable(key) {
         return None;
     }
     match key.code {
@@ -92,6 +119,48 @@ fn map_device_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('s') => Some(Action::Sync),
         KeyCode::Char('l') => Some(Action::Link),
         KeyCode::Char('r') => Some(Action::Rescan),
+        _ => None,
+    }
+}
+
+/// The calibre shelf's bindings: the device screen's four, plus `n` for the
+/// escape hatch and `c` for a conversion.
+///
+/// Deliberately **not** shared with `map_device_key` as one table, even though
+/// four of the six agree: `n` is the global `NewNote`, and a device row is not a
+/// thing you write a note on but a shelf where `n` would then mean two things
+/// depending on which shelf. The two screens claiming different sets is the
+/// honest description of that.
+fn map_calibre_key(key: KeyEvent) -> Option<Action> {
+    if !claimable(key) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('x') => Some(Action::Mark),
+        KeyCode::Char('s') => Some(Action::Sync),
+        KeyCode::Char('l') => Some(Action::Link),
+        KeyCode::Char('r') => Some(Action::Rescan),
+        KeyCode::Char('n') => Some(Action::CreateAnyway),
+        KeyCode::Char('c') => Some(Action::Convert),
+        _ => None,
+    }
+}
+
+/// The Goodreads screen's bindings.
+///
+/// **`x` is absent on purpose**: it is the global `Export`, and export is exactly
+/// what it means here — the one screen from which a Goodreads CSV is written.
+/// Claiming it for `Mark` would spend the key on a marking scheme the screen has
+/// no use for, since a CSV lands whole or not at all.
+fn map_goodreads_key(key: KeyEvent) -> Option<Action> {
+    if !claimable(key) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('s') => Some(Action::Sync),
+        KeyCode::Char('l') => Some(Action::Link),
+        KeyCode::Char('r') => Some(Action::Rescan),
+        KeyCode::Char('n') => Some(Action::CreateAnyway),
         _ => None,
     }
 }
@@ -232,6 +301,87 @@ mod tests {
                 map_key_on(Screen::Device, press(code)),
                 map_key(press(code))
             );
+            assert_eq!(
+                map_key_on(Screen::Calibre, press(code)),
+                map_key(press(code))
+            );
+            assert_eq!(
+                map_key_on(Screen::Goodreads, press(code)),
+                map_key(press(code))
+            );
+        }
+    }
+
+    /// The two import shelves claim their own letters, and only on themselves.
+    ///
+    /// `n` is the interesting one: it is the global `NewNote`, and the calibre and
+    /// Goodreads screens spend it on the `--new` escape hatch. The device screen
+    /// deliberately does *not*, so this asserts the rebinding is scoped to the two
+    /// screens that documented it rather than leaking across every list.
+    #[test]
+    fn the_import_screens_claim_their_own_letters_only() {
+        use crate::app::Screen;
+        // calibre: the device's four, plus the escape hatch and a conversion.
+        for (code, want) in [
+            (KeyCode::Char('x'), Action::Mark),
+            (KeyCode::Char('s'), Action::Sync),
+            (KeyCode::Char('l'), Action::Link),
+            (KeyCode::Char('r'), Action::Rescan),
+            (KeyCode::Char('n'), Action::CreateAnyway),
+            (KeyCode::Char('c'), Action::Convert),
+        ] {
+            assert_eq!(map_key_on(Screen::Calibre, press(code)), Some(want));
+            assert_eq!(
+                map_key_on(Screen::Book, press(code)),
+                map_key(press(code)),
+                "{code:?} was rebound off the calibre screen"
+            );
+        }
+
+        // Goodreads: the same minus `x` and `c`.
+        for (code, want) in [
+            (KeyCode::Char('s'), Action::Sync),
+            (KeyCode::Char('l'), Action::Link),
+            (KeyCode::Char('r'), Action::Rescan),
+            (KeyCode::Char('n'), Action::CreateAnyway),
+        ] {
+            assert_eq!(map_key_on(Screen::Goodreads, press(code)), Some(want));
+        }
+    }
+
+    /// **`x` keeps its global meaning on the Goodreads screen**, which is the one
+    /// place a Goodreads CSV is written. Claiming it for `Mark` — as the two other
+    /// shelves do — would spend the key on a marking scheme a whole-file import has
+    /// no use for, and would leave export with no key at all.
+    #[test]
+    fn x_still_exports_on_the_goodreads_screen() {
+        use crate::app::Screen;
+        assert_eq!(
+            map_key_on(Screen::Goodreads, press(KeyCode::Char('x'))),
+            Some(Action::Export)
+        );
+        // And `n` did not shadow the note key anywhere it means something.
+        assert_eq!(
+            map_key_on(Screen::Device, press(KeyCode::Char('n'))),
+            Some(Action::NewNote)
+        );
+    }
+
+    /// A screen may not shadow `ctrl-c`. The claim maps run before the global one,
+    /// so this is the guard that they never see a modified key at all.
+    #[test]
+    fn no_screen_can_shadow_ctrl_c() {
+        use crate::app::Screen;
+        for screen in [Screen::Device, Screen::Calibre, Screen::Goodreads] {
+            let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+            assert_eq!(map_key_on(screen, ctrl_c), Some(Action::Quit));
+            // And `s`/`n` with control held reach nothing rather than the shelf.
+            for code in [KeyCode::Char('s'), KeyCode::Char('n')] {
+                assert_eq!(
+                    map_key_on(screen, KeyEvent::new(code, KeyModifiers::CONTROL)),
+                    None
+                );
+            }
         }
     }
 

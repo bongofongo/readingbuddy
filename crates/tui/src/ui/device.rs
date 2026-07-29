@@ -9,10 +9,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph};
+use ratatui::widgets::{List, ListItem};
 use readingbuddy::DeviceState;
 
-use crate::app::{App, DeviceRow, LinkPicker};
+use crate::app::{App, DeviceRow};
 use crate::theme;
 
 const HINT: &str = "press r to look again, / for another path";
@@ -36,38 +36,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         ),
         (None, _) => " device ".to_string(),
     };
-    let keys = key_bar();
-
     // Shrink-wrapped and centred, like the library — see `library::draw`. The
-    // key bar rides in the bottom border, so it is part of what the box has to
-    // be wide enough for: the screen must never be a dead end, and that is only
-    // true if the keys are on screen.
-    let widest = rows
-        .iter()
-        .map(|l| l.width() as u16)
-        .max()
-        .unwrap_or(HINT.chars().count() as u16)
-        .max(title.chars().count() as u16)
-        .max(keys.width() as u16);
-    let area = super::list_box(area, widest, rows.len() as u16);
-    f.render_widget(ratatui::widgets::Clear, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::dim())
-        .padding(Padding::horizontal(1))
-        .title(Span::styled(title, theme::accent()))
-        .title_bottom(keys.centered());
-
-    if rows.is_empty() {
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-        f.render_widget(Paragraph::new(HINT).style(theme::dim()), inner);
+    // key bar rides in the bottom border, which `shelf_frame` also sizes the box
+    // for: the screen must never be a dead end, and that is only true if the keys
+    // are on screen.
+    let Some((area, block)) = super::shelf_frame(f, area, title, key_bar(), &rows, HINT) else {
         return;
-    }
+    };
 
     let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
     // No `highlight_style`: the reverse is scoped to the title span in `row`,
@@ -76,8 +51,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let list = List::new(items).block(block).highlight_symbol("› ");
     f.render_stateful_widget(list, area, &mut app.device_state);
 
-    if let Some(picker) = &mut app.device_link {
-        link_picker(f, picker, area);
+    if let Some(picker) = &mut app.link_picker {
+        super::link_picker(f, picker, area);
     }
 }
 
@@ -115,28 +90,11 @@ fn row(r: &DeviceRow, marked: bool, selected: bool) -> Line<'static> {
             theme::accent(),
         ));
     }
-    let detail = clip(detail(r), DETAIL_MAX);
+    let detail = super::clip(detail(r), super::DETAIL_MAX);
     if !detail.is_empty() {
         spans.push(Span::styled(format!("  {detail}"), theme::dim()));
     }
     Line::from(spans)
-}
-
-/// How much of a row's right-hand detail is shown. A parser's own error text
-/// runs to a couple of hundred characters and carries a file path; unclipped, a
-/// single unreadable sidecar sets the width of the whole shrink-wrapped box and
-/// pushes every real row's title off the far side.
-const DETAIL_MAX: usize = 56;
-
-fn clip(s: String, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s;
-    }
-    // `max - 1`, so the ellipsis is inside the budget rather than one past it.
-    s.chars()
-        .take(max - 1)
-        .chain(std::iter::once('…'))
-        .collect()
 }
 
 /// The right-hand half of a row: what this row's state means, or — once it has
@@ -198,55 +156,6 @@ fn key_bar() -> Line<'static> {
         Span::styled("m", theme::key()),
         Span::styled(" menu ", theme::dim()),
     ])
-}
-
-/// The candidate chooser: the engine's own band, offered as a choice.
-fn link_picker(f: &mut Frame, picker: &mut LinkPicker, area: Rect) {
-    let selected = picker.state.selected();
-    let rows: Vec<Line> = picker
-        .candidates
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            // Same rule as every other list here: the reverse is scoped to the
-            // title, so the similarity score stays legible instead of the row
-            // becoming a solid bar.
-            let title = if Some(i) == selected {
-                theme::primary().patch(theme::selected())
-            } else {
-                theme::primary()
-            };
-            Line::from(vec![
-                Span::styled(c.title.clone(), title),
-                Span::styled(format!("  {:.0}%", c.score * 100.0), theme::dim()),
-            ])
-        })
-        .collect();
-    let widest = rows.iter().map(|r| r.width() as u16).max().unwrap_or(20);
-    let title = format!(" link “{}” to ", picker.title);
-    let width = widest
-        .max(title.chars().count() as u16)
-        .saturating_add(super::LIST_CHROME);
-    let box_area = super::centered(area, width, rows.len() as u16 + 2);
-    f.render_widget(ratatui::widgets::Clear, box_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(theme::accent())
-        .padding(Padding::horizontal(1))
-        .title(Span::styled(title, theme::accent()))
-        .title_bottom(
-            Line::from(vec![
-                Span::styled(" enter", theme::key()),
-                Span::styled(" link  ", theme::dim()),
-                Span::styled("esc", theme::key()),
-                Span::styled(" leave it ", theme::dim()),
-            ])
-            .centered(),
-        );
-    let items: Vec<ListItem> = rows.into_iter().map(ListItem::new).collect();
-    let list = List::new(items).block(block).highlight_symbol("› ");
-    f.render_stateful_widget(list, box_area, &mut picker.state);
 }
 
 #[cfg(test)]
