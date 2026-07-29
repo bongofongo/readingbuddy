@@ -312,6 +312,11 @@ Provider enrichment on device pull. Non-numeric rating scales.
     - Known limit: our export carries no `Exclusive Shelf` column, because
       Goodreads' importer does not read one. A round trip into a *fresh* library
       keeps the book and loses the shelf.
+    - **TUI half done** (never separately numbered, like item 7's). Deliberately
+      *not* a shelf: a CSV is matched against the library as a whole, so there is
+      no per-row import to stand on. The screen is what the dry run found, the
+      undecided rows last, and `s` applies the lot. `x` keeps its global `Export`
+      meaning there, which is the one place a CSV is written.
 
 *Items 11–16 are laid out in `docs/spec-11-16.md` — 11–13 to prompt-ready
 detail, 14–16 as constraints to re-plan against.*
@@ -346,6 +351,22 @@ detail, 14–16 as constraints to re-plan against.*
       history. Series is dropped for the same shape of reason — no column, and
       `book_tags` is for shelves.
     - Tier (iii), device push, remains out of scope.
+    - **TUI half done**, as a *shelf* — the device screen's shape, because calibre
+      is another system that owns books and the way to meet one is to be shown its
+      shelf. It forced four thin engine additions, all of them things the CLI
+      never needed because it imports all-or-nothing: `CalibreBookReport` gained
+      `calibre_id` (a report line otherwise names its row only by title, and two
+      editions of one title tie to each other), `ImportOptions` gained `only` for
+      the single-row import `Enter` is, and `link_calibre_book` /
+      `link_goodreads_row` finally give the two CSV/library importers the
+      `link_sidecar` they never had. Before those, `l` on an undecided row would
+      have been a dead end: the only escape hatch was `--new` plus `merge_books`,
+      which creates a duplicate on purpose in order to fold it back in and leaves
+      the far side's id pointing at whichever of the two the merge deleted.
+    - The **rating is still not imported** and the shelf does not offer to — the
+      reason is structural (a rating anchors to a review, which anchors to a
+      reading, which calibre knows nothing about) and a screen is not where that
+      changes.
 14. API crate + `readingbuddyd`.
     - **Done.** `crates/api` (`readingbuddy-api`) holds the surface; `crates/daemon`
       is the transport and holds no logic — it never names a method. Zero new
