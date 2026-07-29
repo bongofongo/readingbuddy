@@ -10,3 +10,25 @@
 2026-07-28T21:17:24.370899Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
 2026-07-28T21:17:24.596179Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
 2026-07-28T21:20:18.640453Z  WARN search{has_isbn=false}: readingbuddy::search: provider degraded provider=googlebooks detail=googlebooks error: HTTP status client error (429 Too Many Requests) for url (https://www.googleapis.com/books/v1/volumes?q=yellowface&maxResults=15&printType=books)
+2026-07-29T10:28:15.750292Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:28:15.756609Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:28:15.827420Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:28:24.417222Z  WARN search{has_isbn=false}: readingbuddy::search: provider degraded provider=googlebooks detail=googlebooks error: HTTP status client error (429 Too Many Requests) for url (https://www.googleapis.com/books/v1/volumes?q=yellowface&maxResults=15&printType=books)
+2026-07-29T10:28:31.367449Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:28:31.374786Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:28:31.445322Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:43:47.734737Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:43:47.743141Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:43:47.813846Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:44:22.736493Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:44:22.745412Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:44:22.814921Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:44:49.047941Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:44:49.055926Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:44:49.061518Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:50:28.916304Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:50:28.922866Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:50:28.988624Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T10:51:46.803651Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T10:51:46.810494Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T10:51:46.827322Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]

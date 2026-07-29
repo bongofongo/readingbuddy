@@ -505,6 +505,40 @@ expensive instruments stay manual:
 | `a_glyph_spin_stays_inside_its_byte_budget` | the glyph baseline itself |
 | `a_spinning_book_retransmits_well_below_the_tick_rate` | `rich-always` stays bad-but-survivable, so the calibration holds |
 
+## Known bugs
+
+**Ghostty 1.3.1 crashes on park.** Pressing the spin-freeze key (`space`)
+while the book is on screen parks it, which transmits the one real settle
+frame (`Quality::Settle`, up to `SETTLE_MAX_PX`, zlib-compressed per `o=z`,
+chunked in `kitty::transmit`). In Ghostty 1.3.1 (ReleaseFast, macOS 26.5.2)
+this reliably kills the whole terminal process. Ghostty's own crash reporter
+(`~/.local/state/ghostty/crash/*.ghosttycrash`, a Sentry envelope with an
+embedded Breakpad minidump — not macOS's DiagnosticReports) captured it;
+symbolizing the minidump in lldb (`target create --core <name>.dmp`, `bt all`)
+puts the fault on Ghostty's own read thread, not ours:
+
+```
+EXC_BREAKPOINT (code=1)
+Io.Writer.unreachableRebase
+compress.flate.Decompress.streamInner
+compress.flate.Decompress.readVec
+Io.Reader.appendRemaining
+terminal.kitty.graphics_exec.loadAndAddImage
+termio.stream_handler.StreamHandler.apcEnd
+terminal.stream.Stream(...).nextNonUtf8
+termio.Exec.ReadThread.threadMainPosix
+```
+
+A Zig `unreachable` inside Ghostty's `std.compress.flate` decompressor, while
+it decodes the zlib-compressed image payload we transmit. Motion never
+triggers it — the hybrid rule sends no pixels while spinning — so the bug is
+invisible until the book is parked. Not reproduced under tmux+Ghostty or
+other terminals in this session; whether it is zlib-chunking-specific or a
+broader Ghostty regression is unconfirmed. Not yet fixed here or reported
+upstream. Candidate workaround, not yet applied: drop `o=z` and send raw
+RGBA, which would route around Ghostty's decompressor entirely at the cost of
+a larger one-time settle transmission.
+
 ## Still open
 
 **A progressive turntable**, if the spin ever needs to be smooth *and*
