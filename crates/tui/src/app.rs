@@ -167,6 +167,15 @@ pub struct BookView {
     pub notes: Vec<NoteRecord>,
     pub highlights: Vec<Highlight>,
     pub cards: Vec<FlashcardRow>,
+    /// Every reading of this book, oldest first — the order
+    /// `Engine::list_readings` returns and the order the 1-based read numbers
+    /// the CLI prints are counted in.
+    ///
+    /// Loaded for the highlight list's gutter, which is the only thing that can
+    /// turn a `Highlight::reading_id` into something a person recognises. The
+    /// list is tiny (one row per read) and it is fetched on the same pass as the
+    /// other three, so it costs a query rather than a design.
+    pub readings: Vec<Reading>,
 }
 
 impl BookView {
@@ -177,6 +186,33 @@ impl BookView {
             BookTab::Highlights => self.highlights.len(),
             BookTab::Cards => self.cards.len(),
         }
+    }
+
+    /// Which read a highlight came from, 1-based, the way `rb show` numbers
+    /// them.
+    ///
+    /// `None` covers both "no reading's window held it" and "this book has been
+    /// read once", and the caller wants the same thing in both cases: no gutter.
+    /// A single-read book has nothing to tell apart, and a number on every row
+    /// of it would be a column that is always `1`.
+    pub fn read_number(&self, h: &Highlight) -> Option<usize> {
+        if self.readings.len() < 2 {
+            return None;
+        }
+        let rid = h.reading_id?;
+        self.readings
+            .iter()
+            .position(|r| r.id == rid)
+            .map(|i| i + 1)
+    }
+
+    /// Does the highlight list need a gutter column at all?
+    ///
+    /// Asked once for the whole list rather than per row, so that every row is
+    /// indented the same amount — deciding per row would leave an unattributed
+    /// highlight flush against the border while its neighbours were indented.
+    pub fn shows_read_gutter(&self) -> bool {
+        self.readings.len() > 1
     }
 }
 
@@ -971,19 +1007,21 @@ impl App {
     }
 
     async fn load_view(&self, book: Book) -> Result<BookView> {
-        let (notes, highlights, cards) = match book.id {
+        let (notes, highlights, cards, readings) = match book.id {
             Some(id) => (
                 self.engine.list_notes(Some(id)).await?,
                 self.engine.list_highlights(id).await?,
                 self.engine.list_flashcards_for_book(id).await?,
+                self.engine.list_readings(id).await?,
             ),
-            None => (Vec::new(), Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
         };
         Ok(BookView {
             book,
             notes,
             highlights,
             cards,
+            readings,
         })
     }
 
@@ -5457,6 +5495,149 @@ mod tests {
             .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Open a book's Highlights section, drawn, as text.
+    async fn highlights_text(app: &mut App, book: Book) -> String {
+        app.open_book(book).await.expect("open");
+        app.book_tab = BookTab::Highlights;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        screen_text(app, 100, 24)
+    }
+
+    /// The drawn row carrying `needle`, with the list's own chrome (the
+    /// selection caret and its padding) stripped off the front.
+    ///
+    /// Asserting on what a row *starts with* is the only way to see the gutter:
+    /// `contains` cannot tell a numbered row from an unnumbered one, since the
+    /// text is the same either way and only its offset changes.
+    /// A drawn line spans the whole terminal, so the pane the row lives in is
+    /// cut out first — the book object sits beside it and its glyphs are on the
+    /// same line.
+    fn row_body<'a>(text: &'a str, needle: &str) -> &'a str {
+        text.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row for {needle}:\n{text}"))
+            .split('│')
+            .find(|seg| seg.contains(needle))
+            .expect("the pane the needle was found in")
+            .trim_start_matches([' ', '›', '‹'])
+            .trim_end()
+    }
+
+    /// One KOReader-shaped highlight, captured at `when`.
+    async fn mark(app: &App, book_id: i64, text: &str, when: &str) {
+        app.engine
+            .storage()
+            .insert_highlight(
+                book_id,
+                &readingbuddy::storage::NewHighlight {
+                    text: text.into(),
+                    chapter: None,
+                    page: None,
+                    pos0: Some(format!("/body/{text}")),
+                    pos1: None,
+                    ko_datetime: Some(when.into()),
+                    ko_datetime_updated: None,
+                    color: None,
+                    note: None,
+                    source: "koreader".into(),
+                },
+            )
+            .await
+            .expect("highlight");
+    }
+
+    /// A book read once shows no read gutter.
+    ///
+    /// The fixture has one reading, which is the overwhelmingly common case, and
+    /// a column that reads `1` on every row is a column that says nothing. This
+    /// is the assertion that keeps the gutter from becoming ambient noise.
+    #[tokio::test]
+    async fn one_reading_puts_no_read_number_on_a_highlight() {
+        let mut app = test_app().await;
+        let book = app.library.first().cloned().expect("seeded book");
+        let text = highlights_text(&mut app, book).await;
+        // The pane is narrow enough to clip the quote, so the assertion is on
+        // what the row *starts* with — which is the claim anyway.
+        assert!(
+            !app.view.as_ref().unwrap().shows_read_gutter(),
+            "one reading has nothing to tell apart"
+        );
+        assert!(
+            row_body(&text, "p.58").starts_with("p.58"),
+            "the row is the highlight and nothing in front of it:\n{text}"
+        );
+    }
+
+    /// Once a book has been read twice, each highlight says which read it came
+    /// from — and one that belongs to neither read says *that*, rather than
+    /// going blank and looking like a misaligned row.
+    #[tokio::test]
+    async fn a_reread_marks_each_highlight_with_the_read_it_came_from() {
+        let mut app = test_app().await;
+        // Its own book rather than the fixture's: this needs two readings with
+        // dates chosen around the captures, and the fixture's reading was opened
+        // by `update_progress` at whatever "now" is on the machine running the
+        // suite.
+        let book = app
+            .engine
+            .save_book(&Book {
+                title: Some("Pachinko".into()),
+                page_count: Some(490),
+                ..Book::default()
+            })
+            .await
+            .expect("save");
+        let id = book.id.expect("id");
+
+        // Both readings carry explicit dates. The engine derives a missing bound
+        // only when it has to, and leaning on that here would be testing
+        // attribution rather than the gutter.
+        let s = app.engine.storage();
+        s.record_reading(
+            id,
+            Some(1_577_836_800),
+            Some(1_580_515_200),
+            "finished",
+            "manual",
+        )
+        .await
+        .expect("first reading"); // 2020-01-01 → 2020-02-01
+        s.record_reading(id, Some(1_798_761_600), None, "reading", "manual")
+            .await
+            .expect("second reading"); // 2027-01-01 → open
+        // Short texts: the section pane shares the width with the book object,
+        // so a long one is clipped before the assertion can see the end of it.
+        mark(&app, id, "alpha", "2020-01-15 10:00:00").await;
+        mark(&app, id, "gamma", "2027-02-01 10:00:00").await;
+        // Between the two readings, so no window holds it.
+        mark(&app, id, "beta", "2023-06-01 10:00:00").await;
+        s.attribute_highlights(id).await.expect("attribute");
+
+        app.refresh_library().await.expect("refresh");
+        let text = highlights_text(&mut app, book).await;
+        assert!(
+            app.view.as_ref().unwrap().shows_read_gutter(),
+            "two readings is exactly when the column earns its cell"
+        );
+        assert_eq!(
+            row_body(&text, "alpha"),
+            "1 alpha",
+            "the first read's highlight is numbered 1:\n{text}"
+        );
+        assert_eq!(
+            row_body(&text, "gamma"),
+            "2 gamma",
+            "the second read's highlight is numbered 2:\n{text}"
+        );
+        assert_eq!(
+            row_body(&text, "beta"),
+            "· beta",
+            "an unplaceable highlight keeps a gutter cell rather than going \
+             blank — the dot is the answer, not a missing one:\n{text}"
+        );
     }
 
     #[tokio::test]

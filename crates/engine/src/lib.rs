@@ -419,8 +419,23 @@ impl Engine {
     // ---- highlights --------------------------------------------------------
 
     /// This book's highlights, device-owned fields and all.
+    ///
+    /// Every reading of the book, in one list. Each row carries the
+    /// `reading_id` it was attributed to — `None` where no reading's window
+    /// holds it — so grouping by read is the caller's to do, and the rows that
+    /// belong to no read stay reachable.
     pub async fn list_highlights(&self, book_id: i64) -> Result<Vec<Highlight>> {
         self.storage.list_highlights(book_id).await
+    }
+
+    /// What was highlighted during one reading.
+    ///
+    /// The reading-scoped half of [`Engine::list_highlights`], and the reason
+    /// `highlights.reading_id` exists: reflections and reviews already anchor to
+    /// a reading, so "what did I mark the second time through?" is a question
+    /// the schema could answer well before anything could ask it.
+    pub async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
+        self.storage.highlights_for_reading(reading_id).await
     }
 
     /// Write **our** annotation on a highlight — the column beside `ko_note`

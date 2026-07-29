@@ -261,13 +261,12 @@ fn draw_section(f: &mut Frame, app: &mut App, area: Rect) {
             );
         }
         BookTab::Highlights => {
-            let items: Vec<ListItem> = app
-                .view
-                .as_ref()
-                .expect("checked")
+            let view = app.view.as_ref().expect("checked");
+            let gutter = view.shows_read_gutter();
+            let items: Vec<ListItem> = view
                 .highlights
                 .iter()
-                .map(|h| ListItem::new(highlight_line(h)))
+                .map(|h| ListItem::new(highlight_line(h, gutter.then(|| view.read_number(h)))))
                 .collect();
             draw_list(
                 f,
@@ -424,8 +423,29 @@ fn anchor_tag(n: &NoteRecord) -> String {
     parts.join(" ")
 }
 
-fn highlight_line(h: &Highlight) -> Line<'static> {
+/// One highlight, optionally behind a one-cell gutter naming the read it came
+/// from.
+///
+/// `read` is `None` when the book has been read once — there is nothing to tell
+/// apart and the column is dropped entirely. `Some(None)` is the other case: the
+/// book has several reads and *this* highlight belongs to none of them, which
+/// gets `·` rather than being left blank. A blank cell would read as an
+/// alignment slip; the dot says the question was asked and has no answer, which
+/// is the honest state — KOReader's sidecar is per-file, so a capture between
+/// two reads genuinely cannot be placed.
+///
+/// Same shape as the note list's `◆`/`◇` kind gutter, and for the same reason: a
+/// word would repeat what the row already says, and one dim cell in front of
+/// every row keeps the text column aligned.
+fn highlight_line(h: &Highlight, read: Option<Option<usize>>) -> Line<'static> {
     let mut spans = Vec::new();
+    if let Some(n) = read {
+        // Two-digit reads are not a thing anyone will hit, but a `10` must not
+        // silently shift the column, so the number is what it is and the space
+        // after it is fixed.
+        let mark = n.map(|n| n.to_string()).unwrap_or_else(|| "·".into());
+        spans.push(Span::styled(format!("{mark} "), theme::dim()));
+    }
     if let Some(p) = h.page {
         spans.push(Span::styled(format!("p.{p}"), theme::primary()));
         spans.push(Span::styled(" · ", theme::primary()));
