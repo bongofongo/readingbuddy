@@ -209,6 +209,10 @@ impl Api {
         Ok(map(self.engine.list_highlights(book_id).await?))
     }
 
+    pub async fn highlights_for_reading(&self, reading_id: i64) -> ApiResult<Vec<HighlightDto>> {
+        Ok(map(self.engine.highlights_for_reading(reading_id).await?))
+    }
+
     pub async fn set_annotation(
         &self,
         highlight_id: i64,
@@ -661,6 +665,9 @@ impl Api {
 
             R::ListHighlights { book_id } => {
                 Response::Highlights(self.list_highlights(book_id).await?)
+            }
+            R::HighlightsForReading { reading_id } => {
+                Response::Highlights(self.highlights_for_reading(reading_id).await?)
             }
             R::SetAnnotation {
                 highlight_id,

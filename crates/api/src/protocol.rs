@@ -132,6 +132,11 @@ pub enum Request {
     ListHighlights {
         book_id: i64,
     },
+    /// What was highlighted during one reading. The reading-scoped half of
+    /// `ListHighlights`, keyed by the reading rather than the book.
+    HighlightsForReading {
+        reading_id: i64,
+    },
     SetAnnotation {
         highlight_id: i64,
         #[serde(default)]

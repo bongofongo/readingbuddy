@@ -548,7 +548,8 @@ impl Storage {
     }
 
     /// Assign `highlights.reading_id` by matching each highlight's
-    /// `ko_datetime` into a reading's `[started_at, finished_at]` window.
+    /// `ko_datetime` into a reading's window.
+    ///
     /// Returns how many highlights of this book now carry a reading.
     ///
     /// **Leaving it `NULL` is correct** when no window contains it. KOReader's
@@ -558,16 +559,67 @@ impl Storage {
     ///
     /// Recomputed from scratch rather than filled in: a highlight whose reading
     /// was deleted, or whose window moved, must lose its stale attribution too.
+    ///
+    /// ## A missing `started_at` is derived, not taken as −∞
+    ///
+    /// This is the whole substance of the query and it was wrong in the first
+    /// cut, which `COALESCE`d an absent bound straight to ±8.64e12. That makes
+    /// an unstarted reading's window *contain every earlier reading's window*,
+    /// and since the match is "the latest window that holds it", the newest
+    /// reading then takes the older readings' highlights and the older readings
+    /// end up with none — permanently, and with nothing on screen looking
+    /// wrong.
+    ///
+    /// Both ways in are ordinary rather than exotic. A **Goodreads** import
+    /// writes `Read Count > 1` as several readings with NULL `started_at` by
+    /// design (the CSV has no start date and `goodreads.rs` refuses to invent
+    /// one), so *every* highlight landed on the most recent read. And any
+    /// reading opened through [`Storage::record_reading`] or
+    /// `open_reading(.., None, ..)` is unstarted, so a reread swallowed the
+    /// first read's highlights too.
+    ///
+    /// So an absent `started_at` derives one: **an unstarted reading begins
+    /// where the previous reading ended.** "Previous" is the latest
+    /// `finished_at` of another reading of the same book that is not after this
+    /// one's own end — which needs no reading-order convention, only the dates
+    /// the rows already carry, and is exactly the bound the user would draw by
+    /// hand. With no such reading it really is −∞, which is the one case the
+    /// old `COALESCE` had right.
+    ///
+    /// `+ 1` makes that derived bound **exclusive**: reading 1 owns the instant
+    /// it finished, and without it that one second lies in both windows and the
+    /// tie is settled by the `ORDER BY` in the newer reading's favour. It is not
+    /// an epsilon — these are integer unix seconds, so it is the next
+    /// representable value. An *explicit* `started_at` stays inclusive: the user
+    /// said the reading started then.
+    ///
+    /// The `ORDER BY` survives as a tie-break rather than as the deciding rule.
+    /// Derived windows are disjoint by construction, but a user is free to give
+    /// two readings explicitly overlapping dates, and the later window is the
+    /// better guess for a highlight that falls in both.
     pub async fn attribute_highlights(&self, book_id: i64) -> Result<usize> {
         sqlx::query(
-            r#"UPDATE highlights SET reading_id = (
-                   SELECT r.id FROM readings r
-                    WHERE r.book_id = highlights.book_id
-                      AND CAST(strftime('%s', highlights.ko_datetime) AS INTEGER)
-                          >= COALESCE(r.started_at, -8640000000000)
-                      AND CAST(strftime('%s', highlights.ko_datetime) AS INTEGER)
-                          <= COALESCE(r.finished_at, 8640000000000)
-                    ORDER BY COALESCE(r.started_at, r.created_at) DESC, r.id DESC
+            r#"WITH windows AS (
+                   SELECT r.id AS reading_id,
+                          COALESCE(
+                              r.started_at,
+                              (SELECT MAX(p.finished_at) + 1 FROM readings p
+                                WHERE p.book_id = r.book_id
+                                  AND p.id <> r.id
+                                  AND p.finished_at IS NOT NULL
+                                  AND p.finished_at <=
+                                      COALESCE(r.finished_at, 8640000000000)),
+                              -8640000000000
+                          ) AS win_start,
+                          COALESCE(r.finished_at, 8640000000000) AS win_end
+                     FROM readings r
+                    WHERE r.book_id = ?1
+               )
+               UPDATE highlights SET reading_id = (
+                   SELECT w.reading_id FROM windows w
+                    WHERE CAST(strftime('%s', highlights.ko_datetime) AS INTEGER)
+                          BETWEEN w.win_start AND w.win_end
+                    ORDER BY w.win_start DESC, w.reading_id DESC
                     LIMIT 1)
                WHERE book_id = ?1"#,
         )
@@ -995,6 +1047,158 @@ mod tests {
             .unwrap();
         assert_eq!(s.attribute_highlights(id).await.unwrap(), 0);
         assert_eq!(reading_of(&s, id, "inside").await, None);
+    }
+
+    /// The Goodreads shape: several readings, none with a start date, each
+    /// closed at the `Date Read` its row carried.
+    ///
+    /// This is the case the first cut got wrong, and it is not a corner — it is
+    /// what *every* `Read Count > 1` row imports as, because the CSV has no
+    /// start date and `goodreads.rs` refuses to invent one. Taking an absent
+    /// `started_at` as −∞ makes the newest reading's window contain both older
+    /// ones, so both highlights landed on the last read and the first two
+    /// readings held none.
+    #[tokio::test]
+    async fn unstarted_readings_do_not_swallow_the_earlier_ones_highlights() {
+        let (s, id) = seeded().await;
+        let first = s
+            .record_reading(
+                id,
+                None,
+                ko_datetime_to_unix("2020-02-01 00:00:00"),
+                STATUS_FINISHED,
+                "goodreads",
+            )
+            .await
+            .unwrap();
+        let second = s
+            .record_reading(
+                id,
+                None,
+                ko_datetime_to_unix("2023-02-01 00:00:00"),
+                STATUS_FINISHED,
+                "goodreads",
+            )
+            .await
+            .unwrap();
+        let third = s
+            .record_reading(
+                id,
+                None,
+                ko_datetime_to_unix("2026-02-01 00:00:00"),
+                STATUS_FINISHED,
+                "goodreads",
+            )
+            .await
+            .unwrap();
+
+        for h in [
+            hl("read once", "2020-01-15 09:00:00"),
+            hl("read twice", "2023-01-15 09:00:00"),
+            hl("read thrice", "2026-01-15 09:00:00"),
+        ] {
+            s.insert_highlight(id, &h).await.unwrap();
+        }
+        assert_eq!(s.attribute_highlights(id).await.unwrap(), 3);
+
+        assert_eq!(reading_of(&s, id, "read once").await, Some(first));
+        assert_eq!(reading_of(&s, id, "read twice").await, Some(second));
+        assert_eq!(reading_of(&s, id, "read thrice").await, Some(third));
+    }
+
+    /// The same defect through the other door: a reread whose reading was
+    /// opened without a start date.
+    ///
+    /// An open reading has no `finished_at` either, so its window was −∞..+∞ and
+    /// it took the finished reading's highlights along with its own. The derived
+    /// bound is what stops it, and the assertion that matters is the *first*
+    /// read keeping what it already had.
+    #[tokio::test]
+    async fn an_unstarted_reread_leaves_the_first_reads_highlights_alone() {
+        let (s, id) = seeded().await;
+        let first = s
+            .record_reading(
+                id,
+                ko_datetime_to_unix("2020-01-01 00:00:00"),
+                ko_datetime_to_unix("2020-02-01 00:00:00"),
+                STATUS_FINISHED,
+                "manual",
+            )
+            .await
+            .unwrap();
+        s.insert_highlight(id, &hl("first read", "2020-01-15 09:00:00"))
+            .await
+            .unwrap();
+        assert_eq!(s.attribute_highlights(id).await.unwrap(), 1);
+        assert_eq!(reading_of(&s, id, "first read").await, Some(first));
+
+        // Open, and with nothing to derive a start from — what
+        // `open_reading(.., None, ..)` gives, and what a sidecar with no usable
+        // datetimes reaches through `ensure_reading`.
+        let second = s.open_reading(id, None, "koreader").await.unwrap();
+        s.insert_highlight(id, &hl("second read", "2026-03-01 09:00:00"))
+            .await
+            .unwrap();
+        assert_eq!(s.attribute_highlights(id).await.unwrap(), 2);
+
+        assert_eq!(
+            reading_of(&s, id, "first read").await,
+            Some(first),
+            "opening a reread must not move the first read's highlights onto it"
+        );
+        assert_eq!(reading_of(&s, id, "second read").await, Some(second));
+    }
+
+    /// The derived bound is exclusive; an explicit one is inclusive.
+    ///
+    /// A highlight captured at the exact second a reading closed belongs to that
+    /// reading. Without the `+ 1` that instant lies in both windows and the
+    /// `ORDER BY` hands it to the newer one — a one-second hole that only ever
+    /// shows up on real device data, where a highlight and a "finished" tap land
+    /// in the same second often enough to matter.
+    #[tokio::test]
+    async fn the_derived_start_is_exclusive_and_an_explicit_one_is_not() {
+        let (s, id) = seeded().await;
+        let closed_at = ko_datetime_to_unix("2020-02-01 00:00:00");
+        let first = s
+            .record_reading(
+                id,
+                ko_datetime_to_unix("2020-01-01 00:00:00"),
+                closed_at,
+                STATUS_FINISHED,
+                "manual",
+            )
+            .await
+            .unwrap();
+        s.open_reading(id, None, "manual").await.unwrap();
+        s.insert_highlight(id, &hl("on the boundary", "2020-02-01 00:00:00"))
+            .await
+            .unwrap();
+        s.attribute_highlights(id).await.unwrap();
+        assert_eq!(
+            reading_of(&s, id, "on the boundary").await,
+            Some(first),
+            "a reading owns the instant it finished; the derived start is the second after"
+        );
+
+        // Said explicitly, the same instant is the *later* reading's start, and
+        // the later window wins. The user's own dates are taken at face value.
+        let (s, id) = seeded().await;
+        s.record_reading(
+            id,
+            ko_datetime_to_unix("2020-01-01 00:00:00"),
+            closed_at,
+            STATUS_FINISHED,
+            "manual",
+        )
+        .await
+        .unwrap();
+        let second = s.open_reading(id, closed_at, "manual").await.unwrap();
+        s.insert_highlight(id, &hl("on the boundary", "2020-02-01 00:00:00"))
+            .await
+            .unwrap();
+        s.attribute_highlights(id).await.unwrap();
+        assert_eq!(reading_of(&s, id, "on the boundary").await, Some(second));
     }
 
     /// A highlight with no `ko_datetime` cannot be placed at all.

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use readingbuddy::{Book, Engine, NewNoteInput, NoteKind};
 
 mod common;
-use common::{book, engine, write_isbnless_epub};
+use common::{book, engine, highlight, seed_book, write_isbnless_epub};
 
 #[tokio::test]
 async fn open_creates_its_directories_and_migrates() {
@@ -405,4 +405,119 @@ async fn importing_does_not_repoint_a_link_the_user_made() {
         .unwrap()
         .unwrap();
     assert_eq!(created.id, chosen.id, "a scan must not repoint");
+}
+
+// ---- highlights across readings ---------------------------------------------
+
+/// `reading_id` reaches the facade at all.
+///
+/// The column and the query that fills it were added with migration `0005`, and
+/// then nothing read them: `HIGHLIGHT_COLUMNS` did not select it, `Highlight`
+/// had no field for it, and every frontend rendered one undifferentiated list.
+/// Attribution was therefore computed correctly (and, for a while, incorrectly)
+/// with no way to observe either.
+#[tokio::test]
+async fn a_highlight_carries_the_reading_it_was_captured_during() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Pachinko").await;
+    let s = engine.storage();
+
+    let first = s
+        .record_reading(
+            id,
+            unix("2020-01-01"),
+            unix("2020-02-01"),
+            "finished",
+            "manual",
+        )
+        .await
+        .unwrap();
+    let second = s
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+
+    for h in [
+        highlight("from the first read", "2020-01-15 09:00:00"),
+        highlight("from the second read", "2026-01-15 09:00:00"),
+        // Between the two, so no window holds it.
+        highlight("from neither", "2023-06-01 09:00:00"),
+    ] {
+        s.insert_highlight(id, &h).await.unwrap();
+    }
+    s.attribute_highlights(id).await.unwrap();
+
+    let hs = engine.list_highlights(id).await.unwrap();
+    let by = |text: &str| {
+        hs.iter()
+            .find(|h| h.text == text)
+            .expect("highlight is listed")
+            .reading_id
+    };
+    assert_eq!(by("from the first read"), Some(first));
+    assert_eq!(by("from the second read"), Some(second));
+    assert_eq!(
+        by("from neither"),
+        None,
+        "an unplaceable highlight is still listed under the book — `book_id` is \
+         authoritative, and only the attribution is missing"
+    );
+}
+
+/// The reading-scoped query returns that reading's share and nothing else — in
+/// particular not the unattributed ones, which belong to the book rather than to
+/// any read and would otherwise appear under every one of them.
+#[tokio::test]
+async fn highlights_for_reading_is_that_read_and_only_that_read() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Pachinko").await;
+    let s = engine.storage();
+
+    let first = s
+        .record_reading(
+            id,
+            unix("2020-01-01"),
+            unix("2020-02-01"),
+            "finished",
+            "manual",
+        )
+        .await
+        .unwrap();
+    let second = s
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+    for h in [
+        highlight("first a", "2020-01-10 09:00:00"),
+        highlight("first b", "2020-01-20 09:00:00"),
+        highlight("second a", "2026-01-15 09:00:00"),
+        highlight("unplaceable", "2023-06-01 09:00:00"),
+    ] {
+        s.insert_highlight(id, &h).await.unwrap();
+    }
+    s.attribute_highlights(id).await.unwrap();
+
+    let texts = |hs: Vec<readingbuddy::Highlight>| {
+        let mut t: Vec<String> = hs.into_iter().map(|h| h.text).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(
+        texts(engine.highlights_for_reading(first).await.unwrap()),
+        ["first a", "first b"]
+    );
+    assert_eq!(
+        texts(engine.highlights_for_reading(second).await.unwrap()),
+        ["second a"]
+    );
+    assert_eq!(
+        engine.list_highlights(id).await.unwrap().len(),
+        4,
+        "the book's own list keeps every highlight, placed or not"
+    );
+}
+
+/// `%Y-%m-%d` as unix seconds, for readings whose exact hour is not the point.
+fn unix(day: &str) -> Option<i64> {
+    readingbuddy::storage::ko_datetime_to_unix(&format!("{day} 00:00:00"))
 }

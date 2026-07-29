@@ -76,6 +76,16 @@ it copies.**
   assigned by matching `ko_datetime` into a reading's date window. KOReader's
   sidecar is per-file and a reread appends to it, so the device cannot supply
   this attribution — unattributed is correct, not a gap to paper over.
+- **A reading with no `started_at` begins where the previous reading ended**, not
+  at −∞. Taking an absent bound literally makes the newest reading's window
+  contain every older one, so the last read silently collects the whole book's
+  highlights — which is what *every* Goodreads `Read Count > 1` import did,
+  since that CSV has no start date and we refuse to invent one. The derived
+  bound is exclusive; an explicit one the user gave is inclusive.
+- **`reading_id` is shown, not merely stored.** `rb highlights` groups by read
+  once a book has more than one, the TUI's highlight list carries a one-cell read
+  gutter on the same condition, and the unattributed ones are listed plainly and
+  last. A column that nothing renders is a claim nothing can check.
 
 ## Reflection and Review — two objects
 

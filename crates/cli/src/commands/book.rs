@@ -181,16 +181,60 @@ pub async fn highlights(engine: &Engine, selector: &str) -> Result<()> {
         return Ok(());
     }
     println!("{} — {} highlights\n", book.display_title(), hs.len());
-    for h in hs {
-        let page = h.page.map(|p| format!("p.{p} ")).unwrap_or_default();
-        let chapter = h.chapter.map(|c| format!("[{c}] ")).unwrap_or_default();
-        println!("  {page}{chapter}“{}”", h.text);
-        if let Some(note) = h.ko_note {
-            println!("      ↳ {note}");
+
+    // Rereads are first-class, so the list is grouped by the read each
+    // highlight was captured during — but only when there is more than one read
+    // to tell apart. One reading is the ordinary case, and a header over the
+    // whole list would be noise that says nothing.
+    let readings = engine.list_readings(id).await?;
+    if readings.len() < 2 {
+        for h in &hs {
+            print_highlight(h, "  ");
         }
-        if let Some(annotation) = h.annotation {
-            println!("      » {annotation}");
+        return Ok(());
+    }
+
+    for (i, r) in readings.iter().enumerate() {
+        println!("  {}", render::reading_line(r, i + 1, readings.len()));
+        let mine: Vec<_> = hs.iter().filter(|h| h.reading_id == Some(r.id)).collect();
+        // Printed even when empty, and that is the informative case: a read
+        // that genuinely marked nothing is a different fact from a read this
+        // list forgot to mention.
+        if mine.is_empty() {
+            println!("    (none)");
+        }
+        for h in mine {
+            print_highlight(h, "    ");
+        }
+        println!();
+    }
+
+    // `reading_id` is NULL where no reading's window held the capture date.
+    // KOReader's sidecar is per-file and a reread appends to it, so the device
+    // cannot supply this — these are ordinary highlights, not a failure and not
+    // a queue of work, so they are listed plainly and last.
+    let unplaced: Vec<_> = hs.iter().filter(|h| h.reading_id.is_none()).collect();
+    if !unplaced.is_empty() {
+        println!("  not placed in a reading ({})", unplaced.len());
+        for h in unplaced {
+            print_highlight(h, "    ");
         }
     }
     Ok(())
+}
+
+fn print_highlight(h: &readingbuddy::Highlight, indent: &str) {
+    let page = h.page.map(|p| format!("p.{p} ")).unwrap_or_default();
+    let chapter = h
+        .chapter
+        .as_deref()
+        .map(|c| format!("[{c}] "))
+        .unwrap_or_default();
+    println!("{indent}{page}{chapter}“{}”", h.text);
+    if let Some(note) = &h.ko_note {
+        println!("{indent}    ↳ {note}");
+    }
+    if let Some(annotation) = &h.annotation {
+        println!("{indent}    » {annotation}");
+    }
 }

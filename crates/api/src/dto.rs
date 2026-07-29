@@ -319,6 +319,14 @@ pub struct HighlightDto {
     pub annotation: Option<String>,
     #[serde(default)]
     pub ko_datetime: Option<String>,
+    /// Which reading this was captured during, when the dates could place it.
+    ///
+    /// `#[serde(default)]` like every other optional field here, and `null` is
+    /// an ordinary answer rather than a missing one: a highlight captured
+    /// between two readings belongs to neither, and the device cannot tell us
+    /// otherwise.
+    #[serde(default)]
+    pub reading_id: Option<i64>,
     pub source: String,
     pub created_at: i64,
 }
@@ -334,6 +342,7 @@ impl From<Highlight> for HighlightDto {
             ko_note: h.ko_note,
             annotation: h.annotation,
             ko_datetime: h.ko_datetime,
+            reading_id: h.reading_id,
             source: h.source,
             created_at: h.created_at,
         }

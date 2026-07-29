@@ -162,6 +162,20 @@ pub struct Highlight {
     /// The reader's own annotation, ours. Import never touches it.
     pub annotation: Option<String>,
     pub ko_datetime: Option<String>,
+    /// Which reading of the book this was captured during, when that can be
+    /// worked out — [`Storage::attribute_highlights`] matches `ko_datetime` into
+    /// a reading's window and this is its answer.
+    ///
+    /// **`None` is an ordinary outcome, not a failure.** KOReader's sidecar is
+    /// per-file and a reread appends to the same file, so the device cannot
+    /// supply this and a highlight captured between two readings genuinely
+    /// belongs to neither. A frontend showing highlights per reading has to have
+    /// somewhere for these to go; it must not drop them, since `book_id` is
+    /// still authoritative and the highlight is real.
+    ///
+    /// Derived, never entered: it is recomputed from scratch on every import, so
+    /// writing to it directly would be overwritten on the next sync.
+    pub reading_id: Option<i64>,
     /// Where the row came from (`koreader`). Provenance, not payload — a device
     /// refresh must leave it alone.
     pub source: String,
@@ -176,8 +190,8 @@ pub struct Highlight {
 /// Shared rather than inlined per query: `citations_for` in [`super::notes`]
 /// returns highlights too, and a second hand-written projection is how the two
 /// drift into disagreeing about what a highlight is.
-pub(super) const HIGHLIGHT_COLUMNS: &str =
-    "id, book_id, text, chapter, page, ko_note, annotation, ko_datetime, source, created_at";
+pub(super) const HIGHLIGHT_COLUMNS: &str = "id, book_id, text, chapter, page, ko_note, annotation, ko_datetime, reading_id, \
+     source, created_at";
 
 pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
     Highlight {
@@ -189,6 +203,7 @@ pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
         ko_note: r.get("ko_note"),
         annotation: r.get("annotation"),
         ko_datetime: r.get("ko_datetime"),
+        reading_id: r.get("reading_id"),
         source: r.get("source"),
         created_at: r.get("created_at"),
     }
@@ -380,6 +395,32 @@ impl Storage {
         );
         let rows = sqlx::query(&sql)
             .bind(book_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows.iter().map(row_to_highlight).collect())
+    }
+
+    /// What was highlighted during one reading, in the same order
+    /// [`Storage::list_highlights`] uses.
+    ///
+    /// A `Reading` is a first-class row that a reflection and a review already
+    /// anchor to, so asking one what was highlighted during it is the natural
+    /// question — and answering it by pulling the whole book's highlights and
+    /// filtering in the frontend is the sort of thing two frontends do
+    /// differently.
+    ///
+    /// It deliberately cannot ask for the **unattributed** ones: `reading_id IS
+    /// NULL` is a property of the *book's* list, not of any reading, and a
+    /// method that answered it here would need a book id anyway. Filter
+    /// `list_highlights` for those — the field is on the row precisely so that
+    /// grouping is a frontend's to do.
+    pub async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
+        let sql = format!(
+            "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE reading_id = ?
+             ORDER BY page ASC, ko_datetime ASC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(reading_id)
             .fetch_all(self.pool())
             .await?;
         Ok(rows.iter().map(row_to_highlight).collect())
