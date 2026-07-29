@@ -125,27 +125,80 @@ pub fn placeholder_symbol(row: u16, col: u16) -> Option<String> {
     Some(s)
 }
 
+/// How an image payload goes on the wire.
+///
+/// A wire format is not normally a policy question — zlib is smaller and every
+/// terminal that speaks the protocol accepts it. It became one because
+/// **libghostty's decompressor dies on ours**. Ghostty 1.3.1 and herdr 0.7.5
+/// (which embeds libghostty: `ghostty_terminal_vt_write` sits directly under
+/// its pty reader in the crash report) both take a `SIGTRAP` inside
+/// `std.compress.flate` while decoding the settle frame:
+///
+/// ```text
+/// Io.Writer.unreachableRebase ← compress.flate.Decompress.streamInner
+///   ← Io.Reader.appendRemaining ← terminal.…Handler.apcEnd
+/// ```
+///
+/// It is their bug — our payload is protocol-correct, `px.len() == s*v*4` — but
+/// it kills the user's whole multiplexer, and the only end of it we own is
+/// whether we hand that decompressor anything at all. [`ImageWire::Raw`] is the
+/// route around it: uncompressed RGBA reaches `apcEnd` and is copied, never
+/// inflated. See `docs/rich-renderer.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageWire {
+    /// zlib (`o=z`) — ~6x smaller, and what every terminal but a libghostty
+    /// one should get.
+    #[default]
+    Zlib,
+    /// Uncompressed RGBA. Costs bytes, which is why the settle budget shrinks
+    /// with it ([`super::raster::RAW_SETTLE_MAX_PX`]).
+    Raw,
+}
+
+impl ImageWire {
+    /// The `o=` key this format needs, empty when the bytes go as they are.
+    fn key(self) -> &'static str {
+        match self {
+            ImageWire::Zlib => "o=z,",
+            ImageWire::Raw => "",
+        }
+    }
+}
+
 /// Transmit `img` as image `id` and create a virtual placement spanning
 /// `cols` x `rows` cells.
 ///
 /// `a=T` does both in one escape. `U=1` marks the placement virtual (it draws
 /// nothing by itself — the placeholder cells do that), `f=32` is straight RGBA,
-/// `o=z` zlib, `q=2` silences all responses.
-pub fn transmit(img: &RgbaBuf, id: u32, cols: u16, rows: u16, in_tmux: bool) -> String {
+/// `o=z` zlib (see [`ImageWire`]), `q=2` silences all responses.
+pub fn transmit(
+    img: &RgbaBuf,
+    id: u32,
+    cols: u16,
+    rows: u16,
+    in_tmux: bool,
+    wire: ImageWire,
+) -> String {
     use base64::Engine as _;
     use flate2::{Compression, write::ZlibEncoder};
     use std::io::Write as _;
 
-    // Level 1: a smooth product render compresses several-fold, and the cheap
-    // level runs fast enough that the win on the wire dwarfs the CPU cost.
-    let mut enc = ZlibEncoder::new(Vec::new(), Compression::new(1));
-    let compressed = match enc.write_all(&img.px).and_then(|()| enc.finish()) {
-        Ok(v) => v,
-        // Compression cannot really fail against a Vec, but a renderer must
-        // never take the app down: drop the frame instead.
-        Err(_) => return String::new(),
+    let payload = match wire {
+        ImageWire::Zlib => {
+            // Level 1: a smooth product render compresses several-fold, and the
+            // cheap level runs fast enough that the win on the wire dwarfs the
+            // CPU cost.
+            let mut enc = ZlibEncoder::new(Vec::new(), Compression::new(1));
+            let compressed = match enc.write_all(&img.px).and_then(|()| enc.finish()) {
+                Ok(v) => v,
+                // Compression cannot really fail against a Vec, but a renderer
+                // must never take the app down: drop the frame instead.
+                Err(_) => return String::new(),
+            };
+            base64::engine::general_purpose::STANDARD.encode(&compressed)
+        }
+        ImageWire::Raw => base64::engine::general_purpose::STANDARD.encode(&img.px),
     };
-    let payload = base64::engine::general_purpose::STANDARD.encode(&compressed);
 
     let mut out = String::with_capacity(payload.len() + 256);
     let chunks: Vec<&str> = payload
@@ -159,8 +212,10 @@ pub fn transmit(img: &RgbaBuf, id: u32, cols: u16, rows: u16, in_tmux: bool) -> 
         let more = u8::from(i < last);
         let escape = if i == 0 {
             format!(
-                "\x1b_Ga=T,U=1,i={id},f=32,s={},v={},c={cols},r={rows},o=z,t=d,q=2,m={more};{chunk}\x1b\\",
-                img.width, img.height
+                "\x1b_Ga=T,U=1,i={id},f=32,s={},v={},c={cols},r={rows},{}t=d,q=2,m={more};{chunk}\x1b\\",
+                img.width,
+                img.height,
+                wire.key()
             )
         } else {
             format!("\x1b_Gm={more};{chunk}\x1b\\")
@@ -304,7 +359,7 @@ mod tests {
         use std::io::Read as _;
 
         let src = img(40, 30);
-        let esc = transmit(&src, 7, 10, 5, false);
+        let esc = transmit(&src, 7, 10, 5, false, ImageWire::Zlib);
         // Pull the payload back out of every chunk and reassemble it.
         let mut b64 = String::new();
         for part in esc.split("\x1b_G").skip(1) {
@@ -323,8 +378,48 @@ mod tests {
     }
 
     #[test]
+    fn a_raw_transmit_hands_the_decompressor_nothing() {
+        use base64::Engine as _;
+
+        // The whole point of the format: `o=z` is what libghostty dies on, so a
+        // raw payload must not merely be decodable *without* zlib — the key
+        // that sends it into the decompressor must be absent.
+        let src = img(40, 30);
+        let esc = transmit(&src, 7, 10, 5, false, ImageWire::Raw);
+        assert!(!esc.contains("o=z"), "raw payload still claims compression");
+        assert!(esc.contains("f=32"), "still straight RGBA");
+        assert!(esc.contains("s=40,v=30"), "pixel dimensions missing");
+
+        let mut b64 = String::new();
+        for part in esc.split("\x1b_G").skip(1) {
+            let body = part.trim_end_matches("\x1b\\");
+            b64.push_str(body.split_once(';').expect("chunk has a payload").1);
+        }
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64.as_bytes())
+            .expect("valid base64");
+        assert_eq!(raw, src.px, "the pixels did not survive the encoding");
+    }
+
+    #[test]
+    fn raw_costs_bytes_which_is_why_it_costs_pixels_too() {
+        // The number behind `RAW_SETTLE_MAX_PX = SETTLE_MAX_PX / 6`. If this
+        // ratio ever drifts far from six, that divisor is wrong rather than
+        // conservative — and the settle frame is either needlessly soft or
+        // quietly six times heavier than the budget it was sized against.
+        let src = img(400, 400);
+        let zlib = transmit(&src, 1, 10, 10, false, ImageWire::Zlib).len() as f64;
+        let raw = transmit(&src, 1, 10, 10, false, ImageWire::Raw).len() as f64;
+        assert!(raw > zlib, "raw {raw} was not larger than zlib {zlib}");
+        // The fixture is `i % 251` noise, which is close to incompressible; a
+        // real render compresses far better, so this is the *lower* bound on
+        // the ratio and the budget divisor stays honest.
+        assert!(raw / zlib > 1.2, "ratio {} is implausible", raw / zlib);
+    }
+
+    #[test]
     fn the_first_chunk_carries_the_control_keys_and_the_rest_do_not() {
-        let esc = transmit(&img(64, 64), 9, 4, 2, false);
+        let esc = transmit(&img(64, 64), 9, 4, 2, false, ImageWire::Zlib);
         let first = esc.split("\x1b\\").next().unwrap();
         assert!(first.contains("a=T"), "no transmit-and-place");
         assert!(first.contains("U=1"), "placement must be virtual");
@@ -342,7 +437,7 @@ mod tests {
     #[test]
     fn chunking_marks_every_chunk_but_the_last_as_continued() {
         // Big enough to need several chunks even after compressing.
-        let esc = transmit(&img(400, 400), 3, 10, 10, false);
+        let esc = transmit(&img(400, 400), 3, 10, 10, false, ImageWire::Zlib);
         let chunks: Vec<&str> = esc.split("\x1b_G").skip(1).collect();
         assert!(chunks.len() > 1, "test needs a multi-chunk payload");
         for chunk in &chunks[..chunks.len() - 1] {
@@ -365,14 +460,14 @@ mod tests {
 
     #[test]
     fn a_single_chunk_payload_is_marked_complete_immediately() {
-        let esc = transmit(&img(2, 2), 5, 1, 1, false);
+        let esc = transmit(&img(2, 2), 5, 1, 1, false, ImageWire::Zlib);
         assert_eq!(esc.matches("\x1b_G").count(), 1);
         assert!(esc.contains("m=0"));
     }
 
     #[test]
     fn tmux_wrapping_covers_every_chunk_separately() {
-        let esc = transmit(&img(400, 400), 3, 10, 10, true);
+        let esc = transmit(&img(400, 400), 3, 10, 10, true, ImageWire::Zlib);
         let opens = esc.matches("\x1bPtmux;").count();
         let graphics = esc.matches("\x1b\x1b_G").count();
         assert!(opens > 1, "test needs a multi-chunk payload");

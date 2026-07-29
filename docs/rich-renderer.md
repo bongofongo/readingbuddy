@@ -505,9 +505,47 @@ expensive instruments stay manual:
 | `a_glyph_spin_stays_inside_its_byte_budget` | the glyph baseline itself |
 | `a_spinning_book_retransmits_well_below_the_tick_rate` | `rich-always` stays bad-but-survivable, so the calibration holds |
 
+## The wire format is a policy question, because of one decoder
+
+`ImageWire` (`render3d/kitty.rs`) picks between `o=z` and an uncompressed RGBA
+payload, and `Caps::image_wire` carries the choice beside everything the probe
+actually measured. It is the one setting in `Caps` that is **identification
+rather than capability**, and that is forced: a terminal that dies decoding a
+compressed image does not answer "no" to anything. It answers `OK` to the
+graphics query, accepts the settle frame, and disappears — which from this side
+is indistinguishable from the user quitting.
+
+Two hosts get `Raw`: **Ghostty** (`TERM_PROGRAM=ghostty`, `xterm-ghostty`,
+`GHOSTTY_*`) and **herdr** (`HERDR_ENV` / `HERDR_PANE_ID` / `HERDR_SOCKET_PATH`).
+herdr is a multiplexer rather than a terminal and is in the list anyway, because
+it **embeds libghostty** — `ghostty_terminal_vt_write` sits directly under its
+pty reader in the crash report — so it owns the decode and inherits the bug. The
+outer terminal being kitty changes nothing.
+
+`--kitty-compress on|off` overrides the guess in both directions, and `--probe`
+prints which way it went. Identification by name is exactly the sort of thing
+that goes stale, so `on` is also how you check whether a fixed libghostty has
+landed: it is the configuration that crashes.
+
+**Raw costs bytes, so it costs pixels.** `RAW_MOTION_MAX_PX` and
+`RAW_SETTLE_MAX_PX` are the zlib budgets divided by six — a smooth render goes
+under one base64 byte per pixel through zlib against 5.33 raw, so a sixth of the
+pixels puts the same number of bytes on the wire. The budget was always bytes
+wearing a pixel count as its unit; dropping the compression alone would have
+fired a 6.4 MB settle frame at a decoder just established as fragile about large
+images. The settle frame is correspondingly softer on those two hosts — visibly
+sharper than glyphs, not the full 1.2 MP.
+
+**Still open, and the way to get the resolution back:** `t=t` temp-file
+transmission. The payload becomes a *path*, so the full 1.2 MP costs ~100 bytes
+on the wire and never meets the decompressor either. It needs a local terminal
+(no ssh), a temp-file lifecycle, and a way to notice that a terminal ignored it —
+`q=2` suppresses the error that would say so.
+
 ## Known bugs
 
-**Ghostty 1.3.1 crashes on park.** Pressing the spin-freeze key (`space`)
+**Ghostty 1.3.1 crashes on park — worked around, not fixed.** Pressing the
+spin-freeze key (`space`)
 while the book is on screen parks it, which transmits the one real settle
 frame (`Quality::Settle`, up to `SETTLE_MAX_PX`, zlib-compressed per `o=z`,
 chunked in `kitty::transmit`). In Ghostty 1.3.1 (ReleaseFast, macOS 26.5.2)
@@ -533,11 +571,33 @@ A Zig `unreachable` inside Ghostty's `std.compress.flate` decompressor, while
 it decodes the zlib-compressed image payload we transmit. Motion never
 triggers it — the hybrid rule sends no pixels while spinning — so the bug is
 invisible until the book is parked. Not reproduced under tmux+Ghostty or
-other terminals in this session; whether it is zlib-chunking-specific or a
-broader Ghostty regression is unconfirmed. Not yet fixed here or reported
-upstream. Candidate workaround, not yet applied: drop `o=z` and send raw
-RGBA, which would route around Ghostty's decompressor entirely at the cost of
-a larger one-time settle transmission.
+other terminals in this session.
+
+**The same crash then arrived from a second direction**: herdr 0.7.5 (an agent
+multiplexer that embeds libghostty) dies identically while running inside
+*kitty*, which rules out Ghostty-the-terminal and puts it squarely in the
+embedded VT engine. Its report is the same six frames, under herdr's own pty
+reader:
+
+```
+Io.Writer.unreachableRebase ← compress.flate.Decompress.streamInner
+  ← compress.flate.Decompress.readVec ← Io.Reader.appendRemaining
+  ← terminal.stream_terminal.Handler.apcEnd ← ghostty_terminal_vt_write
+  ← herdr::pane::terminal::PaneTerminal::process_pty_bytes
+```
+
+Our payload is protocol-correct — `px.len() == s*v*4`, chunks inside the
+documented 4096-byte ceiling — so the only end of this we own is whether that
+decompressor is handed anything at all. It now is not: both hosts are
+identified from the environment and get `ImageWire::Raw` (see above). Still
+their bug, still unreported upstream; `--kitty-compress on` is how a fixed
+version would be confirmed.
+
+Two things this workaround does **not** claim. The settle frame on those hosts
+is a sixth of the pixels, because the bytes have to stay where they were. And
+herdr only *forwards* kitty graphics to its own outer terminal when its
+`[experimental] kitty_graphics` is on — off by default — so not crashing is not
+the same as the book appearing there.
 
 ## Still open
 

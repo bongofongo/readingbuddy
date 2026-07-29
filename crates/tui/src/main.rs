@@ -71,6 +71,12 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = RenderArg::Auto)]
     render: RenderArg,
 
+    /// Compress the pixel payload (`o=z`). `auto` sends it raw on a libghostty
+    /// host — Ghostty and herdr crash decoding a compressed image — and zlib
+    /// everywhere else. Force it either way when the guess is wrong.
+    #[arg(long, value_enum, default_value_t = CompressArg::Auto, value_name = "WHEN")]
+    kitty_compress: CompressArg,
+
     /// Probe the terminal, print what it can do and which renderer that picks,
     /// then exit. Needs a real tty — pipe it and it reports the safe floor.
     #[arg(long)]
@@ -177,6 +183,30 @@ impl RenderArg {
             _ if caps.supports_pixels() => RenderMode::Rich,
             _ => RenderMode::Glyph,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CompressArg {
+    /// Raw on a libghostty host (Ghostty, herdr), zlib everywhere else.
+    Auto,
+    /// zlib always. What every terminal but a libghostty one wants — and the
+    /// way to confirm a libghostty host is still crashing.
+    On,
+    /// Raw always. Six times the bytes, so the pixel budget shrinks with it.
+    Off,
+}
+
+impl CompressArg {
+    /// Apply the flag over what the environment suggested.
+    fn apply(self, caps: render3d::Caps) -> render3d::Caps {
+        use render3d::ImageWire;
+        let image_wire = match self {
+            CompressArg::Auto => return caps,
+            CompressArg::On => ImageWire::Zlib,
+            CompressArg::Off => ImageWire::Raw,
+        };
+        render3d::Caps { image_wire, ..caps }
     }
 }
 
@@ -294,6 +324,7 @@ async fn main() -> Result<()> {
     // The probe has to run with raw mode on and before ratatui reads any input,
     // so the mode can only be settled once the terminal is up.
     let (mut terminal, caps) = setup_terminal(meter.clone())?;
+    let caps = cli.kitty_compress.apply(caps);
     app.set_caps(caps);
     app.set_render_mode(cli.render.resolve(caps));
     app.rich.count_bytes(meter);
@@ -320,6 +351,7 @@ async fn main() -> Result<()> {
 fn report_caps(cli: &Cli) -> Result<()> {
     let raw_mode = enable_raw_mode().is_ok();
     let (caps, raw) = render3d::caps::probe_verbose();
+    let caps = cli.kitty_compress.apply(caps);
     if raw_mode {
         let _ = disable_raw_mode();
     }
@@ -340,6 +372,13 @@ fn report_caps(cli: &Cli) -> Result<()> {
     println!("tmux           : {}", caps.in_tmux);
     println!("passthrough    : {:?}", caps.passthrough);
     println!("pixels usable  : {}", caps.supports_pixels());
+    // Not something the terminal reported — nothing answers "I crash on zlib" —
+    // so print it beside what it did report rather than leaving the one setting
+    // that is a guess invisible.
+    println!(
+        "image payload  : {:?} (--kitty-compress {:?})",
+        caps.image_wire, cli.kitty_compress
+    );
     println!("renderer       : {mode:?} (--render {:?})", cli.render);
     // The bytes the terminal actually sent. When detection surprises you this
     // is the only evidence that settles it, so print it rather than describe it.
@@ -491,6 +530,7 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     app.perf.enable_in_memory();
 
     let (mut terminal, caps) = setup_terminal(meter.clone())?;
+    let caps = cli.kitty_compress.apply(caps);
     app.set_caps(caps);
     app.rich.count_bytes(meter);
 
@@ -882,7 +922,7 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
             .context("no books in the library to bench with")?,
     };
 
-    let caps = render3d::caps::probe();
+    let caps = cli.kitty_compress.apply(render3d::caps::probe());
     render3d::caps::restore_passthrough();
     let (cols, rows) = cli
         .dump_frame
@@ -906,6 +946,7 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
             rows,
             caps.cell_px,
             render3d::raster::Quality::Motion,
+            caps.image_wire,
         );
 
         let t0 = Instant::now();
@@ -917,7 +958,7 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
         trace_ns += t0.elapsed().as_nanos();
 
         let t1 = Instant::now();
-        let esc = render3d::kitty::transmit(&img, id, cols, rows, caps.in_tmux);
+        let esc = render3d::kitty::transmit(&img, id, cols, rows, caps.in_tmux, caps.image_wire);
         encode_ns += t1.elapsed().as_nanos();
 
         let t2 = Instant::now();

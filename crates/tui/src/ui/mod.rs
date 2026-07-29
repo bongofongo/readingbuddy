@@ -417,6 +417,12 @@ fn confirm_prompt(app: &App) -> Option<String> {
         crate::app::Confirm::RemoveBook { title, .. } => format!("remove {title}?  y / n"),
         crate::app::Confirm::DeleteNote(n) => format!("delete “{}”?  y / n", n.title),
         crate::app::Confirm::DiscardDraft => "discard note?  y / n".to_string(),
+        // Says what was looked in as well as what was asked: without the first
+        // half this reads as the search having failed, when nothing has been
+        // searched yet.
+        crate::app::Confirm::SearchOnline(q) => {
+            format!("nothing in the library matching “{q}” — search online?  y / n")
+        }
     })
 }
 

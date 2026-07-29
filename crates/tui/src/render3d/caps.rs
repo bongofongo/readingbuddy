@@ -38,6 +38,8 @@ use std::io::{IsTerminal, Write, stdin, stdout};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use super::kitty::ImageWire;
+
 /// How long to wait for any reply at all before giving up on the terminal.
 const DEADLINE: Duration = Duration::from_millis(200);
 /// Once the DA1 sentinel lands, how much longer to wait for stragglers. The
@@ -89,6 +91,11 @@ pub struct Caps {
     pub cell_px_measured: bool,
     pub in_tmux: bool,
     pub passthrough: Passthrough,
+    /// How image payloads go on the wire. Not a terminal *capability* — every
+    /// terminal that speaks the protocol takes zlib — but a property of the
+    /// situation in exactly the way the rest of this struct is: on a libghostty
+    /// host, compressing is what crashes it. See [`ImageWire`].
+    pub image_wire: ImageWire,
 }
 
 impl Default for Caps {
@@ -101,6 +108,7 @@ impl Default for Caps {
             cell_px_measured: false,
             in_tmux: false,
             passthrough: Passthrough::NotTmux,
+            image_wire: ImageWire::Zlib,
         }
     }
 }
@@ -224,6 +232,14 @@ pub fn probe_verbose() -> (Caps, Vec<u8>) {
     let in_tmux = std::env::var_os("TMUX").is_some();
     let mut caps = Caps {
         in_tmux,
+        // Decided from the environment even when the probe never runs (piped
+        // output, no tty): it is not a reply, and a `--dump-png` or a bench that
+        // does reach a terminal must reach it the same way the app would.
+        image_wire: if env_suggests_libghostty() {
+            ImageWire::Raw
+        } else {
+            ImageWire::Zlib
+        },
         ..Caps::default()
     };
 
@@ -477,6 +493,43 @@ fn env_suggests_kitty() -> bool {
     )
 }
 
+/// The wire format this host's decoder can be trusted with.
+///
+/// The one thing the probe cannot ask about. A terminal that crashes on a
+/// compressed payload does not answer "no" to anything — it answers `OK` to the
+/// graphics query, takes the settle frame, and dies, which from here is
+/// indistinguishable from the user quitting. So this is identification rather
+/// than capability, and `--kitty-compress` exists because identification by
+/// name is exactly the kind of thing that goes stale.
+///
+/// **herdr is here for the same reason Ghostty is**: it is a multiplexer, not a
+/// terminal, but it embeds libghostty (`ghostty_terminal_vt_write` sits under
+/// its pty reader in the crash report), so it owns the decode and inherits the
+/// bug — the outer terminal being kitty changes nothing.
+fn env_suggests_libghostty() -> bool {
+    let has = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    host_is_libghostty(
+        &has,
+        &std::env::var("TERM_PROGRAM").unwrap_or_default(),
+        &std::env::var("TERM").unwrap_or_default(),
+    )
+}
+
+/// [`env_suggests_libghostty`] as a pure function, so it can be tested. Reading
+/// the environment is what makes the caller untestable — `set_var` is `unsafe`
+/// in edition 2024 and races every other test in the binary.
+fn host_is_libghostty(has: &dyn Fn(&str) -> bool, term_program: &str, term: &str) -> bool {
+    // herdr exports these into every pane it owns; any one of them is the
+    // multiplexer saying it is between us and the terminal.
+    if has("HERDR_ENV") || has("HERDR_PANE_ID") || has("HERDR_SOCKET_PATH") {
+        return true;
+    }
+    if has("GHOSTTY_RESOURCES_DIR") || has("GHOSTTY_BIN_DIR") {
+        return true;
+    }
+    term_program == "ghostty" || term.contains("ghostty")
+}
+
 // ---------------------------------------------------------------------------
 // tmux passthrough
 // ---------------------------------------------------------------------------
@@ -559,6 +612,44 @@ pub fn restore_passthrough() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_libghostty_host_is_identified_by_any_of_its_markers() {
+        let none = |_: &str| false;
+        let only = |k: &'static str| move |q: &str| q == k;
+
+        // herdr is a multiplexer, not a terminal, and is here anyway: it embeds
+        // libghostty and so owns the decode. Any one of its pane markers is
+        // enough — a pane inherits all three, and needing all three would make
+        // the detection fail closed in the one situation it exists for.
+        for marker in ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH"] {
+            assert!(
+                host_is_libghostty(&only(marker), "", ""),
+                "{marker} did not identify herdr"
+            );
+        }
+        assert!(host_is_libghostty(&only("GHOSTTY_RESOURCES_DIR"), "", ""));
+        assert!(host_is_libghostty(&none, "ghostty", ""));
+        assert!(host_is_libghostty(&none, "tmux", "xterm-ghostty"));
+
+        // kitty's own decoder is C zlib and has never had this problem, so it
+        // must keep the smaller payload.
+        assert!(!host_is_libghostty(
+            &only("KITTY_WINDOW_ID"),
+            "",
+            "xterm-kitty"
+        ));
+        assert!(!host_is_libghostty(&none, "WezTerm", "wezterm"));
+        assert!(!host_is_libghostty(&none, "", ""));
+    }
+
+    #[test]
+    fn the_safe_floor_still_compresses() {
+        // `Caps::default()` is what tests and non-tty runs get. Raw is the
+        // workaround for a named host, not the new normal — if this ever flips,
+        // every other terminal silently starts taking six times the bytes.
+        assert_eq!(Caps::default().image_wire, ImageWire::Zlib);
+    }
 
     #[test]
     fn wraps_for_tmux_and_doubles_escapes() {

@@ -20,6 +20,7 @@ use readingbuddy::Book;
 
 pub use blit::{GlyphSet, RgbBuf};
 pub use caps::Caps;
+pub use kitty::ImageWire;
 pub use present::presenter_for;
 pub use scene::Pose;
 

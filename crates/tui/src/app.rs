@@ -205,6 +205,11 @@ pub struct LinkPicker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputContext {
     SearchQuery,
+    /// A query against the books already in the library — what `/` means on the
+    /// home shelf. Distinct from [`InputContext::SearchQuery`], which is the
+    /// federated provider search: the shelf is a *place*, and looking for a book
+    /// you already have must not leave it for the network.
+    LibraryFind,
     IsbnAdd,
     ProgressPage,
     KoPath,
@@ -317,6 +322,12 @@ pub enum Confirm {
     DeleteNote(NoteRecord),
     /// Discard the in-progress editor draft stashed in `pending_discard`.
     DiscardDraft,
+    /// A library find that matched nothing, offering the provider search over
+    /// the same words. Asked rather than done: the fallback reaches the network
+    /// and adds books, so it is the user's move, not a consequence of a typo.
+    /// Declining leaves the shelf exactly as it was — which is why this is a
+    /// question and not a status line naming a key nobody bound.
+    SearchOnline(String),
 }
 
 /// What an open in-house editor will do on save.
@@ -357,6 +368,14 @@ pub struct App {
     pub menu_index: usize,
     pub library: Vec<Book>,
     pub library_state: ListState,
+    /// The words the library list is narrowed to, if any.
+    ///
+    /// Held on `App` and applied inside [`App::refresh_library`] rather than at
+    /// draw time, so `self.library` *is* what is on screen: every index into it
+    /// — the selection, remove, open — keeps meaning the row the user is
+    /// standing on, and a refresh underneath a filtered list cannot silently
+    /// widen it back to the whole library.
+    pub library_filter: Option<String>,
     /// The home shelf: one entry per **open** reading.
     ///
     /// The [`Reading`] rides along beside the [`Book`] because the two are not
@@ -461,6 +480,7 @@ impl App {
             menu_index: 0,
             library: Vec::new(),
             library_state: ListState::default(),
+            library_filter: None,
             reading: Vec::new(),
             reading_state: ListState::default(),
             view: None,
@@ -529,6 +549,9 @@ impl App {
 
     pub async fn refresh_library(&mut self) -> Result<()> {
         self.library = self.engine.list_books(200, BookSort::LastModified).await?;
+        if let Some(q) = self.library_filter.clone() {
+            self.library.retain(|b| matches_book(b, &q));
+        }
         if !self.library.is_empty() && self.library_state.selected().is_none() {
             self.library_state.select(Some(0));
         }
@@ -774,9 +797,15 @@ impl App {
             (Screen::Home, Action::Select) => self.open_selected_reading().await?,
             (Screen::Home, Action::Reflect) => self.open_reading_note(NoteKind::Reflection).await?,
             (Screen::Home, Action::Review) => self.open_reading_note(NoteKind::Review).await?,
-            // The two ways a book gets onto this shelf are search and the
-            // library, and `/` already means "search" everywhere else.
-            (Screen::Home, Action::Query) => self.open_search(),
+            // `/` here looks in the library first. The shelf holds what is
+            // *open*, so the commonest thing to want from it is a book you
+            // already own but are not currently reading — and answering that
+            // with a provider search is both slower and the wrong answer. The
+            // network is still reachable: a find that matches nothing offers it
+            // (`Confirm::SearchOnline`).
+            (Screen::Home, Action::Query) => {
+                self.start_input(InputContext::LibraryFind, "find in library", "")
+            }
             // The front door: back from here is out, exactly as it used to be
             // from the menu.
             (Screen::Home, Action::Back) => self.quit = true,
@@ -795,7 +824,23 @@ impl App {
 
             (Screen::Library, Action::Up) => self.step_library(-1),
             (Screen::Library, Action::Down) => self.step_library(1),
-            (Screen::Library, Action::Back) => self.screen = Screen::Menu,
+            // Same key, same meaning, one screen further in: narrowing an
+            // already-narrowed list is refining it, so the box opens on the
+            // words that produced what is on screen rather than empty.
+            (Screen::Library, Action::Query) => {
+                let initial = self.library_filter.clone().unwrap_or_default();
+                self.start_input(InputContext::LibraryFind, "find in library", &initial)
+            }
+            // Esc drops the filter *before* it leaves: a narrowed list is a
+            // state the user can see, and backing out of the screen while it is
+            // still set would hide books behind a word typed on another screen.
+            (Screen::Library, Action::Back) => {
+                if self.library_filter.is_some() {
+                    self.clear_library_filter().await?;
+                } else {
+                    self.screen = Screen::Menu;
+                }
+            }
             (Screen::Library, Action::Delete) => self.ask_remove_selected(),
             (Screen::Library, Action::Select) => {
                 if let Some(book) = self
@@ -1040,6 +1085,43 @@ impl App {
         Ok(())
     }
 
+    /// Narrow the library to `query` and stand on the result.
+    ///
+    /// The matching is a plain case-insensitive substring over title and
+    /// authors, deliberately not the engine's fuzzy matcher: that one exists to
+    /// decide whether two *records* are the same book, and its bands would drop
+    /// a one-letter query that a person typing into a list plainly means.
+    ///
+    /// Matching nothing is not a dead end and not a silent no-op either — it
+    /// asks whether to look online for the same words, which is the search the
+    /// key used to open unconditionally.
+    async fn find_in_library(&mut self, query: String) -> Result<()> {
+        self.library_filter = Some(query.clone());
+        // Selection is reset before the reload rather than clamped after it:
+        // the rows are a different set, so keeping row 3 would land on an
+        // unrelated book.
+        self.library_state.select(None);
+        self.refresh_library().await?;
+        if self.library.is_empty() {
+            self.library_filter = None;
+            self.refresh_library().await?;
+            self.confirm = Some(Confirm::SearchOnline(query));
+            return Ok(());
+        }
+        self.status = None;
+        self.screen = Screen::Library;
+        Ok(())
+    }
+
+    /// Widen the library list back to the whole library.
+    async fn clear_library_filter(&mut self) -> Result<()> {
+        self.library_filter = None;
+        self.library_state.select(None);
+        self.refresh_library().await?;
+        self.status = None;
+        Ok(())
+    }
+
     /// Open the search screen onto a fresh query box.
     fn open_search(&mut self) {
         self.screen = Screen::Search;
@@ -1061,7 +1143,10 @@ impl App {
                 self.screen = Screen::Home;
             }
             MenuItem::Library => {
-                self.refresh_library().await?;
+                // The menu's "Library" is the whole library, always: arriving
+                // at a list still narrowed by a word typed minutes ago on
+                // another screen reads as books having gone missing.
+                self.clear_library_filter().await?;
                 if self.library.is_empty() {
                     self.status =
                         Some("library is empty — add a book with Search or Add by ISBN".into());
@@ -1070,7 +1155,9 @@ impl App {
                 }
             }
             MenuItem::Continue => {
-                self.refresh_library().await?;
+                // Likewise: "continue" means the most recent book, not the most
+                // recent one that happens to match a live filter.
+                self.clear_library_filter().await?;
                 match self.library.first().cloned() {
                     Some(book) => self.open_book(book).await?,
                     None => self.status = Some("nothing to continue — the library is empty".into()),
@@ -2202,6 +2289,20 @@ impl App {
                 self.note_editor = self.pending_discard.take();
                 self.status = None;
             }
+            // Not `open_search`: that opens an empty query box, and the words
+            // are already typed — asking for them a second time would be the
+            // app forgetting what the question it just asked was about.
+            Some(Confirm::SearchOnline(query)) if yes => {
+                self.screen = Screen::Search;
+                self.search_results.clear();
+                self.search_state.select(None);
+                self.run_search(query).await?;
+            }
+            // Declining leaves the shelf as it was, with the words still named
+            // so the answer is legible after the box closes.
+            Some(Confirm::SearchOnline(query)) => {
+                self.status = Some(format!("nothing in the library matching “{query}”"));
+            }
             // Any other decline just keeps things as they were.
             Some(_) => self.status = Some("kept.".into()),
             None => {}
@@ -2270,10 +2371,17 @@ impl App {
             if context == InputContext::SearchQuery && self.search_results.is_empty() {
                 self.screen = Screen::Menu;
             }
+            // An emptied find box is how the filter comes off from the library
+            // screen: the box opens on the words that are set, so clearing them
+            // and pressing enter is the obvious way to ask for all of it.
+            if context == InputContext::LibraryFind && self.library_filter.is_some() {
+                self.clear_library_filter().await?;
+            }
             return Ok(());
         }
         match context {
             InputContext::SearchQuery => self.run_search(text).await?,
+            InputContext::LibraryFind => self.find_in_library(text).await?,
             InputContext::IsbnAdd => self.add_isbn(text).await?,
             InputContext::KoPath => self.import_ko(text).await?,
             InputContext::DevicePath => {
@@ -2460,6 +2568,24 @@ impl App {
         self.search_state
             .select(Some(((cur + delta).rem_euclid(len)) as usize));
     }
+}
+
+/// Does this book answer to `query`?
+///
+/// Title and authors, case-insensitively, as a substring — the two fields the
+/// row itself shows, so a match is always visible in the row it produced.
+/// ISBNs are deliberately not searched: typing one is what the menu's
+/// add-by-ISBN is for.
+///
+/// `to_lowercase` rather than `eq_ignore_ascii_case` because a library is not
+/// ASCII: `Ä` must find `ä`.
+fn matches_book(b: &Book, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let hay = format!("{} {}", b.display_title(), b.display_authors()).to_lowercase();
+    hay.contains(&q)
 }
 
 fn wrap_angle(a: f32) -> f32 {
@@ -3431,6 +3557,7 @@ mod tests {
 
         let caps = Caps {
             kitty_graphics: true,
+            image_wire: crate::render3d::ImageWire::Zlib,
             cell_px: (9, 19),
             cell_px_measured: true,
             in_tmux: true,
@@ -4062,6 +4189,7 @@ mod tests {
     }
 
     /// The whole rendered buffer as one string, rows joined by newlines.
+
     fn screen_text(app: &mut App, w: u16, h: u16) -> String {
         let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
         t.draw(|f| ui::draw(f, app)).expect("draw");
@@ -4249,13 +4377,167 @@ mod tests {
 
         let text = screen_text(&mut app, 80, 20);
         assert!(text.contains("nothing open"), "{text}");
-        assert!(text.contains("search"), "no way onward: {text}");
+        assert!(text.contains("find"), "no way onward: {text}");
         assert!(text.contains("menu"), "no way onward: {text}");
 
-        // And the key it advertises does what it says.
-        app.handle(Action::Query).await.expect("search");
-        assert_eq!(app.screen, Screen::Search);
-        assert!(app.input.is_some(), "/ opened no query box");
+        // And the key it advertises does what it says. It opens the *library*
+        // box, not the provider search: a finished book is still on the shelf
+        // this key looks through, which is most of why it looks there first.
+        app.handle(Action::Query).await.expect("find");
+        assert_eq!(app.screen, Screen::Home);
+        assert_eq!(
+            app.input.as_ref().map(|i| i.context),
+            Some(InputContext::LibraryFind),
+            "/ opened no find box"
+        );
+    }
+
+    /// Seed a second book so a find has something to *not* match.
+    async fn seed_second_book(app: &App) {
+        app.engine
+            .save_book(&Book {
+                title: Some("Pachinko".into()),
+                authors: vec!["Min Jin Lee".into()],
+                isbn_13: Some("9781455563937".into()),
+                ..Book::default()
+            })
+            .await
+            .expect("save");
+    }
+
+    /// The whole point of the key: a book you already own is found in the
+    /// library, and no provider is asked. Asserted by where it lands — the
+    /// search screen is the only place a network call is made from, and this
+    /// never goes there.
+    #[tokio::test]
+    async fn a_find_on_the_home_shelf_looks_in_the_library_first() {
+        let mut app = test_app().await;
+        seed_second_book(&app).await;
+        app.refresh_library().await.expect("refresh");
+        assert_eq!(app.library.len(), 2);
+
+        app.handle(Action::Query).await.expect("find");
+        app.commit_input(InputContext::LibraryFind, "pachinko".into())
+            .await
+            .expect("commit");
+
+        assert_eq!(app.screen, Screen::Library);
+        assert_eq!(app.library_filter.as_deref(), Some("pachinko"));
+        assert_eq!(app.library.len(), 1);
+        assert_eq!(app.library[0].display_title(), "Pachinko");
+        assert_eq!(app.library_state.selected(), Some(0));
+        assert!(app.search_results.is_empty(), "a provider was asked");
+    }
+
+    /// Matching nothing is a question, not a silent no-op and not a network
+    /// call taken on the user's behalf. The shelf is left exactly as it was
+    /// while the question stands.
+    #[tokio::test]
+    async fn a_find_that_matches_nothing_asks_before_going_online() {
+        let mut app = test_app().await;
+        app.refresh_library().await.expect("refresh");
+        let all = app.library.len();
+
+        app.commit_input(InputContext::LibraryFind, "gravity's rainbow".into())
+            .await
+            .expect("commit");
+
+        assert_eq!(app.screen, Screen::Home);
+        assert!(
+            app.library_filter.is_none(),
+            "a filter matching nothing stuck"
+        );
+        assert_eq!(app.library.len(), all);
+        match &app.confirm {
+            Some(Confirm::SearchOnline(q)) => assert_eq!(q, "gravity's rainbow"),
+            other => panic!("expected the online-search question, got {other:?}"),
+        }
+
+        // Declining goes nowhere near a provider.
+        app.resolve_confirm(false).await.expect("decline");
+        assert_eq!(app.screen, Screen::Home);
+        assert!(app.search_results.is_empty());
+        assert!(
+            app.status.as_deref().is_some_and(|s| s.contains("library")),
+            "the answer should say where it looked: {:?}",
+            app.status
+        );
+    }
+
+    /// Esc off a narrowed library widens it rather than leaving: the two
+    /// meanings are one keypress apart, and leaving with the filter still set
+    /// is how books appear to have gone missing later.
+    #[tokio::test]
+    async fn esc_widens_a_narrowed_library_before_it_leaves() {
+        let mut app = test_app().await;
+        seed_second_book(&app).await;
+        app.refresh_library().await.expect("refresh");
+        let all = app.library.len();
+
+        app.commit_input(InputContext::LibraryFind, "station".into())
+            .await
+            .expect("commit");
+        assert_eq!(app.library.len(), 1);
+
+        app.handle(Action::Back).await.expect("widen");
+        assert_eq!(app.screen, Screen::Library, "esc left before it widened");
+        assert!(app.library_filter.is_none());
+        assert_eq!(app.library.len(), all);
+
+        app.handle(Action::Back).await.expect("leave");
+        assert_eq!(app.screen, Screen::Menu);
+    }
+
+    /// A refresh under a narrowed list keeps it narrowed — the filter lives on
+    /// `App` and is applied where the rows are built, so nothing can widen it
+    /// behind the user's back.
+    #[tokio::test]
+    async fn a_refresh_does_not_widen_a_narrowed_library() {
+        let mut app = test_app().await;
+        seed_second_book(&app).await;
+        app.commit_input(InputContext::LibraryFind, "station".into())
+            .await
+            .expect("commit");
+        assert_eq!(app.library.len(), 1);
+
+        app.handle(Action::Refresh).await.expect("refresh");
+        assert_eq!(app.library.len(), 1);
+
+        // But the menu's own Library item is the whole library, always.
+        app.screen = Screen::Menu;
+        app.menu_index = MENU
+            .iter()
+            .position(|m| m.0 == MenuItem::Library)
+            .expect("item");
+        app.handle(Action::Select).await.expect("open library");
+        assert!(app.library_filter.is_none());
+        assert_eq!(app.library.len(), 2);
+    }
+
+    #[test]
+    fn a_find_matches_title_and_author_in_any_case() {
+        let b = Book {
+            title: Some("Kafka on the Shore".into()),
+            authors: vec!["Haruki Murakami".into()],
+            ..Book::default()
+        };
+        assert!(matches_book(&b, "kafka"));
+        assert!(matches_book(&b, "MURAKAMI"));
+        assert!(matches_book(&b, "  shore "));
+        assert!(!matches_book(&b, "pachinko"));
+        // An empty query is everything, which is what makes clearing the box
+        // the same thing as clearing the filter.
+        assert!(matches_book(&b, "   "));
+    }
+
+    /// Not ASCII-only: a library holds `Ä` and a person types `ä`.
+    #[test]
+    fn a_find_folds_case_outside_ascii() {
+        let b = Book {
+            title: Some("Ödipus".into()),
+            ..Book::default()
+        };
+        assert!(matches_book(&b, "ödipus"));
     }
 
     /// The round trip the whole item is for: home → book → the reflection, in

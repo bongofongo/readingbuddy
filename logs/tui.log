@@ -32,3 +32,87 @@
 2026-07-29T10:51:46.803651Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
 2026-07-29T10:51:46.810494Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
 2026-07-29T10:51:46.827322Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:34:54.202722Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:34:54.206425Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:34:54.274737Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:37:15.692520Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:37:15.696078Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:37:15.762226Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:37:33.402419Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:37:33.405914Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:37:33.418212Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:38:13.215516Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:38:13.218781Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:38:13.240927Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:55:42.278862Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:55:42.281980Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:55:42.292918Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:59:15.056717Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:59:15.060458Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:59:15.082306Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T11:59:27.769816Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T11:59:27.773080Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T11:59:27.794658Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:06:39.372899Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:06:39.376672Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:06:39.396910Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:06:46.916877Z  WARN search{has_isbn=false}: readingbuddy::search: provider degraded provider=googlebooks detail=googlebooks error: HTTP status client error (429 Too Many Requests) for url (https://www.googleapis.com/books/v1/volumes?q=yellowface&maxResults=15&printType=books)
+2026-07-29T12:07:53.009880Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:07:53.012622Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:07:53.030386Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:08:02.995173Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:08:02.999600Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:08:03.018386Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:24:19.004370Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:24:19.008509Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:24:19.032389Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:24:36.220187Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:24:36.226030Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:26:02.724322Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:26:02.738705Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:26:02.811494Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:26:27.542542Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:26:27.558023Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:26:27.597340Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:26:35.937102Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:26:35.938629Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:26:35.987966Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:26:57.101269Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:26:57.106069Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:26:57.126832Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:27:07.946858Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T12:27:07.954714Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:27:07.975552Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:28:54.538365Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:28:54.551006Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:28:54.605699Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:29:45.540952Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:29:45.552047Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:29:45.575021Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:30:40.888352Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:30:40.898359Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:30:40.920886Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:31:00.821176Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:31:00.842432Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:31:00.877200Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:31:27.598928Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:31:27.608110Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:31:27.627800Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:33:21.771767Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:33:21.816968Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:33:21.910562Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:33:45.484552Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:33:45.486005Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:33:45.520586Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:34:18.605461Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:34:18.606801Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:34:18.674305Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:34:25.677797Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:34:25.678441Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:34:25.744679Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T12:36:30.588674Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=/Users/oliverfong/toadmountain/reading_card/logs/tui.log
+2026-07-29T12:36:30.591703Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T12:36:30.613224Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-29T13:39:07.607871Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-29T13:39:07.613035Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-29T13:39:07.632135Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]

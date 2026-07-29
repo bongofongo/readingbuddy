@@ -24,7 +24,7 @@ use crate::theme;
 /// What the empty shelf says. Both halves are moves, not apologies: the point
 /// of the axiom's "nothing is a dead end" is that a screen with nothing on it
 /// still tells you where the somethings come from.
-const EMPTY: &str = "nothing open right now — / to search for a book, m for the menu";
+const EMPTY: &str = "nothing open right now — / to find a book, m for the menu";
 
 /// The box title. No count: the library screen can say how many books it holds
 /// because that is inventory, but "3 books" on the screen that greets you reads
@@ -141,8 +141,10 @@ fn key_bar(empty: bool) -> Line<'static> {
         ]);
     }
     spans.extend([
+        // "find", not "search": this key looks in the library, and the provider
+        // search is what it offers when the library has nothing.
         Span::styled(if empty { " /" } else { "/" }, theme::key()),
-        Span::styled(" search  ", theme::dim()),
+        Span::styled(" find  ", theme::dim()),
         Span::styled("m", theme::key()),
         Span::styled(" menu ", theme::dim()),
     ]);

@@ -24,6 +24,7 @@
 //! supersampling. On a megapixel frame that is a few thousand extra pixels —
 //! under 1% — for edges that are properly smooth.
 
+use super::kitty::ImageWire;
 use super::math::Vec3;
 use super::texture::Cover;
 use super::{Model, RenderParams, scene};
@@ -88,11 +89,25 @@ pub const MOTION_MAX_PX: u32 = 120_000;
 /// Pixel ceiling for a settled pose, where the cost is paid once.
 pub const SETTLE_MAX_PX: u32 = 1_200_000;
 
+/// The same two ceilings for an uncompressed payload ([`ImageWire::Raw`]).
+///
+/// Both are the zlib budget divided by six, which is not a round number chosen
+/// for tidiness: a smooth product render measures well under one base64 byte
+/// per pixel through zlib, against 5.33 raw. The budget here has always been
+/// *bytes* wearing a pixel count as its unit, so dropping the compression
+/// without dropping the pixel count would fire a 6.4 MB settle frame at a
+/// decoder that has just been established as fragile about large images.
+pub const RAW_MOTION_MAX_PX: u32 = MOTION_MAX_PX / 6;
+pub const RAW_SETTLE_MAX_PX: u32 = SETTLE_MAX_PX / 6;
+
 impl Quality {
-    pub fn max_px(self) -> u32 {
-        match self {
-            Quality::Motion => MOTION_MAX_PX,
-            Quality::Settle => SETTLE_MAX_PX,
+    /// The pixel ceiling for this tier on `wire`.
+    pub fn max_px(self, wire: ImageWire) -> u32 {
+        match (self, wire) {
+            (Quality::Motion, ImageWire::Zlib) => MOTION_MAX_PX,
+            (Quality::Settle, ImageWire::Zlib) => SETTLE_MAX_PX,
+            (Quality::Motion, ImageWire::Raw) => RAW_MOTION_MAX_PX,
+            (Quality::Settle, ImageWire::Raw) => RAW_SETTLE_MAX_PX,
         }
     }
 
@@ -122,11 +137,17 @@ pub struct Target {
 /// budget. Uniform scaling means `width / height` stays exactly the cell rect's
 /// physical aspect, which is also the box kitty stretches the image into — so
 /// unlike the glyph path there is no `cols : rows*2` approximation here.
-pub fn target_for(cols: u16, rows: u16, cell_px: (u16, u16), quality: Quality) -> Target {
+pub fn target_for(
+    cols: u16,
+    rows: u16,
+    cell_px: (u16, u16),
+    quality: Quality,
+    wire: ImageWire,
+) -> Target {
     let native_w = (cols as u32 * cell_px.0 as u32).max(1);
     let native_h = (rows as u32 * cell_px.1 as u32).max(1);
     let total = native_w as u64 * native_h as u64;
-    let cap = quality.max_px() as u64;
+    let cap = quality.max_px(wire) as u64;
     let (width, height) = if total <= cap {
         (native_w, native_h)
     } else {
@@ -287,7 +308,7 @@ mod tests {
 
     #[test]
     fn native_resolution_is_exact_under_the_cap() {
-        let t = target_for(40, 20, (20, 38), Quality::Settle);
+        let t = target_for(40, 20, (20, 38), Quality::Settle, ImageWire::Zlib);
         assert_eq!((t.width, t.height), (800, 760));
         assert_eq!(t.rows, 20, "rows stays the cell count, not a pixel count");
     }
@@ -297,11 +318,17 @@ mod tests {
         // 120x40 cells at 20x38px is 2400x1520 = 3.6MP, well over both caps.
         let native = 2400.0f64 / 1520.0;
         for q in [Quality::Motion, Quality::Settle] {
-            let t = target_for(120, 40, (20, 38), q);
+            let t = target_for(120, 40, (20, 38), q, ImageWire::Zlib);
             let total = t.width as u64 * t.height as u64;
-            assert!(total <= q.max_px() as u64, "{q:?} exceeded its budget");
+            assert!(
+                total <= q.max_px(ImageWire::Zlib) as u64,
+                "{q:?} exceeded its budget"
+            );
             // Comfortably within the cap, not scaled to nothing.
-            assert!(total > q.max_px() as u64 / 2, "{q:?} scaled too far down");
+            assert!(
+                total > q.max_px(ImageWire::Zlib) as u64 / 2,
+                "{q:?} scaled too far down"
+            );
             let got = t.width as f64 / t.height as f64;
             assert!(
                 (got - native).abs() / native < 0.01,
@@ -312,15 +339,15 @@ mod tests {
 
     #[test]
     fn motion_is_cheaper_than_settle() {
-        let m = target_for(120, 40, (20, 38), Quality::Motion);
-        let s = target_for(120, 40, (20, 38), Quality::Settle);
+        let m = target_for(120, 40, (20, 38), Quality::Motion, ImageWire::Zlib);
+        let s = target_for(120, 40, (20, 38), Quality::Settle, ImageWire::Zlib);
         assert!(m.width * m.height < s.width * s.height);
     }
 
     #[test]
     fn degenerate_rects_never_produce_a_zero_dimension() {
         for (c, r) in [(1u16, 1u16), (1, 40), (40, 1)] {
-            let t = target_for(c, r, (20, 38), Quality::Motion);
+            let t = target_for(c, r, (20, 38), Quality::Motion, ImageWire::Zlib);
             assert!(t.width >= 1 && t.height >= 1, "{c}x{r} collapsed");
             let (model, cover) = fixture();
             // Must not panic at any degenerate size — a render panic in the
@@ -345,7 +372,7 @@ mod tests {
     #[test]
     fn interior_pixels_are_opaque_or_fully_clear() {
         let (model, cover) = fixture();
-        let t = target_for(30, 16, (8, 16), Quality::Settle);
+        let t = target_for(30, 16, (8, 16), Quality::Settle, ImageWire::Zlib);
         let buf = render_rgba(t, &model, &cover, RenderParams::default());
         let alphas: Vec<u8> = (0..buf.height)
             .flat_map(|y| (0..buf.width).map(move |x| (x, y)))
@@ -360,7 +387,7 @@ mod tests {
         // The whole point of the edge pass: partial coverage must exist, or the
         // image is just the glyph path's hard mask at higher resolution.
         let (model, cover) = fixture();
-        let t = target_for(30, 16, (8, 16), Quality::Settle);
+        let t = target_for(30, 16, (8, 16), Quality::Settle, ImageWire::Zlib);
         let buf = render_rgba(t, &model, &cover, RenderParams::default());
         let partial = (0..buf.height)
             .flat_map(|y| (0..buf.width).map(move |x| (x, y)))
@@ -378,7 +405,7 @@ mod tests {
         // black: a stray colour in a fully transparent pixel shows up as a halo
         // wherever a terminal composites naively.
         let (model, cover) = fixture();
-        let t = target_for(20, 10, (8, 16), Quality::Motion);
+        let t = target_for(20, 10, (8, 16), Quality::Motion, ImageWire::Zlib);
         let buf = render_rgba(t, &model, &cover, RenderParams::default());
         for y in 0..buf.height {
             for x in 0..buf.width {
@@ -411,7 +438,7 @@ mod tests {
             ("full pane, motion", 120, 40, (20, 38), Quality::Motion),
             ("full pane, settle", 120, 40, (20, 38), Quality::Settle),
         ] {
-            let t = target_for(cols, rows, cell, q);
+            let t = target_for(cols, rows, cell, q, ImageWire::Zlib);
             let start = std::time::Instant::now();
             let reps = 5;
             for _ in 0..reps {
@@ -448,12 +475,12 @@ mod tests {
             ("book rect, settle", 50, 26, Quality::Settle),
             ("full pane, motion", 120, 40, Quality::Motion),
         ] {
-            let t = target_for(cols, rows, (20, 38), q);
+            let t = target_for(cols, rows, (20, 38), q, ImageWire::Zlib);
             let t0 = std::time::Instant::now();
             let img = render_rgba(t, &model, &cover, params);
             let trace = t0.elapsed();
             let t1 = std::time::Instant::now();
-            let esc = kitty::transmit(&img, 1, cols, rows, true);
+            let esc = kitty::transmit(&img, 1, cols, rows, true, ImageWire::Zlib);
             let encode = t1.elapsed();
             let rate = esc.len() as f64 * 20.0 / 1.0e6;
             println!(
@@ -528,7 +555,7 @@ mod tests {
             let t0 = std::time::Instant::now();
             let img = render_rgba(t, &model, &cover, params);
             let trace = t0.elapsed();
-            let esc = kitty::transmit(&img, 1, 50, 26, true);
+            let esc = kitty::transmit(&img, 1, 50, 26, true, ImageWire::Zlib);
             if let Some(rec) = log.as_mut() {
                 rec.frame_begin();
                 perf::record(perf::Stage::Trace, trace);
@@ -590,7 +617,7 @@ mod tests {
             hit / total
         };
 
-        let t = target_for(cols, rows, (8, 16), Quality::Settle);
+        let t = target_for(cols, rows, (8, 16), Quality::Settle, ImageWire::Zlib);
         let rich = render_rgba(t, &model, &cover, params);
         let rich_frac = {
             let total = (rich.width * rich.height) as f32;

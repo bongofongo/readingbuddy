@@ -342,7 +342,13 @@ impl<'a> RichPresenter<'a> {
             )
         };
 
-        let target = raster::target_for(area.width, area.height, self.state.caps.cell_px, quality);
+        let target = raster::target_for(
+            area.width,
+            area.height,
+            self.state.caps.cell_px,
+            quality,
+            self.state.caps.image_wire,
+        );
         let key = RichKey {
             cover: cover_hash(book),
             yaw_q: key_pose.0,
@@ -411,6 +417,7 @@ impl<'a> RichPresenter<'a> {
                 area.width,
                 area.height,
                 self.state.caps.in_tmux,
+                self.state.caps.image_wire,
             )
         };
         if esc.is_empty() {
@@ -509,6 +516,7 @@ mod tests {
     fn capable() -> Caps {
         Caps {
             kitty_graphics: true,
+            image_wire: crate::render3d::ImageWire::Zlib,
             cell_px: (20, 38),
             cell_px_measured: true,
             in_tmux: false,
@@ -666,6 +674,38 @@ mod tests {
         draw_at(&mut state, &mut sc, 20, 10, false);
         draw_at(&mut state, &mut sc, 20, 10, false);
         assert_eq!(sink.len(), after_park, "a still book kept retransmitting");
+    }
+
+    #[test]
+    fn a_libghostty_host_is_never_sent_a_compressed_frame() {
+        // The whole patch, asserted where it is actually reachable: the settle
+        // frame is the one that crashes Ghostty and herdr, and it is the one
+        // frame the hybrid ever transmits. A `Caps` carrying `Raw` has to reach
+        // the escape — the wiring between them is four call sites deep, and a
+        // dropped argument here would look exactly like a working renderer.
+        let caps = Caps {
+            image_wire: crate::render3d::ImageWire::Raw,
+            ..capable()
+        };
+        let sink = Sink::default();
+        let mut state = RichState::with_writer(caps, Box::new(sink.clone()));
+        let mut sc = scene();
+
+        draw_at(&mut state, &mut sc, 20, 10, false);
+        let sent = sink.text();
+        assert!(sent.contains("a=T"), "no image was transmitted");
+        assert!(!sent.contains("o=z"), "compressed payload reached the host");
+
+        // And the smaller pixel budget came with it, or the byte cost of going
+        // raw lands on the wire instead.
+        let raw_cap = raster::RAW_SETTLE_MAX_PX;
+        let t = raster::target_for(20, 10, caps.cell_px, Quality::Settle, caps.image_wire);
+        assert!(
+            (t.width as u64 * t.height as u64) <= raw_cap as u64,
+            "{}x{} is past the raw budget",
+            t.width,
+            t.height
+        );
     }
 
     #[test]
