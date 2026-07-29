@@ -620,3 +620,97 @@ async fn snapshot(engine: &Engine) -> Vec<String> {
     out.sort();
     out
 }
+
+// ---- linking a row by hand --------------------------------------------------
+
+/// The escape hatch an unmatched row needs, beside `--new`.
+///
+/// Before this the only move was to create the duplicate on purpose and fold it
+/// back in with `merge_books`, which leaves Goodreads' own id pointing at
+/// whichever of the two the merge deleted. Saying "this row is that book" once
+/// makes the next import take its `ExternalId` rung.
+#[tokio::test]
+async fn linking_a_goodreads_row_by_hand_is_matched_by_its_id_from_then_on() {
+    let (_tmp, engine) = common::engine().await;
+    // Nothing about this title can match Pachinko on any other rung.
+    let mine = engine
+        .save_book(&Book {
+            title: Some("A Novel About Snow".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine
+        .link_goodreads_row("34051011", mine.id.unwrap())
+        .await
+        .unwrap();
+
+    let report = engine
+        .import_goodreads(&recorded("library-export.csv"), plain())
+        .await
+        .unwrap();
+
+    let pachinko = report
+        .books
+        .iter()
+        .find(|b| b.title == "Pachinko")
+        .expect("the linked row imported");
+    assert_eq!(pachinko.matched_by, GoodreadsMatch::ExternalId);
+    assert_eq!(pachinko.book_id, mine.id);
+    assert!(
+        !report.unmatched.iter().any(|u| u.title == "Pachinko"),
+        "a linked row is never offered as a guess again"
+    );
+}
+
+/// A row Goodreads gave no `Book Id` — every row of the eight-column importer
+/// format, including our own export — has nothing durable to link by, and says
+/// so rather than inventing a key.
+#[tokio::test]
+async fn a_goodreads_row_with_no_id_cannot_be_linked() {
+    let (_tmp, engine) = common::engine().await;
+    let mine = engine.save_book(&common::book("Pachinko")).await.unwrap();
+    let err = engine
+        .link_goodreads_row("", mine.id.unwrap())
+        .await
+        .expect_err("an empty Book Id is not an identity");
+    assert!(
+        matches!(err, readingbuddy::EngineError::InvalidInput(_)),
+        "{err:?}"
+    );
+}
+
+/// The two link methods write to one table keyed `(source, external_id)`, so the
+/// same string from two systems must stay two different links.
+#[tokio::test]
+async fn a_goodreads_id_and_a_calibre_uuid_do_not_collide() {
+    let (_tmp, engine) = common::engine().await;
+    let a = engine.save_book(&common::book("First")).await.unwrap();
+    let b = engine.save_book(&common::book("Second")).await.unwrap();
+
+    engine
+        .link_goodreads_row("shared", a.id.unwrap())
+        .await
+        .unwrap();
+    engine
+        .link_calibre_book("shared", b.id.unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .storage()
+            .book_for_external_id("goodreads", "shared")
+            .await
+            .unwrap(),
+        a.id
+    );
+    assert_eq!(
+        engine
+            .storage()
+            .book_for_external_id("calibre", "shared")
+            .await
+            .unwrap(),
+        b.id
+    );
+}

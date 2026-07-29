@@ -506,6 +506,14 @@ impl std::fmt::Display for CalibreMatch {
 
 #[derive(Debug)]
 pub struct CalibreBookReport {
+    /// The calibre row this line is about.
+    ///
+    /// Carried because a report line otherwise names its book only by *title*,
+    /// and a frontend showing one row per calibre book has to tie the line back
+    /// to the row it came from — two editions of the same title would tie to
+    /// each other. `uuid` would not do: it is `Option`, and the rows without one
+    /// are exactly the rows that most need identifying.
+    pub calibre_id: i64,
     /// `None` in a dry run for a book that does not exist yet.
     pub book_id: Option<i64>,
     pub title: String,
@@ -560,6 +568,16 @@ pub struct ImportOptions {
     /// reporting it. The same escape hatch `ko pull --new` and
     /// `goodreads import --new` have.
     pub create_ambiguous: bool,
+    /// Import only these calibre rows. **Empty means all of them**, which is
+    /// what keeps every existing caller unchanged.
+    ///
+    /// The filter is applied to the listing, not to the report, so `rows` and
+    /// every count derived from it stay what this import actually considered —
+    /// a frontend importing one row of four hundred must not be told it read
+    /// four hundred. `calibredb list` has no per-id query worth using here: the
+    /// whole library comes back in one process either way, and filtering after
+    /// the parse costs nothing against spawning calibre once per book.
+    pub only: Vec<i64>,
 }
 
 /// Import a calibre library.
@@ -568,7 +586,10 @@ pub struct ImportOptions {
 /// `config.images_dir`, and the detected [`Calibre`] lives on the engine because
 /// detection is once per run.
 pub async fn import(engine: &Engine, opts: &ImportOptions) -> Result<CalibreReport> {
-    let books = list_library(engine.calibre(), opts.library.as_deref()).await?;
+    let mut books = list_library(engine.calibre(), opts.library.as_deref()).await?;
+    if !opts.only.is_empty() {
+        books.retain(|cb| opts.only.contains(&cb.calibre_id));
+    }
     let storage = &engine.storage;
     let mut report = CalibreReport {
         dry_run: opts.dry_run,
@@ -737,6 +758,7 @@ async fn preview(
         }
     };
     Ok(CalibreBookReport {
+        calibre_id: cb.calibre_id,
         book_id,
         title: cb.display_title().to_string(),
         matched_by,
@@ -860,6 +882,7 @@ async fn apply(
     }
 
     Ok(CalibreBookReport {
+        calibre_id: cb.calibre_id,
         book_id: Some(book_id),
         title: cb.display_title().to_string(),
         matched_by,

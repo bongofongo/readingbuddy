@@ -1059,6 +1059,25 @@ impl Engine {
         goodreads::export(self).await
     }
 
+    /// Record that a Goodreads row is that book, so it is never re-guessed.
+    ///
+    /// The [`Engine::link_sidecar`] of the CSV importer, and it exists for the
+    /// same reason: an unmatched row has to be a decision rather than a dead
+    /// end, and until now the only escape hatch was `create_ambiguous` followed
+    /// by [`Engine::merge_books`] — which creates a duplicate on purpose in
+    /// order to fold it back in, and leaves the far side's id pointing at
+    /// whichever of the two the merge happened to delete.
+    ///
+    /// Takes Goodreads' own `Book Id` because that is what
+    /// [`UnmatchedRow::external_id`](goodreads::UnmatchedRow) carries and what
+    /// the `ExternalId` rung of the matcher reads. A row without one cannot be
+    /// linked — there is nothing durable to link *by*, the CSV having no other
+    /// stable key — and says so rather than linking by title.
+    pub async fn link_goodreads_row(&self, external_id: &str, book_id: i64) -> Result<()> {
+        self.link_foreign_record(goodreads::SOURCE, external_id, book_id)
+            .await
+    }
+
     // ---- calibre -----------------------------------------------------------
 
     /// Which calibre tools this machine has. Feature detection, resolved once
@@ -1099,6 +1118,46 @@ impl Engine {
         opts: &calibre::ImportOptions,
     ) -> Result<CalibreReport> {
         calibre::import(self, opts).await
+    }
+
+    /// Record that a calibre book is that book of ours. The calibre twin of
+    /// [`Engine::link_goodreads_row`].
+    ///
+    /// Keyed on calibre's **uuid, never its `id`**, for the reason
+    /// `external_ids` is: calibre ids are per-library and reused after a delete,
+    /// and this table has no library column to tell two libraries' id 4 apart.
+    /// A row calibre gave no uuid therefore cannot be linked, which is the same
+    /// row `CalibreRowNotIdentified` already warns about.
+    pub async fn link_calibre_book(&self, uuid: &str, book_id: i64) -> Result<()> {
+        self.link_foreign_record(calibre::SOURCE, uuid, book_id)
+            .await
+    }
+
+    /// The one implementation behind the two link methods above.
+    ///
+    /// Shared so the two cannot drift, and separate from
+    /// [`Storage::link_external_id`] because that is a bare upsert: `book_id`
+    /// references `books(id)`, so an id that does not exist comes back as a raw
+    /// foreign-key error naming a constraint. A frontend offering a candidate
+    /// list can pass a book deleted in another pane, and every caller branches
+    /// on the answer, so it gets [`EngineError::NotFound`] instead.
+    async fn link_foreign_record(
+        &self,
+        source: &str,
+        external_id: &str,
+        book_id: i64,
+    ) -> Result<()> {
+        if external_id.trim().is_empty() {
+            return Err(EngineError::InvalidInput(format!(
+                "that {source} record has no id, so there is nothing to link it by"
+            )));
+        }
+        if self.storage.get_book(book_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!("book {book_id}")));
+        }
+        self.storage
+            .link_external_id(source, external_id, book_id)
+            .await
     }
 
     // ---- flashcards --------------------------------------------------------

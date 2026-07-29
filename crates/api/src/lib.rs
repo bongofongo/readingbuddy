@@ -506,6 +506,11 @@ impl Api {
         Ok((csv, map(warnings)))
     }
 
+    /// Record that a Goodreads row is that book, keyed on Goodreads' `Book Id`.
+    pub async fn link_goodreads_row(&self, external_id: &str, book_id: i64) -> ApiResult<()> {
+        Ok(self.engine.link_goodreads_row(external_id, book_id).await?)
+    }
+
     // ---- calibre -----------------------------------------------------------
 
     /// Which calibre tools this machine has.
@@ -540,6 +545,7 @@ impl Api {
         library: Option<PathBuf>,
         dry_run: bool,
         create_ambiguous: bool,
+        only: Vec<i64>,
     ) -> ApiResult<CalibreReportDto> {
         Ok(self
             .engine
@@ -547,9 +553,15 @@ impl Api {
                 library,
                 dry_run,
                 create_ambiguous,
+                only,
             })
             .await?
             .into())
+    }
+
+    /// Record that a calibre book is that book of ours, keyed on calibre's uuid.
+    pub async fn link_calibre_book(&self, uuid: &str, book_id: i64) -> ApiResult<()> {
+        Ok(self.engine.link_calibre_book(uuid, book_id).await?)
     }
 
     // ---- flashcards --------------------------------------------------------
@@ -790,6 +802,13 @@ impl Api {
                 let (csv, warnings) = self.export_goodreads().await?;
                 Response::GoodreadsExport { csv, warnings }
             }
+            R::LinkGoodreadsRow {
+                external_id,
+                book_id,
+            } => {
+                self.link_goodreads_row(&external_id, book_id).await?;
+                Response::Unit
+            }
 
             R::CalibreStatus => Response::CalibreStatus(self.calibre_status()),
             R::ConvertEbook {
@@ -808,10 +827,20 @@ impl Api {
                 library,
                 dry_run,
                 create_ambiguous,
+                only,
             } => Response::CalibreReport(
-                self.import_calibre_library(library.map(PathBuf::from), dry_run, create_ambiguous)
-                    .await?,
+                self.import_calibre_library(
+                    library.map(PathBuf::from),
+                    dry_run,
+                    create_ambiguous,
+                    only,
+                )
+                .await?,
             ),
+            R::LinkCalibreBook { uuid, book_id } => {
+                self.link_calibre_book(&uuid, book_id).await?;
+                Response::Unit
+            }
 
             R::ListFlashcards { include_exported } => {
                 Response::Flashcards(self.list_flashcards(include_exported).await?)

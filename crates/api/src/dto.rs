@@ -1481,6 +1481,9 @@ impl From<CalibreMatch> for CalibreMatchDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibreBookReportDto {
+    /// The calibre row this line is about — the only thing tying a report line
+    /// back to the shelf row a client is showing.
+    pub calibre_id: i64,
     #[serde(default)]
     pub book_id: Option<i64>,
     pub title: String,
@@ -1493,6 +1496,7 @@ pub struct CalibreBookReportDto {
 impl From<CalibreBookReport> for CalibreBookReportDto {
     fn from(r: CalibreBookReport) -> Self {
         CalibreBookReportDto {
+            calibre_id: r.calibre_id,
             book_id: r.book_id,
             title: r.title,
             matched_by: r.matched_by.into(),

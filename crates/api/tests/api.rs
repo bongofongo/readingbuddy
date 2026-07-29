@@ -342,3 +342,75 @@ async fn a_failing_call_still_produces_a_reply() {
         .await;
     assert_eq!(reply.id, 100);
 }
+
+/// Claim 1 again, for the two link methods this crate grew — both writes, both
+/// returning `Unit`, so the only way to see that dispatch did the same thing is
+/// to read the link back through the import that consumes it.
+#[tokio::test]
+async fn dispatch_and_the_typed_method_agree_on_linking_a_foreign_record() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+
+    api.link_goodreads_row("34051011", id)
+        .await
+        .expect("typed link");
+    match ok(api
+        .dispatch(Request::LinkCalibreBook {
+            uuid: "c47437a8".into(),
+            book_id: id,
+        })
+        .await)
+    {
+        Response::Unit => {}
+        other => panic!("{other:?}"),
+    }
+
+    // Both landed, and against the same book — the table is keyed
+    // `(source, external_id)`, so one call must not have overwritten the other.
+    for (source, external) in [("goodreads", "34051011"), ("calibre", "c47437a8")] {
+        let linked = api
+            .dispatch(Request::LinkCalibreBook {
+                uuid: external.into(),
+                book_id: id,
+            })
+            .await;
+        assert!(linked.is_ok(), "{source} link is re-recordable");
+    }
+}
+
+/// A link to a book that is not there is a typed `NotFound`, not a foreign-key
+/// error naming a constraint — a candidate list can always name a book another
+/// pane has since deleted.
+#[tokio::test]
+async fn linking_to_a_missing_book_is_a_typed_error() {
+    let (api, _tmp) = api().await;
+    let err = api
+        .link_calibre_book("uuid-abc", -1)
+        .await
+        .expect_err("there is no book -1");
+    assert_eq!(err.code, ErrorCode::NotFound);
+}
+
+/// `only` is `#[serde(default)]`, so a client written before the field existed
+/// sends the same JSON and still means "the whole library". Parsed rather than
+/// constructed, because the default is a property of the wire form.
+#[test]
+fn an_import_request_without_only_still_means_the_whole_library() {
+    let parsed: Request =
+        serde_json::from_str(r#"{"method":"import_calibre_library","params":{"dry_run":true}}"#)
+            .expect("an older client's request still parses");
+    match parsed {
+        Request::ImportCalibreLibrary {
+            dry_run,
+            only,
+            library,
+            create_ambiguous,
+        } => {
+            assert!(dry_run);
+            assert!(only.is_empty(), "absent means the whole library");
+            assert!(library.is_none());
+            assert!(!create_ambiguous);
+        }
+        other => panic!("{other:?}"),
+    }
+}

@@ -603,3 +603,187 @@ async fn a_titleless_row_is_skipped_and_an_id_less_row_says_it_will_recur() {
         "{said:?}"
     );
 }
+
+// ---- one row at a time ------------------------------------------------------
+
+/// `ImportOptions::only` is what lets a frontend show a shelf and import one
+/// line of it. The filter has to reach the *listing*, not the report: a user who
+/// imported one book of three must not be told the import read three.
+#[tokio::test]
+async fn only_imports_the_row_it_was_asked_for_and_counts_only_that_row() {
+    let work = tempfile::tempdir().unwrap();
+    let lib = library(&work.path().join("lib"), &[]);
+    let fake = Fake::new();
+    fake.calibredb(&json_rooted(&work.path().join("lib")));
+
+    let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
+    let report = engine
+        .import_calibre_library(&ImportOptions {
+            library: Some(lib),
+            only: vec![2],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.rows, 1, "rows is what this import considered");
+    assert_eq!(report.books.len(), 1);
+    assert_eq!(report.books[0].calibre_id, 2);
+    assert_eq!(report.books[0].title, "Station Eleven");
+    let shelf = engine
+        .list_books(100, readingbuddy::BookSort::Title)
+        .await
+        .unwrap();
+    assert_eq!(shelf.len(), 1, "the other two rows were left alone");
+}
+
+/// An empty `only` is every row — the default, and what keeps every caller that
+/// predates the field unchanged.
+#[tokio::test]
+async fn an_empty_only_is_the_whole_library() {
+    let work = tempfile::tempdir().unwrap();
+    let lib = library(&work.path().join("lib"), &[]);
+    let fake = Fake::new();
+    fake.calibredb(&json_rooted(&work.path().join("lib")));
+
+    let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
+    let report = engine
+        .import_calibre_library(&ImportOptions {
+            library: Some(lib),
+            only: vec![],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.rows, 3);
+    assert_eq!(report.books.len(), 3);
+}
+
+/// Every report line names the calibre row it came from, in a dry run too — the
+/// dry run being the one a shelf screen renders, where a line that cannot be
+/// tied to a row is a line the user cannot act on.
+#[tokio::test]
+async fn every_report_line_names_its_calibre_row() {
+    let work = tempfile::tempdir().unwrap();
+    let lib = library(&work.path().join("lib"), &[]);
+    let fake = Fake::new();
+    fake.calibredb(&json_rooted(&work.path().join("lib")));
+
+    let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
+    for dry_run in [true, false] {
+        let report = engine
+            .import_calibre_library(&ImportOptions {
+                library: Some(lib.clone()),
+                dry_run,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut ids: Vec<i64> = report.books.iter().map(|b| b.calibre_id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3], "dry_run = {dry_run}");
+    }
+}
+
+// ---- linking by hand --------------------------------------------------------
+
+/// The escape hatch the shelf screen's `l` needs: say once that a calibre book
+/// is a book we already have, and the next import matches it by uuid instead of
+/// offering the same guess again.
+#[tokio::test]
+async fn linking_a_calibre_book_by_hand_is_matched_by_uuid_from_then_on() {
+    let work = tempfile::tempdir().unwrap();
+    let lib = library(&work.path().join("lib"), &[]);
+    let fake = Fake::new();
+    fake.calibredb(&json_rooted(&work.path().join("lib")));
+
+    let (_tmp, engine) = common::engine_with_calibre(Some(fake.path())).await;
+    // A book whose title is nothing like calibre's, so no rung but the link can
+    // possibly find it.
+    let mine = engine
+        .save_book(&Book {
+            title: Some("A Novel About Snow".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    engine
+        .link_calibre_book("0b4a2d15-6f31-4c88-9a2e-1f5b7c9d0e33", mine.id.unwrap())
+        .await
+        .unwrap();
+
+    let report = engine
+        .import_calibre_library(&ImportOptions {
+            library: Some(lib),
+            only: vec![2],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(report.books[0].matched_by, CalibreMatch::Uuid);
+    assert_eq!(report.books[0].book_id, mine.id);
+    assert_eq!(
+        engine
+            .list_books(100, readingbuddy::BookSort::Title)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "linking then importing must not make a second copy"
+    );
+}
+
+/// Repointing is the whole reason `external_ids` upserts rather than inserts: a
+/// link made by hand and then corrected has to move, or the correction is the
+/// one write that silently does nothing.
+#[tokio::test]
+async fn a_hand_link_can_be_corrected() {
+    let (_tmp, engine) = common::engine_with_calibre(None).await;
+    let first = engine.save_book(&common::book("Wrong One")).await.unwrap();
+    let second = engine.save_book(&common::book("Right One")).await.unwrap();
+
+    engine
+        .link_calibre_book("uuid-abc", first.id.unwrap())
+        .await
+        .unwrap();
+    engine
+        .link_calibre_book("uuid-abc", second.id.unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        engine
+            .storage()
+            .book_for_external_id("calibre", "uuid-abc")
+            .await
+            .unwrap(),
+        second.id
+    );
+}
+
+/// A candidate list can name a book another pane has since deleted, so the
+/// answer is typed rather than a foreign-key error naming a constraint.
+#[tokio::test]
+async fn linking_to_a_book_that_is_gone_says_so() {
+    let (_tmp, engine) = common::engine_with_calibre(None).await;
+    let err = engine
+        .link_calibre_book("uuid-abc", 9999)
+        .await
+        .expect_err("there is no book 9999");
+    assert!(matches!(err, EngineError::NotFound(_)), "{err:?}");
+}
+
+/// calibre ids are per-library and reused after a delete, so a row with no uuid
+/// has nothing durable to link by and is refused rather than linked by its id.
+#[tokio::test]
+async fn a_calibre_book_with_no_uuid_cannot_be_linked() {
+    let (_tmp, engine) = common::engine_with_calibre(None).await;
+    let mine = engine.save_book(&common::book("Pachinko")).await.unwrap();
+    let err = engine
+        .link_calibre_book("   ", mine.id.unwrap())
+        .await
+        .expect_err("an empty uuid is not an identity");
+    assert!(matches!(err, EngineError::InvalidInput(_)), "{err:?}");
+}

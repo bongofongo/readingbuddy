@@ -305,6 +305,10 @@ pub enum Request {
         create_ambiguous: bool,
     },
     ExportGoodreads,
+    LinkGoodreadsRow {
+        external_id: String,
+        book_id: i64,
+    },
 
     // ---- calibre ----
     CalibreStatus,
@@ -325,6 +329,15 @@ pub enum Request {
         dry_run: bool,
         #[serde(default)]
         create_ambiguous: bool,
+        /// Import only these calibre rows. Empty — and so an absent field — is
+        /// the whole library, which is what keeps an older client's request
+        /// meaning what it did before.
+        #[serde(default)]
+        only: Vec<i64>,
+    },
+    LinkCalibreBook {
+        uuid: String,
+        book_id: i64,
     },
 
     // ---- flashcards ----

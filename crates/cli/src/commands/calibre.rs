@@ -85,6 +85,9 @@ pub async fn import(
         library,
         dry_run,
         create_ambiguous: new,
+        // The whole library. Importing one row of it is a thing you do standing
+        // on that row, which is a frontend with a shelf on screen.
+        only: Vec::new(),
     };
     let report = match engine.import_calibre_library(&opts).await {
         Ok(r) => r,
