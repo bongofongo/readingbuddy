@@ -3895,6 +3895,20 @@ mod tests {
     /// An engine on an in-memory database — the same trick the engine's own
     /// tests use, so nothing here touches the user's library.
     async fn test_app() -> App {
+        // `None`: detection falls through to `PATH`, so a screen that reads the
+        // library is exercised on the developer's machine and reports absence on
+        // CI. A test that needs one answer rather than either passes a directory.
+        test_app_with_calibre(None).await
+    }
+
+    /// The same app, with `calibre_bin_dir` pointed somewhere.
+    ///
+    /// `find_tool` searches that directory *before* `PATH`, so a fake binary
+    /// under it is what makes a calibre-shaped test give the same answer on both
+    /// machines — the trick `crates/engine/tests/calibre.rs` is built on, and for
+    /// the same reason: a `PATH` edit is `unsafe` in edition 2024 and races every
+    /// other test in this binary.
+    async fn test_app_with_calibre(calibre_bin_dir: Option<PathBuf>) -> App {
         // A unique dir per invocation: tests run in parallel and share a
         // process, so a per-pid vault would let them wipe each other's files.
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3910,9 +3924,7 @@ mod tests {
             vault_dir: tmp.join("vault"),
             log_dir: tmp.join("logs"),
             google_api_key: None,
-            // The TUI has no calibre surface yet; detection falls through to
-            // `PATH`, which costs two `stat` sweeps and finds nothing to do.
-            calibre_bin_dir: None,
+            calibre_bin_dir,
         };
         let engine = Engine::open(config).await.expect("engine");
         let book = engine
@@ -4798,6 +4810,28 @@ mod tests {
             std::env::temp_dir().join(format!("readingbuddy-tui-{tag}-{}-{n}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A scratch directory holding one executable stub called `name`, so
+    /// `Calibre::detect` finds a tool by that name. Returns the directory, ready
+    /// for `test_app_with_calibre`.
+    ///
+    /// The script **fails** rather than doing nothing: every test that needs one
+    /// of these is testing a refusal that happens *before* calibre is spawned, so
+    /// a change that reached the binary should be loud here rather than silently
+    /// passing against a stub that agreed with it.
+    #[cfg(unix)]
+    fn fake_calibre(tag: &str, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch(tag);
+        let bin = dir.join(name);
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\necho 'the fake calibre was run' >&2\nexit 1\n",
+        )
+        .expect("write fake");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         dir
     }
 
@@ -7182,9 +7216,18 @@ mod tests {
     /// A conversion refuses to overwrite, and the refusal is a **question** — a
     /// TUI has no `--force` to name, and losing a file is the one outcome here
     /// with no undo.
+    ///
+    /// Runs against a **fake `ebook-convert`**, because the overwrite guard sits
+    /// behind `Calibre::require`: with no calibre at all the engine answers
+    /// `CalibreMissing` and the question is never asked. Left to `PATH` this test
+    /// asserted the refusal on the developer's machine and nothing whatsoever on
+    /// CI, where it failed. The stub is never spawned — the guard is a `stat` and
+    /// returns first, which is the whole claim.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_conversion_over_an_existing_file_asks_first() {
-        let mut app = test_app().await;
+        let mut app =
+            test_app_with_calibre(Some(fake_calibre("convert-bin", "ebook-convert"))).await;
         let dir = scratch("convert");
         let input = dir.join("in.epub");
         let output = dir.join("out.azw3");
