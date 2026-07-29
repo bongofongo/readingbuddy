@@ -38,3 +38,4 @@ anki.tsv
 
 # Parallel-thread git worktrees: full checkouts plus their own target/ dirs.
 /.claude/worktrees
+

@@ -6,3 +6,7 @@
 2026-07-28T10:49:26.783087Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
 2026-07-28T10:49:29.954534Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
 2026-07-28T10:49:29.958366Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-28T21:17:24.326922Z  INFO readingbuddy_tui: readingbuddy-tui starting version="0.1.0" log=./logs/tui.log
+2026-07-28T21:17:24.370899Z  INFO readingbuddy::storage: storage connected and migrated max_connections=5
+2026-07-28T21:17:24.596179Z  INFO readingbuddy::watch: watching for readers roots=["/Volumes"]
+2026-07-28T21:20:18.640453Z  WARN search{has_isbn=false}: readingbuddy::search: provider degraded provider=googlebooks detail=googlebooks error: HTTP status client error (429 Too Many Requests) for url (https://www.googleapis.com/books/v1/volumes?q=yellowface&maxResults=15&printType=books)
