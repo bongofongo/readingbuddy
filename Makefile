@@ -14,7 +14,7 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean bench bench-box bench-trend perf
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -147,6 +147,19 @@ synthetic: ## Regenerate the committed tier-1 hostile fixtures, then the goldens
 
 goodreads: ## Regenerate the committed Goodreads export fixture
 	cargo run -p corpus -- gen-goodreads --seed $(CORPUS_SEED)
+
+dist: ## Build this machine's release archive into dist/, exactly as CI would
+	@set -eu; \
+	target=$$(rustc -vV | sed -n 's|^host: ||p'); \
+	version=v$$(cargo pkgid -p readingbuddy-tui | sed 's/.*[#@]//'); \
+	name="readingbuddy-$${version}-$${target}"; \
+	cargo build --profile dist --locked --target "$$target" -p readingbuddy-tui -p readingbuddy-cli; \
+	rm -rf "dist/$${name}"; mkdir -p "dist/$${name}"; \
+	cp "target/$${target}/dist/readingbuddy-tui" "target/$${target}/dist/readingbuddy" \
+	   LICENSE README.md TUTORIAL.md "dist/$${name}/"; \
+	tar -C dist -czf "dist/$${name}.tar.gz" "$${name}"; \
+	rm -rf "dist/$${name}"; \
+	ls -lh "dist/$${name}.tar.gz"
 
 clean: ## cargo clean
 	cargo clean
