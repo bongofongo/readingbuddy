@@ -301,6 +301,12 @@ Provider enrichment on device pull. Non-numeric rating scales.
      spent on reset-pose and swap-renderer, where they read correctly, and both
      the home screen and the book view need the pair — so it is global rather
      than a `map_key_on` override two screens would install identically.
+   - **Erratum: the front door moves back.** The **menu** is the front door and
+     the screen the app opens on; the currently-reading screen stays a screen,
+     reached by its menu row, by `--book`, or by opening a book. Single-step
+     `Esc` is replaced by a **navigation trail**: `esc`/`b` pop the screen you
+     came from, and the menu is the bottom of it. **`esc` never quits, from any
+     screen** — `q`, the menu's Quit row and ctrl-c are the only ways out.
 9. Backlinks pane. **Split:** 9a is the engine query plus migration `0008`
    (`note_links` has no index on `to_note` or `target_title`, so both a backlink
    query and `write_links`' back-resolution are full scans today); 9b is the

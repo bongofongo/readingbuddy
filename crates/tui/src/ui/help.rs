@@ -9,8 +9,9 @@
 //! habit: [`tests::no_screen_page_repeats_a_global_key`] asserts it.
 //!
 //! The menu's page therefore does double duty — it is the app's introduction as
-//! well as the global key table, which is right, since the menu is the one
-//! screen that is about the app rather than about a book.
+//! well as the global key table, which is right twice over: the menu is the one
+//! screen that is about the app rather than about a book, and it is both the
+//! screen the app opens on and the screen `esc` walks back to.
 //!
 //! Nothing here counts anything and nothing here is a dead end: the page is a
 //! place you look, and any key closes it.
@@ -47,10 +48,10 @@ const GLOBAL: Section = Section {
         ("↑ ↓ / k j", "move the selection"),
         ("ctrl-d / ctrl-u", "jump a page, stopping at the ends"),
         ("enter", "open what you are standing on"),
-        ("esc / b", "back one step"),
+        ("esc / b", "back one step, stopping at the menu"),
         ("m", "the menu, from anywhere"),
         ("?", "this page, for whatever screen you are on"),
-        ("q", "quit"),
+        ("q", "quit — the only way out"),
     ],
 };
 
@@ -64,14 +65,15 @@ pub fn page(screen: Screen) -> Help {
                 "A place for the books you read: what you are part-way through,",
                 "what you have highlighted, and what you thought about it.",
                 "",
-                "The shelf you land on is what is open right now. The menu is",
-                "everything else — the whole library, a provider search, and the",
-                "other systems that own books: a mounted KOReader, a calibre",
-                "library, a Goodreads export.",
+                "This is the front door, and every row on it is a place to go:",
+                "what you have open right now, the whole library, a provider",
+                "search, and the other systems that own books — a mounted",
+                "KOReader, a calibre library, a Goodreads export.",
                 "",
                 "Nothing here is a queue and nothing counts what you have not",
                 "done. Every screen keeps its keys in its own border, and ? on",
-                "any of them says what that screen is for.",
+                "any of them says what that screen is for. esc retraces the way",
+                "you came and stops here, so nothing you open is a dead end.",
             ],
             sections: &[
                 GLOBAL,

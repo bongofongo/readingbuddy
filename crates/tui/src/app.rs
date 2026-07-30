@@ -53,6 +53,15 @@ const HOME_LIMIT: i64 = 50;
 /// same thing.
 const PAGE: isize = 12;
 
+/// How many screens the back trail remembers.
+///
+/// A bound rather than a size: `b` walking back through a dozen screens is
+/// already further than anyone navigates in one sitting, and a stack with no
+/// ceiling grows for as long as the app is open. What the number must not do is
+/// cost the trail its bottom — see [`App::go`], which drops the *second* entry
+/// when the cap is reached.
+const TRAIL_MAX: usize = 32;
+
 /// How far a selection key moves, and what it does at the ends.
 ///
 /// The two arms differ in exactly one way and it is the whole reason this is a
@@ -89,9 +98,16 @@ impl Move {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    /// What you are currently reading — one row per open reading, and the
-    /// screen the app opens to. `m` still reaches the menu from anywhere, so
-    /// making this the front door takes nothing away.
+    /// What you are currently reading — one row per open reading.
+    ///
+    /// **Not** the screen the app opens to, and that is a decision about the
+    /// back trail rather than about this screen: `b` walks back and has to stop
+    /// somewhere, the place it stops is the [`Screen::Menu`] (the one screen
+    /// carrying a row that leaves the app), and the app opening there is what
+    /// makes "the bottom of the trail is the menu" true by construction instead
+    /// of a rule every transition has to remember. It costs this screen one
+    /// keypress: [`MenuItem::Home`] is the menu's first row, `--book` still
+    /// opens straight past it, and `m` reaches the menu from anywhere.
     Home,
     Menu,
     Library,
@@ -769,6 +785,11 @@ impl NoteDraft {
 pub struct App {
     pub engine: Engine,
     pub screen: Screen,
+    /// The screens behind the current one, oldest first — what `b` walks back
+    /// through. The menu is the bottom by construction rather than by rule:
+    /// the app opens there, every departure from it pushes it, and going *to*
+    /// it clears the trail, so `b` on the menu has nowhere left to go.
+    pub trail: Vec<Screen>,
     pub menu_index: usize,
     pub library: Vec<Book>,
     pub library_state: ListState,
@@ -918,8 +939,15 @@ impl App {
         let scene = Scene::new(engine.images_dir().to_path_buf());
         let mut app = App {
             engine,
-            // The front door is what you are reading, not a list of commands.
-            screen: Screen::Home,
+            // The front door is the menu, because the menu is where going back
+            // stops: it carries the one row that leaves the app, so a `b` that
+            // walks all the way out lands somewhere it can be answered. Opening
+            // anywhere else would make the trail's bottom a convention rather
+            // than something the app cannot get wrong. What you are reading is
+            // the menu's first row, one keypress in.
+            screen: Screen::Menu,
+            // Standing on the menu with nothing behind us.
+            trail: Vec::new(),
             menu_index: 0,
             library: Vec::new(),
             library_state: ListState::default(),
@@ -1063,7 +1091,7 @@ impl App {
         // A pane left open would show the previous book's graph under this
         // book's title. Following a link *into* a book re-opens it afterwards.
         self.links = None;
-        self.screen = Screen::Book;
+        self.go(Screen::Book);
         self.status = None;
         self.dirty = true;
         Ok(())
@@ -1248,6 +1276,52 @@ impl App {
         self.ambient.advance(TICK.as_secs_f32())
     }
 
+    // ---- navigation --------------------------------------------------------
+
+    /// Go to `screen`, remembering where we came from.
+    ///
+    /// Every forward transition in this file goes through here, which is what
+    /// makes the trail a property of navigating rather than a bookkeeping step
+    /// fourteen call sites each have to remember. Two rules, and both of them
+    /// exist to keep the menu at the bottom. **Arriving at the menu clears the
+    /// trail**: the menu is where going back stops, so a trail underneath it
+    /// would be a step *past* the only screen that carries a way out of the app.
+    /// **Re-entering the screen you are already on pushes nothing**, or `r` on
+    /// the device screen — which reopens it — would fill the trail with itself
+    /// and `b` would appear to be stuck.
+    fn go(&mut self, screen: Screen) {
+        if screen == Screen::Menu {
+            self.trail.clear();
+        } else if screen != self.screen {
+            self.trail.push(self.screen);
+            // Drop element **1**, never element 0: element 0 is the menu, and a
+            // cap that ate it would leave `b` bottoming out on whichever screen
+            // happened to be second — which is a screen, not a way out.
+            if self.trail.len() > TRAIL_MAX {
+                self.trail.remove(1);
+            }
+        }
+        self.screen = screen;
+        // A transition is a redraw, and not every caller comes through
+        // `handle`: `--book` opens a book before the loop starts, and
+        // `commit_input` arrives from the input box.
+        self.dirty = true;
+    }
+
+    /// Walk one screen back down the trail.
+    ///
+    /// An empty trail is a no-op, and that no-op is the whole reason this
+    /// exists: you have reached the menu, there is nowhere further back, and `b`
+    /// there does nothing. It used to quit — first from the menu and then, once
+    /// the home screen became the front door, from there — which made the key
+    /// everybody presses to get out of a *screen* the key that closes the app.
+    fn back(&mut self) {
+        if let Some(screen) = self.trail.pop() {
+            self.screen = screen;
+        }
+        self.dirty = true;
+    }
+
     // ---- action dispatch ---------------------------------------------------
 
     pub async fn handle(&mut self, action: Action) -> Result<()> {
@@ -1255,7 +1329,7 @@ impl App {
         match (self.screen, action) {
             (_, Action::Quit) => self.quit = true,
             (_, Action::Menu) => {
-                self.screen = Screen::Menu;
+                self.go(Screen::Menu);
                 self.status = None;
             }
             (_, Action::Refresh) => self.refresh_library().await?,
@@ -1279,9 +1353,10 @@ impl App {
             (Screen::Home, Action::Query) => {
                 self.start_input(InputContext::LibraryFind, "find in library", "")
             }
-            // The front door: back from here is out, exactly as it used to be
-            // from the menu.
-            (Screen::Home, Action::Back) => self.quit = true,
+            // Back where you came from, which for the ordinary route in is the
+            // menu. This quit, once, and that is the bug the trail was written
+            // for: the key you press to leave a screen must never leave the app.
+            (Screen::Home, Action::Back) => self.back(),
 
             (Screen::Menu, Action::Up) => {
                 self.menu_index = (self.menu_index + MENU.len() - 1) % MENU.len();
@@ -1290,10 +1365,11 @@ impl App {
                 self.menu_index = (self.menu_index + 1) % MENU.len();
             }
             (Screen::Menu, Action::Select) => self.activate_menu().await?,
-            // Esc used to quit here, when the menu was the front door. It is
-            // not any more, and a key that leaves the app from the middle of it
-            // is worse than one that goes back where you came from.
-            (Screen::Menu, Action::Back) => self.screen = Screen::Home,
+            // The menu is the bottom of the trail, so back from here does
+            // nothing at all — there is no screen behind it. `q` (and the Quit
+            // row) is the way out, and it is the only way out on purpose: a
+            // repeated Esc walking out of the app is how work gets lost.
+            (Screen::Menu, Action::Back) => self.back(),
 
             (Screen::Library, Action::Up) => self.step_library(Move::Row(-1)),
             (Screen::Library, Action::Down) => self.step_library(Move::Row(1)),
@@ -1313,7 +1389,7 @@ impl App {
                 if self.library_filter.is_some() {
                     self.clear_library_filter().await?;
                 } else {
-                    self.screen = Screen::Menu;
+                    self.back();
                 }
             }
             (Screen::Library, Action::CycleSort) => self.cycle_library_sort().await?,
@@ -1337,7 +1413,7 @@ impl App {
                 self.start_input(InputContext::SearchQuery, "search", "")
             }
             (Screen::Search, Action::Select) => self.add_search_result().await?,
-            (Screen::Search, Action::Back) => self.screen = Screen::Menu,
+            (Screen::Search, Action::Back) => self.back(),
 
             (Screen::Settings, Action::Select | Action::ToggleSpin) => self.toggle_glyphs(),
             (Screen::Settings, Action::Left) => self.cycle_accent(-1),
@@ -1349,7 +1425,7 @@ impl App {
             ),
             (Screen::Settings, Action::EditApiKey) => self.open_api_key(),
             (Screen::Settings, Action::CycleAmbient) => self.cycle_ambient(),
-            (Screen::Settings, Action::Back) => self.screen = Screen::Menu,
+            (Screen::Settings, Action::Back) => self.back(),
 
             (Screen::Device, action) => self.handle_device(action).await?,
             (Screen::Calibre, action) => self.handle_calibre(action).await?,
@@ -1441,12 +1517,15 @@ impl App {
             Action::ToggleFinished => self.toggle_finished().await?,
             Action::Export => self.export_cards().await?,
 
-            // Back / left: leave the section, or leave the book.
+            // Back / left: leave the section, or leave the book — and leaving
+            // the book means back where the book was opened from. This used to
+            // hard-code the library, so opening a book off the home shelf and
+            // pressing Esc landed you in a list you had never been in.
             Action::Back | Action::Left => {
                 if self.in_section {
                     self.in_section = false;
                 } else {
-                    self.screen = Screen::Library;
+                    self.back();
                 }
             }
             Action::Up => {
@@ -1604,7 +1683,7 @@ impl App {
             return Ok(());
         }
         self.status = None;
-        self.screen = Screen::Library;
+        self.go(Screen::Library);
         Ok(())
     }
 
@@ -1619,7 +1698,7 @@ impl App {
 
     /// Open the search screen onto a fresh query box.
     fn open_search(&mut self) {
-        self.screen = Screen::Search;
+        self.go(Screen::Search);
         self.search_results.clear();
         self.search_state.select(None);
         self.start_input(InputContext::SearchQuery, "search", "");
@@ -1635,7 +1714,7 @@ impl App {
         match MENU[self.menu_index].0 {
             MenuItem::Home => {
                 self.refresh_reading().await?;
-                self.screen = Screen::Home;
+                self.go(Screen::Home);
             }
             MenuItem::Library => {
                 // The menu's "Library" is the whole library, always: arriving
@@ -1646,7 +1725,7 @@ impl App {
                     self.status =
                         Some("library is empty — add a book with Search or Add by ISBN".into());
                 } else {
-                    self.screen = Screen::Library;
+                    self.go(Screen::Library);
                 }
             }
             MenuItem::Continue => {
@@ -1670,7 +1749,7 @@ impl App {
                     "{n} flashcard candidate(s) pending — open a book's Cards tab to export"
                 ));
             }
-            MenuItem::Settings => self.screen = Screen::Settings,
+            MenuItem::Settings => self.go(Screen::Settings),
             MenuItem::Quit => self.quit = true,
         }
         Ok(())
@@ -1687,7 +1766,7 @@ impl App {
     /// rules out, and a library directory is a perfectly good thing to point it
     /// at besides.
     fn open_device(&mut self) {
-        self.screen = Screen::Device;
+        self.go(Screen::Device);
         self.link_picker = None;
         let mut mounts = readingbuddy::candidate_mounts();
         match mounts.len() {
@@ -1840,7 +1919,7 @@ impl App {
             Action::Down => self.step_device(Move::Row(1)),
             Action::PageUp => self.step_device(Move::Page(-1)),
             Action::PageDown => self.step_device(Move::Page(1)),
-            Action::Back => self.screen = Screen::Menu,
+            Action::Back => self.back(),
             Action::Select => self.pull_selected(),
             Action::Mark => self.toggle_mark(),
             Action::Sync => self.sync_marked(),
@@ -2165,7 +2244,7 @@ impl App {
     /// and never prescribed, and a menu row that silently does nothing is worse
     /// than a screen that explains itself. So the empty state is the report.
     fn open_calibre(&mut self) {
-        self.screen = Screen::Calibre;
+        self.go(Screen::Calibre);
         self.link_picker = None;
         self.status = None;
         if !self.engine.calibre().can_read_library() {
@@ -2485,7 +2564,7 @@ impl App {
             Action::Down => self.step_calibre(Move::Row(1)),
             Action::PageUp => self.step_calibre(Move::Page(-1)),
             Action::PageDown => self.step_calibre(Move::Page(1)),
-            Action::Back => self.screen = Screen::Menu,
+            Action::Back => self.back(),
             Action::Select => self.import_selected_calibre(false),
             Action::CreateAnyway => self.import_selected_calibre(true),
             Action::Mark => self.toggle_calibre_mark(),
@@ -2547,7 +2626,7 @@ impl App {
     // ---- the goodreads file -------------------------------------------------
 
     fn open_goodreads(&mut self) {
-        self.screen = Screen::Goodreads;
+        self.go(Screen::Goodreads);
         self.link_picker = None;
         self.status = None;
     }
@@ -2724,7 +2803,7 @@ impl App {
             Action::Down => self.step_goodreads(Move::Row(1)),
             Action::PageUp => self.step_goodreads(Move::Page(-1)),
             Action::PageDown => self.step_goodreads(Move::Page(1)),
-            Action::Back => self.screen = Screen::Menu,
+            Action::Back => self.back(),
             Action::Query => self.start_input(InputContext::GoodreadsPath, "goodreads csv", ""),
             // `x` keeps its global meaning here, which is why the screen does not
             // rebind it: export is exactly what `x` means everywhere else.
@@ -3520,7 +3599,7 @@ impl App {
             // are already typed — asking for them a second time would be the
             // app forgetting what the question it just asked was about.
             Some(Confirm::SearchOnline(query)) if yes => {
-                self.screen = Screen::Search;
+                self.go(Screen::Search);
                 self.search_results.clear();
                 self.search_state.select(None);
                 self.run_search(query).await?;
@@ -3575,8 +3654,10 @@ impl App {
                     // The review is already saved; the rating was optional.
                     self.pending_rating = None;
                 } else if self.screen == Screen::Search && self.search_results.is_empty() {
-                    // A cancelled search query with no results falls back to menu.
-                    self.screen = Screen::Menu;
+                    // A cancelled search query with no results leaves a screen
+                    // with nothing on it, so it backs out the way Esc would if
+                    // the box had never been open.
+                    self.back();
                 }
             }
             KeyCode::Enter => {
@@ -3609,14 +3690,14 @@ impl App {
         // calibre's own configured library. Falling into the empty check below
         // would make "use mine" indistinguishable from changing one's mind.
         if context == InputContext::CalibreLibrary {
-            self.screen = Screen::Calibre;
+            self.go(Screen::Calibre);
             let library = (!text.is_empty()).then(|| PathBuf::from(&text));
             self.start_calibre_scan(library);
             return Ok(());
         }
         if text.is_empty() {
             if context == InputContext::SearchQuery && self.search_results.is_empty() {
-                self.screen = Screen::Menu;
+                self.back();
             }
             // An emptied find box is how the filter comes off from the library
             // screen: the box opens on the words that are set, so clearing them
@@ -3632,7 +3713,7 @@ impl App {
             InputContext::IsbnAdd => self.add_isbn(text).await?,
             InputContext::KoPath => self.import_ko(text).await?,
             InputContext::DevicePath => {
-                self.screen = Screen::Device;
+                self.go(Screen::Device);
                 self.start_scan(PathBuf::from(text));
             }
             InputContext::ProgressPage => self.commit_progress(text).await?,
@@ -3641,7 +3722,7 @@ impl App {
                 None => self.status = Some(format!("not a #RRGGBB color: {text}")),
             },
             InputContext::GoodreadsPath => {
-                self.screen = Screen::Goodreads;
+                self.go(Screen::Goodreads);
                 self.start_goodreads(GoodreadsJob {
                     path: PathBuf::from(text),
                     // A preview first, always. Writing a whole shelf because a
@@ -4141,6 +4222,21 @@ mod tests {
         // hand-built list that agrees with nothing.
         let root = write_device_tree(&tmp.join("device"));
         app.finish_scan(&root).await.expect("scan");
+        app
+    }
+
+    /// The same app, standing on the home shelf.
+    ///
+    /// Reached the way a user reaches it — the menu's first row, through
+    /// `activate_menu` — rather than by assigning `screen`, so the trail behind
+    /// it is the trail the running app would have. A test that sets `screen`
+    /// directly is a test in which `b` has nowhere to go, which is exactly the
+    /// state the assertions here are about.
+    async fn home_app() -> App {
+        let mut app = test_app().await;
+        app.menu_index = menu_row(MenuItem::Home);
+        app.handle(Action::Select).await.expect("home");
+        assert_eq!(app.screen, Screen::Home);
         app
     }
 
@@ -4665,17 +4761,7 @@ mod tests {
         {
             let app = &mut *app;
             let mut terminal = ratatui::Terminal::new(TestBackend::new(w, h)).expect("terminal");
-            for screen in [
-                Screen::Home,
-                Screen::Menu,
-                Screen::Library,
-                Screen::Book,
-                Screen::Search,
-                Screen::Settings,
-                Screen::Device,
-                Screen::Calibre,
-                Screen::Goodreads,
-            ] {
+            for screen in ALL_SCREENS {
                 app.screen = screen;
                 for tab in [
                     BookTab::Info,
@@ -5193,9 +5279,10 @@ mod tests {
         assert!(!app.in_section);
         assert_eq!(app.screen, Screen::Book);
 
-        // Esc again leaves the book.
-        app.handle(Action::Back).await.expect("back to library");
-        assert_eq!(app.screen, Screen::Library);
+        // Esc again leaves the book, back where it was opened from — which here
+        // is the front door, since that is where `open_book` was called from.
+        app.handle(Action::Back).await.expect("leave the book");
+        assert_eq!(app.screen, Screen::Menu);
     }
 
     #[tokio::test]
@@ -5946,12 +6033,12 @@ mod tests {
 
     // ---- the home screen ---------------------------------------------------
 
-    /// The front door is what you are reading, and the menu is still one key
-    /// away — which is what makes moving it off the front door cost nothing.
+    /// What you are reading is the menu's first row, one keypress from the front
+    /// door, and it shows the reading rather than the book: a sidecar-seeded
+    /// book has a percentage and no page at all.
     #[tokio::test]
-    async fn the_app_opens_onto_what_you_are_reading() {
-        let mut app = test_app().await;
-        assert_eq!(app.screen, Screen::Home);
+    async fn the_home_shelf_is_one_row_off_the_menu() {
+        let mut app = home_app().await;
         assert_eq!(app.reading.len(), 1, "the seeded book has an open reading");
         assert_eq!(app.reading_state.selected(), Some(0));
 
@@ -5960,18 +6047,20 @@ mod tests {
         // Its progress, from the reading — 120 of 333.
         assert!(text.contains("36%"), "{text}");
 
-        // `m` reaches the menu, and Esc comes back rather than quitting.
+        // Esc walks back to the menu it was opened from, and never out.
+        app.handle(Action::Back).await.expect("back");
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(!app.quit, "esc off the shelf killed the app");
+
+        // `m` gets there too, from the shelf — and the trail is spent there, so
+        // a second Esc is a no-op rather than a way out.
+        app.menu_index = menu_row(MenuItem::Home);
+        app.handle(Action::Select).await.expect("home");
         app.handle(Action::Menu).await.expect("menu");
         assert_eq!(app.screen, Screen::Menu);
         app.handle(Action::Back).await.expect("back");
-        assert_eq!(app.screen, Screen::Home);
-        assert!(!app.quit, "esc out of the menu killed the app");
-
-        // And the menu carries a row back here, so it is findable.
-        app.screen = Screen::Menu;
-        app.menu_index = menu_row(MenuItem::Home);
-        app.handle(Action::Select).await.expect("home");
-        assert_eq!(app.screen, Screen::Home);
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(!app.quit, "esc on the menu killed the app");
     }
 
     /// The screen counts nothing. `docs/decisions.md` bans task-completion
@@ -5979,7 +6068,7 @@ mod tests {
     /// currently-reading screen invites.
     #[tokio::test]
     async fn the_home_screen_greets_you_with_no_numbers() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         // The fixture's device scan leaves its own report in the status line;
         // arriving here at startup there is none.
         app.status = None;
@@ -5999,7 +6088,7 @@ mod tests {
     /// the key it names actually works.
     #[tokio::test]
     async fn the_empty_shelf_offers_a_way_onward() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         let id = app.library[0].id.expect("id");
         // Finishing closes the reading, which is the ordinary way this screen
         // empties.
@@ -6069,7 +6158,7 @@ mod tests {
     /// while the question stands.
     #[tokio::test]
     async fn a_find_that_matches_nothing_asks_before_going_online() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.refresh_library().await.expect("refresh");
         let all = app.library.len();
 
@@ -6179,7 +6268,7 @@ mod tests {
     /// the in-house editor, and back to a Notes list that shows it as one.
     #[tokio::test]
     async fn home_opens_a_book_and_its_reflection() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.handle(Action::Select).await.expect("open the book");
         assert_eq!(app.screen, Screen::Book);
         assert_eq!(
@@ -6224,7 +6313,7 @@ mod tests {
     /// reading, opened again and again.
     #[tokio::test]
     async fn opening_a_reflection_twice_is_the_same_note() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.handle(Action::Reflect).await.expect("first");
         let first = match &app.note_editor.as_ref().unwrap().target {
             NoteTarget::Edit(n) => n.id,
@@ -6248,7 +6337,7 @@ mod tests {
     /// and an answer that is not on the scale is reported, never rounded.
     #[tokio::test]
     async fn a_review_asks_for_its_rating_and_never_rounds_one() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.handle(Action::Review).await.expect("review");
         assert_eq!(app.note_editor.as_ref().unwrap().title(), "review");
         for c in "worth your time".chars() {
@@ -6308,7 +6397,7 @@ mod tests {
     /// the home screen is a view of `readings`, not a list it keeps by hand.
     #[tokio::test]
     async fn finishing_a_book_takes_it_off_the_shelf() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.handle(Action::Select).await.expect("open");
         app.handle(Action::ToggleFinished).await.expect("finish");
         assert!(app.reading.is_empty(), "a finished book is still 'reading'");
@@ -6319,7 +6408,7 @@ mod tests {
     /// The screen navigates and is never a dead end.
     #[tokio::test]
     async fn the_home_screen_navigates_and_reaches_the_menu() {
-        let mut app = test_app().await;
+        let mut app = home_app().await;
         app.handle(Action::Up).await.expect("up");
         assert_eq!(app.reading_state.selected(), Some(0), "one row wraps to it");
         app.handle(Action::Menu).await.expect("menu");
@@ -6758,9 +6847,8 @@ mod tests {
     #[tokio::test]
     async fn quitting_and_navigation_move_between_screens() {
         let mut app = test_app().await;
-        // The app opens onto what you are reading, not onto a list of commands.
-        assert_eq!(app.screen, Screen::Home);
-        app.handle(Action::Menu).await.expect("menu");
+        // The app opens on the menu, which is where going back stops.
+        assert_eq!(app.screen, Screen::Menu);
         app.menu_index = menu_row(MenuItem::Library);
         app.handle(Action::Select).await.expect("open library");
         assert_eq!(app.screen, Screen::Library);
@@ -6772,6 +6860,154 @@ mod tests {
         assert_eq!(app.screen, Screen::Menu);
         app.handle(Action::Quit).await.expect("quit");
         assert!(app.quit);
+    }
+
+    // ---- the back trail ----------------------------------------------------
+
+    /// Every screen, for the sweeps that must cover all of them.
+    ///
+    /// One list rather than one per test: [`draw_every_screen_once`] carried its
+    /// own copy, and two lists of the same nine things is how a screen ends up in
+    /// one sweep and not the other. The length is written out, so growing it is a
+    /// deliberate edit — though what really stops a screen shipping unswept is
+    /// `ui::help::page`, which is exhaustive on [`Screen`].
+    const ALL_SCREENS: [Screen; 9] = [
+        Screen::Home,
+        Screen::Menu,
+        Screen::Library,
+        Screen::Book,
+        Screen::Search,
+        Screen::Settings,
+        Screen::Device,
+        Screen::Calibre,
+        Screen::Goodreads,
+    ];
+
+    /// The front door is the menu with nothing behind it, which is what makes
+    /// "the bottom of the trail is the menu" true from the first keypress rather
+    /// than from the first navigation.
+    #[tokio::test]
+    async fn the_app_opens_on_the_menu_with_nothing_behind_it() {
+        let app = test_app().await;
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(
+            app.trail.is_empty(),
+            "the front door has a trail: {:?}",
+            app.trail
+        );
+    }
+
+    /// `b` walks back one screen at a time and then stops dead. Stopping is the
+    /// point: the last press changes nothing, and above all does not quit.
+    #[tokio::test]
+    async fn back_walks_the_trail_one_screen_at_a_time_and_stops_at_the_menu() {
+        let mut app = test_app().await;
+        app.menu_index = menu_row(MenuItem::Library);
+        app.handle(Action::Select).await.expect("library");
+        app.handle(Action::Select).await.expect("book");
+        assert_eq!(app.screen, Screen::Book);
+        assert_eq!(app.trail, vec![Screen::Menu, Screen::Library]);
+
+        app.handle(Action::Back).await.expect("back");
+        assert_eq!(app.screen, Screen::Library);
+        app.handle(Action::Back).await.expect("back");
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(app.trail.is_empty());
+
+        // And one press further, which is the one that used to leave the app.
+        app.handle(Action::Back).await.expect("back");
+        assert_eq!(app.screen, Screen::Menu, "back walked past the menu");
+        assert!(!app.quit, "back off the bottom of the trail quit the app");
+    }
+
+    /// **Esc never quits, from anywhere.** Asserted over every screen rather
+    /// than over the two that used to do it, because this is the sort of rule
+    /// that comes back one screen at a time.
+    #[tokio::test]
+    async fn back_never_quits_from_any_screen() {
+        for screen in ALL_SCREENS {
+            let mut app = test_app().await;
+            app.screen = screen;
+            app.handle(Action::Back).await.expect("back");
+            assert!(!app.quit, "back quit the app from {screen:?}");
+            // Twice, since a trail set by hand is empty and the second press is
+            // the one that meets the no-op.
+            app.handle(Action::Back).await.expect("back again");
+            assert!(!app.quit, "a second back quit the app from {screen:?}");
+        }
+    }
+
+    /// Going *to* the menu spends the trail, however deep it was. The menu is
+    /// the bottom, and a trail underneath it would be a step past the one screen
+    /// that carries a way out of the app.
+    #[tokio::test]
+    async fn the_menu_is_always_the_bottom_of_the_trail() {
+        let mut app = test_app().await;
+        app.menu_index = menu_row(MenuItem::Library);
+        app.handle(Action::Select).await.expect("library");
+        app.handle(Action::Select).await.expect("book");
+        app.open_search();
+        app.input = None;
+        assert_eq!(
+            app.trail,
+            vec![Screen::Menu, Screen::Library, Screen::Book],
+            "three screens deep"
+        );
+
+        app.handle(Action::Menu).await.expect("menu");
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(
+            app.trail.is_empty(),
+            "the menu left a trail: {:?}",
+            app.trail
+        );
+    }
+
+    /// The trail is bounded, and the entry it drops to stay bounded is the
+    /// *second* — element 0 is the menu, and a cap that ate it would leave `b`
+    /// bottoming out on a screen instead of on the way out.
+    #[tokio::test]
+    async fn the_trail_is_capped_and_keeps_the_menu_underneath() {
+        let mut app = test_app().await;
+        // Straight through `go`, and two screens that are each other's forward
+        // navigation: the cap is a property of the transition, so driving it with
+        // the shortest walk that reaches it says the most about it.
+        for _ in 0..TRAIL_MAX + 8 {
+            app.go(Screen::Library);
+            app.go(Screen::Search);
+        }
+        assert!(
+            app.trail.len() <= TRAIL_MAX,
+            "the trail grew past its cap: {}",
+            app.trail.len()
+        );
+        assert_eq!(app.trail[0], Screen::Menu, "the cap ate the bottom");
+
+        // And it is still walkable all the way down to the one screen `b` stops
+        // on, rather than to whatever the cap happened to leave.
+        let depth = app.trail.len();
+        for _ in 0..depth {
+            app.handle(Action::Back).await.expect("back");
+        }
+        assert_eq!(app.screen, Screen::Menu);
+        assert!(!app.quit);
+    }
+
+    /// The improvement a user actually feels: a book opened off the home shelf
+    /// goes back to the home shelf. Leaving the book used to be hard-coded to
+    /// the library, so Esc landed you in a list you had never been in.
+    #[tokio::test]
+    async fn a_book_opened_from_the_home_shelf_goes_back_to_it() {
+        let mut app = home_app().await;
+        app.handle(Action::Select).await.expect("open the book");
+        assert_eq!(app.screen, Screen::Book);
+
+        app.handle(Action::Back).await.expect("leave the book");
+        assert_eq!(
+            app.screen,
+            Screen::Home,
+            "leaving the book landed somewhere it was not opened from"
+        );
     }
 
     /// Print every screen's help page, drawn.
@@ -7854,7 +8090,12 @@ mod tests {
     #[tokio::test]
     async fn any_key_closes_the_help_page_and_none_reaches_the_screen_behind() {
         let mut app = test_app().await;
-        app.screen = Screen::Library;
+        // Reached through the menu rather than assigned, and that is what keeps
+        // the Esc case sharp: with an empty trail behind it a leaked `Back` would
+        // be a no-op, so the assertion below would pass without asserting.
+        app.menu_index = menu_row(MenuItem::Library);
+        app.handle(Action::Select).await.expect("library");
+        assert_eq!(app.trail, vec![Screen::Menu]);
         let before = app.library.len();
 
         for code in [
