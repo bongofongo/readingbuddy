@@ -52,6 +52,7 @@ use crate::book::{Book, normalize_isbn};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::error::{EngineError, Result};
 use crate::koreader::{self, MatchCandidate};
+use crate::matching::Query;
 use crate::providers::normalize_language;
 use crate::storage::{LinkedBy, Storage};
 use crate::{Engine, partial_md5};
@@ -667,14 +668,14 @@ enum Matched {
     Nothing,
 }
 
-/// uuid → ISBN → `partial_md5` → the shared title scan.
+/// uuid → ISBN → `partial_md5` → the shared title+author scan.
 ///
 /// That is dedup level 3 as `docs/decisions.md` states it, with calibre's own
-/// stable id in front of it. **No second matcher**: `koreader::title_scores_for`
-/// is the same fuzzy scan a sidecar and a Goodreads row get, with the same
-/// `AUTO_MATCH` / `CANDIDATE_MIN` bands. Two fuzzy matchers would be two answers
-/// to "is this the book I already have", and the one that disagreed would be the
-/// one that made the duplicate.
+/// stable id in front of it. **No second matcher**: [`crate::matching`], through
+/// `koreader::scores_for`, is the same scan a sidecar and a Goodreads row get,
+/// with the same `AUTO_MATCH` / `CANDIDATE_MIN` bands. Two fuzzy matchers would
+/// be two answers to "is this the book I already have", and the one that
+/// disagreed would be the one that made the duplicate.
 async fn match_book(storage: &Storage, cb: &CalibreBook, hashes: &[String]) -> Result<Matched> {
     if let Some(uuid) = &cb.uuid
         && let Some(book_id) = storage.book_for_external_id(SOURCE, uuid).await?
@@ -696,14 +697,17 @@ async fn match_book(storage: &Storage, cb: &CalibreBook, hashes: &[String]) -> R
         }
     }
 
-    let scored = koreader::title_scores_for(storage, cb.title.as_deref()).await?;
-    if let Some((score, book)) = scored.first()
-        && *score >= koreader::AUTO_MATCH
-        && let Some(book_id) = book.id
+    // One scan, both answers. Calling the auto-match and the band separately
+    // read the whole shelf twice for every row calibre listed.
+    let scored =
+        koreader::scores_for(storage, &Query::new(cb.title.as_deref(), &cb.authors)).await?;
+    if let Some(s) = scored.first()
+        && s.can_auto
+        && let Some(book_id) = s.book.id
     {
         return Ok(Matched::Book(book_id, CalibreMatch::Title));
     }
-    let candidates = koreader::candidates_for_title(storage, cb.title.as_deref()).await?;
+    let candidates = koreader::band(scored);
     Ok(if candidates.is_empty() {
         Matched::Nothing
     } else {

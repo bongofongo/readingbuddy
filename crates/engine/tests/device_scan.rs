@@ -440,6 +440,46 @@ async fn a_new_row_carries_the_books_it_might_already_be() {
     }
 }
 
+/// The author is a veto, and the scan has to reach the same verdict twice —
+/// once from the file, once from `sidecar_seen`.
+///
+/// The second half is the part worth a test: the matcher reads `authors` now,
+/// and a cache that kept everything *but* that would make a cache hit and a
+/// fresh parse disagree about the same book, with nothing on screen looking
+/// wrong. `parsed == 0` is what proves the second scan came off the cache.
+#[tokio::test]
+async fn a_book_by_somebody_else_is_not_offered_and_the_cache_agrees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("KOBOeReader");
+    place(&root, "Pachinko.sdr", "Pachinko.sdr");
+
+    let s = Storage::connect("sqlite::memory:").await.unwrap();
+    // The sidecar's book is Min Jin Lee's. This one is not, whatever the title
+    // says — two books can share a title, and folding them together is worse
+    // than leaving the shelf alone.
+    s.upsert_book(&Book {
+        title: Some("Pachinko".into()),
+        authors: vec!["Someone Else Entirely".into()],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    for round in 1..=2 {
+        let scan = device::scan_device(&s, &root).await.unwrap();
+        if round == 2 {
+            assert_eq!(scan.parsed, 0, "the second scan came off the cache");
+        }
+        match &scan.books[0].state {
+            DeviceState::New { candidates } => assert!(
+                candidates.is_empty(),
+                "round {round}: nothing here looks like it, and saying so is the point"
+            ),
+            other => panic!("round {round}: expected New with no candidate, got {other:?}"),
+        }
+    }
+}
+
 /// Syncing an unmatched row is the decision to create it — and doing it twice
 /// must not put a second copy on the shelf.
 #[tokio::test]

@@ -23,13 +23,15 @@
 //!    two rows and one book; nothing else is needed for it, and in particular
 //!    no "is this the same edition" heuristic.
 //! 3. **same book, unknown file** → ISBN, then `partial_md5` through the
-//!    existing `device_books` mapping, then the jaro-winkler title fingerprint.
+//!    existing `device_books` mapping, then the title+author fingerprint.
 //!
-//! **No second matcher.** Level 3's last rung is
-//! [`crate::koreader::title_scores_for`] — the same scan a sidecar and a
-//! Goodreads row get, with the same `AUTO_MATCH`/`CANDIDATE_MIN` band. Two fuzzy
-//! matchers would be two answers to "is this the book I already have", and the
-//! one that disagreed would be the one that made the duplicate.
+//! **No second matcher.** Level 3's last rung is [`crate::matching`], through
+//! [`crate::koreader::scores_for`] — the same scan a sidecar and a Goodreads
+//! row get, with the same `AUTO_MATCH`/`CANDIDATE_MIN` band. An epub supplies
+//! its own authors to it; a file matched by its filename stem has none, and the
+//! title then decides alone. Two fuzzy matchers would be two answers to "is this
+//! the book I already have", and the one that disagreed would be the one that
+//! made the duplicate.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -66,7 +68,7 @@ pub enum FileMatch {
     /// KOReader's `partialMD5` is already mapped to a book — either because the
     /// device told us, or because we imported this file once before.
     Md5,
-    /// Jaro-winkler on the title, at or above `AUTO_MATCH`.
+    /// The shared title+author matcher was sure enough to link without asking.
     Title,
 }
 
@@ -359,17 +361,21 @@ pub async fn identify(storage: &Storage, path: &Path) -> Result<FileIdentity> {
     }
     let mut candidates = Vec::new();
     if matched.is_none() {
-        let scored = crate::koreader::title_scores_for(storage, title.as_deref()).await?;
+        // The epub's own authors when it had any; a file matched by its
+        // *filename* has none, and then the title decides alone.
+        let authors = info.as_ref().map(|i| i.authors.clone()).unwrap_or_default();
+        let scored = crate::koreader::scores_for(
+            storage,
+            &crate::matching::Query::new(title.as_deref(), &authors),
+        )
+        .await?;
         match scored.first() {
-            Some((score, book)) if *score >= crate::koreader::AUTO_MATCH => {
-                if let Some(id) = book.id {
+            Some(s) if s.can_auto => {
+                if let Some(id) = s.book.id {
                     matched = Some((id, FileMatch::Title));
                 }
             }
-            _ => {
-                candidates =
-                    crate::koreader::candidates_for_title(storage, title.as_deref()).await?
-            }
+            _ => candidates = crate::koreader::band(scored),
         }
     }
 

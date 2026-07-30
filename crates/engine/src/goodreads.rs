@@ -11,11 +11,12 @@
 //!   how a spreadsheet is stopped from eating the leading zero. It is stripped
 //!   and then put through [`normalize_isbn`] like every other ISBN entering the
 //!   system — see [`strip_armour`].
-//! * **One matcher.** ISBN-13 → ISBN-10 → the same jaro-winkler title scan a
-//!   KOReader sidecar gets ([`koreader::title_scores_for`]), with the same
-//!   `AUTO_MATCH` / `CANDIDATE_MIN` bands. A second fuzzy matcher would be a
-//!   second answer to "is this the book I already have", and the one that
-//!   disagreed would be the one that made the duplicate.
+//! * **One matcher.** ISBN-13 → ISBN-10 → the same title+author scan a KOReader
+//!   sidecar gets ([`crate::matching`], through [`koreader::scores_for`]), with
+//!   the same `AUTO_MATCH` / `CANDIDATE_MIN` bands and the CSV's own `Author`
+//!   column on the veto side. A second fuzzy matcher would be a second answer to
+//!   "is this the book I already have", and the one that disagreed would be the
+//!   one that made the duplicate.
 //! * **`Exclusive Shelf` is readings, not a status column** — `read` is a
 //!   finished reading, `currently-reading` an open one, and `to-read` is *a book
 //!   with no reading at all*. That last one is why `to-read` needs no collection
@@ -35,6 +36,7 @@ use crate::book::{Book, normalize_isbn};
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Severity};
 use crate::error::{EngineError, Result};
 use crate::koreader::{self, MatchCandidate};
+use crate::matching::Query;
 use crate::notes::{NewNoteInput, NoteKind};
 use crate::storage::{STATUS_FINISHED, STATUS_READING, Storage};
 use crate::{Engine, storage};
@@ -515,14 +517,16 @@ async fn match_row(storage: &Storage, row: &GoodreadsRow) -> Result<Matched> {
         }
     }
 
-    let scored = koreader::title_scores_for(storage, row.title.as_deref()).await?;
-    if let Some((score, book)) = scored.first()
-        && *score >= koreader::AUTO_MATCH
-        && let Some(book_id) = book.id
+    // One scan, both answers — see `calibre::match_book`.
+    let scored =
+        koreader::scores_for(storage, &Query::new(row.title.as_deref(), &row.authors)).await?;
+    if let Some(s) = scored.first()
+        && s.can_auto
+        && let Some(book_id) = s.book.id
     {
         return Ok(Matched::Book(book_id, GoodreadsMatch::Title));
     }
-    let candidates = koreader::candidates_for_title(storage, row.title.as_deref()).await?;
+    let candidates = koreader::band(scored);
     Ok(if candidates.is_empty() {
         Matched::Nothing
     } else {

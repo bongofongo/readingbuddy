@@ -578,7 +578,10 @@ async fn a_file_imported_later_lands_on_the_book_the_device_already_created() {
     // no ISBN — a sidecar-created book has none either, so the ISBN rung cannot
     // be what saves this.
     let file = tmp.path().join("pachinko-min-jin-lee.epub");
-    common::write_isbnless_epub(&file, "Pachinko");
+    // The sidecar's own author, because it is the same book: the matcher reads
+    // authors, and two different names for one title is exactly what it now
+    // refuses to fold together.
+    common::write_isbnless_epub_by(&file, "Pachinko", "Min Jin Lee");
     let report = engine
         .import_file(&file, readingbuddy::FileImportOptions::default())
         .await

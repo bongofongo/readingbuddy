@@ -159,6 +159,15 @@ pub fn skipped(reason: &str, hint: &str) -> bool {
 /// reason (its create-a-book path goes through `import_epub`), and two epub
 /// builders would be two definitions of what a valid epub is.
 pub fn write_isbnless_epub(path: &std::path::Path, title: &str) {
+    write_isbnless_epub_by(path, title, "A Test Author")
+}
+
+/// The same file with an author of your choosing.
+///
+/// Needed because the matcher reads authors now: a test that means "this is the
+/// same book arriving from somewhere else" has to say so on both sides, or the
+/// author veto fires and is right to.
+pub fn write_isbnless_epub_by(path: &std::path::Path, title: &str, author: &str) {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
@@ -192,7 +201,7 @@ pub fn write_isbnless_epub(path: &std::path::Path, title: &str) {
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="bookid">urn:uuid:00000000-0000-4000-8000-000000000000</dc:identifier>
     <dc:title>{title}</dc:title>
-    <dc:creator>A Test Author</dc:creator>
+    <dc:creator>{author}</dc:creator>
     <dc:language>en</dc:language>
   </metadata>
   <manifest>

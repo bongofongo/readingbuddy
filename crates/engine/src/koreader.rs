@@ -2,13 +2,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use mlua::{Lua, LuaOptions, StdLib, Table, Value};
-use strsim::jaro_winkler;
 
 use crate::book::Book;
 use crate::diagnostic::Diagnostic;
 use crate::error::{EngineError, Result};
 use crate::flashcards::single_word;
-use crate::search::normalize;
+use crate::matching::{Prepared, Query};
 use crate::storage::{LinkedBy, NewHighlight, Storage, ko_datetime_to_unix};
 
 /// Instructions a sidecar chunk may execute before it is killed.
@@ -29,19 +28,14 @@ const LUA_INSTRUCTION_BUDGET: u32 = 5_000_000;
 /// symlink cycle, which is otherwise an unbounded recursion.
 const MAX_LIBRARY_DEPTH: usize = 32;
 
-/// Jaro-winkler similarity at or above which a sidecar title is linked to a
-/// library book with no questions asked.
-///
-/// `const`, not config, for the same reason `PROVIDER_TIMEOUT` is: a knob here
-/// would be a knob on what "the same book" means, and the only honest way to
-/// test either value is against a fixed one.
-pub(crate) const AUTO_MATCH: f64 = 0.85;
-
-/// Below this a title match is noise, not a candidate. The band between the two
-/// is what [`match_candidates`] returns: too weak to link silently, too strong
-/// to throw away, which is exactly the case where a variant title used to
-/// become a duplicate with nothing said.
-pub(crate) const CANDIDATE_MIN: f64 = 0.60;
+#[cfg(test)]
+use crate::matching::AUTO_MATCH;
+/// The floor of the candidate band. The rule itself lives in
+/// [`crate::matching`], which is where the reasons are; the callers no longer
+/// compare against `AUTO_MATCH` by hand, because whether a match may be made
+/// silently is now the matcher's answer rather than a threshold anyone can
+/// re-derive.
+pub(crate) use crate::matching::CANDIDATE_MIN;
 
 /// Parsed KOReader `.sdr` sidecar (`metadata.epub.lua` etc.).
 #[derive(Debug, Default)]
@@ -369,7 +363,8 @@ pub enum MatchMethod {
     Md5,
     /// A sibling `.epub` next to the `.sdr` dir carried an ISBN we know.
     Isbn,
-    /// Fuzzy jaro-winkler match on the normalized `doc_props.title`.
+    /// The shared matcher was sure enough on `doc_props` title and authors to
+    /// link without asking.
     Title,
     /// Nothing matched, so the book was created from the sidecar's own
     /// metadata. Only [`import_book_from_sidecar`] produces this — an ordinary
@@ -528,12 +523,13 @@ pub fn is_sidecar_file(p: &Path) -> bool {
 }
 
 /// Match a sidecar to a library book: (a) a recorded `device_books` link on the
-/// sidecar's `partial_md5`, (b) sibling ebook file's ISBN, (c) fuzzy doc_props
-/// title (jaro-winkler >= 0.85 on normalized titles).
+/// sidecar's `partial_md5`, (b) sibling ebook file's ISBN, (c) the shared
+/// [`crate::matching`] scan over `doc_props` title and authors.
 ///
 /// Public so [`crate::device`] can show the same verdict a scan's later import
-/// would reach. Only `partial_md5` and `title` are read off `sc`, which is what
-/// lets the scan call this from its cached facts rather than a fresh parse.
+/// would reach. Only `partial_md5`, `title` and `authors` are read off `sc`,
+/// and `sidecar_seen` caches all three verbatim — which is what lets the scan
+/// call this from its cached facts rather than a fresh parse.
 pub async fn match_book(
     storage: &Storage,
     sidecar_path: &Path,
@@ -567,90 +563,98 @@ pub async fn match_book(
     }
 
     let mut scored = title_scores(storage, sc).await?;
-    if scored.first().is_some_and(|(s, _)| *s >= AUTO_MATCH) {
-        return Ok(Some((scored.remove(0).1, MatchMethod::Title)));
+    if scored.first().is_some_and(|s| s.can_auto) {
+        return Ok(Some((scored.remove(0).book, MatchMethod::Title)));
     }
     Ok(None)
 }
 
-/// Every library book scored against the sidecar's title, best first.
+/// Every library book that could be this sidecar's, best first.
 ///
 /// One scan shared by [`match_book`] and [`match_candidates`], because the two
 /// answers have to come from the same ordering: a book the auto-match rejected
 /// showing up as a candidate is the whole point, and a book it accepted showing
 /// up as one as well would be an invitation to link what is already linked.
-async fn title_scores(storage: &Storage, sc: &KoSidecar) -> Result<Vec<(f64, Book)>> {
-    title_scores_for(storage, sc.title.as_deref()).await
+async fn title_scores(storage: &Storage, sc: &KoSidecar) -> Result<Vec<Scored>> {
+    let authors = split_authors(sc.authors.as_deref());
+    scores_for(storage, &Query::new(sc.title.as_deref(), &authors)).await
 }
 
-/// The same scan, given a bare title.
+/// A library book and what [`crate::matching`] made of it.
+pub(crate) struct Scored {
+    pub score: f64,
+    pub can_auto: bool,
+    pub book: Book,
+}
+
+/// The scan, given whatever the other system knows about the book.
 ///
-/// `pub(crate)` because a Goodreads row needs the *same* matcher a sidecar
-/// gets: `docs/decisions.md` names "do not invent a second matcher" under
-/// **Files**, and it applies wherever books are matched. Two fuzzy matchers
-/// would be two answers to "is this the book I already have", and the one that
-/// disagreed would be the one that made the duplicate.
-pub(crate) async fn title_scores_for(
-    storage: &Storage,
-    title: Option<&str>,
-) -> Result<Vec<(f64, Book)>> {
-    let Some(title) = title else {
+/// `pub(crate)` because a Goodreads row, a calibre row and an owned file need
+/// the *same* matcher a sidecar gets: `docs/decisions.md` names "do not invent
+/// a second matcher" under **Files**, and it applies wherever books are
+/// matched. Two fuzzy matchers would be two answers to "is this the book I
+/// already have", and the one that disagreed would be the one that made the
+/// duplicate.
+///
+/// The books this returns are the ones that survived the rule — a coincidence
+/// of letters is **absent**, not present with a low number. That is what lets a
+/// caller say *nothing here looks like it* instead of naming its best guess.
+pub(crate) async fn scores_for(storage: &Storage, query: &Query<'_>) -> Result<Vec<Scored>> {
+    let Some(prepared) = Prepared::new(query) else {
         return Ok(Vec::new());
     };
-    let want = normalize(title);
-    if want.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut scored: Vec<(f64, Book)> = storage
+    let mut scored: Vec<Scored> = storage
         .list_books(10_000, crate::storage::BookSort::LastModified)
         .await?
         .into_iter()
         .filter_map(|book| {
-            let have = normalize(book.title.as_deref().unwrap_or(""));
-            if have.is_empty() {
-                return None;
-            }
-            Some((jaro_winkler(&want, &have), book))
+            let v = prepared.compare(&book)?;
+            Some(Scored {
+                score: v.score,
+                can_auto: v.can_auto,
+                book,
+            })
         })
         .collect();
     // `total_cmp` rather than `partial_cmp().unwrap()`: a NaN here would panic
     // mid-import. Ties break on book id so the order is deterministic and a
     // caller showing "the best candidate" shows the same one twice running.
-    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.id.cmp(&b.1.id)));
+    scored.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.book.id.cmp(&b.book.id)));
     Ok(scored)
+}
+
+/// The band, out of a scan already run.
+///
+/// A pure filter, so a caller that needs both the auto-match and the band pays
+/// for **one** pass over the library rather than two. `calibre.rs` used to run
+/// the scan twice per row, which on a four-hundred-book library is eight
+/// hundred loads of the whole shelf.
+pub(crate) fn band(scored: Vec<Scored>) -> Vec<MatchCandidate> {
+    scored
+        .into_iter()
+        .filter(|s| !s.can_auto && s.score >= CANDIDATE_MIN)
+        .filter_map(|s| {
+            Some(MatchCandidate {
+                book_id: s.book.id?,
+                title: s.book.display_title().to_string(),
+                score: s.score,
+            })
+        })
+        .collect()
 }
 
 /// Library books in the ambiguous band, best first.
 ///
-/// Above [`AUTO_MATCH`] the caller has already matched; below [`CANDIDATE_MIN`]
-/// it is noise. What is left is the case the matcher used to swallow: a variant
-/// title — a subtitle dropped, a translator's spelling, "The" gained or lost —
-/// that quietly became a second copy of a book already on the shelf, with
-/// nothing said and nothing to act on. Offering it as a candidate is what turns
-/// `unmatched` from a dead end into a decision.
+/// A book the matcher would link outright is not here — the caller has already
+/// matched it — and neither is one it refused, which is the half that changed:
+/// a coincidence of letters is now absent rather than present with a plausible
+/// number. What is left is the case worth asking about: a variant title — a
+/// subtitle dropped, a translator's spelling, "The" gained or lost — that
+/// quietly became a second copy of a book already on the shelf, with nothing
+/// said and nothing to act on. Offering it is what turns `unmatched` from a
+/// dead end into a decision.
 pub async fn match_candidates(storage: &Storage, sc: &KoSidecar) -> Result<Vec<MatchCandidate>> {
-    candidates_for_title(storage, sc.title.as_deref()).await
-}
-
-/// The candidate band for a bare title — the shared half of
-/// [`match_candidates`], for the Goodreads import. See [`title_scores_for`] on
-/// why this is shared rather than reimplemented.
-pub(crate) async fn candidates_for_title(
-    storage: &Storage,
-    title: Option<&str>,
-) -> Result<Vec<MatchCandidate>> {
-    Ok(title_scores_for(storage, title)
-        .await?
-        .into_iter()
-        .filter(|(score, _)| *score >= CANDIDATE_MIN && *score < AUTO_MATCH)
-        .filter_map(|(score, book)| {
-            Some(MatchCandidate {
-                book_id: book.id?,
-                title: book.display_title().to_string(),
-                score,
-            })
-        })
-        .collect())
+    Ok(band(title_scores(storage, sc).await?))
 }
 
 /// Import all sidecars under `path`. Idempotent: re-running inserts nothing

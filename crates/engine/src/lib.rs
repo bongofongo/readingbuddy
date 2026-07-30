@@ -16,6 +16,9 @@ pub mod flashcards;
 pub mod goodreads;
 pub mod images;
 pub mod koreader;
+/// The one answer to "is this the book I already have". Internal: a frontend
+/// asks an import path, never the matcher.
+pub(crate) mod matching;
 pub mod notes;
 pub mod partial_md5;
 pub mod providers;

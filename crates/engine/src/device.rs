@@ -348,8 +348,11 @@ async fn scan_one(
         }
     };
 
-    // The matcher reads only `partial_md5` and `title`, so a cache hit reaches
-    // exactly the verdict a fresh parse would.
+    // The matcher reads only `partial_md5`, `title` and `authors`, all three of
+    // which `sidecar_seen` keeps verbatim, so a cache hit reaches exactly the
+    // verdict a fresh parse would. `authors` joined that list when the matcher
+    // gained its veto: cached but unread it would have been fine, read but
+    // uncached it would have made a cache hit and a fresh parse disagree.
     let probe = KoSidecar {
         title: facts.title.clone(),
         authors: facts.authors.clone(),

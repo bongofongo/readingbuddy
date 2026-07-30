@@ -141,8 +141,18 @@ it copies.**
   Unreadable. Single-book pull first, then multi-select and "sync everything".
 - **Pull-from-device creates the book** from sidecar metadata. No provider
   enrichment in v1 — the path is fully offline.
-- Matching order: **md5 mapping → title jaro-winkler ≥ 0.85 → candidate band
+- Matching order: **md5 mapping → title+author score ≥ 0.85 → candidate band
   (~0.60–0.85, offered as *Link*) → New.**
+- The score is **not** a bare jaro-winkler on the titles, and was: two titles
+  must share a **content word** and their authors must not **disagree**, before
+  either is offered at all. On a whole title jaro-winkler's prefix bonus and its
+  high floor for any two English strings put ~10% of arbitrary title pairs
+  inside the band, and the band is reported as a maximum over the whole library
+  — so at fifty books nearly every unmatched row grew a confident wrong
+  candidate, and `Dune`/`Dune Messiah` linked itself. The author signal is a
+  **veto only**: no threshold separates `J.R.R. Tolkien` from
+  `John Ronald Reuel Tolkien` (one person) without also merging `Frank Herbert`
+  with `Brian Herbert` (two), so it is not asked to.
 - Once linked, the decision is **recorded against `stats.md5` and never
   re-guessed.**
 - Scan must pre-filter on sidecar `mtime` + size; re-parsing every sidecar in

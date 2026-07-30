@@ -272,12 +272,17 @@ async fn an_isbn_finds_the_book_already_on_the_shelf() {
 #[tokio::test]
 async fn a_near_miss_is_reported_with_candidates_rather_than_duplicated() {
     let (_tmp, engine) = common::engine().await;
-    // jaro-winkler on short titles is generous, and a shared prefix is enough
-    // to land in the band — which is exactly the case where acting silently
-    // used to mean a second copy of a book already on the shelf.
+    // A subtitle the library carries and the CSV does not: the shape that
+    // acting silently used to turn into a second copy of a book already on the
+    // shelf.
+    //
+    // This used to seed "Pacific Ocean Notes" — a *different book* that landed
+    // in the band on nothing but the shared "Pac" prefix, which is the false
+    // positive `matching.rs` exists to remove. Under the shared-word rule it is
+    // correctly dropped, so the fixture is now a real variant of the same work.
     let near = engine
         .save_book(&Book {
-            title: Some("Pacific Ocean Notes".into()),
+            title: Some("Pachinko: A Novel of Korea and Japan".into()),
             ..Default::default()
         })
         .await
@@ -297,9 +302,11 @@ async fn a_near_miss_is_reported_with_candidates_rather_than_duplicated() {
         "the fixture has drifted out of the candidate band: {}",
         unmatched.candidates[0].score
     );
-    assert!(
-        engine.resolve_books("Pachinko").await.unwrap().is_empty(),
-        "nothing was created behind the user's back"
+    let on_the_shelf = engine.resolve_books("Pachinko").await.unwrap();
+    assert_eq!(
+        on_the_shelf.iter().map(|b| b.id).collect::<Vec<_>>(),
+        [near.id],
+        "nothing was created behind the user's back — only the book already there"
     );
 
     // And the escape hatch does what it says.
