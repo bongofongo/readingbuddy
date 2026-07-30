@@ -15,6 +15,10 @@ anki.tsv
 # useful — the trend only means anything against your own baseline.
 /perf
 
+# `make dist` staging. The real archives are built by .github/workflows/release.yml
+# and live on the GitHub release; this is only the local rehearsal of that.
+/dist
+
 .DS_Store
 
 # Drop-in dir for the user's own real KOReader exports (never commit highlights).

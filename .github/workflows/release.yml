@@ -1,0 +1,225 @@
+name: release
+
+# Tag-driven. `git tag v0.2.0 && git push origin v0.2.0` is the whole ritual;
+# everything below follows from that one push.
+#
+# `workflow_dispatch` builds every artifact and publishes none, which is how the
+# pipeline is exercised without minting a version. That matters more here than
+# usual: the two Apple targets are built on one host (see below), and "does the
+# Intel slice link" is not a question a tag push should be the first to ask.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Read-only by default; only the publish job is granted `contents: write`, and
+# only for as long as it runs.
+permissions:
+  contents: read
+
+# Deliberately NOT cancel-in-progress. A cancelled release leaves a partially
+# uploaded release behind, which is worse than two runs racing — and two runs of
+# the same tag cannot happen, since a tag is pushed once.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The floor a released binary promises. arm64 macOS starts at 11.0 anyway, so
+  # this only binds the Intel slice, and it binds the vendored C (lua54,
+  # libsqlite3) as well as the Rust.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  # The gate. CI already ran on the commit this tag points at — but "the tag
+  # points at the commit I think it does" is exactly what nobody checks, and a
+  # release is the one place where being wrong is public.
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      # A tag that disagrees with Cargo.toml ships archives named for a version
+      # the binary's own `--version` denies. Cheap to check, silent for ever if
+      # it is not.
+      - name: the tag and the workspace version must agree
+        id: version
+        run: |
+          set -euo pipefail
+          # `cargo pkgid` rather than `cargo metadata | jq`: jq happens to be on
+          # the runner image, and depending on it means this step is the one
+          # thing here that cannot be reproduced with the toolchain alone.
+          # Both pkgid spellings end in the version — `…#name@0.1.0` and the
+          # older `…#0.1.0` — so the last # or @ is the split either way.
+          crate=$(cargo pkgid -p readingbuddy-tui | sed 's/.*[#@]//')
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            if [ "v${crate}" != "${tag}" ]; then
+              echo "::error::tag ${tag} does not match the workspace version ${crate}"
+              echo "Bump [workspace.package] version in Cargo.toml, or retag."
+              exit 1
+            fi
+            echo "version=${tag}" >> "$GITHUB_OUTPUT"
+          else
+            # A dispatch run has no tag. Name the artifacts so they can never be
+            # mistaken for a release someone can install.
+            echo "version=v${crate}-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - run: cargo nextest run --workspace --locked
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built on the OLDEST runner image still offered, because a
+          # glibc-linked binary runs on that glibc and everything newer, and
+          # nothing older. 22.04 is glibc 2.35. Bumping this line raises the
+          # floor for every user; it is not a routine maintenance edit.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+
+          # Both Apple targets on ONE arm64 host, the Intel slice cross-built.
+          # Not a preference: macos-13 was the last Intel runner and is retired,
+          # so there is no host to build x86_64 natively on. The macOS SDK is
+          # universal and `cc` passes the target through to clang, so the
+          # vendored lua54 and libsqlite3 cross as cleanly as the Rust does.
+          # `macos-latest` rather than a pin, so this does not break the day the
+          # current arm64 image ages out.
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # No-op for a native target; installs the std for the cross one. rustup
+      # reads rust-toolchain.toml, so this lands on the pinned toolchain rather
+      # than fighting the pin.
+      - run: rustup target add ${{ matrix.target }}
+
+      # Only the two frontends. `readingbuddyd` is deliberately absent: it
+      # serves GUIs that do not exist yet, and an unused daemon in the tarball
+      # is a thing users have to ask about.
+      # `--profile dist`, not `--release`: same optimisation, without the 90 MB
+      # of line tables. See the profile's comment in Cargo.toml — the symbol
+      # table stays, so a crash log still names functions.
+      - run: cargo build --profile dist --locked --target ${{ matrix.target }}
+             -p readingbuddy-tui -p readingbuddy-cli
+
+      # Stage a directory rather than tarring the target dir in place: an
+      # archive that explodes N files into the user's cwd is rude, and the
+      # licence has to travel with the binary (see LICENSE — the epub crate is
+      # GPL-3.0 and this is the step that distributes it).
+      - name: stage the archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="readingbuddy-${{ needs.verify.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/dist/readingbuddy-tui" "dist/${name}/"
+          cp "target/${{ matrix.target }}/dist/readingbuddy"     "dist/${name}/"
+          cp LICENSE README.md TUTORIAL.md "dist/${name}/"
+          tar -C dist -czf "${name}.tar.gz" "${name}"
+          echo "asset=${name}.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish the release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Artifacts are built on every dispatch; a release is cut only by a tag.
+    if: github.ref_type == 'tag'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One file covering every archive, which is what `install.sh` fetches: a
+      # per-asset .sha256 would mean one more round trip per install for the
+      # same bytes.
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.tar.gz | sed 's| \./| |' > SHA256SUMS
+          cat SHA256SUMS
+
+      # The installer is attached to the release as well as living on the
+      # default branch. The branch copy is the one the README's one-liner names;
+      # this copy is what pins an *old* version's install to the script that
+      # understood it, which matters the first time the archive layout changes.
+      - run: cp install.sh dist/install.sh
+
+      - name: notes
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          ## Install
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | sh
+          \`\`\`
+
+          Or pin this version:
+
+          \`\`\`sh
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | RB_VERSION=${VERSION} sh
+          \`\`\`
+
+          Then \`readingbuddy-tui\` (the TUI) and \`readingbuddy\` (the CLI).
+          Both read \`READINGBUDDY_DATA_DIR\`, defaulting to the current
+          directory — set it once in your shell profile, or every directory you
+          launch from becomes its own library.
+
+          Prebuilt for x86_64 and arm64 on both Linux (glibc 2.35+) and macOS
+          (11.0+). Verify a manual download against \`SHA256SUMS\`.
+
+          readingbuddy is GPL-3.0 (see LICENSE); source is this repository.
+          EOF
+
+      # `gh` rather than a marketplace action: it is preinstalled on every
+      # runner, it needs no version pin, and this repo has spent its
+      # third-party-action budget on things that do work `gh` cannot.
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag \
+            dist/*.tar.gz dist/SHA256SUMS dist/install.sh

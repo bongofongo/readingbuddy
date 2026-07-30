@@ -2,6 +2,15 @@
 
 A walk through every feature, in the order you'd naturally meet them.
 
+If you installed a release (see the README), the CLI is already on your path as
+`readingbuddy`:
+
+```
+alias rb='readingbuddy'
+```
+
+From a source checkout instead:
+
 ```
 cargo build --workspace
 alias rb='cargo run -q -p readingbuddy-cli --'   # or install: cargo install --path crates/cli

@@ -17,10 +17,32 @@ rust-version = "1.88"
 publish = false
 
 # A release backtrace is bare addresses without this, which makes the crash log
-# worthless. Costs a few MB of binary and nothing else.
+# worthless.
+#
+# This used to say it cost "a few MB of binary and nothing else". Measured when
+# the release pipeline went in, the line tables are 90 MB of the TUI's 112 MB —
+# free on this machine, and not free over a network, which is what `dist` below
+# is for.
 [profile.release]
 debug = "line-tables-only"
 strip = "none"
+
+# What .github/workflows/release.yml ships, and the only difference from
+# `release` is what the download costs: 22 MB against 112, ~15 MB of archive
+# against 53.
+#
+# `strip = "debuginfo"` and NOT `"symbols"`. The symbol table is the cheap half
+# — dropping the line tables is where the 90 MB goes — and it is what keeps a
+# crash log naming `readingbuddy_tui::app::draw` instead of `0x55f3a1c04e20`.
+# A frame without a line number still says which function; a bare address says
+# nothing, which is exactly what the profile above exists to prevent.
+#
+# Local builds are untouched: `cargo build --release` still carries everything,
+# so a crash on the dev machine is diagnosed with the file and line it has
+# always had.
+[profile.dist]
+inherits = "release"
+strip = "debuginfo"
 
 [workspace.dependencies]
 # `default-features = false` is load-bearing: the defaults pull native-tls ->
