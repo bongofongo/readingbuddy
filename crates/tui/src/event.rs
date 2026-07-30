@@ -12,6 +12,11 @@ pub enum Action {
     Back,
     Up,
     Down,
+    /// A jump of several rows, stopping at the end of the list rather than
+    /// wrapping. `ctrl-u` / `ctrl-d`, and the page keys, which mean the same
+    /// thing on a keyboard that has them.
+    PageUp,
+    PageDown,
     Left,
     Right,
     Select,
@@ -53,6 +58,8 @@ pub enum Action {
     EditApiKey,
     /// Cycle the ambient background motif (settings screen).
     CycleAmbient,
+    /// Cycle the library list's order (library screen).
+    CycleSort,
     /// Mark / unmark the selected device row.
     Mark,
     /// Bring the marked device rows across (or every syncable one).
@@ -71,6 +78,11 @@ pub enum Action {
     CreateAnyway,
     /// Convert a book between formats through calibre.
     Convert,
+    /// Show the current screen's help page.
+    ///
+    /// Global, and deliberately so: the page is per-screen but the *key* is not,
+    /// or the one key a lost user tries would itself have to be looked up.
+    Help,
 }
 
 /// The key map, with the screen's own bindings applied first.
@@ -173,6 +185,12 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
             KeyCode::Char('c') => Some(Action::Quit),
+            // vim's half-page pair. They live in the control map rather than
+            // taking two more letters because that is where every user who
+            // reaches for them will look, and `d` and `u` are both letters this
+            // app would otherwise have to give up (`d` deletes).
+            KeyCode::Char('d') => Some(Action::PageDown),
+            KeyCode::Char('u') => Some(Action::PageUp),
             _ => None,
         };
     }
@@ -195,8 +213,16 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Left | KeyCode::Char('h') => Some(Action::Left),
         KeyCode::Right | KeyCode::Char('l') => Some(Action::Right),
         KeyCode::Enter => Some(Action::Select),
+        // The same jump, for a keyboard that has the keys. Not an alias anybody
+        // has to learn — it is what these keys already mean everywhere else.
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::PageUp => Some(Action::PageUp),
         KeyCode::Char(' ') => Some(Action::ToggleSpin),
-        KeyCode::Char('o') | KeyCode::Char('?') => Some(Action::ToggleOptions),
+        KeyCode::Char('o') => Some(Action::ToggleOptions),
+        // `?` used to be a second spelling of `o`, which meant the one key
+        // everybody tries when lost expanded a key bar on the single screen
+        // that has one and did nothing at all on the other eight.
+        KeyCode::Char('?') => Some(Action::Help),
         KeyCode::Char('r') => Some(Action::Reset),
         KeyCode::Char('t') => Some(Action::RotateLayout),
         KeyCode::Char('v') => Some(Action::ToggleRenderer),
@@ -228,6 +254,12 @@ pub fn map_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('/') => Some(Action::Query),
         KeyCode::Char('g') => Some(Action::EditApiKey),
         KeyCode::Char('a') => Some(Action::CycleAmbient),
+        // Global in the map, meaningful on the library screen — the same shape
+        // as `a` above, which only the settings screen answers. It is safe to
+        // take globally *because* the three import shelves claim `s` for `Sync`
+        // in their own maps, which run first: the one meaning of `s` that was
+        // already spent is the one this cannot reach.
+        KeyCode::Char('s') => Some(Action::CycleSort),
         _ => None,
     }
 }
@@ -259,6 +291,28 @@ mod tests {
             map_key(press(KeyCode::Char('b'))),
             map_key(press(KeyCode::Esc))
         );
+    }
+
+    /// `s` cycles the library's order — global in the map, answered only by the
+    /// library screen, exactly like `a` below. It is safe to take globally
+    /// *because* the three import shelves claim `s` for `Sync` in their own
+    /// maps, which run first: the meaning that was already spent is the one
+    /// this cannot reach.
+    #[test]
+    fn s_sorts_the_library_and_still_syncs_the_shelves() {
+        use crate::app::Screen;
+        assert_eq!(map_key(press(KeyCode::Char('s'))), Some(Action::CycleSort));
+        assert_eq!(
+            map_key_on(Screen::Library, press(KeyCode::Char('s'))),
+            Some(Action::CycleSort)
+        );
+        for screen in [Screen::Device, Screen::Calibre, Screen::Goodreads] {
+            assert_eq!(
+                map_key_on(screen, press(KeyCode::Char('s'))),
+                Some(Action::Sync),
+                "sort took the sync key on {screen:?}"
+            );
+        }
     }
 
     #[test]
@@ -422,11 +476,64 @@ mod tests {
         assert_eq!(map_key(press(KeyCode::Char('l'))), Some(Action::Right));
     }
 
+    /// `?` is the help page on every screen, including the three that claim
+    /// their own letters — being lost on an import shelf is exactly when it is
+    /// wanted. `o` keeps the key bar it always had.
+    #[test]
+    fn question_mark_is_help_everywhere_and_o_is_still_the_key_bar() {
+        use crate::app::Screen;
+        assert_eq!(map_key(press(KeyCode::Char('?'))), Some(Action::Help));
+        assert_eq!(
+            map_key(press(KeyCode::Char('o'))),
+            Some(Action::ToggleOptions)
+        );
+        for screen in [
+            Screen::Home,
+            Screen::Menu,
+            Screen::Book,
+            Screen::Device,
+            Screen::Calibre,
+            Screen::Goodreads,
+        ] {
+            assert_eq!(
+                map_key_on(screen, press(KeyCode::Char('?'))),
+                Some(Action::Help),
+                "help was shadowed on {screen:?}"
+            );
+        }
+    }
+
     #[test]
     fn ctrl_c_quits_and_other_ctrl_keys_are_ignored() {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
         assert_eq!(map_key(ctrl('c')), Some(Action::Quit));
         assert_eq!(map_key(ctrl('l')), None);
+    }
+
+    /// The half-page pair, and the plain letters it must not have disturbed —
+    /// `d` removes a book and `u` means nothing, and both stay that way.
+    #[test]
+    fn the_page_keys_are_control_only() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(map_key(ctrl('d')), Some(Action::PageDown));
+        assert_eq!(map_key(ctrl('u')), Some(Action::PageUp));
+        assert_eq!(map_key(press(KeyCode::Char('d'))), Some(Action::Delete));
+        assert_eq!(map_key(press(KeyCode::Char('u'))), None);
+        // The keys a keyboard with them already spells this way.
+        assert_eq!(map_key(press(KeyCode::PageDown)), Some(Action::PageDown));
+        assert_eq!(map_key(press(KeyCode::PageUp)), Some(Action::PageUp));
+    }
+
+    /// A screen may claim letters, never a control key — so the three import
+    /// shelves cannot shadow the jump the way they shadow `x` and `r`.
+    #[test]
+    fn no_screen_shadows_the_page_keys() {
+        use crate::app::Screen;
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for screen in [Screen::Device, Screen::Calibre, Screen::Goodreads] {
+            assert_eq!(map_key_on(screen, ctrl('d')), Some(Action::PageDown));
+            assert_eq!(map_key_on(screen, ctrl('u')), Some(Action::PageUp));
+        }
     }
 
     #[test]

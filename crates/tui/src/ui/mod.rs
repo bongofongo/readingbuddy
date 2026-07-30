@@ -5,6 +5,7 @@ pub mod book;
 pub mod calibre;
 pub mod device;
 pub mod goodreads;
+pub mod help;
 pub mod home;
 pub mod input;
 pub mod library;
@@ -541,6 +542,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Screen::Device => device::draw(f, app, body),
         Screen::Calibre => calibre::draw(f, app, body),
         Screen::Goodreads => goodreads::draw(f, app, body),
+    }
+
+    // The help page floats over the screen it describes — over the screen and
+    // under nothing, because it cannot be open at the same time as any of the
+    // modals below (the key that opens it never reaches `map_key` while one of
+    // them has the keyboard).
+    if app.help {
+        help::render(f, body, app.screen);
     }
 
     if let Some(msg) = &status_line {

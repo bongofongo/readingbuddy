@@ -9,6 +9,174 @@ use readingbuddy::Book;
 use crate::app::App;
 use crate::theme;
 
+/// What the library list is ordered by. Cycled with `s`, persisted in
+/// `tui.toml`.
+///
+/// **Applied in the frontend, not by `ORDER BY`**, and that is the decision
+/// here. `refresh_library` fetches a fixed page of the library by recency and
+/// then narrows and orders it in Rust — so changing the sort re-orders *the
+/// same books* rather than swapping which ones are on screen, which is what a
+/// SQL `ORDER BY … LIMIT` would do. It is also the only place [`Sort::Author`]
+/// can live at all: "alphabetically by last name" is a parse of a human name,
+/// and SQLite has nothing to parse one with.
+///
+/// The variant order is the cycle order, and it starts at the default so one
+/// press moves away from it and four come back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// Most recently touched first — the order the engine hands them over, and
+    /// what a library screen is usually opened to look at.
+    #[default]
+    Recent,
+    /// By title, case-insensitively.
+    ///
+    /// **Leading articles are not stripped**, so "The Overstory" files under T.
+    /// A library catalogue would file it under O, but this list shows the title
+    /// it is sorting by: a row that reads "The Overstory" sitting between "Sea
+    /// of Tranquility" and "Trust" looks like a bug, and no amount of being
+    /// right about cataloguing makes it look less like one.
+    Title,
+    /// By the first author's last name.
+    Author,
+    /// Newest first, undated last.
+    ///
+    /// Descending, like every other list in this app — a year sort ascending
+    /// would be the one place the newest thing is at the bottom.
+    Year,
+}
+
+impl Sort {
+    const ALL: [Sort; 4] = [Sort::Recent, Sort::Title, Sort::Author, Sort::Year];
+
+    /// What the box title calls it, and what `tui.toml` stores.
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Recent => "recent",
+            Sort::Title => "title",
+            Sort::Author => "author",
+            Sort::Year => "year",
+        }
+    }
+
+    /// Parse a persisted label. An unknown value is not an error — the caller
+    /// falls back to the default, the same as the ambient motif's.
+    pub fn from_label(s: &str) -> Option<Sort> {
+        Sort::ALL.into_iter().find(|o| o.label() == s)
+    }
+
+    pub fn next(self) -> Sort {
+        let i = Sort::ALL.iter().position(|o| *o == self).unwrap_or(0);
+        Sort::ALL[(i + 1) % Sort::ALL.len()]
+    }
+
+    /// Order `books` in place.
+    ///
+    /// [`Sort::Recent`] is a **no-op**, not a re-sort: the engine already
+    /// returned the list that way, and re-deriving it here from
+    /// `Book::last_modified` would be a second opinion about an order we were
+    /// given.
+    ///
+    /// Every other arm sorts by a key that can tie — two books by one author,
+    /// two from one year — and `sort_by_key` is stable, so a tie keeps the
+    /// recency order underneath. That is a better tie-break than any second key
+    /// could be, and it costs nothing: within an author, newest first.
+    pub fn apply(self, books: &mut [Book]) {
+        match self {
+            Sort::Recent => {}
+            Sort::Title => books.sort_by_key(|b| b.display_title().to_lowercase()),
+            Sort::Author => books.sort_by_key(author_key),
+            // `Reverse` on the year alone: the `None` arm must stay *last*, so
+            // it cannot ride along inside the reversal.
+            Sort::Year => books.sort_by_key(|b| match b.publish_year {
+                Some(y) => (0, std::cmp::Reverse(y)),
+                None => (1, std::cmp::Reverse(0)),
+            }),
+        }
+    }
+}
+
+/// The sort key for [`Sort::Author`]: `(no-author flag, last name, full name)`.
+///
+/// The flag is what keeps an authorless book at the bottom rather than at the
+/// top under an empty string, and the full name breaks ties between two people
+/// who share a surname.
+fn author_key(b: &Book) -> (u8, String, String) {
+    match b.authors.first() {
+        Some(a) if !a.trim().is_empty() => {
+            (0, last_name(a).to_lowercase(), a.trim().to_lowercase())
+        }
+        _ => (1, String::new(), String::new()),
+    }
+}
+
+/// Name particles that belong to the surname rather than to the given names —
+/// "Ursula K. **Le Guin**", "Vincent **van Gogh**", "Simone **de Beauvoir**".
+///
+/// Matched case-insensitively, because the same particle is capitalised in one
+/// language and not in the next, and a person writing their own name does not
+/// consult a table.
+const PARTICLES: [&str; 18] = [
+    "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "van", "von", "ten", "ter",
+    "af", "av", "bin", "ibn",
+];
+
+/// Honorific and generational suffixes, which are never the name to file under.
+const SUFFIXES: [&str; 8] = ["jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd"];
+
+fn is_suffix(word: &str) -> bool {
+    SUFFIXES.contains(&word.trim_matches(',').to_lowercase().as_str())
+}
+
+/// The name to file an author under.
+///
+/// Three shapes, in the order they are decided:
+///
+/// 1. **`Surname, Given`** — the author already said which half is the surname,
+///    so nothing is guessed. This is the form a Goodreads export and half the
+///    providers use, so it is worth handling first rather than as a curiosity.
+/// 2. **Suffixes are dropped** — "Kurt Vonnegut Jr." files under Vonnegut.
+/// 3. **The last word, plus any particle in front of it.** "Emily St. John
+///    Mandel" → Mandel, because "John" is not a particle; "Ursula K. Le Guin"
+///    → Le Guin, because "Le" is.
+///
+/// A single word is itself: a mononym is a surname as far as this is concerned,
+/// and the alternative is filing Homer under nothing.
+pub fn last_name(author: &str) -> String {
+    let author = author.trim();
+    if let Some((head, tail)) = author.split_once(',') {
+        let head = head.trim();
+        // **Unless the comma is only holding a suffix.** "Martin Luther King,
+        // Jr." is the same name as "Martin Luther King" and files under King,
+        // not under Martin — so a tail that is nothing but suffixes is not the
+        // inverted form, however much it looks like it from the comma alone.
+        let inverted = !head.is_empty() && !tail.split_whitespace().all(is_suffix);
+        if inverted {
+            return head.to_string();
+        }
+    }
+    // Commas are separators here, not part of a word: the only ones left are
+    // the suffix-holding kind the branch above declined.
+    let mut words: Vec<&str> = author
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect();
+    while words.len() > 1 && is_suffix(words[words.len() - 1]) {
+        words.pop();
+    }
+    match words.len() {
+        0 => String::new(),
+        1 => words[0].to_string(),
+        n => {
+            let particle = PARTICLES.contains(&words[n - 2].to_lowercase().as_str());
+            if particle {
+                format!("{} {}", words[n - 2], words[n - 1])
+            } else {
+                words[n - 1].to_string()
+            }
+        }
+    }
+}
+
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let selected = app.library_state.selected();
     let rows: Vec<Line> = app
@@ -21,9 +189,21 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     // filtered set, so the count is the count of what is on screen — and the
     // words are shown because a list that is short for a reason must not look
     // like a library that has lost books.
+    // The sort is named in the border, always — including the default. "State
+    // persists and is visible": a list ordered by author with nothing saying so
+    // is a library that has quietly rearranged itself, and the one moment the
+    // user needs to be told is the one after they pressed the key.
     let title = match &app.library_filter {
-        Some(q) => format!(" library · “{q}” · {} ", app.library.len()),
-        None => format!(" library · {} ", app.library.len()),
+        Some(q) => format!(
+            " library · “{q}” · by {} · {} ",
+            app.library_sort.label(),
+            app.library.len()
+        ),
+        None => format!(
+            " library · by {} · {} ",
+            app.library_sort.label(),
+            app.library.len()
+        ),
     };
 
     // Shrink-wrapped and centred: the box is the size of the library, not the
@@ -88,6 +268,8 @@ fn key_bar(filtered: bool) -> Line<'static> {
         Span::styled(" open  ", theme::dim()),
         Span::styled("/", theme::key()),
         Span::styled(" find  ", theme::dim()),
+        Span::styled("s", theme::key()),
+        Span::styled(" sort  ", theme::dim()),
         Span::styled("d", theme::key()),
         Span::styled(" remove  ", theme::dim()),
         Span::styled("esc", theme::key()),
@@ -131,5 +313,170 @@ mod tests {
     #[test]
     fn progress_tag_survives_a_zero_page_count() {
         assert_eq!(progress_tag(&book(Some(50), Some(0), false)), "p.50");
+    }
+
+    /// The name parse, on the shapes a real library actually contains. Every
+    /// one of these is a book somebody owns rather than an invented edge case,
+    /// which is the only reason to handle any of them.
+    #[test]
+    fn a_last_name_survives_particles_initials_and_suffixes() {
+        // The ordinary case, and the one a naive `split().last()` gets right.
+        assert_eq!(last_name("Min Jin Lee"), "Lee");
+        // Initials and a compound given name: "John" is not a particle, so the
+        // surname is the last word alone.
+        assert_eq!(last_name("Emily St. John Mandel"), "Mandel");
+        // Particles, capitalised and not — the whole reason `PARTICLES` exists.
+        assert_eq!(last_name("Ursula K. Le Guin"), "Le Guin");
+        assert_eq!(last_name("Vincent van Gogh"), "van Gogh");
+        assert_eq!(last_name("Simone de Beauvoir"), "de Beauvoir");
+        // A suffix is never the name to file under.
+        assert_eq!(last_name("Kurt Vonnegut Jr."), "Vonnegut");
+        // A comma that is only holding a suffix is **not** the inverted form.
+        // Read as one, this would file under Martin.
+        assert_eq!(last_name("Martin Luther King, Jr."), "King");
+        // Already inverted: the author said which half is the surname, so
+        // nothing is guessed.
+        assert_eq!(last_name("Mandel, Emily St. John"), "Mandel");
+        assert_eq!(last_name("King, Martin Luther Jr."), "King");
+        // A trailing comma with nothing after it is a typo, not an inversion.
+        assert_eq!(last_name("Min Jin Lee,"), "Lee");
+        // A mononym is its own surname; the alternative is filing Homer under
+        // nothing at all.
+        assert_eq!(last_name("Homer"), "Homer");
+        // Degenerate input answers rather than panicking.
+        assert_eq!(last_name(""), "");
+        assert_eq!(last_name("   "), "");
+    }
+
+    /// A name that is *only* a suffix keeps it. The loop stops at one word
+    /// left, so there is no input that strips a name down to nothing.
+    #[test]
+    fn stripping_suffixes_never_empties_a_name() {
+        assert_eq!(last_name("Jr."), "Jr.");
+        assert_eq!(last_name("III"), "III");
+    }
+
+    fn titled(title: &str, author: &str, year: Option<i64>) -> Book {
+        Book {
+            title: Some(title.into()),
+            authors: if author.is_empty() {
+                Vec::new()
+            } else {
+                vec![author.into()]
+            },
+            publish_year: year,
+            ..Book::default()
+        }
+    }
+
+    fn titles(books: &[Book]) -> Vec<&str> {
+        books.iter().map(|b| b.display_title()).collect()
+    }
+
+    /// The four orders, on one list, so each is compared against the others
+    /// rather than against itself.
+    #[test]
+    fn every_order_orders_what_it_says_it_does() {
+        // Deliberately given in none of the four orders.
+        let original = vec![
+            titled("Station Eleven", "Emily St. John Mandel", Some(2014)),
+            titled("A Wizard of Earthsea", "Ursula K. Le Guin", Some(1968)),
+            titled("Pachinko", "Min Jin Lee", Some(2017)),
+            titled("The Overstory", "Richard Powers", Some(2018)),
+        ];
+
+        // Recent is the engine's own order, untouched.
+        let mut books = original.clone();
+        Sort::Recent.apply(&mut books);
+        assert_eq!(titles(&books), titles(&original));
+
+        let mut books = original.clone();
+        Sort::Title.apply(&mut books);
+        assert_eq!(
+            titles(&books),
+            // Articles are not stripped, so "The Overstory" files under T.
+            vec![
+                "A Wizard of Earthsea",
+                "Pachinko",
+                "Station Eleven",
+                "The Overstory"
+            ]
+        );
+
+        let mut books = original.clone();
+        Sort::Author.apply(&mut books);
+        // Le Guin, Lee, Mandel, Powers — and "Le Guin" before "Lee" is the
+        // particle being part of the surname rather than "Guin" filing under G.
+        assert_eq!(
+            titles(&books),
+            vec![
+                "A Wizard of Earthsea",
+                "Pachinko",
+                "Station Eleven",
+                "The Overstory"
+            ]
+        );
+
+        let mut books = original.clone();
+        Sort::Year.apply(&mut books);
+        assert_eq!(
+            titles(&books),
+            vec![
+                "The Overstory",
+                "Pachinko",
+                "Station Eleven",
+                "A Wizard of Earthsea"
+            ]
+        );
+    }
+
+    /// The two rows that have nothing to sort by go **last**, not first under
+    /// an empty key — an unknown is not the beginning of the alphabet.
+    #[test]
+    fn a_missing_author_or_year_sinks_rather_than_floats() {
+        let mut books = vec![
+            titled("No One", "", None),
+            titled("Pachinko", "Min Jin Lee", Some(2017)),
+        ];
+        Sort::Author.apply(&mut books);
+        assert_eq!(titles(&books), vec!["Pachinko", "No One"]);
+
+        let mut books = vec![
+            titled("No One", "", None),
+            titled("Pachinko", "Min Jin Lee", Some(2017)),
+        ];
+        Sort::Year.apply(&mut books);
+        assert_eq!(titles(&books), vec!["Pachinko", "No One"]);
+    }
+
+    /// Ties keep the order underneath, which is recency — so within one author
+    /// or one year the newest book is still first, for free.
+    #[test]
+    fn a_tie_keeps_the_order_it_arrived_in() {
+        let mut books = vec![
+            titled("Second", "Min Jin Lee", Some(2017)),
+            titled("First", "Min Jin Lee", Some(2017)),
+        ];
+        Sort::Author.apply(&mut books);
+        assert_eq!(titles(&books), vec!["Second", "First"]);
+        Sort::Year.apply(&mut books);
+        assert_eq!(titles(&books), vec!["Second", "First"]);
+    }
+
+    /// The cycle visits all four and comes back, and every label round-trips
+    /// through the config file's spelling of it.
+    #[test]
+    fn the_cycle_is_closed_and_every_label_round_trips() {
+        let mut seen = Vec::new();
+        let mut s = Sort::default();
+        for _ in 0..Sort::ALL.len() {
+            seen.push(s);
+            assert_eq!(Sort::from_label(s.label()), Some(s));
+            s = s.next();
+        }
+        assert_eq!(s, Sort::default(), "the cycle does not close");
+        assert_eq!(seen, Sort::ALL.to_vec());
+        // A hand-edited typo is the default, never an error.
+        assert_eq!(Sort::from_label("by-author"), None);
     }
 }

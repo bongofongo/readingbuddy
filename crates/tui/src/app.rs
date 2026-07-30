@@ -42,6 +42,51 @@ pub const TICK: Duration = Duration::from_millis(50);
 /// shown anywhere — the screen carries no count of anything.
 const HOME_LIMIT: i64 = 50;
 
+/// How far `ctrl-d` / `ctrl-u` move a selection.
+///
+/// A fixed number of rows rather than the drawn list's height, and that is a
+/// decision. Every list here is **shrink-wrapped** — `list_box` sizes the box to
+/// its contents and then to the pane — so "one screenful" is a different number
+/// on every screen, in every terminal, and changes under the user when a filter
+/// narrows the list. A jump that moves a different distance each time is a jump
+/// nobody can aim. Twelve is a screenful of the common case and always means the
+/// same thing.
+const PAGE: isize = 12;
+
+/// How far a selection key moves, and what it does at the ends.
+///
+/// The two arms differ in exactly one way and it is the whole reason this is a
+/// type rather than an `isize`: **a row wraps and a page clamps**. `j` off the
+/// bottom coming back to the top is how every list here has always behaved, and
+/// it costs one keypress to undo. `ctrl-d` doing the same would fling the user
+/// to the opposite end of the list they were paging *through*, which is the one
+/// thing a page key must not do. Clamping also gives `ctrl-d` a useful meaning
+/// on a list shorter than [`PAGE`]: go to the last row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Move {
+    /// One row, wrapping. `-1` up, `1` down.
+    Row(isize),
+    /// A [`PAGE`] of rows, stopping at the end. `-1` up, `1` down.
+    Page(isize),
+}
+
+impl Move {
+    /// Where this move lands, from `cur`, in a list of `len` rows.
+    ///
+    /// `len == 0` answers 0 — the callers all return early on an empty list, so
+    /// this is belt and braces rather than a case anything relies on.
+    fn land(self, cur: usize, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let (cur, len) = (cur as isize, len as isize);
+        match self {
+            Move::Row(d) => (cur + d).rem_euclid(len) as usize,
+            Move::Page(d) => (cur + d * PAGE).clamp(0, len - 1) as usize,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     /// What you are currently reading — one row per open reading, and the
@@ -735,6 +780,11 @@ pub struct App {
     /// standing on, and a refresh underneath a filtered list cannot silently
     /// widen it back to the whole library.
     pub library_filter: Option<String>,
+    /// What the library list is ordered by. Applied in [`App::refresh_library`]
+    /// beside the filter and for the same reason: `self.library` *is* what is on
+    /// screen, so every index into it — the selection, remove, open — keeps
+    /// meaning the row the user is standing on.
+    pub library_sort: crate::ui::library::Sort,
     /// The home shelf: one entry per **open** reading.
     ///
     /// The [`Reading`] rides along beside the [`Book`] because the two are not
@@ -781,6 +831,12 @@ pub struct App {
     /// Idle spin on/off.
     pub spinning: bool,
     pub show_options: bool,
+    /// Whether the current screen's help page (`?`) is up.
+    ///
+    /// A plain flag rather than a `Screen` of its own: the page describes the
+    /// screen underneath, which is still drawn, so the help is a layer over a
+    /// place rather than a place you navigate to and have to get back from.
+    pub help: bool,
     pub status: Option<String>,
     pub input: Option<Input>,
     pub note_editor: Option<NoteDraft>,
@@ -868,6 +924,7 @@ impl App {
             library: Vec::new(),
             library_state: ListState::default(),
             library_filter: None,
+            library_sort: crate::ui::library::Sort::default(),
             reading: Vec::new(),
             reading_state: ListState::default(),
             view: None,
@@ -886,6 +943,7 @@ impl App {
             ambient: crate::ambient::Ambient::default(),
             spinning: true,
             show_options: false,
+            help: false,
             status: None,
             input: None,
             note_editor: None,
@@ -945,10 +1003,15 @@ impl App {
     }
 
     pub async fn refresh_library(&mut self) -> Result<()> {
+        // `BookSort::LastModified` regardless of `library_sort`, and the
+        // ordering is applied below. A SQL `ORDER BY … LIMIT 200` would make the
+        // sort key decide *which* 200 books are on screen, so pressing `s` would
+        // swap the contents of the list rather than reorder it.
         self.library = self.engine.list_books(200, BookSort::LastModified).await?;
         if let Some(q) = self.library_filter.clone() {
             self.library.retain(|b| matches_book(b, &q));
         }
+        self.library_sort.apply(&mut self.library);
         if !self.library.is_empty() && self.library_state.selected().is_none() {
             self.library_state.select(Some(0));
         }
@@ -1120,6 +1183,11 @@ impl App {
             && self.input.is_none()
             && self.note_editor.is_none()
             && self.api_key.is_none()
+            // The help page is a modal like the other three, and this is the
+            // same narrowing they are — *not* the widening the doc comment
+            // below forbids. It still means "the book is turning"; a book
+            // behind a full-pane page is not one anybody is watching turn.
+            && !self.help
     }
 
     /// Whether the ambient layer is on screen right now.
@@ -1146,6 +1214,7 @@ impl App {
             // The candidate chooser is a modal like the others: while a decision
             // is open the background stops drifting behind it.
             && self.link_picker.is_none()
+            && !self.help
     }
 
     /// Advance the idle animations. Returns true when something moved.
@@ -1190,9 +1259,14 @@ impl App {
                 self.status = None;
             }
             (_, Action::Refresh) => self.refresh_library().await?,
+            // Screen-agnostic on purpose: `ui::help::page` decides what the
+            // page says, and this only decides that it is up.
+            (_, Action::Help) => self.help = true,
 
-            (Screen::Home, Action::Up) => self.step_reading(-1),
-            (Screen::Home, Action::Down) => self.step_reading(1),
+            (Screen::Home, Action::Up) => self.step_reading(Move::Row(-1)),
+            (Screen::Home, Action::Down) => self.step_reading(Move::Row(1)),
+            (Screen::Home, Action::PageUp) => self.step_reading(Move::Page(-1)),
+            (Screen::Home, Action::PageDown) => self.step_reading(Move::Page(1)),
             (Screen::Home, Action::Select) => self.open_selected_reading().await?,
             (Screen::Home, Action::Reflect) => self.open_reading_note(NoteKind::Reflection).await?,
             (Screen::Home, Action::Review) => self.open_reading_note(NoteKind::Review).await?,
@@ -1221,8 +1295,10 @@ impl App {
             // is worse than one that goes back where you came from.
             (Screen::Menu, Action::Back) => self.screen = Screen::Home,
 
-            (Screen::Library, Action::Up) => self.step_library(-1),
-            (Screen::Library, Action::Down) => self.step_library(1),
+            (Screen::Library, Action::Up) => self.step_library(Move::Row(-1)),
+            (Screen::Library, Action::Down) => self.step_library(Move::Row(1)),
+            (Screen::Library, Action::PageUp) => self.step_library(Move::Page(-1)),
+            (Screen::Library, Action::PageDown) => self.step_library(Move::Page(1)),
             // Same key, same meaning, one screen further in: narrowing an
             // already-narrowed list is refining it, so the box opens on the
             // words that produced what is on screen rather than empty.
@@ -1240,6 +1316,7 @@ impl App {
                     self.screen = Screen::Menu;
                 }
             }
+            (Screen::Library, Action::CycleSort) => self.cycle_library_sort().await?,
             (Screen::Library, Action::Delete) => self.ask_remove_selected(),
             (Screen::Library, Action::Select) => {
                 if let Some(book) = self
@@ -1252,8 +1329,10 @@ impl App {
                 }
             }
 
-            (Screen::Search, Action::Up) => self.step_search(-1),
-            (Screen::Search, Action::Down) => self.step_search(1),
+            (Screen::Search, Action::Up) => self.step_search(Move::Row(-1)),
+            (Screen::Search, Action::Down) => self.step_search(Move::Row(1)),
+            (Screen::Search, Action::PageUp) => self.step_search(Move::Page(-1)),
+            (Screen::Search, Action::PageDown) => self.step_search(Move::Page(1)),
             (Screen::Search, Action::Query) => {
                 self.start_input(InputContext::SearchQuery, "search", "")
             }
@@ -1300,12 +1379,18 @@ impl App {
                 // nobody can see.
                 Action::Up => {
                     self.ensure_panel();
-                    self.step_links(-1);
+                    self.step_links(Move::Row(-1));
                     return Ok(());
                 }
                 Action::Down => {
                     self.ensure_panel();
-                    self.step_links(1);
+                    self.step_links(Move::Row(1));
+                    return Ok(());
+                }
+                Action::PageUp | Action::PageDown => {
+                    self.ensure_panel();
+                    let d = if action == Action::PageUp { -1 } else { 1 };
+                    self.step_links(Move::Page(d));
                     return Ok(());
                 }
                 Action::Select | Action::Right => {
@@ -1367,7 +1452,7 @@ impl App {
             Action::Up => {
                 self.ensure_panel();
                 if self.in_section {
-                    self.step_tab(-1);
+                    self.step_tab(Move::Row(-1));
                 } else {
                     self.cycle_tab(-1);
                 }
@@ -1375,9 +1460,19 @@ impl App {
             Action::Down => {
                 self.ensure_panel();
                 if self.in_section {
-                    self.step_tab(1);
+                    self.step_tab(Move::Row(1));
                 } else {
                     self.cycle_tab(1);
+                }
+            }
+            // A page of an open section's list. Deliberately nothing on the
+            // section *menu*: it is four rows, and a jump key there would
+            // either do nothing or land on the same row a single press reaches.
+            Action::PageUp | Action::PageDown => {
+                self.ensure_panel();
+                if self.in_section {
+                    let d = if action == Action::PageUp { -1 } else { 1 };
+                    self.step_tab(Move::Page(d));
                 }
             }
             Action::PrevTab => {
@@ -1402,14 +1497,13 @@ impl App {
 
     // ---- the home screen ---------------------------------------------------
 
-    fn step_reading(&mut self, delta: isize) {
+    fn step_reading(&mut self, m: Move) {
         if self.reading.is_empty() {
             return;
         }
-        let len = self.reading.len() as isize;
-        let cur = self.reading_state.selected().unwrap_or(0) as isize;
+        let cur = self.reading_state.selected().unwrap_or(0);
         self.reading_state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+            .select(Some(m.land(cur, self.reading.len())));
     }
 
     /// The selected row's book id and the id of the reading it is showing.
@@ -1726,14 +1820,13 @@ impl App {
         Ok(())
     }
 
-    fn step_device(&mut self, delta: isize) {
+    fn step_device(&mut self, m: Move) {
         if self.device.is_empty() {
             return;
         }
-        let len = self.device.len() as isize;
-        let cur = self.device_state.selected().unwrap_or(0) as isize;
+        let cur = self.device_state.selected().unwrap_or(0);
         self.device_state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+            .select(Some(m.land(cur, self.device.len())));
     }
 
     /// Device-screen keys. The candidate chooser, when open, takes the
@@ -1743,8 +1836,10 @@ impl App {
             return self.handle_link_picker(action).await;
         }
         match action {
-            Action::Up => self.step_device(-1),
-            Action::Down => self.step_device(1),
+            Action::Up => self.step_device(Move::Row(-1)),
+            Action::Down => self.step_device(Move::Row(1)),
+            Action::PageUp => self.step_device(Move::Page(-1)),
+            Action::PageDown => self.step_device(Move::Page(1)),
             Action::Back => self.screen = Screen::Menu,
             Action::Select => self.pull_selected(),
             Action::Mark => self.toggle_mark(),
@@ -1958,14 +2053,17 @@ impl App {
         let Some(picker) = self.link_picker.as_mut() else {
             return Ok(());
         };
-        let len = picker.candidates.len() as isize;
+        let len = picker.candidates.len();
         match action {
-            Action::Up | Action::Down => {
-                let delta = if action == Action::Up { -1 } else { 1 };
-                let cur = picker.state.selected().unwrap_or(0) as isize;
-                picker
-                    .state
-                    .select(Some((cur + delta).rem_euclid(len.max(1)) as usize));
+            Action::Up | Action::Down | Action::PageUp | Action::PageDown => {
+                let m = match action {
+                    Action::Up => Move::Row(-1),
+                    Action::Down => Move::Row(1),
+                    Action::PageUp => Move::Page(-1),
+                    _ => Move::Page(1),
+                };
+                let cur = picker.state.selected().unwrap_or(0);
+                picker.state.select(Some(m.land(cur, len)));
             }
             Action::Back | Action::Left => {
                 self.link_picker = None;
@@ -2383,8 +2481,10 @@ impl App {
             return self.handle_link_picker(action).await;
         }
         match action {
-            Action::Up => self.step_calibre(-1),
-            Action::Down => self.step_calibre(1),
+            Action::Up => self.step_calibre(Move::Row(-1)),
+            Action::Down => self.step_calibre(Move::Row(1)),
+            Action::PageUp => self.step_calibre(Move::Page(-1)),
+            Action::PageDown => self.step_calibre(Move::Page(1)),
             Action::Back => self.screen = Screen::Menu,
             Action::Select => self.import_selected_calibre(false),
             Action::CreateAnyway => self.import_selected_calibre(true),
@@ -2412,14 +2512,13 @@ impl App {
         Ok(())
     }
 
-    fn step_calibre(&mut self, delta: isize) {
+    fn step_calibre(&mut self, m: Move) {
         if self.calibre.is_empty() {
             return;
         }
-        let len = self.calibre.len() as isize;
-        let cur = self.calibre_state.selected().unwrap_or(0) as isize;
+        let cur = self.calibre_state.selected().unwrap_or(0);
         self.calibre_state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+            .select(Some(m.land(cur, self.calibre.len())));
     }
 
     // ---- conversion ---------------------------------------------------------
@@ -2621,8 +2720,10 @@ impl App {
             return self.handle_link_picker(action).await;
         }
         match action {
-            Action::Up => self.step_goodreads(-1),
-            Action::Down => self.step_goodreads(1),
+            Action::Up => self.step_goodreads(Move::Row(-1)),
+            Action::Down => self.step_goodreads(Move::Row(1)),
+            Action::PageUp => self.step_goodreads(Move::Page(-1)),
+            Action::PageDown => self.step_goodreads(Move::Page(1)),
             Action::Back => self.screen = Screen::Menu,
             Action::Query => self.start_input(InputContext::GoodreadsPath, "goodreads csv", ""),
             // `x` keeps its global meaning here, which is why the screen does not
@@ -2655,18 +2756,16 @@ impl App {
         Ok(())
     }
 
-    fn step_goodreads(&mut self, delta: isize) {
+    fn step_goodreads(&mut self, m: Move) {
         let Some(preview) = &mut self.goodreads else {
             return;
         };
         if preview.rows.is_empty() {
             return;
         }
-        let len = preview.rows.len() as isize;
-        let cur = preview.state.selected().unwrap_or(0) as isize;
-        preview
-            .state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+        let cur = preview.state.selected().unwrap_or(0);
+        let land = m.land(cur, preview.rows.len());
+        preview.state.select(Some(land));
     }
 
     // ---- deferred work -----------------------------------------------------
@@ -2740,14 +2839,13 @@ impl App {
         }
     }
 
-    fn step_tab(&mut self, delta: isize) {
+    fn step_tab(&mut self, m: Move) {
         let len = self.view.as_ref().map_or(0, |v| v.tab_len(self.book_tab));
         if len == 0 {
             return;
         }
-        let cur = self.tab_state.selected().unwrap_or(0) as isize;
-        self.tab_state
-            .select(Some((cur + delta).rem_euclid(len as isize) as usize));
+        let cur = self.tab_state.selected().unwrap_or(0);
+        self.tab_state.select(Some(m.land(cur, len)));
     }
 
     /// Enter on a list row: edit a note, or anchor a new note to a highlight.
@@ -2878,7 +2976,7 @@ impl App {
         Ok(())
     }
 
-    fn step_links(&mut self, delta: isize) {
+    fn step_links(&mut self, m: Move) {
         let Some(pane) = self.links.as_mut() else {
             return;
         };
@@ -2886,9 +2984,8 @@ impl App {
         if len == 0 {
             return;
         }
-        let cur = pane.state.selected().unwrap_or(0) as isize;
-        pane.state
-            .select(Some((cur + delta).rem_euclid(len as isize) as usize));
+        let cur = pane.state.selected().unwrap_or(0);
+        pane.state.select(Some(m.land(cur, len)));
     }
 
     /// Enter on a pane row: go to that note, or say why there is none.
@@ -3194,6 +3291,52 @@ impl App {
         self.status = Some(format!("accent: {}", theme::to_hex(rgb)));
     }
 
+    /// Apply the persisted order at startup.
+    ///
+    /// Re-orders the list in place rather than re-querying: `App::new` has
+    /// already fetched it, and the fetch is by recency whatever the order is —
+    /// so there is nothing a second round trip could learn.
+    pub fn set_library_sort(&mut self, sort: crate::ui::library::Sort) {
+        self.library_sort = sort;
+        sort.apply(&mut self.library);
+        self.dirty = true;
+    }
+
+    /// Move the library on to its next order, and remember it.
+    async fn cycle_library_sort(&mut self) -> Result<()> {
+        self.advance_library_sort().await?;
+        self.persist_config();
+        Ok(())
+    }
+
+    /// The order change itself, without the write.
+    ///
+    /// Split from [`App::cycle_library_sort`] for the same reason
+    /// `config_snapshot` is split from `persist_config`: that writes the user's
+    /// real `~/.config/readingbuddy/tui.toml`, and a test has no business
+    /// touching it. This half is where everything worth asserting happens.
+    ///
+    /// **The selection follows the book, not the index.** Re-sorting under a
+    /// fixed index moves the cursor to whatever row happens to land there, which
+    /// looks like the app choosing a different book — and the next keypress
+    /// might be `d`. So the id is read before and looked up after.
+    async fn advance_library_sort(&mut self) -> Result<()> {
+        let standing_on = self
+            .library_state
+            .selected()
+            .and_then(|i| self.library.get(i))
+            .and_then(|b| b.id);
+        self.library_sort = self.library_sort.next();
+        self.refresh_library().await?;
+        if let Some(id) = standing_on
+            && let Some(i) = self.library.iter().position(|b| b.id == Some(id))
+        {
+            self.library_state.select(Some(i));
+        }
+        self.status = Some(format!("by {}", self.library_sort.label()));
+        Ok(())
+    }
+
     /// Cycle the ambient motif, apply it live, persist.
     fn cycle_ambient(&mut self) {
         let motif = self.ambient.motif.next();
@@ -3224,6 +3367,7 @@ impl App {
         TuiConfig {
             accent: Some(theme::to_hex(theme::accent_rgb())),
             ambient: Some(self.ambient.motif.label().to_string()),
+            library_sort: Some(self.library_sort.label().to_string()),
         }
     }
 
@@ -3682,24 +3826,22 @@ impl App {
 
     // ---- list / object helpers --------------------------------------------
 
-    fn step_library(&mut self, delta: isize) {
+    fn step_library(&mut self, m: Move) {
         if self.library.is_empty() {
             return;
         }
-        let len = self.library.len() as isize;
-        let cur = self.library_state.selected().unwrap_or(0) as isize;
+        let cur = self.library_state.selected().unwrap_or(0);
         self.library_state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+            .select(Some(m.land(cur, self.library.len())));
     }
 
-    fn step_search(&mut self, delta: isize) {
+    fn step_search(&mut self, m: Move) {
         if self.search_results.is_empty() {
             return;
         }
-        let len = self.search_results.len() as isize;
-        let cur = self.search_state.selected().unwrap_or(0) as isize;
+        let cur = self.search_state.selected().unwrap_or(0);
         self.search_state
-            .select(Some(((cur + delta).rem_euclid(len)) as usize));
+            .select(Some(m.land(cur, self.search_results.len())));
     }
 }
 
@@ -3867,6 +4009,19 @@ fn park_cursor<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 /// action map — in that priority.
 async fn dispatch_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.kind == KeyEventKind::Release {
+        return Ok(());
+    }
+    // The help page is first, and **any** key closes it. A page you have to
+    // guess your way out of is the dead end it was written to prevent, and the
+    // keys it lists are keys for the screen underneath — acting on one while
+    // the page is up would fire it against a screen the user cannot see.
+    if app.help {
+        app.help = false;
+        app.dirty = true;
+        // Except ctrl-c, which no layer of this app may swallow.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            app.quit = true;
+        }
         return Ok(());
     }
     if app.note_editor.is_some() {
@@ -4543,6 +4698,12 @@ mod tests {
                         }
                     }
                 }
+                // And this screen's help page over it. The page is the widest
+                // box in the app, so it is the likeliest thing to underflow —
+                // and 1x1 is where a `Paragraph` into a zero rect panics.
+                app.help = true;
+                terminal.draw(|f| ui::draw(f, app)).expect("draw help");
+                app.help = false;
             }
             // With a text input and a confirmation overlaid.
             app.screen = Screen::Search;
@@ -6613,6 +6774,48 @@ mod tests {
         assert!(app.quit);
     }
 
+    /// Print every screen's help page, drawn.
+    ///
+    /// The pages are mostly prose, and prose is the thing a unit test cannot
+    /// judge — whether a description says what the screen is for is read, not
+    /// asserted. This is how it gets read without a terminal.
+    ///
+    /// `cargo test -p readingbuddy-tui -- --ignored --nocapture print_help`
+    #[test]
+    #[ignore = "development aid: prints the help pages"]
+    fn print_help() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = rt.block_on(test_app());
+        app.status = None;
+        app.help = true;
+
+        let (w, h) = (88u16, 34u16);
+        for screen in [
+            Screen::Menu,
+            Screen::Home,
+            Screen::Library,
+            Screen::Book,
+            Screen::Search,
+            Screen::Settings,
+            Screen::Device,
+            Screen::Calibre,
+            Screen::Goodreads,
+        ] {
+            app.screen = screen;
+            let mut t = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+            t.draw(|f| ui::draw(f, &mut app)).unwrap();
+            println!("=== {screen:?} {w}x{h} ===");
+            let buf = t.backend().buffer();
+            for y in 0..h {
+                let text: String = (0..w)
+                    .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect();
+                println!("{}", text.trim_end());
+            }
+            println!();
+        }
+    }
+
     /// Print the list screens: the shrink-wrapped box, and beside each row a
     /// `#` under every cell carrying `REVERSED`.
     ///
@@ -7409,5 +7612,302 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `s` cycles the order, the border says which, and the sort survives a
+    /// refresh — it lives beside the filter in `refresh_library`, so every path
+    /// that reloads the shelf reapplies it.
+    #[tokio::test]
+    async fn the_library_key_cycles_the_order_and_the_border_says_so() {
+        use crate::ui::library::Sort;
+
+        let mut app = test_app().await;
+        app.screen = Screen::Library;
+        app.status = None;
+        for (title, author, year) in [
+            ("A Wizard of Earthsea", "Ursula K. Le Guin", 1968),
+            ("Pachinko", "Min Jin Lee", 2017),
+        ] {
+            app.engine
+                .save_book(&Book {
+                    title: Some(title.into()),
+                    authors: vec![author.into()],
+                    publish_year: Some(year),
+                    ..Book::default()
+                })
+                .await
+                .expect("save");
+        }
+        app.refresh_library().await.expect("refresh");
+        assert_eq!(app.library_sort, Sort::Recent);
+
+        // `advance_library_sort`, not `handle(Action::CycleSort)`: the key path
+        // persists, and that writes the user's real `tui.toml`. The key itself
+        // is covered in `event.rs`.
+        for want in [Sort::Title, Sort::Author, Sort::Year, Sort::Recent] {
+            app.advance_library_sort().await.expect("sort");
+            assert_eq!(app.library_sort, want);
+            let text = screen_text(&mut app, 90, 20);
+            assert!(
+                text.contains(&format!("by {}", want.label())),
+                "the border does not name {want:?}:\n{text}"
+            );
+        }
+
+        // By author, Le Guin comes first — and it survives a reload, which is
+        // what "beside the filter" buys.
+        app.library_sort = Sort::Author;
+        app.refresh_library().await.expect("refresh");
+        assert_eq!(
+            app.library.first().map(|b| b.display_title()),
+            Some("A Wizard of Earthsea")
+        );
+    }
+
+    /// **Re-sorting keeps the book, not the index.** A cursor that stays on row
+    /// 3 while the rows move under it is the app silently choosing a different
+    /// book — and the next key might be `d`.
+    #[tokio::test]
+    async fn the_cursor_follows_the_book_through_a_re_sort() {
+        use crate::ui::library::Sort;
+
+        let mut app = test_app().await;
+        app.screen = Screen::Library;
+        for (title, author) in [
+            ("A Wizard of Earthsea", "Ursula K. Le Guin"),
+            ("Pachinko", "Min Jin Lee"),
+        ] {
+            app.engine
+                .save_book(&Book {
+                    title: Some(title.into()),
+                    authors: vec![author.into()],
+                    ..Book::default()
+                })
+                .await
+                .expect("save");
+        }
+        app.refresh_library().await.expect("refresh");
+
+        // Stand on a book that is not first, and remember which one it is.
+        app.library_state.select(Some(app.library.len() - 1));
+        let standing_on = app.library[app.library.len() - 1].id;
+        assert!(standing_on.is_some());
+
+        while app.library_sort != Sort::Author {
+            app.advance_library_sort().await.expect("sort");
+        }
+        let now = app
+            .library_state
+            .selected()
+            .and_then(|i| app.library.get(i))
+            .and_then(|b| b.id);
+        assert_eq!(now, standing_on, "the cursor moved to a different book");
+    }
+
+    /// The order is a persisted setting, and writing it must not blank the
+    /// others — the same whole-struct rule `config_snapshot` exists for.
+    #[test]
+    fn the_snapshot_carries_the_order_beside_every_other_setting() {
+        use crate::ui::library::Sort;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = rt.block_on(test_app());
+        app.set_library_sort(Sort::Author);
+        let cfg = app.config_snapshot();
+        assert_eq!(cfg.library_sort.as_deref(), Some("author"));
+        assert!(cfg.accent.is_some());
+        assert!(cfg.ambient.is_some());
+    }
+
+    /// **A row wraps and a page clamps** — the one difference between the two
+    /// arms, and the reason `Move` is a type rather than an `isize`.
+    #[test]
+    fn a_row_wraps_and_a_page_stops_at_the_end() {
+        // Wrapping, as every list here has always behaved.
+        assert_eq!(Move::Row(-1).land(0, 40), 39);
+        assert_eq!(Move::Row(1).land(39, 40), 0);
+
+        // Clamping. Paging off the bottom lands on the last row, not the first
+        // — being flung to the other end of the list you are paging through is
+        // the one thing a jump key must not do.
+        assert_eq!(Move::Page(1).land(0, 40), PAGE as usize);
+        assert_eq!(Move::Page(1).land(35, 40), 39);
+        assert_eq!(Move::Page(-1).land(4, 40), 0);
+        assert_eq!(Move::Page(-1).land(0, 40), 0);
+
+        // On a list shorter than a page, the jump still means something: the
+        // far end of it.
+        assert_eq!(Move::Page(1).land(0, 5), 4);
+        assert_eq!(Move::Page(-1).land(4, 5), 0);
+
+        // An empty list has nowhere to land. The callers all return early, so
+        // this is belt and braces rather than a case anything relies on.
+        assert_eq!(Move::Page(1).land(0, 0), 0);
+        assert_eq!(Move::Row(1).land(0, 0), 0);
+    }
+
+    /// The jump reaches every list in the app, through whatever handler owns
+    /// it: the plain screens, the two shelves with override maps, the book
+    /// view's open section, and the links pane inside it.
+    #[tokio::test]
+    async fn the_page_keys_move_every_list() {
+        let mut app = test_app().await;
+        // Forty books, so a page is a real jump rather than a clamp.
+        for i in 0..40 {
+            app.library.push(Book {
+                title: Some(format!("Book {i}")),
+                ..Book::default()
+            });
+        }
+        app.search_results = app
+            .library
+            .iter()
+            .map(|b| readingbuddy::RankedResult {
+                book: b.clone(),
+                sources: Vec::new(),
+                score: 1.0,
+            })
+            .collect();
+        app.search_state.select(Some(0));
+        app.library_state.select(Some(0));
+
+        for (screen, at) in [(Screen::Library, 0usize), (Screen::Search, 0usize)] {
+            app.screen = screen;
+            app.handle(Action::PageDown).await.expect("page down");
+            let landed = match screen {
+                Screen::Library => app.library_state.selected(),
+                _ => app.search_state.selected(),
+            };
+            assert_eq!(
+                landed,
+                Some(at + PAGE as usize),
+                "{screen:?} did not jump a page"
+            );
+            app.handle(Action::PageUp).await.expect("page up");
+            let landed = match screen {
+                Screen::Library => app.library_state.selected(),
+                _ => app.search_state.selected(),
+            };
+            assert_eq!(landed, Some(at), "{screen:?} did not come back");
+        }
+
+        // The book view's open section. Its lists are short, so the assertion
+        // is the clamp: a page lands on the last row rather than nowhere.
+        let book = app.library[0].clone();
+        app.open_book(book).await.expect("open");
+        app.book_tab = BookTab::Highlights;
+        app.in_section = true;
+        app.clamp_tab_selection();
+        let len = app
+            .view
+            .as_ref()
+            .map_or(0, |v| v.tab_len(BookTab::Highlights));
+        assert!(len > 0, "the fixture seeds a highlight");
+        app.handle(Action::PageDown).await.expect("page down");
+        assert_eq!(app.tab_state.selected(), Some(len - 1));
+        app.handle(Action::PageUp).await.expect("page up");
+        assert_eq!(app.tab_state.selected(), Some(0));
+    }
+
+    /// `?` opens the page for the screen you are standing on, from every screen
+    /// — including the three that claim their own letters.
+    #[tokio::test]
+    async fn the_help_key_opens_the_page_for_the_screen_underneath() {
+        let mut app = test_app().await;
+        app.status = None;
+        let book = app.library[0].clone();
+        app.open_book(book).await.expect("open");
+
+        for (screen, want) in [
+            (Screen::Menu, "readingbuddy"),
+            (Screen::Home, "reading"),
+            (Screen::Library, "library"),
+            (Screen::Book, "a book"),
+            (Screen::Search, "search"),
+            (Screen::Settings, "settings"),
+            (Screen::Device, "device"),
+            (Screen::Calibre, "calibre"),
+            (Screen::Goodreads, "goodreads"),
+        ] {
+            app.screen = screen;
+            dispatch_key(&mut app, KeyEvent::from(KeyCode::Char('?')))
+                .await
+                .expect("help");
+            assert!(app.help, "? did not open the page on {screen:?}");
+            let text = screen_text(&mut app, 90, 40);
+            assert!(
+                text.contains(want),
+                "{screen:?}'s page is not the one that was drawn:\n{text}"
+            );
+            // And it closes again, so the next screen starts from nothing.
+            dispatch_key(&mut app, KeyEvent::from(KeyCode::Esc))
+                .await
+                .expect("close");
+            assert!(!app.help);
+        }
+    }
+
+    /// **Any key closes it, and no key acts on the screen behind it.** A page
+    /// you have to guess your way out of is the dead end it was written to
+    /// prevent — and the keys it lists belong to a screen the user cannot
+    /// currently see, so firing one from here would act blind.
+    #[tokio::test]
+    async fn any_key_closes_the_help_page_and_none_reaches_the_screen_behind() {
+        let mut app = test_app().await;
+        app.screen = Screen::Library;
+        let before = app.library.len();
+
+        for code in [
+            KeyCode::Esc,
+            KeyCode::Char('?'),
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            // `d` removes a book from the library screen underneath. It must
+            // not, from here.
+            KeyCode::Char('d'),
+            KeyCode::Char('q'),
+        ] {
+            app.help = true;
+            dispatch_key(&mut app, KeyEvent::from(code))
+                .await
+                .expect("key");
+            assert!(!app.help, "{code:?} left the page up");
+            assert!(!app.quit, "{code:?} quit the app from the help page");
+            assert!(app.confirm.is_none(), "{code:?} reached the screen behind");
+            assert_eq!(app.library.len(), before);
+            assert_eq!(app.screen, Screen::Library, "{code:?} navigated away");
+        }
+
+        // ctrl-c is the one key no layer of this app may swallow.
+        app.help = true;
+        dispatch_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        )
+        .await
+        .expect("ctrl-c");
+        assert!(!app.help);
+        assert!(app.quit);
+    }
+
+    /// The book stops turning behind the page, the same way it stops behind
+    /// every other modal — and the ambient field stops drifting behind it.
+    #[tokio::test]
+    async fn the_help_page_calms_what_is_behind_it() {
+        let mut app = test_app().await;
+        let book = app.library[0].clone();
+        app.open_book(book).await.expect("open");
+        assert!(app.animating());
+        app.help = true;
+        assert!(!app.animating());
+
+        app.help = false;
+        app.screen = Screen::Menu;
+        app.ambient.motif = crate::ambient::Motif::Motes;
+        assert!(app.ambient_animating());
+        app.help = true;
+        assert!(!app.ambient_animating());
+        // Still *drawn*, though — the layer calms rather than vanishing.
+        assert!(app.ambient_visible());
     }
 }

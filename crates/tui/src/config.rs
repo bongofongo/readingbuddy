@@ -21,6 +21,9 @@ pub struct TuiConfig {
     pub accent: Option<String>,
     /// Ambient background motif by label (None / unknown = off).
     pub ambient: Option<String>,
+    /// What the library list is ordered by, by label (None / unknown =
+    /// most-recently-touched).
+    pub library_sort: Option<String>,
 }
 
 /// Mirror of the CLI's `CliConfig` — only the fields we touch. Deserialize

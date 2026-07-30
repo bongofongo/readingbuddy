@@ -546,12 +546,17 @@ fn draw_key_bar(f: &mut Frame, app: &App, area: Rect) {
         ("[ ]", "panes"),
         ("v", render_label(app)),
         ("o", "less"),
+        // Between the key bar and the menu, because it is the thing to try when
+        // neither of those said enough. `o` and `?` are two different offers now
+        // — the bar lists what the view does, the page says what the view *is*.
+        ("?", "help"),
         ("m", "menu"),
         ("q", "quit"),
     ];
     let collapsed: &[(&str, &str)] = &[
         ("n", "note"),
         ("o", "options"),
+        ("?", "help"),
         ("m", "menu"),
         ("q", "quit"),
     ];

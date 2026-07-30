@@ -38,6 +38,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(" move   ", theme::dim()),
         Span::styled("enter", theme::key()),
         Span::styled(" open   ", theme::dim()),
+        // The one key that has to be advertised rather than looked up. It sits
+        // on the menu because the menu's page is the app's introduction, and a
+        // help key nobody can find is a help key nobody has.
+        Span::styled("?", theme::key()),
+        Span::styled(" help   ", theme::dim()),
         Span::styled("q", theme::key()),
         Span::styled(" quit", theme::dim()),
     ]));
