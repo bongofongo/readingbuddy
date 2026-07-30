@@ -48,7 +48,7 @@ also check it's reflected in `CLAUDE.md` (update if not).
   isn't obvious. Always end with:
 
   ```
-  Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
   ```
 
 - Commit directly to `main` (this repo's convention — no feature branches
