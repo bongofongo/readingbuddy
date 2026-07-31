@@ -94,3 +94,67 @@ reading explicitly rather than assuming it.
    reading? This is the surface most worth designing carefully: it's the one
    no competitor has, and the one easiest to wreck (KOReader users are
    protective of a fast, quiet reader).
+
+## Round 2 — no decay, pixel art, and the Tauri GUI first
+
+### What your answers settled
+- **No decay, and now it has a precise reason rather than a vibe.** In
+  operant-conditioning terms, tamagotchi decay/neglect is **negative
+  punishment** — removing something good (happiness, health) because the
+  wanted behavior didn't happen. That's punishment wearing a cute sprite, and
+  it's out, categorically. The companion's state economy is
+  **positive-reinforcement-only**: things are added or unlocked, nothing is
+  ever taken away or allowed to wilt for inaction.
+- **Aesthetic: retro pixel art.** This settles open question 4 from round 1 —
+  the companion is **not** built on `render3d/`'s ray-traced-cuboid
+  machinery. It's a separate, much simpler pipeline: sprite sheets / pixel
+  art frames, not a camera and a raster. Good news for scope: this is cheap
+  compared to the book renderer, and it means companion work never risks the
+  book renderer's hard-won performance budget (`render3d/`'s whole design
+  discipline — no images while animating, motion quantization, the kitty
+  wire-format traps — is scoped to the book object and stays untouched).
+- **Build order: the Tauri GUI, with its embedded companion, comes first** —
+  ahead of the KOReader plugin, iOS, and everything else in round 1's
+  cross-surface list. Those are still the eventual shape, just not what gets
+  built first.
+- **Platforms: Mac, Linux, and Windows, in that priority order.** Mac is
+  primary because that's the native dev machine — its design takes
+  precedent when a choice has to be made. Linux is second (a real machine
+  exists to test on). Windows is the stretch goal — no local machine to
+  develop against, so it's the one that will actually test whether "Tauri
+  gives you all three for free" holds up in practice. This isn't a new
+  architectural question — it's the same reasoning `docs/decisions.md`
+  already used to pick Tauri over SwiftUI (**"Linux for free"**, which
+  SwiftUI never gives) — this just confirms the payoff was the point, not
+  an incidental benefit.
+
+### Open thread: reward schedule
+Positive-reinforcement-only still leaves a real design choice — *how*
+rewards land:
+- **Fixed/deterministic** — do X, get Y, every time. Predictable, feels
+  earned, matches "just for fun" without pressure.
+- **Variable/intermittent** — unpredictable timing or magnitude. The
+  strongest schedule for sustained engagement in the literature, and also
+  the mechanism behind slot machines and loot boxes — worth naming plainly
+  since this app's ethos elsewhere (no streaks, no nagging, self-hosted, no
+  dark patterns) is pointedly anti-manipulation. A mostly-fixed economy with
+  occasional ungated surprises (a bonus after a milestone, never behind
+  repeated grinding) gets the delight without the compulsion loop.
+
+> **A:**
+
+### Open questions for round 3
+7. Does the companion coexist with the 3D book in the Tauri GUI, or replace
+   it as the centerpiece on some screens? (E.g.: book stays the library
+   centrepiece; the pixel-art companion is a separate persistent
+   character/corner presence — a "little writer desktop" pet sitting beside
+   the desk rather than swapping out the desk's own furniture.)
+8. Pixel art at what fidelity/scale — Game Boy-era 1-bit-feeling sprites (which
+   would also travel cleanly to the KOReader e-ink surface later), or fuller
+   16/32-bit color pixel art (matches "little writer desktop" more, but is a
+   worse fit for e-ink if that surface still matters)?
+9. First concrete unlock content: what are the *first few* things worth
+   earning, concretely — cosmetic accessories, poses, room/background
+   decorations, companion "forms"? Naming 3-4 real examples now makes the
+   schema (round-4-style: what table holds an "unlock") much easier to sketch
+   honestly than designing the abstraction first.
