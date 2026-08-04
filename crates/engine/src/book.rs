@@ -21,6 +21,30 @@ pub struct Book {
     pub page_count: Option<i64>,
     pub description: Option<String>,
     pub first_sentence: Option<String>,
+    /// What a *provider* says this book is about (migration `0013`).
+    ///
+    /// Deliberately **not** `book_tags`: those are shelves the user or another
+    /// system minted, and `docs/decisions.md` defers collections because three
+    /// systems minting them is a merge problem. A subject is a bibliographic
+    /// fact with an origin, like a publisher, and merges like one — the empty
+    /// vec means "this record does not say", never "this book has no subjects".
+    ///
+    /// The strings are raw as the provider spelled them. There is no controlled
+    /// vocabulary, which means Google's BISAC paths (`Fiction / Literary`) and
+    /// OpenLibrary's headings (`Korean Americans`) are two dialects — and is
+    /// why a merge takes one provider's set whole rather than unioning them.
+    pub subjects: Vec<String>,
+    /// The series this book belongs to, as its origin names it.
+    ///
+    /// A **pair** with [`Book::series_index`], and the pair is why
+    /// `MERGE_RULES` gained `Rule::pair`: owning "Dune" while a provider fills
+    /// in "#2" from a differently-named series is an incoherent row, so
+    /// user-ownership of either half protects both.
+    pub series: Option<String>,
+    /// The book's position in [`Book::series`]. Fractional on purpose —
+    /// novellas are numbered 0.5 and 1.5 by calibre, Goodreads and publishers
+    /// alike.
+    pub series_index: Option<f64>,
     /// Reading state, as a **read-only projection of the current reading** —
     /// the open one if there is one, else the most recent. Since migration
     /// `0005` these are not `books` columns and

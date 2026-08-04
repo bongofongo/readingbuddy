@@ -339,6 +339,27 @@ fn merge_into(a: &mut Book, b: &Book, b_provider: ProviderId, claims: &mut Field
         p,
         claims,
     );
+    // A **set**, filled whole or not at all — the same rule `MERGE_RULES` gives
+    // the column. Unioning Google's BISAC paths with OpenLibrary's headings
+    // would produce a list neither provider published and that `claims` could
+    // not honestly attribute to one of them.
+    if a.subjects.is_empty() && !b.subjects.is_empty() {
+        a.subjects = b.subjects.clone();
+        claims.claim("subjects", p);
+    }
+    // **The pair moves together.** Taking `series_index` from a record whose
+    // series name lost — or was never read — is how a row ends up saying
+    // *Dune #2* about *Dune Messiah*'s neighbour. So the index comes from
+    // whoever supplied the name, including when that provider had no index at
+    // all; `series_index` is never filled on its own.
+    if a.series.is_none() && b.series.is_some() {
+        a.series = b.series.clone();
+        claims.claim("series", p);
+        a.series_index = b.series_index;
+        if b.series_index.is_some() {
+            claims.claim("series_index", p);
+        }
+    }
 }
 
 fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
@@ -555,6 +576,9 @@ mod tests {
         a.sort_title = Some("Pachinko".into());
         a.cover_path = Some("database/images/c.jpg".into());
         a.translators = vec!["A Translator".into()];
+        a.subjects = vec!["Fiction / Literary".into()];
+        a.series = Some("Dune".into());
+        a.series_index = Some(2.0);
         let mut b = a.clone();
         b.googlebooks_id = Some("gb1".into());
         b.language = Some("en".into());
@@ -580,6 +604,60 @@ mod tests {
                 "{col} was supplied but never claimed"
             );
         }
+    }
+
+    /// **A series index never arrives without the name it indexes.**
+    ///
+    /// The federated merge fills field by field, so nothing stops an index from
+    /// one provider landing beside a name from another — and *Dune #2* is a
+    /// different book from *Dune Chronicles #2*. The pair therefore moves as a
+    /// unit: whoever supplies the name supplies the index, even when it has
+    /// none.
+    #[test]
+    fn a_series_index_never_arrives_without_its_series() {
+        let mut named = book("Dune Messiah", "Frank Herbert");
+        named.series = Some("Dune".into());
+        // No index: this provider knows the series and not the position.
+        let mut numbered = book("Dune Messiah", "Frank Herbert");
+        numbered.series = Some("Dune Chronicles".into());
+        numbered.series_index = Some(2.0);
+
+        let merged = dedup(vec![
+            pb(ProviderId::OpenLibrary, 0, named),
+            pb(ProviderId::GoogleBooks, 0, numbered),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].book.series.as_deref(), Some("Dune"));
+        assert_eq!(
+            merged[0].book.series_index, None,
+            "the index of a series that lost must not survive the merge"
+        );
+        assert!(
+            !merged[0].claims.iter().any(|(f, _)| f == "series_index"),
+            "an unfilled index must not be claimed"
+        );
+    }
+
+    /// Two providers, two vocabularies: the set that survives is one provider's,
+    /// whole. A union would be a list neither of them published, and
+    /// `field_provenance` has one `source` per field to name it with.
+    #[test]
+    fn subject_sets_are_taken_whole_and_never_unioned() {
+        let mut gb = book("Pachinko", "Min Jin Lee");
+        gb.subjects = vec!["Fiction / Literary".into()];
+        let mut ol = book("Pachinko", "Min Jin Lee");
+        ol.subjects = vec!["Korean Americans".into(), "Fiction".into()];
+
+        let merged = dedup(vec![
+            pb(ProviderId::GoogleBooks, 0, gb),
+            pb(ProviderId::OpenLibrary, 0, ol),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].book.subjects, vec!["Fiction / Literary"]);
+        assert_eq!(
+            merged[0].claims.source_of("subjects"),
+            Some(ProviderId::GoogleBooks)
+        );
     }
 
     /// The claims follow the **preference table**, not the arrival order. This

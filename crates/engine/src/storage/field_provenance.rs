@@ -106,6 +106,29 @@ pub(super) fn user_owns(book_expr: &str, col: &str) -> String {
     )
 }
 
+/// [`user_owns`] asked of a live connection rather than rendered into a clause.
+///
+/// The stamp half of the **pair** guard (`Rule::pair`): a column held back
+/// because the user owns its *other* half has no `user` row of its own, so
+/// [`stamp`]'s `WHERE` — which only ever protects the same field — would claim
+/// it for a provider whose value the merge refused to write. Same predicate,
+/// same `USER` spelling, asked the other way round.
+pub(super) async fn user_owns_now(
+    conn: &mut SqliteConnection,
+    book_id: i64,
+    field: &str,
+) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM field_provenance WHERE book_id = ? AND field = ? AND source = ?",
+    )
+    .bind(book_id)
+    .bind(field)
+    .bind(USER)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(n > 0)
+}
+
 /// One field's attribution, as stored.
 ///
 /// `source` is the raw column and not a [`Source`], deliberately: there is no

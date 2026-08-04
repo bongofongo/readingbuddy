@@ -1,0 +1,47 @@
+-- Subjects, series and series index (item 32).
+--
+-- Three columns on `books`, which means three `MERGE_RULES` rows in
+-- `storage/books.rs` and nothing else: the upsert's ON CONFLICT clause,
+-- `enrich_book`'s UPDATE, `merge_books`'s dst-wins fill, the `field_provenance`
+-- stamps and `Rule::show` are all generated from that table, so a column added
+-- there is a column all five already know about.
+--
+-- **`subjects` is not `book_tags`, and the separation is the point.**
+-- `book_tags` holds shelves the user or another system *minted* — a Goodreads
+-- shelf, a calibre tag — and `docs/decisions.md` defers collections precisely
+-- because three systems minting them is a merge problem with no good default.
+-- A provider subject is not a collection: it is a bibliographic fact with an
+-- origin, like a publisher, and it merges the way every other provider field
+-- merges. Putting the two vocabularies in one table would make that merge
+-- undecidable the first time a user renamed one.
+--
+-- **A JSON array column rather than a `book_subjects` table**, for the same
+-- reason `authors` and `translators` are: it is a value of a book, not a
+-- relation, nothing joins on it yet, and a table would need its own merge
+-- dialect and its own provenance grain — which is the second column list this
+-- whole arrangement exists to prevent. `[]` is the same "this record does not
+-- say" sentinel `authors` uses, and `Merge::NonEmptyList` gives it the same
+-- rule: **a set is replaced wholesale by a provider that has one, never
+-- unioned.** Union looks generous and is dishonest — Google's categories are
+-- BISAC paths ("Fiction / Literary") and OpenLibrary's are free-text headings
+-- ("Korean Americans", "Fiction"), so a union is a pile no single source
+-- vouches for, and `field_provenance` has exactly one `source` per field and
+-- would then have to name one of two origins for a value that came from both.
+--
+-- **`series` and `series_index` are a pair**, and per-field provenance cannot
+-- protect a pair: owning "Dune" while a provider writes "#2" from *Dune
+-- Chronicles* is not a coherent row. `merge_set` therefore guards them
+-- together — see `Rule::pair` — which is the same fix the isbn_10/isbn_13 case
+-- item 30 recorded needed, generalized rather than special-cased.
+--
+-- `series_index` is REAL, not INTEGER: calibre, Goodreads and publishers all
+-- number novellas 0.5 and 1.5, and an integer column would silently round
+-- "Dune #0.5" onto book zero.
+--
+-- No index on `series`. Grouping a shelf by series is a later item and a
+-- settled deferral; an index nothing queries is a claim about a query that does
+-- not exist, and `0008` is the precedent that an index is judged on the plan
+-- that picks it.
+ALTER TABLE books ADD COLUMN subjects TEXT NOT NULL DEFAULT '[]'; -- JSON array of strings
+ALTER TABLE books ADD COLUMN series TEXT;
+ALTER TABLE books ADD COLUMN series_index REAL;
