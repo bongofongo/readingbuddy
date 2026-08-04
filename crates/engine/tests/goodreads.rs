@@ -152,6 +152,22 @@ async fn the_recorded_export_lands_where_it_should() {
     assert_eq!(report.books[0].rating, Some(5));
     assert_eq!(report.books[0].review, TextOutcome::Written);
 
+    // The columns the CSV supplied are Goodreads' (item 29), and the ones it has
+    // no column for are nobody's — a row that claimed `description` would be
+    // claiming a field the export cannot carry.
+    let claimed = engine
+        .storage()
+        .field_provenance(pachinko.id.unwrap())
+        .await
+        .unwrap();
+    assert!(
+        claimed.iter().all(|f| f.source == "goodreads"),
+        "this book has one origin so far: {claimed:?}"
+    );
+    let fields: Vec<&str> = claimed.iter().map(|f| f.field.as_str()).collect();
+    assert!(fields.contains(&"title") && fields.contains(&"page_count"));
+    assert!(!fields.contains(&"description"), "{fields:?}");
+
     // `Read Count 3` really is three readings.
     let veg = book(&engine, "The Vegetarian").await;
     let readings = engine

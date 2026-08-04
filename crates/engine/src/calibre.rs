@@ -54,7 +54,7 @@ use crate::error::{EngineError, Result};
 use crate::koreader::{self, MatchCandidate};
 use crate::matching::Query;
 use crate::providers::normalize_language;
-use crate::storage::{LinkedBy, Storage};
+use crate::storage::{LinkedBy, Source, Storage};
 use crate::{Engine, partial_md5};
 
 /// The `source` a calibre row is recorded under, in `external_ids` and
@@ -854,10 +854,12 @@ async fn apply(
     // why that test asserts the library's *size* and not only the report.
     let book_id = match book_id {
         Some(id) => {
-            storage.enrich_book(id, &book).await?;
+            storage
+                .enrich_book(id, &book, Some(Source::Calibre))
+                .await?;
             id
         }
-        None => storage.upsert_book(&book).await?,
+        None => storage.upsert_book(&book, Some(Source::Calibre)).await?,
     };
     // `timestamp` is when the user added it to *calibre*, which is exactly what
     // `books.created_at` means — and only for a book this import just created:

@@ -128,10 +128,13 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, id)
@@ -158,10 +161,13 @@ mod tests {
         );
 
         let other = s
-            .upsert_book(&Book {
-                title: Some("Pachinko (paperback)".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko (paperback)".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         s.link_external_id("goodreads", "34051011", other)

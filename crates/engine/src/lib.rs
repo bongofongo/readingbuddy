@@ -265,8 +265,19 @@ impl Engine {
     // ---- library -----------------------------------------------------------
 
     /// Save (insert-or-merge) and return the stored copy.
+    ///
+    /// **Writes no field provenance, and that is a refusal rather than an
+    /// omission.** The `Book` reaching here has already been through
+    /// `search::merge_provider_books`, which keeps the winning value per field
+    /// and throws away which provider supplied it — so this path genuinely
+    /// cannot say where `page_count` came from, and stamping the whole record
+    /// with whichever provider is guessed at would be inventing exactly the
+    /// thing `field_provenance` exists to record. Item 30 merges provider by
+    /// provider and can answer honestly; until then a book added by search is
+    /// unattributed, the same state every book that predates migration `0012`
+    /// is in.
     pub async fn save_book(&self, book: &Book) -> Result<Book> {
-        let id = self.storage.upsert_book(book).await?;
+        let id = self.storage.upsert_book(book, None).await?;
         self.storage
             .get_book(id)
             .await?
@@ -364,7 +375,13 @@ impl Engine {
         let path = images::image_from_url(&self.client, &url, &self.config.images_dir).await?;
         book.cover_path = Some(path.display().to_string());
         if book.id.is_some() || book.isbn_10.is_some() || book.isbn_13.is_some() {
-            self.storage.upsert_book(book).await?;
+            // Unattributed for the same reason `save_book` is, and with an extra
+            // one: this writes the *whole* book back, not the one field it
+            // changed, so any source named here would be claimed for fifteen
+            // fields it had nothing to do with. `cover_url` — the only thing
+            // this path really knows the origin of — was set by whoever built
+            // the record, which is where it will be stamped.
+            self.storage.upsert_book(book, None).await?;
         }
         Ok(Some(path))
     }
@@ -499,32 +516,53 @@ impl Engine {
     #[tracing::instrument(skip(self), fields(path = %path.display()))]
     pub async fn import_epub(&self, path: &Path) -> Result<Book> {
         let info = epub::epub_info(path)?;
-        let mut book = match &info.isbn {
+        let mut seed = match &info.isbn {
             Some(isbn) => self.lookup_isbn(isbn).await?.unwrap_or_default(),
             None => Book::default(),
         };
-        if book.title.is_none() {
-            book.title = info.title.clone();
-        }
-        if book.authors.is_empty() {
-            book.authors = info.authors.clone();
-        }
-        if book.language.is_none() {
-            book.language = info.language.clone();
-        }
-        if book.isbn_10.is_none()
-            && book.isbn_13.is_none()
+
+        // Two records with two origins, merged by the same statement every other
+        // partial record goes through — where this used to fold the file's
+        // metadata onto the provider's field by field, with a hand-written
+        // `is_none()` per column. That chain *was* `MERGE_RULES`'s no-clobber
+        // merge, spelled a second time, and it produced one `Book` with two
+        // origins that no single `field_provenance` stamp could describe
+        // honestly. The precedence is unchanged: the provider wins, the file
+        // fills the gaps, which is what `Storage::fill_book` means.
+        let mut from_epub = Book {
+            title: info.title.clone(),
+            authors: info.authors.clone(),
+            language: info.language.clone(),
+            ..Default::default()
+        };
+        if seed.isbn_10.is_none()
+            && seed.isbn_13.is_none()
             && let Some(isbn) = &info.isbn
         {
             match isbn.len() {
-                10 => book.isbn_10 = Some(isbn.clone()),
-                _ => book.isbn_13 = Some(isbn.clone()),
+                10 => from_epub.isbn_10 = Some(isbn.clone()),
+                _ => from_epub.isbn_13 = Some(isbn.clone()),
             }
+            // The seed carries the ISBN too, and *only* as a conflict key: with
+            // no ISBN on it `upsert_book` takes its third branch, a plain
+            // insert, and re-importing the same file would make a second book.
+            // The claim on the column is stamped by the fill below, which is
+            // where it belongs — the file is what said it.
+            seed.isbn_10.clone_from(&from_epub.isbn_10);
+            seed.isbn_13.clone_from(&from_epub.isbn_13);
         }
         if let Some(cover) = epub::extract_cover(path, &self.config.images_dir)? {
-            book.cover_path = Some(cover.display().to_string());
+            from_epub.cover_path = Some(cover.display().to_string());
         }
-        let saved = self.save_book(&book).await?;
+
+        let id = self.storage.upsert_book(&seed, None).await?;
+        self.storage
+            .fill_book(id, &from_epub, Some(storage::Source::Epub))
+            .await?;
+        let saved = self
+            .get_book(id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))?;
 
         // Record the file's KOReader identity now, while we are holding the
         // file. The payoff arrives later and elsewhere: when this book's

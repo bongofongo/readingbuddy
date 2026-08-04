@@ -38,7 +38,7 @@ use crate::error::{EngineError, Result};
 use crate::koreader::{self, MatchCandidate};
 use crate::matching::Query;
 use crate::notes::{NewNoteInput, NoteKind};
-use crate::storage::{STATUS_FINISHED, STATUS_READING, Storage};
+use crate::storage::{STATUS_FINISHED, STATUS_READING, Source, Storage};
 use crate::{Engine, storage};
 
 /// The `source` these rows are recorded under, in `external_ids`, `book_tags`
@@ -536,16 +536,19 @@ async fn match_row(storage: &Storage, row: &GoodreadsRow) -> Result<Matched> {
 
 async fn create_book(storage: &Storage, row: &GoodreadsRow) -> Result<i64> {
     let book_id = storage
-        .upsert_book(&Book {
-            title: row.title.clone(),
-            authors: row.authors.clone(),
-            publisher: row.publisher.clone(),
-            publish_year: row.publish_year,
-            page_count: row.page_count,
-            isbn_10: row.isbn_10.clone(),
-            isbn_13: row.isbn_13.clone(),
-            ..Default::default()
-        })
+        .upsert_book(
+            &Book {
+                title: row.title.clone(),
+                authors: row.authors.clone(),
+                publisher: row.publisher.clone(),
+                publish_year: row.publish_year,
+                page_count: row.page_count,
+                isbn_10: row.isbn_10.clone(),
+                isbn_13: row.isbn_13.clone(),
+                ..Default::default()
+            },
+            Some(Source::Goodreads),
+        )
         .await?;
     // `Date Added` is when the *user* added it, which is exactly what
     // `books.created_at` means — and only for a book this import just created:

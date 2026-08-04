@@ -8,7 +8,7 @@ use crate::diagnostic::Diagnostic;
 use crate::error::{EngineError, Result};
 use crate::flashcards::single_word;
 use crate::matching::{Prepared, Query};
-use crate::storage::{LinkedBy, NewHighlight, Storage, ko_datetime_to_unix};
+use crate::storage::{LinkedBy, NewHighlight, Source, Storage, ko_datetime_to_unix};
 
 /// Instructions a sidecar chunk may execute before it is killed.
 ///
@@ -968,7 +968,9 @@ pub async fn import_book_from_sidecar(storage: &Storage, sidecar: &Path) -> Resu
                 (id, MatchMethod::Md5)
             }
             None => {
-                let id = storage.upsert_book(&book_from_sidecar(&sc)).await?;
+                let id = storage
+                    .upsert_book(&book_from_sidecar(&sc), Some(Source::KOReader))
+                    .await?;
                 storage.link_device_book(md5, id, LinkedBy::Auto).await?;
                 (id, MatchMethod::New)
             }
@@ -984,7 +986,9 @@ pub async fn import_book_from_sidecar(storage: &Storage, sidecar: &Path) -> Resu
             );
             warnings.push(Diagnostic::sidecar_not_identified(sidecar.to_path_buf()));
             (
-                storage.upsert_book(&book_from_sidecar(&sc)).await?,
+                storage
+                    .upsert_book(&book_from_sidecar(&sc), Some(Source::KOReader))
+                    .await?,
                 MatchMethod::New,
             )
         }
@@ -1350,11 +1354,14 @@ return {
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                title: Some("1Q84".into()),
-                authors: vec!["Haruki Murakami".into()],
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("1Q84".into()),
+                    authors: vec!["Haruki Murakami".into()],
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -1389,10 +1396,13 @@ return {
         std::fs::write(sdr.join("metadata.epub.lua"), DEVICE_STATE).unwrap();
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        s.upsert_book(&Book {
-            title: Some("1Q84".into()),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some("1Q84".into()),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -1418,10 +1428,13 @@ return {
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some(title.into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         import(&s, tmp.path(), dry_run).await.unwrap();
@@ -1565,10 +1578,13 @@ return {{
 
             let s = Storage::connect("sqlite::memory:").await.unwrap();
             let id = s
-                .upsert_book(&Book {
-                    title: Some("1Q84".into()),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some("1Q84".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap();
 
@@ -1603,10 +1619,13 @@ return {{
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("1Q84".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("1Q84".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         import(&s, tmp.path(), false).await.unwrap();
@@ -1660,11 +1679,14 @@ return {{
         std::fs::write(sdr.join("metadata.epub.lua"), MODERN).unwrap();
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        s.upsert_book(&Book {
-            title: Some("Pachinko".into()),
-            authors: vec!["Min Jin Lee".into()],
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some("Pachinko".into()),
+                authors: vec!["Min Jin Lee".into()],
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -1814,10 +1836,13 @@ return {{
             // Noise, far below CANDIDATE_MIN.
             "The Brothers Karamazov",
         ] {
-            s.upsert_book(&Book {
-                title: Some(title.into()),
-                ..Default::default()
-            })
+            s.upsert_book(
+                &Book {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         }
@@ -1839,12 +1864,15 @@ return {{
         let path = sdr(tmp.path(), "1Q84", DEVICE_STATE);
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                // Nothing like the sidecar's title: only the recorded link can
-                // connect the two.
-                title: Some("Nineteen Eighty-Four Times Two".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    // Nothing like the sidecar's title: only the recorded link can
+                    // connect the two.
+                    title: Some("Nineteen Eighty-Four Times Two".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -1885,10 +1913,13 @@ return {{
         let tmp = tempfile::tempdir().unwrap();
         sdr(tmp.path(), "Pachinko", MODERN);
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        s.upsert_book(&Book {
-            title: Some("Pachinko: A Novel of Korea and Japan".into()),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some("Pachinko: A Novel of Korea and Japan".into()),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
 
@@ -2028,11 +2059,14 @@ return {
         std::fs::write(good.join("metadata.epub.lua"), LEGACY).unwrap();
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        s.upsert_book(&Book {
-            title: Some("The Trial".into()),
-            authors: vec!["Franz Kafka".into()],
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some("The Trial".into()),
+                authors: vec!["Franz Kafka".into()],
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
 

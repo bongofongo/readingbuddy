@@ -371,6 +371,42 @@ async fn re_importing_the_same_epub_writes_one_mapping() {
     );
 }
 
+/// **The file is an origin, and the row now says so** (item 29).
+///
+/// `import_epub` used to fold the file's metadata onto the provider's record
+/// field by field, with a hand-written `is_none()` per column, and write the
+/// result once — one row with two origins that no single `field_provenance`
+/// stamp could describe honestly. It is two writes now, through the same merge
+/// table, and only what the file supplied is claimed for the file.
+#[tokio::test]
+async fn an_imported_epub_claims_the_fields_the_file_supplied() {
+    let (tmp, engine) = engine().await;
+    let path = tmp.path().join("offline.epub");
+    write_isbnless_epub(&path, "A Book With No ISBN");
+
+    let saved = engine.import_epub(&path).await.unwrap();
+    assert_eq!(saved.title.as_deref(), Some("A Book With No ISBN"));
+
+    let mut claimed: Vec<(String, String)> = engine
+        .storage()
+        .field_provenance(saved.id.unwrap())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.field, f.source))
+        .collect();
+    claimed.sort();
+    assert_eq!(
+        claimed,
+        vec![
+            ("authors".to_string(), "epub".to_string()),
+            ("language".to_string(), "epub".to_string()),
+            ("title".to_string(), "epub".to_string()),
+        ],
+        "the file's three fields, and nothing it did not supply"
+    );
+}
+
 /// A manual link is the user's decision. Importing the file again is a scan,
 /// and a scan must never repoint it or relabel it as a guess — which is why
 /// the hook calls `link_device_book` and not `set_device_link`.
