@@ -1,0 +1,70 @@
+{
+  "generator_version": 1,
+  "schema_version": 20221111,
+  "books": [
+    {
+      "title": "Pachinko",
+      "md5": "8cb32bca81b36ca0816851073e5661d3",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-05",
+          "seconds": 720,
+          "pages": 3,
+          "minutes": 12
+        },
+        {
+          "day": "2026-01-06",
+          "seconds": 810,
+          "pages": 2,
+          "minutes": 14
+        },
+        {
+          "day": "2026-01-09",
+          "seconds": 3600,
+          "pages": 1,
+          "minutes": 60
+        }
+      ]
+    },
+    {
+      "title": "Brief Encounter",
+      "md5": "a5b01da92a68bbbb6d88c12483cf3b56",
+      "in_library": true,
+      "days": [
+        {
+          "day": "2026-01-07",
+          "seconds": 19,
+          "pages": 1,
+          "minutes": 0
+        }
+      ]
+    },
+    {
+      "title": "A Book We Never Imported",
+      "md5": "25dc3d7e5bd746db64267cff902d3edd",
+      "in_library": false,
+      "days": [
+        {
+          "day": "2026-01-05",
+          "seconds": 900,
+          "pages": 1,
+          "minutes": 15
+        }
+      ]
+    },
+    {
+      "title": "No Checksum Here",
+      "md5": null,
+      "in_library": false,
+      "days": [
+        {
+          "day": "2026-01-06",
+          "seconds": 450,
+          "pages": 1,
+          "minutes": 8
+        }
+      ]
+    }
+  ]
+}

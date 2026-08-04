@@ -41,6 +41,10 @@ tracing.workspace = true
 # that would stop every other task in the frontend.
 tokio = { workspace = true, features = ["time", "sync", "process"] }
 notify.workspace = true
+# Item 31 copies the device's live `statistics.sqlite3` out before reading it,
+# and the copy has to land somewhere private that is cleaned up even when the
+# read fails. It was already a dev-dependency; this promotes it.
+tempfile = "3"
 
 [dev-dependencies]
 # A package depending on itself, which cargo permits for dev-dependencies and

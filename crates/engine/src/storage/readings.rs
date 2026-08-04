@@ -112,6 +112,32 @@ fn row_to_reading_prefixed(row: &SqliteRow, prefix: &str) -> Result<Reading> {
 const DEVICE_STATE_DIFFER: &str =
     "(ko_status IS NOT ?2 OR ko_percent IS NOT ?3 OR ko_rating IS NOT ?4)";
 
+/// One book's readings as half-open-ish intervals of unix seconds, `?1` the
+/// book id, columns `reading_id`/`win_start`/`win_end`.
+///
+/// **Extracted so there is one definition, not two.** The derivation of a
+/// missing `started_at` is the subtle part — see [`Storage::attribute_highlights`]
+/// for the full argument and for the ±infinity bug it replaced — and item 31
+/// needs the same windows to place a *day* of measured reading time. Two copies
+/// of this would be two chances to reintroduce that bug, and only one of them
+/// would have a test aimed at it.
+///
+/// `?1` rather than `?` because both callers mention the book id twice.
+pub(super) const READING_WINDOWS: &str = "
+    SELECT r.id AS reading_id,
+           COALESCE(
+               r.started_at,
+               (SELECT MAX(p.finished_at) + 1 FROM readings p
+                 WHERE p.book_id = r.book_id
+                   AND p.id <> r.id
+                   AND p.finished_at IS NOT NULL
+                   AND p.finished_at <= COALESCE(r.finished_at, 8640000000000)),
+               -8640000000000
+           ) AS win_start,
+           COALESCE(r.finished_at, 8640000000000) AS win_end
+      FROM readings r
+     WHERE r.book_id = ?1";
+
 /// KOReader's `datetime` as unix seconds.
 ///
 /// The device writes `YYYY-MM-DD HH:MM:SS` with no zone, so it is read as UTC —
@@ -598,31 +624,16 @@ impl Storage {
     /// two readings explicitly overlapping dates, and the later window is the
     /// better guess for a highlight that falls in both.
     pub async fn attribute_highlights(&self, book_id: i64) -> Result<usize> {
-        sqlx::query(
-            r#"WITH windows AS (
-                   SELECT r.id AS reading_id,
-                          COALESCE(
-                              r.started_at,
-                              (SELECT MAX(p.finished_at) + 1 FROM readings p
-                                WHERE p.book_id = r.book_id
-                                  AND p.id <> r.id
-                                  AND p.finished_at IS NOT NULL
-                                  AND p.finished_at <=
-                                      COALESCE(r.finished_at, 8640000000000)),
-                              -8640000000000
-                          ) AS win_start,
-                          COALESCE(r.finished_at, 8640000000000) AS win_end
-                     FROM readings r
-                    WHERE r.book_id = ?1
-               )
+        sqlx::query(&format!(
+            "WITH windows AS ({READING_WINDOWS})
                UPDATE highlights SET reading_id = (
                    SELECT w.reading_id FROM windows w
                     WHERE CAST(strftime('%s', highlights.ko_datetime) AS INTEGER)
                           BETWEEN w.win_start AND w.win_end
                     ORDER BY w.win_start DESC, w.reading_id DESC
                     LIMIT 1)
-               WHERE book_id = ?1"#,
-        )
+               WHERE book_id = ?1"
+        ))
         .bind(book_id)
         .execute(self.pool())
         .await?;

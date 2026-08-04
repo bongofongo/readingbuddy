@@ -171,6 +171,50 @@ pub enum DiagnosticKind {
         dropped: usize,
     },
 
+    // ---- koreader statistics (item 31) -------------------------------------
+    //
+    // Four variants rather than one, and the module doc's rule is the reason:
+    // *absence is ordinary here*, so these are the ordinary path rather than an
+    // exceptional one, and a caller that cannot tell "this device has never run
+    // the statistics plugin" from "we do not understand this device's schema"
+    // has no way to tell the user which of the two it is looking at.
+    /// The volume has no `settings/statistics.sqlite3`. The commonest case by
+    /// far — the plugin is optional and a fresh install has never written one —
+    /// and emphatically not an error.
+    StatisticsDbAbsent {
+        path: PathBuf,
+    },
+    /// The file is there and SQLite would not read it: a partial copy off a
+    /// yanked volume, a permissions problem, a file that is not a database.
+    StatisticsDbUnreadable {
+        path: PathBuf,
+        class: ErrorClass,
+    },
+    /// `PRAGMA user_version` is a schema this build has never seen.
+    ///
+    /// **Refuses rather than guesses.** KOReader stamps the version precisely so
+    /// a reader can tell; the columns we aggregate could have been renamed or
+    /// re-scaled under us, and importing a wrong number of minutes is far worse
+    /// than importing none, because nothing downstream can tell it apart from a
+    /// right one.
+    StatisticsSchemaUnknown {
+        path: PathBuf,
+        version: i64,
+    },
+    /// A `book` row whose `md5` matches no book in the library.
+    ///
+    /// Ordinary: the device holds books that were never imported here. Reported
+    /// because it is also what a *broken join* looks like, and the two are
+    /// indistinguishable in silence.
+    StatisticsBookUnmatched {
+        md5: String,
+    },
+    /// A `book` row carrying no `md5` at all, so there is nothing to join on.
+    /// The sibling of [`DiagnosticKind::SidecarNotIdentified`].
+    StatisticsBookNotIdentified {
+        title: String,
+    },
+
     // ---- calibre (item 13) -------------------------------------------------
     /// A calibre row with no title, so there is nothing to match on. The rest
     /// of the library still imports.
@@ -271,6 +315,62 @@ impl Diagnostic {
         }
     }
 
+    // ---- koreader statistics (item 31) -------------------------------------
+
+    /// No statistics database on this volume. A `Warning`, never an error: the
+    /// statistics plugin is optional, and *a device with no measured time is a
+    /// device with no measured time*, not a failure.
+    pub fn statistics_db_absent(path: PathBuf) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::StatisticsDbAbsent { path },
+            severity: Severity::Warning,
+            detail: "no KOReader statistics database; no reading time to import".to_string(),
+        }
+    }
+
+    pub fn statistics_db_unreadable(path: PathBuf, err: &EngineError) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::StatisticsDbUnreadable {
+                path,
+                class: ErrorClass::from(err),
+            },
+            severity: Severity::Warning,
+            detail: err.to_string(),
+        }
+    }
+
+    pub fn statistics_schema_unknown(path: PathBuf, version: i64) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::StatisticsSchemaUnknown { path, version },
+            severity: Severity::Warning,
+            detail: format!(
+                "statistics schema {version} is not one this build understands \
+                 (expected {}); nothing imported",
+                crate::ko_statistics::KNOWN_SCHEMA_VERSION
+            ),
+        }
+    }
+
+    pub fn statistics_book_unmatched(md5: &str) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::StatisticsBookUnmatched {
+                md5: md5.to_string(),
+            },
+            severity: Severity::Warning,
+            detail: "no book in this library has that file".to_string(),
+        }
+    }
+
+    pub fn statistics_book_not_identified(title: &str) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::StatisticsBookNotIdentified {
+                title: title.to_string(),
+            },
+            severity: Severity::Warning,
+            detail: "no md5 on the statistics row; nothing to join on".to_string(),
+        }
+    }
+
     /// The provider this diagnostic is about, if any.
     pub fn provider(&self) -> Option<ProviderId> {
         match self.kind {
@@ -330,6 +430,17 @@ impl fmt::Display for Diagnostic {
             | DiagnosticKind::GoodreadsUndatableRereads { title, .. }
             | DiagnosticKind::GoodreadsRatingUnmapped { title }
             | DiagnosticKind::GoodreadsRereadsDropped { title, .. } => {
+                write!(f, "{title}: {}", self.detail)
+            }
+            DiagnosticKind::StatisticsDbAbsent { path }
+            | DiagnosticKind::StatisticsDbUnreadable { path, .. }
+            | DiagnosticKind::StatisticsSchemaUnknown { path, .. } => {
+                write!(f, "{}: {}", path.display(), self.detail)
+            }
+            DiagnosticKind::StatisticsBookUnmatched { md5 } => {
+                write!(f, "{md5}: {}", self.detail)
+            }
+            DiagnosticKind::StatisticsBookNotIdentified { title } => {
                 write!(f, "{title}: {}", self.detail)
             }
             DiagnosticKind::CalibreRowSkipped { calibre_id }

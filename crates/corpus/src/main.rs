@@ -15,6 +15,7 @@
 
 mod goodreads;
 mod gutenberg;
+mod kostats;
 mod synthetic;
 
 use std::path::PathBuf;
@@ -58,6 +59,21 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Write the committed KOReader `statistics.sqlite3` fixture (item 31).
+    ///
+    /// Emits **SQL text plus an expected-totals JSON**, not a database file:
+    /// see `kostats.rs` for why, and note that the totals are accumulated while
+    /// the rows are written rather than read back, which is what makes them an
+    /// oracle rather than a recording.
+    GenKostats {
+        /// PRNG seed. ChaCha8, so the same seed is the same file for ever.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// Output dir; defaults to the engine's
+        /// `tests/fixtures/koreader/statistics`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Derive tier-2 sidecars from the fetched Project Gutenberg epubs.
     GenCorpus {
         /// PRNG seed. Output is a pure function of (seed, generator version,
@@ -92,6 +108,16 @@ fn main() -> std::io::Result<()> {
             println!(
                 "wrote {n} rows (v{}, seed {seed}) to {}/library.csv",
                 goodreads::GENERATOR_VERSION,
+                out.display()
+            );
+            Ok(())
+        }
+        Cmd::GenKostats { seed, out } => {
+            let out = out.unwrap_or_else(kostats::default_out);
+            let n = kostats::generate(&out, &kostats::Options { seed })?;
+            println!(
+                "wrote {n} statistics books (v{}, seed {seed}) to {}/statistics.sql",
+                kostats::GENERATOR_VERSION,
                 out.display()
             );
             Ok(())
