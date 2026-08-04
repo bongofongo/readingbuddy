@@ -17,12 +17,44 @@ mod common;
 use common::{SYNTHETIC, place};
 
 async fn seed(s: &Storage, title: &str) -> i64 {
-    s.upsert_book(&Book {
-        title: Some(title.into()),
-        ..Default::default()
-    })
+    s.upsert_book(
+        &Book {
+            title: Some(title.into()),
+            ..Default::default()
+        },
+        None,
+    )
     .await
     .unwrap()
+}
+
+/// **A book the device created is the device's** (item 29).
+///
+/// `import_book_from_sidecar` builds the whole record out of the sidecar's own
+/// `stats`/`doc_props` block, so every field it writes has exactly one origin
+/// and there is no reason for any of them to go unattributed. It is the easiest
+/// of the writers to get right and therefore the easiest to forget.
+#[tokio::test]
+async fn a_book_pulled_from_a_sidecar_is_attributed_to_the_device() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("KOBOeReader");
+    let stranger = place(&root, "Unmatched.sdr", "Stranger.sdr");
+
+    let s = Storage::connect("sqlite::memory:").await.unwrap();
+    let reports = device::sync_device(&s, std::slice::from_ref(&stranger))
+        .await
+        .unwrap();
+    let created = reports[0].stats.book_id;
+
+    let claimed = s.field_provenance(created).await.unwrap();
+    assert!(
+        claimed.iter().any(|f| f.field == "title"),
+        "the sidecar supplied the title: {claimed:?}"
+    );
+    assert!(
+        claimed.iter().all(|f| f.source == "koreader"),
+        "a sidecar-created book has one origin: {claimed:?}"
+    );
 }
 
 fn row<'a>(books: &'a [DeviceBook], path: &Path) -> &'a DeviceBook {
@@ -457,11 +489,14 @@ async fn a_book_by_somebody_else_is_not_offered_and_the_cache_agrees() {
     // The sidecar's book is Min Jin Lee's. This one is not, whatever the title
     // says — two books can share a title, and folding them together is worse
     // than leaving the shelf alone.
-    s.upsert_book(&Book {
-        title: Some("Pachinko".into()),
-        authors: vec!["Someone Else Entirely".into()],
-        ..Default::default()
-    })
+    s.upsert_book(
+        &Book {
+            title: Some("Pachinko".into()),
+            authors: vec!["Someone Else Entirely".into()],
+            ..Default::default()
+        },
+        None,
+    )
     .await
     .unwrap();
 

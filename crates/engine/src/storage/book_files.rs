@@ -112,10 +112,13 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, id)
@@ -171,10 +174,13 @@ mod tests {
     async fn the_same_bytes_cannot_belong_to_two_books() {
         let (s, first) = seeded().await;
         let second = s
-            .upsert_book(&Book {
-                title: Some("Pachinko (the other copy)".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko (the other copy)".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
 

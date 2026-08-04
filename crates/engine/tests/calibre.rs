@@ -266,6 +266,25 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
         ["fiction", "korean-lit"]
     );
 
+    // Field provenance (item 29), beside the row provenance above: every column
+    // this import wrote is calibre's, and `page_count` — which `calibredb list`
+    // does not carry at all — is claimed by nobody rather than by calibre.
+    let claimed = engine
+        .storage()
+        .field_provenance(book.id.unwrap())
+        .await
+        .unwrap();
+    assert!(
+        claimed.iter().all(|f| f.source == "calibre"),
+        "nothing else has written to this book: {claimed:?}"
+    );
+    let fields: Vec<&str> = claimed.iter().map(|f| f.field.as_str()).collect();
+    assert!(fields.contains(&"title") && fields.contains(&"isbn_13"));
+    assert!(
+        !fields.contains(&"page_count"),
+        "calibre said nothing about the page count, so it claims nothing: {fields:?}"
+    );
+
     // The undated book's sentinel `pubdate` did not become the year 101.
     let se = report
         .books

@@ -1,6 +1,7 @@
 mod book_files;
 mod books;
 mod device_books;
+mod field_provenance;
 mod flashcards;
 mod highlights;
 mod notes;
@@ -13,6 +14,7 @@ mod sidecar_seen;
 pub use book_files::BookFile;
 pub use books::{BookSort, MergeReport};
 pub use device_books::LinkedBy;
+pub use field_provenance::{FieldSource, Source};
 pub use flashcards::FlashcardRow;
 pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};

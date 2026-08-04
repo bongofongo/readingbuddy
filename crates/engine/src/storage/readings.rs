@@ -644,22 +644,28 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                page_count: Some(490),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    page_count: Some(490),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, id)
     }
 
     async fn add(s: &Storage, title: &str) -> i64 {
-        s.upsert_book(&Book {
-            title: Some(title.into()),
-            page_count: Some(300),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some(title.into()),
+                page_count: Some(300),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap()
     }
@@ -1238,7 +1244,7 @@ mod props {
                 .unwrap();
             rt.block_on(async {
                 let s = Storage::connect("sqlite::memory:").await.unwrap();
-                let id = s.upsert_book(&Book { title: Some("t".into()), ..Default::default() })
+                let id = s.upsert_book(&Book { title: Some("t".into()), ..Default::default() }, None)
                     .await.unwrap();
 
                 let mut page = 0i64;
@@ -1294,7 +1300,7 @@ mod props {
                 for n in 0..3 {
                     ids.push(s.upsert_book(&Book {
                         title: Some(format!("book {n}")), ..Default::default()
-                    }).await.unwrap());
+                    }, None).await.unwrap());
                 }
 
                 for (which, step) in &steps {

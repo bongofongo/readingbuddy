@@ -475,10 +475,13 @@ mod tests {
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         let book = s.get_book(book_id).await.unwrap().unwrap();
@@ -516,10 +519,13 @@ mod tests {
 
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         let book = s.get_book(book_id).await.unwrap().unwrap();

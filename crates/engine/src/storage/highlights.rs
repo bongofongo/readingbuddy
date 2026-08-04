@@ -501,10 +501,13 @@ mod tests {
     async fn double_insert_is_idempotent() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                title: Some("T".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("T".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         let h = hl("a phrase worth keeping");
@@ -517,10 +520,13 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book_id = s
-            .upsert_book(&Book {
-                title: Some("T".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("T".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, book_id)
@@ -669,10 +675,13 @@ mod tests {
     async fn a_refresh_does_not_reach_into_another_book() {
         let (s, first) = seeded().await;
         let second = s
-            .upsert_book(&Book {
-                title: Some("Another".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Another".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         let h = hl("a phrase worth keeping");
@@ -751,10 +760,13 @@ mod tests {
     async fn our_own_annotation_is_not_part_of_the_device_digest() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let book = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         let h = hl("a passage");

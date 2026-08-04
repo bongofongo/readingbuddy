@@ -2,6 +2,7 @@ use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use time::OffsetDateTime;
 
+use super::field_provenance::{self, Source};
 use super::highlights::identity_hash_of;
 use super::{Storage, now_unix};
 use crate::book::Book;
@@ -130,60 +131,203 @@ enum Merge {
     Coalesce,
 }
 
+/// One column's entry in [`MERGE_RULES`].
+///
+/// `says` is the third thing the table has to answer, and it is not a
+/// convenience: provenance is stamped for the fields a record actually
+/// *supplied*, which is the same question `merge` answers in SQL — "is there a
+/// value here, by this column's own definition of empty". Keeping it beside the
+/// rule is what stops the two definitions of empty drifting apart, which for
+/// `authors` (`[]`) and `title` (`''`) is a real risk and not a hypothetical.
+struct Rule {
+    col: &'static str,
+    merge: Merge,
+    /// Does this record say anything about this column?
+    says: fn(&Book) -> bool,
+}
+
 /// **The provider no-clobber merge, defined once.**
 ///
-/// Two statements need it — `ON CONFLICT DO UPDATE` in [`Storage::upsert_book`],
-/// and a plain `UPDATE … WHERE id = ?` in [`Storage::enrich_book`] — and they
-/// must not be able to disagree about what "merge a partial record" means. That
-/// is the same rule `DEVICE_FIELDS_DIFFER` and `identity_hash_of` follow: one
-/// formula, both sides through it.
+/// Four statements need it — `ON CONFLICT DO UPDATE` in
+/// [`Storage::upsert_book`], a plain `UPDATE … WHERE id = ?` in
+/// [`Storage::enrich_book`], the `dst`-wins fill in [`Storage::merge_books`],
+/// and the `field_provenance` stamp all three carry — and they must not be able
+/// to disagree about what "merge a partial record" means. That is the same rule
+/// `DEVICE_FIELDS_DIFFER` and `identity_hash_of` follow: one formula, every side
+/// through it. A field name that exists in one list and not another is the bug
+/// this arrangement makes unrepresentable, and it is the bug that would
+/// otherwise arrive with item 32, which adds three more columns.
 ///
 /// It is emphatically **not** the device merge. A sidecar is the device's
 /// complete state, so a missing note there means the user deleted it and
 /// straight assignment is correct. A provider record — and a `calibredb list`
 /// row, which carries no page count at all — is partial, and missing means
 /// "don't know". `docs/decisions.md`: do not copy one pattern to the other.
-const MERGE_RULES: [(&str, Merge); 16] = [
-    ("title", Merge::NonEmptyText),
-    ("sort_title", Merge::Coalesce),
-    ("authors", Merge::NonEmptyList),
-    ("translators", Merge::NonEmptyList),
-    ("publisher", Merge::Coalesce),
-    ("publish_year", Merge::Coalesce),
-    ("language", Merge::Coalesce),
-    ("isbn_10", Merge::Coalesce),
-    ("isbn_13", Merge::Coalesce),
-    ("openlibrary_key", Merge::Coalesce),
-    ("googlebooks_id", Merge::Coalesce),
-    ("cover_url", Merge::Coalesce),
-    ("cover_path", Merge::Coalesce),
-    ("page_count", Merge::Coalesce),
-    ("description", Merge::Coalesce),
-    ("first_sentence", Merge::Coalesce),
+const MERGE_RULES: [Rule; 16] = [
+    Rule {
+        col: "title",
+        merge: Merge::NonEmptyText,
+        says: |b| b.title.as_deref().is_some_and(|t| !t.is_empty()),
+    },
+    Rule {
+        col: "sort_title",
+        merge: Merge::Coalesce,
+        says: |b| b.sort_title.is_some(),
+    },
+    Rule {
+        col: "authors",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.authors.is_empty(),
+    },
+    Rule {
+        col: "translators",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.translators.is_empty(),
+    },
+    Rule {
+        col: "publisher",
+        merge: Merge::Coalesce,
+        says: |b| b.publisher.is_some(),
+    },
+    Rule {
+        col: "publish_year",
+        merge: Merge::Coalesce,
+        says: |b| b.publish_year.is_some(),
+    },
+    Rule {
+        col: "language",
+        merge: Merge::Coalesce,
+        says: |b| b.language.is_some(),
+    },
+    Rule {
+        col: "isbn_10",
+        merge: Merge::Coalesce,
+        says: |b| b.isbn_10.is_some(),
+    },
+    Rule {
+        col: "isbn_13",
+        merge: Merge::Coalesce,
+        says: |b| b.isbn_13.is_some(),
+    },
+    Rule {
+        col: "openlibrary_key",
+        merge: Merge::Coalesce,
+        says: |b| b.openlibrary_key.is_some(),
+    },
+    Rule {
+        col: "googlebooks_id",
+        merge: Merge::Coalesce,
+        says: |b| b.googlebooks_id.is_some(),
+    },
+    Rule {
+        col: "cover_url",
+        merge: Merge::Coalesce,
+        says: |b| b.cover_url.is_some(),
+    },
+    Rule {
+        col: "cover_path",
+        merge: Merge::Coalesce,
+        says: |b| b.cover_path.is_some(),
+    },
+    Rule {
+        col: "page_count",
+        merge: Merge::Coalesce,
+        says: |b| b.page_count.is_some(),
+    },
+    Rule {
+        col: "description",
+        merge: Merge::Coalesce,
+        says: |b| b.description.is_some(),
+    },
+    Rule {
+        col: "first_sentence",
+        merge: Merge::Coalesce,
+        says: |b| b.first_sentence.is_some(),
+    },
 ];
+
+/// Which side of a merge wins where both have something to say.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Winner {
+    /// The record being merged in. `upsert_book` and `enrich_book`: the new
+    /// data is the authority and the stored row only survives where the record
+    /// is silent.
+    Incoming,
+    /// The stored row. `merge_books`: `dst` is the row the user chose to keep,
+    /// so `src` fills gaps and nothing else.
+    Stored,
+}
 
 /// The SET clause for [`MERGE_RULES`]. `src` names where the incoming value
 /// comes from, per column: `excluded.title` inside an upsert, `?1` inside an
-/// update. `last_modified` is appended by the caller, since only one of the two
-/// statements binds it positionally.
-fn merge_set(src: impl Fn(usize, &str) -> String) -> String {
+/// update. `last_modified` is appended by the caller, since not every statement
+/// binds it positionally.
+///
+/// `guard_user` wraps every column in the one rule that makes this item worth
+/// building: **a field the user owns is not overwritten by a merge.** It lives
+/// here, in the generated SQL, rather than in each caller — a caller-side check
+/// is a rule that has to be remembered once per writer, and item 30 is a new
+/// writer. `merge_books` turns it off, and that is not an exception to the rule:
+/// `dst` wins there anyway, so a `user` field is only ever *filled* when `dst`
+/// has no value for the user to have corrected.
+fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> String) -> String {
     MERGE_RULES
         .iter()
         .enumerate()
-        .map(|(i, (col, rule))| {
+        .map(|(i, rule)| {
+            let col = rule.col;
             let new = src(i, col);
-            match rule {
-                Merge::NonEmptyText => {
-                    format!("{col} = CASE WHEN {new} != '' THEN {new} ELSE books.{col} END")
-                }
-                Merge::NonEmptyList => {
-                    format!("{col} = CASE WHEN {new} != '[]' THEN {new} ELSE books.{col} END")
-                }
-                Merge::Coalesce => format!("{col} = COALESCE({new}, books.{col})"),
+            let stored = format!("books.{col}");
+            let (a, b) = match winner {
+                Winner::Incoming => (&new, &stored),
+                Winner::Stored => (&stored, &new),
+            };
+            let value = match rule.merge {
+                Merge::NonEmptyText => format!("CASE WHEN {a} != '' THEN {a} ELSE {b} END"),
+                Merge::NonEmptyList => format!("CASE WHEN {a} != '[]' THEN {a} ELSE {b} END"),
+                Merge::Coalesce => format!("COALESCE({a}, {b})"),
+            };
+            if guard_user {
+                let owned = field_provenance::user_owns("books.id", col);
+                format!("{col} = CASE WHEN {owned} THEN {stored} ELSE {value} END")
+            } else {
+                format!("{col} = {value}")
             }
         })
         .collect::<Vec<_>>()
         .join(",\n            ")
+}
+
+/// Does a write from `source` have to respect fields the user owns?
+///
+/// Everyone except the user, and stated once because "except the user" is
+/// exactly the clause that gets remembered in two writers out of three. An
+/// unattributed write (`None`) is guarded like any other: not knowing who is
+/// writing is not a reason to let them past a correction.
+fn guards_user(source: Option<Source>) -> bool {
+    source != Some(Source::User)
+}
+
+/// The columns this record has something to say about — which is exactly the
+/// set that gets a `field_provenance` row, since a source can only be the origin
+/// of a value it supplied.
+fn fields_said(book: &Book) -> Vec<&'static str> {
+    MERGE_RULES
+        .iter()
+        .filter(|r| (r.says)(book))
+        .map(|r| r.col)
+        .collect()
+}
+
+/// The columns `stored` is silent about and `incoming` is not — the only ones a
+/// `Winner::Stored` merge actually takes from the incoming record, and therefore
+/// the only ones whose attribution may travel with it.
+fn gap_fields(stored: &Book, incoming: &Book) -> Vec<&'static str> {
+    MERGE_RULES
+        .iter()
+        .filter(|r| !(r.says)(stored) && (r.says)(incoming))
+        .map(|r| r.col)
+        .collect()
 }
 
 /// Bind the sixteen [`MERGE_RULES`] columns, in order, to a query.
@@ -227,10 +371,22 @@ impl Storage {
     /// un-finishing a book, and a provider upsert now has no reach into reading
     /// state at all. Everything else keeps its `COALESCE` no-clobber — that
     /// pattern is still right for providers, which return partial records.
-    pub async fn upsert_book(&self, book: &Book) -> Result<i64> {
+    ///
+    /// **`source` is who supplied this record**, and every field the record
+    /// speaks to gets a `field_provenance` row stamped with it, in the same
+    /// transaction as the write. `None` is the honest answer for a writer that
+    /// cannot say — `Engine::save_book` holds a record already merged across
+    /// providers by `search::merge_provider_books`, which keeps the winning
+    /// value and discards which provider supplied it — and it stamps nothing
+    /// rather than picking one. It is a parameter and not a default precisely so
+    /// that every writer has to answer; a writer that does not stamp is a field
+    /// that goes on silently claiming whatever it claimed last.
+    pub async fn upsert_book(&self, book: &Book, source: Option<Source>) -> Result<i64> {
         let set_clause = format!(
             "{},\n            last_modified = excluded.last_modified",
-            merge_set(|_, col| format!("excluded.{col}"))
+            merge_set(Winner::Incoming, guards_user(source), |_, col| format!(
+                "excluded.{col}"
+            ))
         );
 
         let insert = r#"INSERT INTO books (
@@ -248,12 +404,22 @@ impl Storage {
         };
 
         let now = now_unix();
+        // One transaction, for the same reason `merge_books` is one: a row whose
+        // `page_count` landed and whose provenance did not is indistinguishable
+        // from history, and it is indistinguishable *forever* — nothing later
+        // re-derives where a field came from.
+        let mut tx = self.pool().begin().await?;
         let row = bind_merge_columns(sqlx::query(&sql), book)?
             .bind(now)
             .bind(now)
-            .fetch_one(self.pool())
+            .fetch_one(&mut *tx)
             .await?;
-        Ok(row.try_get("id")?)
+        let id: i64 = row.try_get("id")?;
+        if let Some(source) = source {
+            field_provenance::stamp(&mut tx, id, &fields_said(book), source).await?;
+        }
+        tx.commit().await?;
+        Ok(id)
     }
 
     /// Merge a partial record into a book **we have already identified**.
@@ -269,17 +435,85 @@ impl Storage {
     /// Same rules as the upsert, from [`MERGE_RULES`] — the caller has a partial
     /// record either way, and which statement runs is about *how the book was
     /// found*, never about what a missing field means.
-    pub async fn enrich_book(&self, book_id: i64, book: &Book) -> Result<()> {
+    ///
+    /// Same `source` contract as [`Storage::upsert_book`] — and this is also the
+    /// door a user edit comes through: `Some(Source::User)` both writes the
+    /// value and claims the field, after which no provider merge can overwrite
+    /// it. There is no user-edit path in the engine yet, so nothing but a test
+    /// passes that today; the rule is built now because item 30's first run is
+    /// where its absence would be discovered, by silently overwriting a hand
+    /// correction.
+    pub async fn enrich_book(
+        &self,
+        book_id: i64,
+        book: &Book,
+        source: Option<Source>,
+    ) -> Result<()> {
         // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
         let sql = format!(
             "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
-            merge_set(|i, _| format!("?{}", i + 1))
+            merge_set(Winner::Incoming, guards_user(source), |i, _| format!(
+                "?{}",
+                i + 1
+            ))
         );
+        let mut tx = self.pool().begin().await?;
         bind_merge_columns(sqlx::query(&sql), book)?
             .bind(now_unix())
             .bind(book_id)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await?;
+        if let Some(source) = source {
+            field_provenance::stamp(&mut tx, book_id, &fields_said(book), source).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Merge a **fallback** record: the stored row wins, and this fills only
+    /// what it is silent about.
+    ///
+    /// The mirror of [`Storage::enrich_book`], and the difference is which
+    /// record is the authority rather than how a missing field is read. It
+    /// exists for `Engine::import_epub`, where the file's own metadata is
+    /// deliberately second to whatever a provider said about the same ISBN —
+    /// that used to be a hand-written `if book.title.is_none()` chain folding
+    /// the two into one `Book` before a single write, which is `MERGE_RULES`
+    /// spelled a second time *and* a record with two origins and no way to say
+    /// which supplied what. Two writes, two sources, one merge table.
+    ///
+    /// Provenance is stamped for the fields it actually filled, never for the
+    /// ones the stored row already answered — a source is only the origin of a
+    /// value that survived.
+    pub async fn fill_book(&self, book_id: i64, book: &Book, source: Option<Source>) -> Result<()> {
+        // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
+        let sql = format!(
+            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            merge_set(Winner::Stored, guards_user(source), |i, _| format!(
+                "?{}",
+                i + 1
+            ))
+        );
+        let mut tx = self.pool().begin().await?;
+        // Read before the write, or the gaps this filled are already closed and
+        // it would look as though it had supplied nothing.
+        let select = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
+        let stored = sqlx::query(&select)
+            .bind(book_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
+        let gaps = gap_fields(&row_to_book(&stored)?, book);
+
+        bind_merge_columns(sqlx::query(&sql), book)?
+            .bind(now_unix())
+            .bind(book_id)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(source) = source {
+            field_provenance::stamp(&mut tx, book_id, &gaps, source).await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -372,16 +606,16 @@ impl Storage {
         // connection, so a nested acquire would deadlock rather than fail.
         let mut tx = self.pool().begin().await?;
 
-        let dst_cover: Option<Option<String>> =
-            sqlx::query_scalar("SELECT cover_path FROM books WHERE id = ?")
-                .bind(dst)
-                .fetch_optional(&mut *tx)
-                .await?;
-        let Some(dst_cover) = dst_cover else {
+        // The whole row, not just its cover: which fields `dst` is silent about
+        // is what decides both the fill below and whose provenance travels with
+        // it, and that has to be read *before* the fill changes the answer.
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
+        let dst_row = sqlx::query(&sql).bind(dst).fetch_optional(&mut *tx).await?;
+        let Some(dst_row) = dst_row else {
             return Err(EngineError::NotFound(format!("book id {dst}")));
         };
+        let dst_book = row_to_book(&dst_row)?;
 
-        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.id = ?");
         let Some(src_row) = sqlx::query(&sql).bind(src).fetch_optional(&mut *tx).await? else {
             // Already merged (or never existed). Returning an empty report
             // rather than an error is what makes merging twice equal merging
@@ -547,6 +781,12 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
 
+        // Field provenance cascades too, and moving it wholesale would be worse
+        // than losing it: the fill below is `dst`-wins, so `src`'s claim on a
+        // field `dst` already has a value for would attribute `dst`'s value to
+        // the source of a value that was thrown away. Only the gaps travel.
+        field_provenance::move_claims(&mut tx, src, dst, &gap_fields(&dst_book, &src_book)).await?;
+
         // `src` goes before `dst` is updated: isbn_10 and isbn_13 are UNIQUE, so
         // handing `dst` an ISBN `src` still holds would fail the constraint.
         sqlx::query("DELETE FROM books WHERE id = ?")
@@ -554,54 +794,30 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
 
-        if dst_cover.is_some() {
+        if dst_book.cover_path.is_some() {
             report.orphaned_cover = src_book.cover_path.clone();
         }
 
         // dst wins: `src` fills only what `dst` does not already have. The
         // inverse of `upsert_book`'s clause, where the incoming record wins —
         // there the new data is the authority, here the kept row is.
-        sqlx::query(
-            r#"UPDATE books SET
-                   title           = CASE WHEN title   != ''   THEN title   ELSE ?2  END,
-                   sort_title      = COALESCE(sort_title,      ?3),
-                   authors         = CASE WHEN authors != '[]' THEN authors ELSE ?4  END,
-                   translators     = CASE WHEN translators != '[]' THEN translators ELSE ?5 END,
-                   publisher       = COALESCE(publisher,       ?6),
-                   publish_year    = COALESCE(publish_year,    ?7),
-                   language        = COALESCE(language,        ?8),
-                   isbn_10         = COALESCE(isbn_10,         ?9),
-                   isbn_13         = COALESCE(isbn_13,         ?10),
-                   openlibrary_key = COALESCE(openlibrary_key, ?11),
-                   googlebooks_id  = COALESCE(googlebooks_id,  ?12),
-                   cover_url       = COALESCE(cover_url,       ?13),
-                   cover_path      = COALESCE(cover_path,      ?14),
-                   page_count      = COALESCE(page_count,      ?15),
-                   description     = COALESCE(description,     ?16),
-                   first_sentence  = COALESCE(first_sentence,  ?17),
-                   last_modified   = ?18
-               WHERE id = ?1"#,
-        )
-        .bind(dst)
-        .bind(src_book.title.as_deref().unwrap_or(""))
-        .bind(src_book.sort_title.as_ref())
-        .bind(serde_json::to_string(&src_book.authors)?)
-        .bind(serde_json::to_string(&src_book.translators)?)
-        .bind(src_book.publisher.as_ref())
-        .bind(src_book.publish_year)
-        .bind(src_book.language.as_ref())
-        .bind(src_book.isbn_10.as_ref())
-        .bind(src_book.isbn_13.as_ref())
-        .bind(src_book.openlibrary_key.as_ref())
-        .bind(src_book.googlebooks_id.as_ref())
-        .bind(src_book.cover_url.as_ref())
-        .bind(src_book.cover_path.as_ref())
-        .bind(src_book.page_count)
-        .bind(src_book.description.as_ref())
-        .bind(src_book.first_sentence.as_ref())
-        .bind(now_unix())
-        .execute(&mut *tx)
-        .await?;
+        //
+        // Generated from `MERGE_RULES` like the other three, and it did not use
+        // to be: this was sixteen hand-written columns, i.e. a second list that
+        // item 32 would have had to remember to extend, in the one statement
+        // where forgetting a column loses data outright rather than merely
+        // failing to merge it. The user guard is **off** — see `merge_set`; both
+        // books are ours, and `dst` winning already means a corrected field can
+        // only ever be filled when there was nothing to correct.
+        let fill = format!(
+            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            merge_set(Winner::Stored, false, |i, _| format!("?{}", i + 1))
+        );
+        bind_merge_columns(sqlx::query(&fill), &src_book)?
+            .bind(now_unix())
+            .bind(dst)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
         Ok(report)
@@ -656,13 +872,13 @@ mod tests {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let mut b = sample();
         b.description = Some("A sweeping saga.".into());
-        let id1 = s.upsert_book(&b).await.unwrap();
+        let id1 = s.upsert_book(&b, None).await.unwrap();
 
         // Re-upsert same ISBN with missing description but new page count:
         // description must survive, page count must land, id must be stable.
         let mut b2 = sample();
         b2.page_count = Some(490);
-        let id2 = s.upsert_book(&b2).await.unwrap();
+        let id2 = s.upsert_book(&b2, None).await.unwrap();
         assert_eq!(id1, id2);
 
         let got = s.get_book(id1).await.unwrap().unwrap();
@@ -696,18 +912,37 @@ mod tests {
             ..Default::default()
         };
 
-        let by_upsert = {
+        let (by_upsert, prov_upsert) = {
             let s = Storage::connect("sqlite::memory:").await.unwrap();
-            let id = s.upsert_book(&full).await.unwrap();
+            let id = s
+                .upsert_book(&full, Some(Source::GoogleBooks))
+                .await
+                .unwrap();
             // Same ISBN, so this takes the ON CONFLICT branch.
-            assert_eq!(s.upsert_book(&partial).await.unwrap(), id);
-            s.get_book(id).await.unwrap().unwrap()
+            assert_eq!(
+                s.upsert_book(&partial, Some(Source::OpenLibrary))
+                    .await
+                    .unwrap(),
+                id
+            );
+            (
+                s.get_book(id).await.unwrap().unwrap(),
+                sources(&s, id).await,
+            )
         };
-        let by_enrich = {
+        let (by_enrich, prov_enrich) = {
             let s = Storage::connect("sqlite::memory:").await.unwrap();
-            let id = s.upsert_book(&full).await.unwrap();
-            s.enrich_book(id, &partial).await.unwrap();
-            s.get_book(id).await.unwrap().unwrap()
+            let id = s
+                .upsert_book(&full, Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+            s.enrich_book(id, &partial, Some(Source::OpenLibrary))
+                .await
+                .unwrap();
+            (
+                s.get_book(id).await.unwrap().unwrap(),
+                sources(&s, id).await,
+            )
         };
 
         for (name, a, b) in [
@@ -739,6 +974,19 @@ mod tests {
         assert_eq!(by_enrich.authors, vec!["Min Jin Lee".to_string()]);
         assert_eq!(by_enrich.page_count, Some(490));
         assert_eq!(by_enrich.publish_year, Some(2017));
+
+        // …and the third consumer of the same table agrees with both. Two
+        // statements that merge identically while attributing differently is
+        // exactly the drift this arrangement is built to make impossible.
+        assert_eq!(prov_upsert, prov_enrich, "provenance stamped differently");
+        assert!(
+            prov_enrich.contains(&("publish_year".into(), "openlibrary".into())),
+            "the field the partial record supplied is claimed by it: {prov_enrich:?}"
+        );
+        assert!(
+            prov_enrich.contains(&("description".into(), "googlebooks".into())),
+            "a field the partial record is silent about keeps its claim: {prov_enrich:?}"
+        );
     }
 
     /// The reason `enrich_book` exists at all: `upsert_book`'s third branch is a
@@ -748,10 +996,13 @@ mod tests {
     async fn enrich_updates_an_isbn_less_book_where_upsert_would_duplicate_it() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Untitled Draft".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Untitled Draft".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -761,6 +1012,7 @@ mod tests {
                 publisher: Some("Self".into()),
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -771,11 +1023,14 @@ mod tests {
 
         // The contrast, so the claim above is observed rather than asserted:
         // the same partial record through `upsert_book` makes a second row.
-        s.upsert_book(&Book {
-            id: Some(id),
-            publisher: Some("Self".into()),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                id: Some(id),
+                publisher: Some("Self".into()),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap();
         assert_eq!(s.list_books(10, BookSort::Title).await.unwrap().len(), 2);
@@ -789,8 +1044,8 @@ mod tests {
             isbn_10: Some("0306406152".into()),
             ..Default::default()
         };
-        let id1 = s.upsert_book(&b).await.unwrap();
-        let id2 = s.upsert_book(&b).await.unwrap();
+        let id1 = s.upsert_book(&b, None).await.unwrap();
+        let id2 = s.upsert_book(&b, None).await.unwrap();
         assert_eq!(id1, id2);
         let found = s.find_book_by_isbn("0306406152").await.unwrap();
         assert!(found.is_some());
@@ -799,7 +1054,7 @@ mod tests {
     #[tokio::test]
     async fn progress_and_finish_flow() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        let id = s.upsert_book(&sample()).await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
         let b = s.update_progress(id, Some(100), None).await.unwrap();
         assert_eq!(b.current_page, Some(100));
         assert!(!b.finished);
@@ -823,7 +1078,7 @@ mod tests {
     #[tokio::test]
     async fn a_provider_upsert_never_touches_reading_state() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
-        let id = s.upsert_book(&sample()).await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
         s.update_progress(id, Some(100), Some(true)).await.unwrap();
         let before = s.list_readings(id).await.unwrap();
 
@@ -836,7 +1091,7 @@ mod tests {
             date_finished: Some(2),
             ..sample()
         };
-        assert_eq!(s.upsert_book(&refreshed).await.unwrap(), id);
+        assert_eq!(s.upsert_book(&refreshed, None).await.unwrap(), id);
 
         let b = s.get_book(id).await.unwrap().unwrap();
         assert!(b.finished, "a provider upsert must not un-finish a book");
@@ -846,12 +1101,15 @@ mod tests {
 
         // And the other direction: it must not *start* a reading either.
         let fresh = s
-            .upsert_book(&Book {
-                title: Some("Never opened".into()),
-                current_page: Some(42),
-                finished: true,
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Never opened".into()),
+                    current_page: Some(42),
+                    finished: true,
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         assert!(s.list_readings(fresh).await.unwrap().is_empty());
@@ -880,10 +1138,13 @@ mod tests {
     }
 
     async fn book(s: &Storage, title: &str) -> i64 {
-        s.upsert_book(&Book {
-            title: Some(title.into()),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some(title.into()),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap()
     }
@@ -1014,22 +1275,28 @@ mod tests {
     async fn dst_wins_and_src_fills_the_gaps() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let src = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                isbn_13: Some("9781455563937".into()),
-                description: Some("from the duplicate".into()),
-                page_count: Some(490),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    isbn_13: Some("9781455563937".into()),
+                    description: Some("from the duplicate".into()),
+                    page_count: Some(490),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         s.update_progress(src, None, Some(true)).await.unwrap();
         let dst = s
-            .upsert_book(&Book {
-                title: Some("Pachinko (the keeper)".into()),
-                description: Some("the one to keep".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko (the keeper)".into()),
+                    description: Some("the one to keep".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
 
@@ -1043,6 +1310,74 @@ mod tests {
         // Not a field merge any more: `src`'s reading came with it, and the
         // projection reads off that.
         assert!(got.finished, "src's reading survives the fold");
+    }
+
+    /// Provenance travels with the **value**, not with the row.
+    ///
+    /// `field_provenance` cascades on `books`, so a merge that ignored it would
+    /// delete `src`'s claims — but moving them wholesale is worse than losing
+    /// them, and the third case below is why. `dst` wins the fill, so a field
+    /// `dst` already answered keeps `dst`'s claim; only a gap `src` closed hands
+    /// its claim over. And a field `dst` holds *unattributed* — every book older
+    /// than migration `0012` — must stay unattributed rather than quietly
+    /// inheriting the claim attached to a value that was thrown away.
+    #[tokio::test]
+    async fn a_merge_moves_a_claim_only_where_it_moved_the_value() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko (dupe)".into()),
+                    description: Some("from the duplicate".into()),
+                    page_count: Some(490),
+                    publisher: Some("from the duplicate".into()),
+                    ..Default::default()
+                },
+                Some(Source::Goodreads),
+            )
+            .await
+            .unwrap();
+        let dst = s
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    description: Some("the one to keep".into()),
+                    ..Default::default()
+                },
+                Some(Source::Calibre),
+            )
+            .await
+            .unwrap();
+        // A field `dst` has a value for and no claim on: the state every book
+        // that predates the migration is in.
+        sqlx::query("UPDATE books SET publisher = 'unattributed history' WHERE id = ?")
+            .bind(dst)
+            .execute(s.pool())
+            .await
+            .unwrap();
+
+        s.merge_books(src, dst).await.unwrap();
+
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("the one to keep"));
+        assert_eq!(got.page_count, Some(490), "the gap is filled");
+        assert_eq!(got.publisher.as_deref(), Some("unattributed history"));
+
+        assert_eq!(
+            s.field_source(dst, "description").await.unwrap().as_deref(),
+            Some("calibre"),
+            "dst kept its value, so it keeps its claim"
+        );
+        assert_eq!(
+            s.field_source(dst, "page_count").await.unwrap().as_deref(),
+            Some("goodreads"),
+            "src's value arrived, so src's claim arrived with it"
+        );
+        assert_eq!(
+            s.field_source(dst, "publisher").await.unwrap(),
+            None,
+            "an unattributed value must not inherit the claim of a discarded one"
+        );
     }
 
     /// Both books were being read. That is two open readings on one book the
@@ -1105,19 +1440,25 @@ mod tests {
         for (dst_cover, expect_orphan) in [(None, None), (Some("dst.jpg"), Some("src.jpg"))] {
             let s = Storage::connect("sqlite::memory:").await.unwrap();
             let src = s
-                .upsert_book(&Book {
-                    title: Some("a".into()),
-                    cover_path: Some("src.jpg".into()),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some("a".into()),
+                        cover_path: Some("src.jpg".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap();
             let dst = s
-                .upsert_book(&Book {
-                    title: Some("b".into()),
-                    cover_path: dst_cover.map(str::to_string),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some("b".into()),
+                        cover_path: dst_cover.map(str::to_string),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap();
 
@@ -1159,12 +1500,220 @@ mod tests {
         );
     }
 
+    // ---- provenance --------------------------------------------------------
+
+    use super::tests_support::{PROBES, columns, probes_cover_the_merge_table, says_everything};
+
+    async fn sources(s: &Storage, id: i64) -> Vec<(String, String)> {
+        s.field_provenance(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.field, f.source))
+            .collect()
+    }
+
+    /// **The three consumers of `MERGE_RULES` cannot disagree.**
+    ///
+    /// `the_two_statements_cannot_disagree` (above, as
+    /// `enrich_merges_a_partial_record_exactly_as_the_upsert_does`) pins the two
+    /// SQL renderings against each other. This pins the *third* consumer — the
+    /// provenance stamp — against the SQL, column by column, and it is the
+    /// assertion that stops the failure this arrangement exists to prevent: a
+    /// field the merge writes and the stamp forgets, or the reverse.
+    ///
+    /// For each column: a record that speaks only to that column must move
+    /// exactly that column, and claim exactly that field. A wrong `says`
+    /// predicate shows up as a missing or extra claim; a wrong bind order shows
+    /// up as the *neighbouring* column moving.
+    #[tokio::test]
+    async fn a_record_claims_exactly_the_fields_it_supplies() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&says_everything(1), Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+            let before = columns(&s, id).await;
+
+            let mut partial = Book::default();
+            set(&mut partial, 2);
+            s.enrich_book(id, &partial, Some(Source::OpenLibrary))
+                .await
+                .unwrap();
+
+            let after = columns(&s, id).await;
+            for ((name, was), (_, now)) in before.iter().zip(after.iter()) {
+                if name == col {
+                    assert_ne!(
+                        was, now,
+                        "{col}: the record said something and nothing moved"
+                    );
+                } else {
+                    assert_eq!(was, now, "a {col} record moved {name}");
+                }
+            }
+            for (name, _) in PROBES {
+                let want = if name == col {
+                    "openlibrary"
+                } else {
+                    "googlebooks"
+                };
+                assert_eq!(
+                    s.field_source(id, name).await.unwrap().as_deref(),
+                    Some(want),
+                    "a {col} record claimed {name}"
+                );
+            }
+        }
+    }
+
+    /// **A field the user owns is not overwritten by a provider merge**, for
+    /// every column and every source. Without this, item 30's first run silently
+    /// replaces every hand correction in the library — which is the reason this
+    /// item goes before it.
+    ///
+    /// Both guards are asserted together on purpose: the value must survive
+    /// *and* the claim must, because either one alone is a half-protected field
+    /// that the next writer finishes off.
+    #[tokio::test]
+    async fn a_user_owned_field_survives_every_provider_merge() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s
+                .upsert_book(&says_everything(1), Some(Source::GoogleBooks))
+                .await
+                .unwrap();
+
+            let mut mine = Book::default();
+            set(&mut mine, 2);
+            s.enrich_book(id, &mine, Some(Source::User)).await.unwrap();
+            let corrected = columns(&s, id).await;
+
+            for source in Source::ALL.into_iter().filter(|s| *s != Source::User) {
+                let mut theirs = Book::default();
+                set(&mut theirs, 3);
+                s.enrich_book(id, &theirs, Some(source)).await.unwrap();
+                // And an unattributed writer, which is the one that would
+                // otherwise slip past a rule that keyed on the incoming source.
+                s.enrich_book(id, &theirs, None).await.unwrap();
+            }
+
+            assert_eq!(columns(&s, id).await, corrected, "{col} was overwritten");
+            assert_eq!(
+                s.field_source(id, col).await.unwrap().as_deref(),
+                Some("user"),
+                "{col} lost the user's claim"
+            );
+        }
+    }
+
+    /// The guard is in the clause, so it is in **both** statements the clause
+    /// generates. The sweep above goes through `enrich_book`; this is the upsert
+    /// half, through the `ON CONFLICT DO UPDATE` branch.
+    #[tokio::test]
+    async fn the_upsert_honours_the_user_guard_too() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.description = Some("what the provider said".into());
+        let id = s.upsert_book(&b, Some(Source::GoogleBooks)).await.unwrap();
+
+        s.enrich_book(
+            id,
+            &Book {
+                description: Some("what I actually think".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        // Same ISBN, so this is the conflict branch of the upsert.
+        let mut refreshed = sample();
+        refreshed.description = Some("the provider, again".into());
+        refreshed.publisher = Some("Grand Central".into());
+        assert_eq!(
+            s.upsert_book(&refreshed, Some(Source::OpenLibrary))
+                .await
+                .unwrap(),
+            id
+        );
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.description.as_deref(), Some("what I actually think"));
+        assert_eq!(
+            got.publisher.as_deref(),
+            Some("Grand Central"),
+            "one held field must not hold the rest of the record"
+        );
+        assert_eq!(
+            s.field_source(id, "description").await.unwrap().as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            s.field_source(id, "publisher").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
+    /// `fill_book` is the mirror: the stored row wins, so the incoming record
+    /// may only claim what it actually filled. A source that claimed a field
+    /// whose value it lost would attribute somebody else's value to itself,
+    /// which is the failure mode this whole table exists to prevent.
+    #[tokio::test]
+    async fn a_fallback_record_claims_only_the_gaps_it_filled() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    description: Some("from the provider".into()),
+                    ..Default::default()
+                },
+                Some(Source::GoogleBooks),
+            )
+            .await
+            .unwrap();
+
+        s.fill_book(
+            id,
+            &Book {
+                title: Some("PACHINKO (epub metadata)".into()),
+                description: Some("from the file".into()),
+                language: Some("en".into()),
+                ..Default::default()
+            },
+            Some(Source::Epub),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.title.as_deref(), Some("Pachinko"), "stored wins");
+        assert_eq!(got.description.as_deref(), Some("from the provider"));
+        assert_eq!(got.language.as_deref(), Some("en"), "the gap is filled");
+
+        let mut got = sources(&s, id).await;
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("description".to_string(), "googlebooks".to_string()),
+                ("language".to_string(), "epub".to_string()),
+                ("title".to_string(), "googlebooks".to_string()),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn delete_returns_cover_path() {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let mut b = sample();
         b.cover_path = Some("database/images/x.jpg".into());
-        let id = s.upsert_book(&b).await.unwrap();
+        let id = s.upsert_book(&b, None).await.unwrap();
         let cover = s.delete_book(id).await.unwrap();
         assert_eq!(cover.as_deref(), Some("database/images/x.jpg"));
         assert!(s.get_book(id).await.unwrap().is_none());
@@ -1236,6 +1785,97 @@ mod tests_support {
         pub dst: i64,
     }
 
+    /// One writer per [`MERGE_RULES`] column, so a test can say "a record that
+    /// speaks to *this* field" sixteen times without naming the field sixteen
+    /// times.
+    ///
+    /// It is a second list, and it is the only one: the first assertion of every
+    /// test that uses it is that its column names are `MERGE_RULES`'s, in order.
+    /// A seventeenth rule therefore fails these tests loudly rather than
+    /// silently going uncovered — which is the whole reason the probes are here
+    /// rather than inlined into one test that happens to name four fields.
+    ///
+    /// `n` distinguishes one record from another. Nothing validates these
+    /// values — `upsert_book` does not check ISBNs, `normalize_isbn` guards the
+    /// door much earlier — so they only have to differ.
+    #[allow(clippy::type_complexity)]
+    pub const PROBES: [(&str, fn(&mut Book, u32)); 16] = [
+        ("title", |b, n| b.title = Some(format!("title-{n}"))),
+        ("sort_title", |b, n| {
+            b.sort_title = Some(format!("sort-{n}"))
+        }),
+        ("authors", |b, n| b.authors = vec![format!("author-{n}")]),
+        ("translators", |b, n| {
+            b.translators = vec![format!("translator-{n}")]
+        }),
+        ("publisher", |b, n| b.publisher = Some(format!("pub-{n}"))),
+        ("publish_year", |b, n| {
+            b.publish_year = Some(1900 + i64::from(n))
+        }),
+        ("language", |b, n| b.language = Some(format!("l{n}"))),
+        ("isbn_10", |b, n| b.isbn_10 = Some(format!("isbn10-{n}"))),
+        ("isbn_13", |b, n| b.isbn_13 = Some(format!("isbn13-{n}"))),
+        ("openlibrary_key", |b, n| {
+            b.openlibrary_key = Some(format!("/works/OL{n}W"))
+        }),
+        ("googlebooks_id", |b, n| {
+            b.googlebooks_id = Some(format!("gb-{n}"))
+        }),
+        ("cover_url", |b, n| {
+            b.cover_url = Some(format!("https://example.invalid/{n}.jpg"))
+        }),
+        ("cover_path", |b, n| {
+            b.cover_path = Some(format!("database/images/{n}.jpg"))
+        }),
+        ("page_count", |b, n| b.page_count = Some(100 + i64::from(n))),
+        ("description", |b, n| {
+            b.description = Some(format!("description-{n}"))
+        }),
+        ("first_sentence", |b, n| {
+            b.first_sentence = Some(format!("first-{n}"))
+        }),
+    ];
+
+    /// A record that speaks to every column, all of it distinguishable by `n`.
+    pub fn says_everything(n: u32) -> Book {
+        let mut b = Book::default();
+        for (_, set) in PROBES {
+            set(&mut b, n);
+        }
+        b
+    }
+
+    /// Every `MERGE_RULES` column of one row, as text, keyed by column name.
+    ///
+    /// `CAST(… AS TEXT)` so the two integer columns come back comparably;
+    /// the point is only whether a value moved, never what type it is.
+    pub async fn columns(storage: &Storage, id: i64) -> Vec<(String, Option<String>)> {
+        let mut out = Vec::new();
+        for (col, _) in PROBES {
+            let v: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT CAST({col} AS TEXT) FROM books WHERE id = ?"
+            ))
+            .bind(id)
+            .fetch_one(storage.pool())
+            .await
+            .unwrap();
+            out.push((col.to_string(), v));
+        }
+        out
+    }
+
+    /// The probes cover the merge table exactly. Called first by every test that
+    /// sweeps them, so "item 32 added a column" is a failure with a name.
+    pub fn probes_cover_the_merge_table() {
+        let probed: Vec<&str> = PROBES.iter().map(|(c, _)| *c).collect();
+        let ruled: Vec<&str> = super::MERGE_RULES.iter().map(|r| r.col).collect();
+        assert_eq!(
+            probed, ruled,
+            "PROBES must name every MERGE_RULES column, in order: a column with \
+             no probe is a column no provenance test covers"
+        );
+    }
+
     /// Highlights are keyed on their text, so a text appearing in both lists is
     /// an identity collision and one appearing once is a plain move. Flashcard
     /// words work the same way against `UNIQUE(book_id, word)`.
@@ -1250,8 +1890,8 @@ mod tests_support {
             title: Some(title.to_string()),
             ..Default::default()
         };
-        let src = storage.upsert_book(&mk("src")).await.unwrap();
-        let dst = storage.upsert_book(&mk("dst")).await.unwrap();
+        let src = storage.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = storage.upsert_book(&mk("dst"), None).await.unwrap();
 
         for (book_id, texts) in [(src, src_texts), (dst, dst_texts)] {
             for t in texts {

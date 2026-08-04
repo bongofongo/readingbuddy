@@ -124,10 +124,13 @@ mod tests {
     use crate::book::Book;
 
     async fn seed(s: &Storage, title: &str) -> i64 {
-        s.upsert_book(&Book {
-            title: Some(title.into()),
-            ..Default::default()
-        })
+        s.upsert_book(
+            &Book {
+                title: Some(title.into()),
+                ..Default::default()
+            },
+            None,
+        )
         .await
         .unwrap()
     }

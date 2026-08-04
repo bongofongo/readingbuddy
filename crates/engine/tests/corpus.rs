@@ -174,11 +174,14 @@ async fn the_whole_corpus_imports_idempotently() {
                 continue;
             };
             storage
-                .upsert_book(&Book {
-                    title: Some(title),
-                    authors: sc.authors.clone().into_iter().collect(),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some(title),
+                        authors: sc.authors.clone().into_iter().collect(),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .expect("seed");
         }

@@ -68,17 +68,20 @@ async fn seed_books(storage: &Storage, books: &Value) {
             })
             .unwrap_or_default();
         storage
-            .upsert_book(&Book {
-                title: b["title"].as_str().map(str::to_owned),
-                authors,
-                // Optional, and the reason the schema was extended: without an
-                // ISBN on the seeded book, the sibling-epub match path can
-                // never fire and stays untested.
-                isbn_10: b["isbn_10"].as_str().map(str::to_owned),
-                isbn_13: b["isbn_13"].as_str().map(str::to_owned),
-                language: b["language"].as_str().map(str::to_owned),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: b["title"].as_str().map(str::to_owned),
+                    authors,
+                    // Optional, and the reason the schema was extended: without an
+                    // ISBN on the seeded book, the sibling-epub match path can
+                    // never fire and stays untested.
+                    isbn_10: b["isbn_10"].as_str().map(str::to_owned),
+                    isbn_13: b["isbn_13"].as_str().map(str::to_owned),
+                    language: b["language"].as_str().map(str::to_owned),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("seed book");
     }
@@ -699,10 +702,13 @@ async fn real_exports_are_idempotent() {
             && let Some(title) = sc.title
         {
             storage
-                .upsert_book(&Book {
-                    title: Some(title),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some(title),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .expect("seed real book");
         }
