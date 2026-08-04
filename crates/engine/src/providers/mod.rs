@@ -21,6 +21,22 @@ impl std::fmt::Display for ProviderId {
     }
 }
 
+impl From<ProviderId> for crate::storage::Source {
+    /// A provider, as `field_provenance` names it.
+    ///
+    /// An exhaustive `match` and not a string built from [`Display`], though the
+    /// two spell the same words today: `Source`'s vocabulary is wider than this
+    /// enum (calibre, epub, koreader, goodreads, the user) and going through
+    /// text would let a fourth provider land as a source nothing in
+    /// `field_provenance` recognises, silently. Here it is a compile error.
+    fn from(id: ProviderId) -> Self {
+        match id {
+            ProviderId::OpenLibrary => crate::storage::Source::OpenLibrary,
+            ProviderId::GoogleBooks => crate::storage::Source::GoogleBooks,
+        }
+    }
+}
+
 /// Fielded search request; any combination of fields may be set.
 #[derive(Debug, Clone, Default)]
 pub struct SearchRequest {
