@@ -9,6 +9,7 @@ pub mod config;
 pub mod crash;
 pub mod device;
 pub mod diagnostic;
+pub mod enrich;
 pub mod epub;
 pub mod error;
 pub mod files;
@@ -44,6 +45,9 @@ pub use device::{
     mount_roots, offers_reader,
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
+pub use enrich::{
+    EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, FieldChange, HeldField,
+};
 pub use error::{EngineError, Result};
 pub use files::{
     FileIdentity, FileImportReport, FileMatch, FileOutcome, ImportOptions as FileImportOptions,
@@ -63,9 +67,9 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FlashcardRow,
-    Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit, OutgoingLink,
-    Rating, RatingScale, Reading, ReadingEvent, RefillReport, Storage,
+    ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FieldSource,
+    FlashcardRow, Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit,
+    OutgoingLink, Rating, RatingScale, Reading, ReadingEvent, RefillReport, Source, Storage,
 };
 pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 
@@ -374,18 +378,145 @@ impl Engine {
         let Some(url) = book.cover_url.clone() else {
             return Ok(None);
         };
-        let path = images::image_from_url(&self.client, &url, &self.config.images_dir).await?;
+        let path = self.download_cover_file(&url).await?;
         book.cover_path = Some(path.display().to_string());
-        if book.id.is_some() || book.isbn_10.is_some() || book.isbn_13.is_some() {
-            // Unattributed for the same reason `save_book` is, and with an extra
-            // one: this writes the *whole* book back, not the one field it
-            // changed, so any source named here would be claimed for fifteen
-            // fields it had nothing to do with. `cover_url` — the only thing
-            // this path really knows the origin of — was set by whoever built
-            // the record, which is where it will be stamped.
-            self.storage.upsert_book(book, None).await?;
+        // Unattributed for the same reason `save_book` is, and with an extra
+        // one: this writes the *whole* book back, not the one field it changed,
+        // so any source named here would be claimed for fifteen fields it had
+        // nothing to do with. `cover_url` — the only thing this path really
+        // knows the origin of — was set by whoever built the record, which is
+        // where it will be stamped.
+        match book.id {
+            // **Not `upsert_book`.** Its third branch — no `isbn_10`, no
+            // `isbn_13` — is a plain unconditional insert that ignores
+            // `Book::id`, so a stored book with an id and no ISBN got a
+            // *duplicate row* here instead of a cover. That is every book this
+            // path matters most for: a sidecar-seeded one. Found by running
+            // item 30's enrichment against exactly that case, and reachable
+            // before it through `Engine::fetch_cover`.
+            Some(id) => {
+                self.storage.enrich_book(id, book, None).await?;
+            }
+            None if book.isbn_10.is_some() || book.isbn_13.is_some() => {
+                self.storage.upsert_book(book, None).await?;
+            }
+            // An unsaved candidate with no ISBN: the caller is holding it and
+            // the path has been written onto it, which is all it asked for.
+            None => {}
         }
         Ok(Some(path))
+    }
+
+    /// Fetch the bytes at a cover URL. The half of [`Engine::download_cover`]
+    /// that is not about *which* row to write, so enrichment can attribute the
+    /// file it fetched to the provider that supplied the URL rather than writing
+    /// the whole record back unattributed.
+    async fn download_cover_file(&self, url: &str) -> Result<PathBuf> {
+        images::image_from_url(&self.client, url, &self.config.images_dir).await
+    }
+
+    // ---- looking a book up again (item 30) ---------------------------------
+
+    /// Ask the providers about a book we already have, and merge what they say.
+    ///
+    /// The gap this closes: `Storage::enrich_book` has existed since item 13 and
+    /// only calibre ever called it, so every book created without an ISBN — from
+    /// a sidecar, or from a filename stem — had no cover, no description and no
+    /// page count, permanently.
+    ///
+    /// An **explicit action on one book**. Not the device pull path, which
+    /// `docs/decisions.md:231` puts out of scope and which stays fully offline;
+    /// nothing automatic, nothing periodic, and no count of books that have not
+    /// had it done to them. There is deliberately no bulk form: the per-book cost
+    /// is a provider fan-out, and a loop over the shelf is a rate-limit policy
+    /// nobody has decided yet.
+    ///
+    /// Everything else — the one matcher, the refusal band, the per-field
+    /// attribution, the user guard — is argued in [`enrich`].
+    pub async fn enrich_book_from_providers(&self, book_id: i64) -> Result<EnrichReport> {
+        let providers = self.providers();
+        let mut report = enrich::enrich_metadata(&self.storage, &providers, book_id).await?;
+
+        // The cover last, and only where there is no file. The merge above may
+        // have just supplied the URL — which is the ordinary case, since a book
+        // with no cover usually had no `cover_url` either — and a book that
+        // already has an image does not re-fetch one.
+        let book = self
+            .storage
+            .get_book(book_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))?;
+        if book.cover_path.is_none()
+            && let Some(url) = book.cover_url.as_deref()
+        {
+            match self.download_cover_file(url).await {
+                Ok(path) => {
+                    // One field, one claim: whoever supplied the URL is the
+                    // origin of the file fetched from it. `None` when the URL
+                    // predates this run, which is the honest answer — we did not
+                    // learn it here and cannot say who did.
+                    let source = report.source_of("cover_url");
+                    self.storage
+                        .enrich_book(
+                            book_id,
+                            &Book {
+                                cover_path: Some(path.display().to_string()),
+                                ..Default::default()
+                            },
+                            source,
+                        )
+                        .await?;
+                    report.cover = Some(path);
+                }
+                // A cover that will not download degrades; it does not fail the
+                // call. The metadata landed and is worth keeping, and the next
+                // run tries again for free.
+                Err(e) => report.warnings.push(Diagnostic::cover_unavailable(&e)),
+            }
+        }
+        Ok(report)
+    }
+
+    /// Write fields the **user** supplied, and record that they did.
+    ///
+    /// This is the door item 29 built the `user` rank for and could not open:
+    /// `field_provenance`'s whole reason to exist is that a hand correction must
+    /// survive the next provider merge, and until this method there was no way
+    /// for a field to *become* the user's outside a test — a protection nothing
+    /// could trigger. Item 30 is what made it urgent rather than tidy, in both
+    /// directions: enrichment is the first writer that would silently overwrite
+    /// a correction, and correcting a title or supplying an ISBN is the
+    /// **next move** its refusal offers. A refusal whose remedy did not exist
+    /// would be the dead end `docs/decisions.md` bans.
+    ///
+    /// The merge is the ordinary partial-record one — a field the record is
+    /// silent about is left alone — so this **sets, and cannot clear**. Clearing
+    /// a field needs a statement that can write NULL and therefore a way to say
+    /// "I mean it", which no caller has asked for; saying so is better than
+    /// implying it works.
+    pub async fn set_book_fields(&self, book_id: i64, fields: &Book) -> Result<Book> {
+        if self.storage.get_book(book_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!("book id {book_id}")));
+        }
+        self.storage
+            .enrich_book(book_id, fields, Some(Source::User))
+            .await?;
+        self.storage
+            .get_book(book_id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(format!("book id {book_id}")))
+    }
+
+    /// Where each field of a book came from, and when (item 29).
+    ///
+    /// On the facade because item 30 gives it its first real content and its
+    /// first real reader: a frontend showing "page count: 512 (openlibrary)"
+    /// needs this, and reaching through `Engine::storage` for it is the seam
+    /// item 14 closed. **An absent field means nobody has claimed it** — every
+    /// book predating migration `0012` reports an empty list however
+    /// well-populated it is.
+    pub async fn field_provenance(&self, book_id: i64) -> Result<Vec<FieldSource>> {
+        self.storage.field_provenance(book_id).await
     }
 
     /// [`Engine::download_cover`] for a book that is already stored.
