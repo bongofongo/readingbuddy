@@ -29,5 +29,5 @@
 The reasoning behind every migration lives beside the module that uses it:
 `0001`–`0002` and `0007`–`0008` in [`../CLAUDE.md`](../CLAUDE.md) under
 "notes.rs"; `0003`/`0006` under "device.rs"; `0004` under "koreader.rs"; `0005`
-in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md); `0009` under
-"goodreads.rs"; `0010` under "files.rs".
+and `0011` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md); `0009`
+under "goodreads.rs"; `0010` under "files.rs".
