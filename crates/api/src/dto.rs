@@ -178,6 +178,17 @@ impl From<BookDto> for Book {
             finished: d.finished,
             date_started: d.date_started,
             date_finished: d.date_finished,
+            // `subjects`, `series` and `series_index` (migration `0013`) have
+            // **no DTO field yet**, deliberately: item 32 is engine-only, and a
+            // wire field added before a client needs it is a public promise
+            // made on spec. The gap is safe in exactly this direction because
+            // the merge reads them as "this record does not say" — an empty set
+            // and a NULL index clobber nothing — so a client that round-trips a
+            // book through `save_book` cannot erase them. Adding them is an API
+            // item, which is the rule `crates/api/CLAUDE.md` states.
+            subjects: Vec::new(),
+            series: None,
+            series_index: None,
             created_at: None,
             last_modified: None,
         }
@@ -1656,7 +1667,11 @@ mod tests {
 
     /// `Book -> BookDto -> Book` must not quietly drop a field, which is the
     /// one bug a hand-written `From` invites. Timestamps are the deliberate
-    /// exception and are asserted as such.
+    /// exception and are asserted as such — as are `subjects`/`series`/
+    /// `series_index` (migration `0013`), which have no DTO field yet because
+    /// item 32 was engine-only. Asserted rather than omitted: a field this
+    /// struct cannot carry is an **API gap with a name**, which is what
+    /// `crates/api/CLAUDE.md` asks a frontend need to become.
     #[test]
     fn the_trip_through_the_dto_keeps_every_field_but_the_stamps() {
         let book = Book {
@@ -1681,6 +1696,9 @@ mod tests {
             finished: true,
             date_started: Some(1),
             date_finished: Some(2),
+            subjects: vec!["Fiction / Literary".into()],
+            series: Some("Dune".into()),
+            series_index: Some(2.0),
             created_at: Some(time::OffsetDateTime::from_unix_timestamp(1000).unwrap()),
             last_modified: Some(time::OffsetDateTime::from_unix_timestamp(2000).unwrap()),
         };
@@ -1713,6 +1731,12 @@ mod tests {
         // Storage stamps these; a client must not be able to backdate a row.
         assert_eq!(back.created_at, None);
         assert_eq!(back.last_modified, None);
+        // No wire field yet. Harmless in this direction — the merge reads an
+        // empty set and a NULL index as "this record does not say", so a client
+        // round-tripping a book cannot erase either.
+        assert!(back.subjects.is_empty());
+        assert_eq!(back.series, None);
+        assert_eq!(back.series_index, None);
     }
 
     /// The whole argument for mirroring `DiagnosticKind` in full rather than

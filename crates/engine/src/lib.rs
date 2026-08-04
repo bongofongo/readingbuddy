@@ -48,6 +48,7 @@ pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use enrich::{
     EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, FieldChange, HeldField,
 };
+pub use epub::{TableOfContents, TocEntry};
 pub use error::{EngineError, Result};
 pub use files::{
     FileIdentity, FileImportReport, FileMatch, FileOutcome, ImportOptions as FileImportOptions,
@@ -752,6 +753,42 @@ impl Engine {
     /// The files this book owns.
     pub async fn book_files(&self, book_id: i64) -> Result<Vec<BookFile>> {
         self.storage.book_files(book_id).await
+    }
+
+    /// The chapter list of the epub this book owns — **read from the file, not
+    /// from the database** (item 32).
+    ///
+    /// `None` means there is no file here this can read: no owned epub at all,
+    /// or only formats it cannot parse. `Some(entries)` with an empty list
+    /// means the epub itself carries no navigable TOC, which is a different
+    /// answer and an ordinary one. Neither is an error; a file we own that will
+    /// not parse *is*, because those bytes are ours and were verified on the
+    /// way in.
+    ///
+    /// Why nothing is stored is argued at [`epub::table_of_contents`]. The
+    /// short of it: the file is content-addressed, so it is always the current
+    /// answer, and a chapter list has no origin to attribute or user to correct
+    /// it — which is what every other column migration `0013` added does have.
+    ///
+    /// The **first** epub, when a book owns several. Two epubs on one book is
+    /// legitimate (a re-download, a second edition) and choosing between them is
+    /// a question no caller has asked yet; `book_files` order is stable, so the
+    /// answer at least does not flicker.
+    pub async fn table_of_contents(&self, book_id: i64) -> Result<Option<TableOfContents>> {
+        let Some(file) = self
+            .storage
+            .book_files(book_id)
+            .await?
+            .into_iter()
+            .find(|f| f.format == "epub")
+        else {
+            return Ok(None);
+        };
+        let entries = epub::table_of_contents(&self.file_path(&file))?;
+        Ok(Some(TableOfContents {
+            sha256: file.sha256,
+            entries,
+        }))
     }
 
     /// One owned file by its content address. `sha256` is the primary key, so

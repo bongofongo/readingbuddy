@@ -65,6 +65,7 @@ pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, 
      books.translators, books.publisher, books.publish_year, books.language, books.isbn_10, \
      books.isbn_13, books.openlibrary_key, books.googlebooks_id, books.cover_url, \
      books.cover_path, books.page_count, books.description, books.first_sentence, \
+     books.subjects, books.series, books.series_index, \
      cur.current_page AS current_page, \
      CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
      cur.started_at AS date_started, cur.finished_at AS date_finished, \
@@ -86,6 +87,7 @@ pub(super) const BOOK_FROM: &str = "FROM books LEFT JOIN readings cur ON cur.id 
 pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
     let authors: String = row.try_get("authors")?;
     let translators: String = row.try_get("translators")?;
+    let subjects: String = row.try_get("subjects")?;
     let created: i64 = row.try_get("created_at")?;
     let modified: i64 = row.try_get("last_modified")?;
     Ok(Book {
@@ -106,6 +108,9 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
         page_count: row.try_get("page_count")?,
         description: row.try_get("description")?,
         first_sentence: row.try_get("first_sentence")?,
+        subjects: serde_json::from_str(&subjects).unwrap_or_default(),
+        series: row.try_get("series")?,
+        series_index: row.try_get("series_index")?,
         current_page: row.try_get("current_page")?,
         finished: row.try_get::<i64, _>("finished")? != 0,
         date_started: row.try_get("date_started")?,
@@ -159,6 +164,28 @@ struct Rule {
     /// question, and a column where they disagree is a field that is claimed
     /// and unprintable or printable and unclaimed.
     show: fn(&Book) -> Option<String>,
+    /// The column this one is only meaningful *beside*, if any — and therefore
+    /// the column whose user-ownership also protects this one.
+    ///
+    /// **Per-field provenance cannot protect a field pair**, which item 30 hit
+    /// for real: a user-owned `isbn_13` was held while the unowned `isbn_10`
+    /// landed from a *different edition*, leaving one row carrying two ISBNs of
+    /// two books. `series`/`series_index` has exactly that shape — owning
+    /// "Dune" without owning "#2" is not a coherent state, and a provider that
+    /// knows a different series would write its index under the user's name.
+    ///
+    /// The fix is a guard, not a new kind of claim: **owning either half holds
+    /// both**. That is strictly weaker than what the ISBN case was said to need
+    /// (a claim on an *edition*, i.e. a claim with no value) and it is enough
+    /// for both instances, because in both the incoherence is only ever
+    /// introduced by a write to the unowned half. It costs the user nothing
+    /// they can't undo: `Engine::set_book_fields` writes both halves and the
+    /// user outranks the guard.
+    ///
+    /// Symmetric by construction — `pairs_are_symmetric` asserts that a
+    /// column's pair names it back, since a one-way pairing protects one
+    /// direction of exactly the write it exists to stop.
+    pair: Option<&'static str>,
 }
 
 /// **The provider no-clobber merge, defined once.**
@@ -178,104 +205,172 @@ struct Rule {
 /// straight assignment is correct. A provider record — and a `calibredb list`
 /// row, which carries no page count at all — is partial, and missing means
 /// "don't know". `docs/decisions.md`: do not copy one pattern to the other.
-const MERGE_RULES: [Rule; 16] = [
+const MERGE_RULES: [Rule; 19] = [
     Rule {
         col: "title",
         merge: Merge::NonEmptyText,
         says: |b| b.title.as_deref().is_some_and(|t| !t.is_empty()),
         show: |b| b.title.clone().filter(|t| !t.is_empty()),
+        pair: None,
     },
     Rule {
         col: "sort_title",
         merge: Merge::Coalesce,
         says: |b| b.sort_title.is_some(),
         show: |b| b.sort_title.clone(),
+        pair: None,
     },
     Rule {
         col: "authors",
         merge: Merge::NonEmptyList,
         says: |b| !b.authors.is_empty(),
         show: |b| (!b.authors.is_empty()).then(|| b.authors.join(", ")),
+        pair: None,
     },
     Rule {
         col: "translators",
         merge: Merge::NonEmptyList,
         says: |b| !b.translators.is_empty(),
         show: |b| (!b.translators.is_empty()).then(|| b.translators.join(", ")),
+        pair: None,
     },
     Rule {
         col: "publisher",
         merge: Merge::Coalesce,
         says: |b| b.publisher.is_some(),
         show: |b| b.publisher.clone(),
+        pair: None,
     },
     Rule {
         col: "publish_year",
         merge: Merge::Coalesce,
         says: |b| b.publish_year.is_some(),
         show: |b| b.publish_year.map(|y| y.to_string()),
+        pair: None,
     },
     Rule {
         col: "language",
         merge: Merge::Coalesce,
         says: |b| b.language.is_some(),
         show: |b| b.language.clone(),
+        pair: None,
     },
     Rule {
         col: "isbn_10",
         merge: Merge::Coalesce,
         says: |b| b.isbn_10.is_some(),
         show: |b| b.isbn_10.clone(),
+        // Two ISBNs of two editions is the row item 30 recorded and could not
+        // patch. It is the same shape as `series`, so it takes the same guard.
+        pair: Some("isbn_13"),
     },
     Rule {
         col: "isbn_13",
         merge: Merge::Coalesce,
         says: |b| b.isbn_13.is_some(),
         show: |b| b.isbn_13.clone(),
+        pair: Some("isbn_10"),
     },
     Rule {
         col: "openlibrary_key",
         merge: Merge::Coalesce,
         says: |b| b.openlibrary_key.is_some(),
         show: |b| b.openlibrary_key.clone(),
+        pair: None,
     },
     Rule {
         col: "googlebooks_id",
         merge: Merge::Coalesce,
         says: |b| b.googlebooks_id.is_some(),
         show: |b| b.googlebooks_id.clone(),
+        pair: None,
     },
     Rule {
         col: "cover_url",
         merge: Merge::Coalesce,
         says: |b| b.cover_url.is_some(),
         show: |b| b.cover_url.clone(),
+        pair: None,
     },
     Rule {
         col: "cover_path",
         merge: Merge::Coalesce,
         says: |b| b.cover_path.is_some(),
         show: |b| b.cover_path.clone(),
+        pair: None,
     },
     Rule {
         col: "page_count",
         merge: Merge::Coalesce,
         says: |b| b.page_count.is_some(),
         show: |b| b.page_count.map(|n| n.to_string()),
+        pair: None,
     },
     Rule {
         col: "description",
         merge: Merge::Coalesce,
         says: |b| b.description.is_some(),
         show: |b| b.description.clone(),
+        pair: None,
     },
     Rule {
         col: "first_sentence",
         merge: Merge::Coalesce,
         says: |b| b.first_sentence.is_some(),
         show: |b| b.first_sentence.clone(),
+        pair: None,
+    },
+    // ---- migration 0013 ----------------------------------------------------
+    Rule {
+        // A **set**, and `MERGE_RULES` had no vocabulary for one — so it got the
+        // vocabulary `authors` already had rather than a new one. `NonEmptyList`
+        // means a provider with subjects replaces the stored set whole, and a
+        // provider without them says nothing: `[]` is "this record does not
+        // say", never "this book has no subjects".
+        //
+        // **Not a union**, and that is the decision this column forced. A union
+        // reads as generous and is dishonest twice over: Google's categories are
+        // BISAC paths and OpenLibrary's are free-text headings, so the result is
+        // a two-dialect pile no source vouches for; and `field_provenance` holds
+        // exactly one `source` per field, so a unioned value would have to name
+        // one of two origins. The set that survives is the set one provider
+        // actually published.
+        col: "subjects",
+        merge: Merge::NonEmptyList,
+        says: |b| !b.subjects.is_empty(),
+        show: |b| (!b.subjects.is_empty()).then(|| b.subjects.join(", ")),
+        pair: None,
+    },
+    Rule {
+        col: "series",
+        merge: Merge::Coalesce,
+        says: |b| b.series.is_some(),
+        show: |b| b.series.clone(),
+        pair: Some("series_index"),
+    },
+    Rule {
+        // Fractional, because novellas are 0.5. `show` prints it the way a
+        // series index is written rather than as a float: `Dune #2`, not `2`.
+        col: "series_index",
+        merge: Merge::Coalesce,
+        says: |b| b.series_index.is_some(),
+        show: |b| b.series_index.map(|n| format!("#{}", trim_index(n))),
+        pair: Some("series"),
     },
 ];
+
+/// A series index as a person writes it: `2`, not `2`; `0.5`, not `0.5000`.
+///
+/// The column is REAL because half-numbered novellas are real, so the whole
+/// numbers — which is nearly all of them — arrive as `2.0` and would print that
+/// way in every report and every future shelf line.
+fn trim_index(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
+}
 
 /// Every column the merge table governs, in its own order.
 ///
@@ -296,6 +391,20 @@ pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
         .iter()
         .find(|r| r.col == col)
         .and_then(|r| (r.show)(book))
+}
+
+/// The column whose user-ownership also protects `col` — see [`Rule::pair`].
+///
+/// `pub(crate)` for `enrich.rs`, whose *report* has to ask the same question the
+/// merge clause asks: a field held back because the user owns its partner is a
+/// field silently not updated, which is the state `EnrichReport::held` exists to
+/// remove. Asked of the table rather than re-derived, for the reason every other
+/// consumer is.
+pub(crate) fn field_pair(col: &str) -> Option<&'static str> {
+    MERGE_RULES
+        .iter()
+        .find(|r| r.col == col)
+        .and_then(|r| r.pair)
 }
 
 /// Which side of a merge wins where both have something to say.
@@ -340,7 +449,19 @@ fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> Stri
                 Merge::Coalesce => format!("COALESCE({a}, {b})"),
             };
             if guard_user {
-                let owned = field_provenance::user_owns("books.id", col);
+                // A paired column is guarded by *either* half's claim — see
+                // `Rule::pair`. Without it, owning one half of a pair invites
+                // the other half to be filled from a record about something
+                // else, which is a row that contradicts itself and that nothing
+                // downstream can tell from a correct one.
+                let owned = match rule.pair {
+                    Some(other) => format!(
+                        "({} OR {})",
+                        field_provenance::user_owns("books.id", col),
+                        field_provenance::user_owns("books.id", other)
+                    ),
+                    None => field_provenance::user_owns("books.id", col),
+                };
                 format!("{col} = CASE WHEN {owned} THEN {stored} ELSE {value} END")
             } else {
                 format!("{col} = {value}")
@@ -371,6 +492,42 @@ pub(crate) fn fields_said(book: &Book) -> Vec<&'static str> {
         .collect()
 }
 
+/// The fields a guarded write is allowed to *claim*, which is not always the
+/// set it supplied.
+///
+/// [`field_provenance::stamp`]'s own `WHERE` refuses to overwrite a `user` claim
+/// on the same field, and that covers every unpaired column: value held, claim
+/// held, one predicate. A **paired** column is held by the *other* half's claim
+/// and has no row of its own, so the stamp would sail past a value the merge
+/// clause had just refused to write — a field claiming a provider that did not
+/// supply it, which is the exact half-protected state the guard exists to
+/// prevent. Same rule as `merge_set`'s, read off the same `Rule::pair`.
+async fn claimable(
+    conn: &mut sqlx::SqliteConnection,
+    book_id: i64,
+    fields: &[&'static str],
+    guard_user: bool,
+) -> Result<Vec<&'static str>> {
+    if !guard_user {
+        return Ok(fields.to_vec());
+    }
+    let mut out = Vec::with_capacity(fields.len());
+    for field in fields {
+        let held = match MERGE_RULES
+            .iter()
+            .find(|r| r.col == *field)
+            .and_then(|r| r.pair)
+        {
+            Some(other) => field_provenance::user_owns_now(conn, book_id, other).await?,
+            None => false,
+        };
+        if !held {
+            out.push(*field);
+        }
+    }
+    Ok(out)
+}
+
 /// The columns `stored` is silent about and `incoming` is not — the only ones a
 /// `Winner::Stored` merge actually takes from the incoming record, and therefore
 /// the only ones whose attribution may travel with it.
@@ -382,7 +539,7 @@ fn gap_fields(stored: &Book, incoming: &Book) -> Vec<&'static str> {
         .collect()
 }
 
-/// Bind the sixteen [`MERGE_RULES`] columns, in order, to a query.
+/// Bind the [`MERGE_RULES`] columns, in order, to a query.
 ///
 /// Shared for the same reason the clause is: the SQL and the binds are one
 /// thing, and a column added to the list without a bind beside it is a runtime
@@ -406,7 +563,10 @@ fn bind_merge_columns<'q>(
         .bind(book.cover_path.clone())
         .bind(book.page_count)
         .bind(book.description.clone())
-        .bind(book.first_sentence.clone()))
+        .bind(book.first_sentence.clone())
+        .bind(serde_json::to_string(&book.subjects)?)
+        .bind(book.series.clone())
+        .bind(book.series_index))
 }
 
 impl Storage {
@@ -444,8 +604,9 @@ impl Storage {
         let insert = r#"INSERT INTO books (
                 title, sort_title, authors, translators, publisher, publish_year, language,
                 isbn_10, isbn_13, openlibrary_key, googlebooks_id, cover_url, cover_path,
-                page_count, description, first_sentence, created_at, last_modified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
+                page_count, description, first_sentence, subjects, series, series_index,
+                created_at, last_modified
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
 
         let sql = if book.isbn_10.is_some() {
             format!("{insert} ON CONFLICT(isbn_10) DO UPDATE SET {set_clause} RETURNING id")
@@ -468,7 +629,9 @@ impl Storage {
             .await?;
         let id: i64 = row.try_get("id")?;
         if let Some(source) = source {
-            field_provenance::stamp(&mut tx, id, &fields_said(book), source).await?;
+            let fields =
+                claimable(&mut tx, id, &fields_said(book), guards_user(Some(source))).await?;
+            field_provenance::stamp(&mut tx, id, &fields, source).await?;
         }
         tx.commit().await?;
         Ok(id)
@@ -542,9 +705,9 @@ impl Storage {
         claims: &[(&'static str, Source)],
     ) -> Result<()> {
         let guard_user = claims.iter().all(|(_, s)| guards_user(Some(*s)));
-        // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
+        // ?1..?19 are the merge columns, ?20 is last_modified, ?21 the id.
         let sql = format!(
-            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            "UPDATE books SET {}, last_modified = ?20 WHERE id = ?21",
             merge_set(Winner::Incoming, guard_user, |i, _| format!("?{}", i + 1))
         );
         let mut tx = self.pool().begin().await?;
@@ -561,6 +724,7 @@ impl Storage {
                 .filter(|(field, s)| *s == source && said.contains(field))
                 .map(|(field, _)| *field)
                 .collect();
+            let fields = claimable(&mut tx, book_id, &fields, guard_user).await?;
             if !fields.is_empty() {
                 field_provenance::stamp(&mut tx, book_id, &fields, source).await?;
             }
@@ -585,9 +749,9 @@ impl Storage {
     /// ones the stored row already answered — a source is only the origin of a
     /// value that survived.
     pub async fn fill_book(&self, book_id: i64, book: &Book, source: Option<Source>) -> Result<()> {
-        // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
+        // ?1..?19 are the merge columns, ?20 is last_modified, ?21 the id.
         let sql = format!(
-            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            "UPDATE books SET {}, last_modified = ?20 WHERE id = ?21",
             merge_set(Winner::Stored, guards_user(source), |i, _| format!(
                 "?{}",
                 i + 1
@@ -610,6 +774,7 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
         if let Some(source) = source {
+            let gaps = claimable(&mut tx, book_id, &gaps, guards_user(Some(source))).await?;
             field_provenance::stamp(&mut tx, book_id, &gaps, source).await?;
         }
         tx.commit().await?;
@@ -909,7 +1074,7 @@ impl Storage {
         // books are ours, and `dst` winning already means a corrected field can
         // only ever be filled when there was nothing to correct.
         let fill = format!(
-            "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
+            "UPDATE books SET {}, last_modified = ?20 WHERE id = ?21",
             merge_set(Winner::Stored, false, |i, _| format!("?{}", i + 1))
         );
         bind_merge_columns(sqlx::query(&fill), &src_book)?
@@ -1856,6 +2021,160 @@ mod tests {
         }
     }
 
+    /// A pair that only guards one way guards nothing: the write it exists to
+    /// stop is the one to the *other* half.
+    #[test]
+    fn pairs_are_symmetric() {
+        for rule in MERGE_RULES.iter() {
+            let Some(other) = rule.pair else { continue };
+            let back = MERGE_RULES
+                .iter()
+                .find(|r| r.col == other)
+                .unwrap_or_else(|| panic!("{}: pair names no column", rule.col));
+            assert_eq!(
+                back.pair,
+                Some(rule.col),
+                "{} pairs with {other}, which does not pair back",
+                rule.col
+            );
+        }
+    }
+
+    /// **Owning half a pair holds the whole pair.**
+    ///
+    /// This is the second instance of the bug item 30 recorded and left: a
+    /// user-owned `isbn_13` with an unowned `isbn_10` landing from a different
+    /// edition, so one row carries two ISBNs of two books. `series` +
+    /// `series_index` has exactly that shape and is worse to read — "Dune #2"
+    /// is a claim about which book this is.
+    ///
+    /// Both instances are asserted here, because they are one rule.
+    #[tokio::test]
+    async fn owning_half_a_pair_holds_the_other_half() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+
+        // The user names the series and never says which number it is.
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+        // …and the ISBN of the edition they actually hold.
+        s.enrich_book(
+            id,
+            &Book {
+                isbn_13: Some("9780441013593".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        // A provider that knows a *different* series, and a different edition.
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune Chronicles".into()),
+                series_index: Some(2.0),
+                isbn_10: Some("0441013597".into()),
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.series.as_deref(), Some("Dune"));
+        assert_eq!(
+            got.series_index, None,
+            "an index from a series the user did not name is not this book's"
+        );
+        assert_eq!(got.isbn_13.as_deref(), Some("9780441013593"));
+        assert_eq!(
+            got.isbn_10, None,
+            "the other edition's isbn_10 landed beside the user's isbn_13"
+        );
+        // And the held halves stay unattributed rather than being claimed by a
+        // provider whose value was never written.
+        assert_eq!(s.field_source(id, "series_index").await.unwrap(), None);
+        assert_eq!(s.field_source(id, "isbn_10").await.unwrap(), None);
+    }
+
+    /// The pair guard is *only* about the user. Two providers merging into an
+    /// unowned pair is the ordinary case and must still fill it.
+    #[tokio::test]
+    async fn an_unowned_pair_still_fills() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune".into()),
+                series_index: Some(0.5),
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.series.as_deref(), Some("Dune"));
+        // Half-numbered novellas are why the column is REAL.
+        assert_eq!(got.series_index, Some(0.5));
+    }
+
+    /// A subject set is a value like `authors`: it round-trips as JSON, an empty
+    /// one means "this record does not say", and a provider with one replaces
+    /// the stored set rather than growing it.
+    #[tokio::test]
+    async fn subjects_are_replaced_whole_and_an_empty_set_says_nothing() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut b = sample();
+        b.subjects = vec!["Fiction / Literary".into(), "Historical".into()];
+        let id = s.upsert_book(&b, Some(Source::GoogleBooks)).await.unwrap();
+        assert_eq!(
+            s.get_book(id).await.unwrap().unwrap().subjects,
+            vec!["Fiction / Literary", "Historical"]
+        );
+
+        // A record with nothing to say leaves them alone…
+        s.enrich_book(id, &Book::default(), Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+        assert_eq!(
+            s.get_book(id).await.unwrap().unwrap().subjects.len(),
+            2,
+            "an empty set must read as silence, not as 'no subjects'"
+        );
+
+        // …and one with a set replaces it, rather than unioning two
+        // vocabularies into a list neither provider published.
+        s.enrich_book(
+            id,
+            &Book {
+                subjects: vec!["Korean Americans".into()],
+                ..Default::default()
+            },
+            Some(Source::OpenLibrary),
+        )
+        .await
+        .unwrap();
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.subjects, vec!["Korean Americans"]);
+        assert_eq!(
+            s.field_source(id, "subjects").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
     /// The guard is in the clause, so it is in **both** statements the clause
     /// generates. The sweep above goes through `enrich_book`; this is the upsert
     /// half, through the `ON CONFLICT DO UPDATE` branch.
@@ -2032,8 +2351,8 @@ mod tests_support {
     }
 
     /// One writer per [`MERGE_RULES`] column, so a test can say "a record that
-    /// speaks to *this* field" sixteen times without naming the field sixteen
-    /// times.
+    /// speaks to *this* field" once per column without naming the column
+    /// twice.
     ///
     /// It is a second list, and it is the only one: the first assertion of every
     /// test that uses it is that its column names are `MERGE_RULES`'s, in order.
@@ -2045,7 +2364,7 @@ mod tests_support {
     /// values — `upsert_book` does not check ISBNs, `normalize_isbn` guards the
     /// door much earlier — so they only have to differ.
     #[allow(clippy::type_complexity)]
-    pub const PROBES: [(&str, fn(&mut Book, u32)); 16] = [
+    pub const PROBES: [(&str, fn(&mut Book, u32)); 19] = [
         ("title", |b, n| b.title = Some(format!("title-{n}"))),
         ("sort_title", |b, n| {
             b.sort_title = Some(format!("sort-{n}"))
@@ -2079,6 +2398,13 @@ mod tests_support {
         }),
         ("first_sentence", |b, n| {
             b.first_sentence = Some(format!("first-{n}"))
+        }),
+        ("subjects", |b, n| b.subjects = vec![format!("subject-{n}")]),
+        ("series", |b, n| b.series = Some(format!("series-{n}"))),
+        // Fractional, so the probe also pins that the REAL column round-trips a
+        // half-numbered novella rather than truncating it to book two.
+        ("series_index", |b, n| {
+            b.series_index = Some(f64::from(n) + 0.5)
         }),
     ];
 

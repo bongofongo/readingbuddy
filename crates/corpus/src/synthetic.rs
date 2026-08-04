@@ -224,6 +224,19 @@ return {{
         n += 2;
     }
 
+    // 11b. An epub with a **real table of contents** (item 32), and no sidecar
+    //      beside it: the TOC path is read off a file the library owns, not off
+    //      anything KOReader wrote.
+    //
+    //      Built here rather than committed as a blob, like its neighbour, so
+    //      the ncx that the parse is judged against is readable in the diff.
+    //      It is a separate epub rather than an extension of `Gen-Isbn-Match`
+    //      because that file's bytes are what the sibling-epub ISBN path and
+    //      its goldens were built on, and a fixture that changes shape to serve
+    //      a second test is a fixture two tests then disagree about.
+    write_toc_epub(&synthetic.join(format!("{GEN}Toc-Chapters.epub")))?;
+    n += 1;
+
     // 12. The device's own reading state: `summary` and `percent_finished`.
     //     Everything here is reported but deliberately NOT persisted — status,
     //     rating and progress belong to `readings` (build item 4), and parking
@@ -463,6 +476,126 @@ fn lua(synthetic: &Path, name: &str, body: &str) -> std::io::Result<usize> {
     };
     std::fs::write(dir.join("metadata.epub.lua"), contents)?;
     Ok(1)
+}
+
+/// An epub whose `toc.ncx` is the point: three top-level chapters, one of them
+/// with two nested sections, and one entry pointing at a **fragment** inside a
+/// document the spine already carries.
+///
+/// Three details are deliberate, and each of them is a way the parse can be
+/// wrong while still returning something:
+///
+/// * **`playOrder` is on every `navPoint`.** The reader silently drops any that
+///   lacks one, and it sorts by that number rather than by document order — so
+///   `ch3` is declared *before* `ch2` here, and the flattened list must still
+///   come back in reading order.
+/// * **A nested `navPoint` is inside its parent**, not a sibling with a deeper
+///   `class`, so depth is structural.
+/// * **The fragment entry** (`ch2.xhtml#part-two`) must keep its fragment in the
+///   target and still resolve to `ch2`'s spine position: the spine is keyed on
+///   resources and no resource is ever named with a `#`.
+///
+/// The manifest carries the ncx and the spine names it with `toc="ncx"`, which
+/// is the attribute the reader keys the whole thing on — without it there is no
+/// table of contents however well-formed the file is.
+fn write_toc_epub(path: &Path) -> std::io::Result<()> {
+    use zip::write::SimpleFileOptions;
+
+    let file = std::fs::File::create(path)?;
+    let mut zip = zip::ZipWriter::new(file);
+
+    zip.start_file(
+        "mimetype",
+        SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )?;
+    zip.write_all(b"application/epub+zip")?;
+
+    let opts = SimpleFileOptions::default();
+
+    zip.start_file("META-INF/container.xml", opts)?;
+    zip.write_all(
+        br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"#,
+    )?;
+
+    zip.start_file("OEBPS/content.opf", opts)?;
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">urn:isbn:9780306406157</dc:identifier>
+    <dc:title>A Book With Chapters</dc:title>
+    <dc:creator>A Generated Author</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch3" href="ch3.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+    <itemref idref="ch3"/>
+  </spine>
+</package>
+"#,
+    )?;
+
+    // `ch3` is declared before `ch2` on purpose: reading order is `playOrder`,
+    // never the order the navPoints happen to appear in.
+    zip.start_file("OEBPS/toc.ncx", opts)?;
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <docTitle><text>A Book With Chapters</text></docTitle>
+  <navMap>
+    <navPoint id="np1" playOrder="1">
+      <navLabel><text>One: The Beginning</text></navLabel>
+      <content src="ch1.xhtml"/>
+    </navPoint>
+    <navPoint id="np4" playOrder="4">
+      <navLabel><text>Three: The End</text></navLabel>
+      <content src="ch3.xhtml"/>
+    </navPoint>
+    <navPoint id="np2" playOrder="2">
+      <navLabel><text>Two: The Middle</text></navLabel>
+      <content src="ch2.xhtml"/>
+      <navPoint id="np3" playOrder="3">
+        <navLabel><text>Two, part two</text></navLabel>
+        <content src="ch2.xhtml#part-two"/>
+      </navPoint>
+    </navPoint>
+  </navMap>
+</ncx>
+"#,
+    )?;
+
+    for (id, title) in [
+        ("ch1", "One: The Beginning"),
+        ("ch2", "Two: The Middle"),
+        ("ch3", "Three: The End"),
+    ] {
+        zip.start_file(format!("OEBPS/{id}.xhtml"), opts)?;
+        zip.write_all(
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title></head>
+<body><h1>{title}</h1><p id="part-two">A paragraph, so the document is not empty.</p></body></html>
+"#
+            )
+            .as_bytes(),
+        )?;
+    }
+
+    zip.finish()?;
+    Ok(())
 }
 
 /// A genuinely valid, ~2 KB epub carrying an ISBN in its OPF.

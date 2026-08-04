@@ -583,3 +583,90 @@ async fn attaching_to_a_book_that_does_not_exist_is_an_error() {
     );
     assert!(stored_files(&files_dir(&tmp)).is_empty());
 }
+
+// ---- the table of contents (item 32) ---------------------------------------
+
+/// The committed epub whose whole point is its `toc.ncx`.
+fn toc_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/koreader/synthetic/Gen-Toc-Chapters.epub")
+}
+
+/// **The chapter list is derived from the owned file, never stored**, and this
+/// is the assertion that says so: attach a *better* file to the same book and
+/// the answer changes, with no migration, no cache and nothing to invalidate.
+///
+/// A stored copy would still be reporting the first file's chapters here, and
+/// nothing in the row would look wrong.
+#[tokio::test]
+async fn a_chapter_list_follows_the_file_the_book_owns() {
+    let (tmp, engine) = engine().await;
+
+    let plain = tmp.path().join("A Book With No ISBN.epub");
+    write_isbnless_epub(&plain, "A Book With No ISBN");
+    let report = engine
+        .import_file(&plain, FileImportOptions::default())
+        .await
+        .unwrap();
+    let book_id = report.book_id.unwrap();
+
+    // An epub with no ncx: the file answers "no navigable table of contents",
+    // which is an empty list and not an absent one.
+    let first = engine.table_of_contents(book_id).await.unwrap().unwrap();
+    assert!(first.entries.is_empty());
+    assert_eq!(first.sha256, report.sha256);
+
+    // The book is given up and re-imported from a file that *does* have one —
+    // the ordinary "I found a better copy" move.
+    engine.remove_file(&report.sha256).await.unwrap();
+    assert!(
+        engine.table_of_contents(book_id).await.unwrap().is_none(),
+        "a book owning no file this can read has no chapter list to give"
+    );
+    let better = engine
+        .add_file_to_book(book_id, &toc_fixture())
+        .await
+        .unwrap();
+
+    let toc = engine.table_of_contents(book_id).await.unwrap().unwrap();
+    assert_eq!(
+        toc.sha256, better.sha256,
+        "the answer names the file it read"
+    );
+    assert_eq!(
+        toc.entries
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "One: The Beginning",
+            "Two: The Middle",
+            "Two, part two",
+            "Three: The End",
+        ]
+    );
+    assert_eq!(toc.entries[2].depth, 1);
+}
+
+/// A book with no files at all — every sidecar-seeded book, which is most of a
+/// real shelf — has no chapter list, and that is `None` rather than an error or
+/// an empty one. The two answers are different and a frontend shows different
+/// things for them.
+#[tokio::test]
+async fn a_book_with_no_epub_has_no_chapter_list() {
+    let (_tmp, engine) = engine().await;
+    let book = engine
+        .save_book(&Book {
+            title: Some("Nothing Owned".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .table_of_contents(book.id.unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
