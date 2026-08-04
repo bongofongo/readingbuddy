@@ -72,6 +72,10 @@ enum Cmd {
     },
     /// Show one book (selector: id, ISBN, or title fragment)
     Show { book: String },
+    /// Ask the providers about a book you already have (item 30)
+    Enrich { book: String },
+    /// Correct a book's metadata, and record that you are the one who said so
+    Set(commands::enrich::SetArgs),
     /// Remove a book and its cover image
     Rm {
         book: String,
@@ -393,6 +397,8 @@ async fn main() -> Result<()> {
         Cmd::Epub { path } => commands::book::import_epub(&engine, &path).await?,
         Cmd::List { limit, sort } => commands::book::list(&engine, limit, &sort).await?,
         Cmd::Show { book } => commands::book::show(&engine, &book).await?,
+        Cmd::Enrich { book } => commands::enrich::enrich(&engine, &book).await?,
+        Cmd::Set(args) => commands::enrich::set(&engine, &args).await?,
         Cmd::Rm { book, yes } => commands::book::remove(&engine, &book, yes).await?,
         Cmd::Progress {
             book,
