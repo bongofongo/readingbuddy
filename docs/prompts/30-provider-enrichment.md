@@ -39,6 +39,26 @@ page count, permanently. On a real library that is most of the shelf.
   field whose provenance is `user`.** Hold it back and say so in the report — a
   field silently not updated is indistinguishable from a field the provider had
   nothing for.
+
+**Item 29 has landed and changed the ground under this item.** Read
+`crates/engine/src/storage/field_provenance.rs`'s header before you start. Three
+things bind you:
+
+- `upsert_book` / `enrich_book` / `fill_book` now take an `Option<Source>` as a
+  **required parameter**, so a writer has to answer for itself. The user guard is
+  rendered into the generated clause from one predicate — do not re-spell it.
+- **`save_book` deliberately stamps `None`**, because `search::merge_provider_books`
+  keeps the winning value per field and discards which provider supplied it.
+  Item 29's report names *this item* as where the provider half becomes
+  answerable: you merge provider by provider and therefore know. Decide whether
+  enrich should go through the federated merge at all, or should attribute each
+  provider's contribution as it applies it — the second is the whole reason the
+  ordering put 29 first, and it is worth the extra call.
+- The **disagreement-history** table (`(book_id, field, source, value, fetched_at)`)
+  is the growth path item 29 declined to build, on the grounds that it only starts
+  paying once something re-asks a provider it has already asked. **You are that
+  something.** Say in your report whether re-asking made the case for it; do not
+  build it unless you can show it earns its place here.
 - Then `download_cover` where the book has none.
 
 `EnrichReport` names every field **filled**, every field **held back** and why,
