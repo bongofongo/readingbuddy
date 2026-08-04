@@ -14,7 +14,14 @@ else
   RUN_FILTER = cargo test --test
 endif
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf
+# Detect the frontend the same way nextest is detected, and for the same reason:
+# every web target must degrade to a stated skip rather than an error, so `make
+# check` keeps working in a tree where the GUI has not landed yet (spec item 25)
+# and on a machine with no node installed.
+GUI_PKG := $(wildcard gui/package.json)
+GUI_DEPS := $(wildcard gui/node_modules)
+
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf web-check web-fix shots e2e
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -117,7 +124,54 @@ fmt: ## Format all crates
 fmt-check: ## Verify formatting without writing
 	cargo fmt --all --check
 
-check: fmt-check lint build-check test ## Local gate: fmt + lint + workspace build + test
+
+# ---------------------------------------------------------------------------
+# Frontend. `pnpm`, never npm or yarn — a second lockfile is a silent
+# divergence. Each target states its skip rather than failing, because an absent
+# GUI is a fact about this tree and not a broken build.
+# ---------------------------------------------------------------------------
+
+web-check: ## Frontend gate: svelte-check + tsc + eslint + vitest + build
+ifeq ($(GUI_PKG),)
+	@echo "SKIPPED: no gui/package.json — the GUI scaffold is spec item 25."
+else ifeq ($(GUI_DEPS),)
+	@echo "SKIPPED: gui/node_modules absent — run 'pnpm install' in gui/ first."
+else
+	cd gui && pnpm exec svelte-check --threshold error
+	cd gui && pnpm exec tsc --noEmit
+	cd gui && pnpm exec eslint .
+	cd gui && pnpm vitest run
+	cd gui && pnpm build
+endif
+
+web-fix: ## Format + autofix the frontend (writes files, like `fmt`)
+ifeq ($(GUI_DEPS),)
+	@echo "SKIPPED: no gui/node_modules."
+else
+	cd gui && pnpm exec prettier --write .
+	cd gui && pnpm exec eslint . --fix
+endif
+
+shots: ## Render every route to gui/tests/shots/ for the screenshot-reviewer agent
+ifeq ($(GUI_DEPS),)
+	@echo "SKIPPED: no gui/node_modules."
+else
+	cd gui && pnpm exec playwright test --project=webkit --update-snapshots
+	@echo "shots in gui/tests/shots/ — read the PNGs, do not trust a green run."
+endif
+
+# NOT part of `check` or `ci`, deliberately. It builds the app binary and drives
+# a real webview, which is minutes, and `tauri-driver` does not run on macOS at
+# all (no WKWebView driver exists). This is the seam check — does it boot, does
+# one real invoke reach SQLite — never a feature suite. See docs/gui/testing.md.
+e2e: ## E2E smoke against the built app (slow; Linux, or the wdio plugin on macOS)
+ifeq ($(GUI_DEPS),)
+	@echo "SKIPPED: no gui/node_modules."
+else
+	cd gui && pnpm exec wdio run wdio.conf.ts
+endif
+
+check: fmt-check lint build-check test web-check ## Local gate: fmt + lint + build + test + frontend
 
 # What .github/workflows/ci.yml runs, in the same order — which now makes `ci`
 # and `check` the same three steps, since the gate widened to the whole
@@ -128,6 +182,12 @@ check: fmt-check lint build-check test ## Local gate: fmt + lint + workspace bui
 #
 # CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
 # explained in the workflow and is not worth reproducing locally.
+#
+# `check` and `ci` have now DIVERGED on purpose: `check` runs `web-check` and
+# `ci` does not, because .github/workflows/ci.yml has no frontend job yet. When
+# the GUI lands (spec item 25) the workflow grows that step and this comment
+# comes out. Until then, adding web-check here would make `make ci` stop
+# reproducing the gate, which is the one thing it is for.
 ci: fmt-check lint build-check test ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only — CI's macOS leg, and the fast inner loop
