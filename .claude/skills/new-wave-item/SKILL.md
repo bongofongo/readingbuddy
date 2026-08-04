@@ -29,9 +29,14 @@ is not a git conflict — the filenames differ past the number.
 `migration_versions_are_contiguous_from_one` catches it, but only after both are
 merged, which is the expensive moment to find out.
 
-The current wave has these pre-allocated: **`0011`** → item 20 (cover
-dimensions + accent), **`0012`** → item 21 (`reading_events`), **`0013`** →
-item 23 (moments). Nothing else in the wave takes one.
+Currently pre-allocated, in merge order: **`0011`** → item 21
+(`reading_events`), **`0012`** → item 29 (`field_provenance`), **`0013`** →
+item 32 (subjects/series), **`0014`** → item 20 (cover dimensions + accent),
+**`0015`** → item 23 (moments). Nothing else in either wave takes one.
+
+The contiguity test fails on a **gap** as well as on a duplicate, so a branch
+holding `0012` before `0011` has merged is red until its predecessor lands.
+That is expected — rebase, never renumber.
 
 **Never edit an applied migration.** CI's `migrations` job refuses a modified,
 deleted or renamed one outright.

@@ -31,9 +31,14 @@ developable independently. That is a constraint on the engine, not on either
 frontend. Anything both need lives below both. Item 17 is that item, and it is
 first for that reason.
 
-**Migration numbers are pre-allocated** and merge in numeric order: `0011` to
-item 20, `0012` to item 21, `0013` to item 23. Nothing else in this wave takes
-one. Per `CLAUDE.md`, an applied migration is never edited, and
+**Migration numbers are pre-allocated** and merge in numeric order. They were
+**reshuffled on 2026-08-04** when items 29–32 (`docs/spec-engine-29-32.md`) took
+the front of the queue and item 21 moved into that wave: `0011` to item 21,
+`0012`/`0013` to items 29/32, then **`0014` to item 20 and `0015` to item 23**.
+Nothing else in this wave takes one. The reshuffle is free because nothing had
+been built against the old numbers, and it is necessary because
+`migration_versions_are_contiguous_from_one` fails on a *gap* as well as on a
+duplicate. Per `CLAUDE.md`, an applied migration is never edited, and
 `migration_versions_are_contiguous_from_one` is what catches two threads both
 claiming a number.
 
@@ -224,7 +229,7 @@ rewired.
 
 ---
 
-## Item 20 — covers a grid can actually use — migration `0011`
+## Item 20 — covers a grid can actually use — migration `0014`
 
 Four things, one migration.
 
@@ -257,11 +262,18 @@ extraction **already exists and is wired**: `epub::extract_cover`
 (`crates/engine/src/epub.rs:41`), called from `Engine` at
 `crates/engine/src/lib.rs:484`.
 
-**Migration:** `0011`. **Parallel with:** everything except 19, which wants it.
+**Migration:** `0014`. **Parallel with:** everything except 19, which wants it.
 
 ---
 
-## Item 21 — `reading_events`, the source-agnostic activity log — migration `0012`
+## Item 21 — `reading_events`, the source-agnostic activity log — migration `0011`
+
+> **Moved.** Built as part of items 29–32 (`docs/spec-engine-29-32.md`), because
+> item 31 needs somewhere to put reading time and the settled answer is that no
+> source is consumed in its own shape. The design below is unchanged and is
+> still the authority. Its `statistics.sqlite3` filler is **item 31**, not item
+> 15 — that deferral was about the plugin, and reading a file off an
+> already-mounted volume is what `scan_device` does today.
 
 The problem this exists to solve, stated plainly: **reading-time data is
 KOReader-only**, and a surface built directly on it opens to blanks for a reader
@@ -312,7 +324,7 @@ device data returns absent minutes, not zero. This is the same discipline as
 rather than rounding, and as Goodreads import refusing to invent a start date.
 Zero is a claim.
 
-**Migration:** `0012`. **Depends on:** nothing. **Blocks:** 23, 28.
+**Migration:** `0011`. **Depends on:** nothing. **Blocks:** 23, 28, and 31.
 
 ---
 
@@ -370,7 +382,7 @@ assumption.
 
 ---
 
-## Item 23 — moments — migration `0013`
+## Item 23 — moments — migration `0015`
 
 A moment fires once. That requires knowing it fired, which is state the app
 keeps about itself rather than a number shown to anyone.
@@ -389,7 +401,7 @@ answer is that a moment fires only for events that occur **after** the book is
 in the library — an import is history arriving, not a thing you just did. The
 cards, though, are minted for all 400, because the shelf is the history.
 
-**Migration:** `0013`. **Depends on:** 21.
+**Migration:** `0015`. **Depends on:** 21.
 
 ---
 
@@ -501,20 +513,21 @@ rather than showing a zero.
 ```
 17 (derived facts)  ─┐
 18 (list endpoints) ─┤
-20 (covers, 0011)   ─┼─ all parallel, no shared files
-21 (events, 0012)   ─┤
+20 (covers, 0014)   ─┼─ all parallel, no shared files
+21 (events, 0011)   ─┤  — moved to items 29–32; see spec-engine-29-32.md
 22 (local source)   ─┤
 24 (vault watch)    ─┘
         ↓
 19 (edition shape)     — wants 20b's stored aspect
-23 (moments, 0013)     — wants 21
+23 (moments, 0015)     — wants 21
         ↓
 25 (scaffold)
         ↓
 26 (shelf) ── 27 (book + notes) ── 28 (chain + reading life)
 ```
 
-Migrations merge in numeric order: `0011` (20), `0012` (21), `0013` (23).
+Migrations merge in numeric order: `0011` (21), `0012` (29), `0013` (32),
+`0014` (20), `0015` (23).
 
 **What is deliberately not in this wave**, so it is not quietly added: KOReader
 `statistics.sqlite3` (item 15, with the plugin); goals of any kind (decided
