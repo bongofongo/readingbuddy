@@ -21,7 +21,7 @@ endif
 GUI_PKG := $(wildcard gui/package.json)
 GUI_DEPS := $(wildcard gui/node_modules)
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf web-check web-fix shots e2e
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf web-check web-fix shots e2e
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -207,6 +207,9 @@ synthetic: ## Regenerate the committed tier-1 hostile fixtures, then the goldens
 
 goodreads: ## Regenerate the committed Goodreads export fixture
 	cargo run -p corpus -- gen-goodreads --seed $(CORPUS_SEED)
+
+kostats: ## Regenerate the committed KOReader statistics fixture (SQL + expected totals)
+	cargo run -p corpus -- gen-kostats --seed $(CORPUS_SEED)
 
 dist: ## Build this machine's release archive into dist/, exactly as CI would
 	@set -eu; \

@@ -517,3 +517,193 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use crate::book::Book;
+    use crate::storage::{DayRange, LinkedBy, day_of_unix};
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+
+    /// 2026-01-05 00:00:00 UTC.
+    const BASE: i64 = 1_767_571_200;
+    const DAY: i64 = 86_400;
+
+    /// The two tables this module reads, and nothing else.
+    ///
+    /// A third transcription of the plugin's DDL, and deliberately the *minimal*
+    /// one: this harness exists to vary the data, not to re-assert the schema.
+    /// The committed fixture is where the full verbatim DDL is exercised, and
+    /// it is the generator's copy that is authoritative.
+    const DDL: &str = "
+        PRAGMA user_version=20221111;
+        CREATE TABLE book (id integer PRIMARY KEY autoincrement, title text,
+            authors text, notes integer, last_open integer, highlights integer,
+            pages integer, series text, language text, md5 text,
+            total_read_time integer, total_read_pages integer);
+        CREATE TABLE page_stat_data (id_book integer, page integer NOT NULL DEFAULT 0,
+            start_time integer NOT NULL DEFAULT 0, duration integer NOT NULL DEFAULT 0,
+            total_pages integer NOT NULL DEFAULT 0,
+            UNIQUE (id_book, page, start_time), FOREIGN KEY(id_book) REFERENCES book(id));";
+
+    /// One recorded page turn: which book, which day, how long.
+    #[derive(Debug, Clone)]
+    struct Session {
+        book: usize,
+        day: u8,
+        seconds: u16,
+    }
+
+    fn session() -> impl Strategy<Value = Session> {
+        // `seconds` reaches below 30 on purpose: a sub-minute session is the
+        // input that separates "measured zero" from "absent", and a strategy
+        // that only produced comfortable durations would never generate the
+        // case this property exists for.
+        (0usize..3, 0u8..20, 0u16..2400).prop_map(|(book, day, seconds)| Session {
+            book,
+            day,
+            seconds,
+        })
+    }
+
+    fn md5_of(book: usize) -> String {
+        format!("{book:032x}")
+    }
+
+    /// Write a statistics database holding exactly these sessions.
+    async fn device(dir: &Path, sessions: &[Session]) -> PathBuf {
+        let path = dir.join(STATS_DB_NAME);
+        let opts = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let mut conn = SqliteConnection::connect_with(&opts).await.unwrap();
+        sqlx::raw_sql(DDL).execute(&mut conn).await.unwrap();
+        for book in 0..3 {
+            sqlx::query("INSERT INTO book (id, title, md5) VALUES (?, ?, ?)")
+                .bind(book as i64 + 1)
+                .bind(format!("book {book}"))
+                .bind(md5_of(book))
+                .execute(&mut conn)
+                .await
+                .unwrap();
+        }
+        for (n, s) in sessions.iter().enumerate() {
+            // `page` is the row index so the UNIQUE constraint never fires;
+            // this property is about durations, not about page counting.
+            sqlx::query(
+                "INSERT INTO page_stat_data (id_book, page, start_time, duration, total_pages)
+                 VALUES (?, ?, ?, ?, 300)",
+            )
+            .bind(s.book as i64 + 1)
+            .bind(n as i64)
+            .bind(BASE + i64::from(s.day) * DAY + 3_600 + n as i64)
+            .bind(i64::from(s.seconds))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        }
+        conn.close().await.unwrap();
+        path
+    }
+
+    async fn library(storage: &Storage) {
+        for book in 0..3 {
+            let id = storage
+                .upsert_book(&Book {
+                    title: Some(format!("book {book}")),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            storage
+                .link_device_book(&md5_of(book), id, LinkedBy::Auto)
+                .await
+                .unwrap();
+        }
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    proptest! {
+        /// **Absent is not zero, and a measured zero is not absent.**
+        ///
+        /// A property rather than examples because the failure is one
+        /// `unwrap_or(0)` away and reads as perfectly correct in every example
+        /// where the device happens to have recorded a comfortable number of
+        /// minutes. The two directions are asserted together on purpose: it is
+        /// easy to satisfy either alone, and the interesting inputs are the
+        /// ones where a whole period consists of sessions too short to round up
+        /// to a minute — there the honest answer is `Some(0)`, and both
+        /// `None` and a fabricated positive number are wrong.
+        ///
+        /// The expected value is recomputed from the generated sessions rather
+        /// than from the database, so it shares nothing with the aggregate
+        /// under test but the rounding rule itself.
+        #[test]
+        fn minutes_are_absent_exactly_when_the_device_measured_nothing(
+            sessions in proptest::collection::vec(session(), 0..12),
+            (a, b) in (0u8..20, 0u8..20),
+        ) {
+            let (from, to) = (a.min(b), a.max(b));
+            rt().block_on(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let storage = Storage::connect("sqlite::memory:").await.unwrap();
+                library(&storage).await;
+                let db = device(tmp.path(), &sessions).await;
+
+                import_statistics(&storage, &db).await.unwrap();
+
+                let range = DayRange::new(
+                    &day_of_unix(BASE + i64::from(from) * DAY).unwrap(),
+                    &day_of_unix(BASE + i64::from(to) * DAY).unwrap(),
+                ).unwrap();
+
+                // What the device said, grouped the way an event is: per
+                // (book, day), rounded once, then summed.
+                let mut per_day: BTreeMap<(usize, u8), i64> = BTreeMap::new();
+                for s in &sessions {
+                    if s.day >= from && s.day <= to {
+                        *per_day.entry((s.book, s.day)).or_default() += i64::from(s.seconds);
+                    }
+                }
+                let want: Option<i64> = if per_day.is_empty() {
+                    None
+                } else {
+                    Some(per_day.values().map(|&sec| minutes_of(sec)).sum())
+                };
+
+                let sum = storage.activity_summary(&range).await.unwrap();
+                prop_assert_eq!(sum.minutes, want);
+
+                // The claim spelled out, so a regression names itself.
+                if per_day.is_empty() {
+                    prop_assert_eq!(
+                        sum.minutes, None,
+                        "a period the device never measured must not report zero"
+                    );
+                } else {
+                    prop_assert!(
+                        sum.minutes.is_some(),
+                        "a period the device did measure must report a number, \
+                         even when every session was too short to round up"
+                    );
+                }
+
+                // Days are events; a measured day exists however short it was.
+                prop_assert_eq!(sum.activity_days, {
+                    let mut days: Vec<u8> = per_day.keys().map(|&(_, d)| d).collect();
+                    days.sort_unstable();
+                    days.dedup();
+                    days.len() as i64
+                });
+                Ok(())
+            })?;
+        }
+    }
+}
