@@ -1,0 +1,33 @@
+# migrations/
+
+`sqlx::migrate!` runs every file here on connect, in numeric order.
+
+## The rules, and they are hard
+
+- **Never edit an applied migration.** A new schema change is a new numbered
+  file. CI enforces this: the `migrations` job on every PR refuses a migration
+  that was modified, deleted or renamed (`git diff --diff-filter=MDR` against
+  the merge base).
+- **Pre-allocate the number before parallel threads start.** Parallel branches
+  are how two threads both claim `0008`, and a duplicate version is *not* a git
+  conflict — the filenames differ past the number.
+  `migration_versions_are_contiguous_from_one` in `tests/migrations.rs` is what
+  catches it.
+- **A destructive migration back-fills first, then drops.** `0005` is the first
+  one in the repo and does back-fill → `DROP COLUMN` ×4 in that order;
+  `tests/migrations.rs` applies the set in two halves precisely to exercise the
+  back-fill, which a fully-migrated database can never reach again.
+- An **indexes-only** migration is judged on `EXPLAIN QUERY PLAN` before and
+  after — "the index is used" is the only claim it can make. See `0008` and
+  `the_note_link_indexes_are_the_plan_the_planner_picks`.
+- Collation is part of an index. `idx_note_links_target` is `COLLATE NOCASE`
+  because back-resolution compares that way, and SQLite silently ignores an
+  index whose collation differs.
+
+## What each one did
+
+The reasoning behind every migration lives beside the module that uses it:
+`0001`–`0002` and `0007`–`0008` in [`../CLAUDE.md`](../CLAUDE.md) under
+"notes.rs"; `0003`/`0006` under "device.rs"; `0004` under "koreader.rs"; `0005`
+in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md); `0009` under
+"goodreads.rs"; `0010` under "files.rs".
