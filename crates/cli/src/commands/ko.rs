@@ -61,10 +61,13 @@ pub async fn pull(engine: &Engine, path: &Path, new: bool) -> Result<()> {
         eprintln!("warning: {w}");
     }
     println!("{}", stats_line(&report.stats, ""));
+    // The pull is offline by design, so the book arrives bare. This line used to
+    // name `search` then `ko link` — hand-assembling, out of two commands meant
+    // for something else, exactly the thing item 30 built. It is a real command
+    // now, and it is one.
     println!(
-        "  #{} — no ISBN, cover or description yet; `readingbuddy search` then \
-         `readingbuddy ko link` to enrich it",
-        report.stats.book_id
+        "  #{} — no ISBN, cover or description yet: `readingbuddy enrich {}`",
+        report.stats.book_id, report.stats.book_id
     );
     Ok(())
 }

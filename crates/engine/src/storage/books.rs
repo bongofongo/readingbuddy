@@ -144,6 +144,21 @@ struct Rule {
     merge: Merge,
     /// Does this record say anything about this column?
     says: fn(&Book) -> bool,
+    /// What this record says about this column, as text a report can print.
+    ///
+    /// The fifth thing the table generates, and it is here for the same reason
+    /// `says` is. Item 30's `EnrichReport` has to name the value a provider
+    /// *offered* for a field it was not allowed to write — a held-back field
+    /// reported by name alone is exactly the "silently not updated" state the
+    /// report exists to remove — and a `Book`-to-text projection written beside
+    /// the table rather than in it is the second column list all of this is
+    /// arranged to make unrepresentable.
+    ///
+    /// **`Some` exactly when `says` is true**, asserted by
+    /// `show_and_says_agree_on_every_column`: they are two readings of one
+    /// question, and a column where they disagree is a field that is claimed
+    /// and unprintable or printable and unclaimed.
+    show: fn(&Book) -> Option<String>,
 }
 
 /// **The provider no-clobber merge, defined once.**
@@ -168,83 +183,120 @@ const MERGE_RULES: [Rule; 16] = [
         col: "title",
         merge: Merge::NonEmptyText,
         says: |b| b.title.as_deref().is_some_and(|t| !t.is_empty()),
+        show: |b| b.title.clone().filter(|t| !t.is_empty()),
     },
     Rule {
         col: "sort_title",
         merge: Merge::Coalesce,
         says: |b| b.sort_title.is_some(),
+        show: |b| b.sort_title.clone(),
     },
     Rule {
         col: "authors",
         merge: Merge::NonEmptyList,
         says: |b| !b.authors.is_empty(),
+        show: |b| (!b.authors.is_empty()).then(|| b.authors.join(", ")),
     },
     Rule {
         col: "translators",
         merge: Merge::NonEmptyList,
         says: |b| !b.translators.is_empty(),
+        show: |b| (!b.translators.is_empty()).then(|| b.translators.join(", ")),
     },
     Rule {
         col: "publisher",
         merge: Merge::Coalesce,
         says: |b| b.publisher.is_some(),
+        show: |b| b.publisher.clone(),
     },
     Rule {
         col: "publish_year",
         merge: Merge::Coalesce,
         says: |b| b.publish_year.is_some(),
+        show: |b| b.publish_year.map(|y| y.to_string()),
     },
     Rule {
         col: "language",
         merge: Merge::Coalesce,
         says: |b| b.language.is_some(),
+        show: |b| b.language.clone(),
     },
     Rule {
         col: "isbn_10",
         merge: Merge::Coalesce,
         says: |b| b.isbn_10.is_some(),
+        show: |b| b.isbn_10.clone(),
     },
     Rule {
         col: "isbn_13",
         merge: Merge::Coalesce,
         says: |b| b.isbn_13.is_some(),
+        show: |b| b.isbn_13.clone(),
     },
     Rule {
         col: "openlibrary_key",
         merge: Merge::Coalesce,
         says: |b| b.openlibrary_key.is_some(),
+        show: |b| b.openlibrary_key.clone(),
     },
     Rule {
         col: "googlebooks_id",
         merge: Merge::Coalesce,
         says: |b| b.googlebooks_id.is_some(),
+        show: |b| b.googlebooks_id.clone(),
     },
     Rule {
         col: "cover_url",
         merge: Merge::Coalesce,
         says: |b| b.cover_url.is_some(),
+        show: |b| b.cover_url.clone(),
     },
     Rule {
         col: "cover_path",
         merge: Merge::Coalesce,
         says: |b| b.cover_path.is_some(),
+        show: |b| b.cover_path.clone(),
     },
     Rule {
         col: "page_count",
         merge: Merge::Coalesce,
         says: |b| b.page_count.is_some(),
+        show: |b| b.page_count.map(|n| n.to_string()),
     },
     Rule {
         col: "description",
         merge: Merge::Coalesce,
         says: |b| b.description.is_some(),
+        show: |b| b.description.clone(),
     },
     Rule {
         col: "first_sentence",
         merge: Merge::Coalesce,
         says: |b| b.first_sentence.is_some(),
+        show: |b| b.first_sentence.clone(),
     },
 ];
+
+/// Every column the merge table governs, in its own order.
+///
+/// `pub(crate)` so that a caller assembling per-field attribution — item 30's
+/// enrichment, which merges provider by provider — names columns this table
+/// knows about rather than strings that merely look like column names.
+pub(crate) fn merge_columns() -> impl Iterator<Item = &'static str> {
+    MERGE_RULES.iter().map(|r| r.col)
+}
+
+/// What a record says about one column, as printable text.
+///
+/// `None` both when the column is not in [`MERGE_RULES`] and when the record is
+/// silent about it — a caller asking for a field's value has no use for the
+/// difference, and every caller here has already been through `merge_columns`.
+pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
+    MERGE_RULES
+        .iter()
+        .find(|r| r.col == col)
+        .and_then(|r| (r.show)(book))
+}
 
 /// Which side of a merge wins where both have something to say.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -311,7 +363,7 @@ fn guards_user(source: Option<Source>) -> bool {
 /// The columns this record has something to say about — which is exactly the
 /// set that gets a `field_provenance` row, since a source can only be the origin
 /// of a value it supplied.
-fn fields_said(book: &Book) -> Vec<&'static str> {
+pub(crate) fn fields_said(book: &Book) -> Vec<&'static str> {
     MERGE_RULES
         .iter()
         .filter(|r| (r.says)(book))
@@ -449,13 +501,51 @@ impl Storage {
         book: &Book,
         source: Option<Source>,
     ) -> Result<()> {
+        let claims: Vec<(&'static str, Source)> = match source {
+            Some(source) => fields_said(book).into_iter().map(|f| (f, source)).collect(),
+            // Not "claims nothing by accident": `None` is a writer that cannot
+            // honestly name a source, and an empty claim list is exactly that.
+            None => Vec::new(),
+        };
+        self.enrich_book_attributed(book_id, book, &claims).await
+    }
+
+    /// [`Storage::enrich_book`] where the record's fields came from **different
+    /// sources**, each named.
+    ///
+    /// This is the write item 29 left open. `Engine::save_book` stamps `None`
+    /// because `search::merge_provider_books` keeps the winning value per field
+    /// and discards which provider supplied it; item 30 merges provider by
+    /// provider, so it holds that map and can answer honestly. Rather than one
+    /// `UPDATE` per provider — which would make whichever provider ran first win
+    /// every field it spoke to, a *second* dialect of the federated merge's
+    /// tuned per-field preference — the merged record is written once and the
+    /// attribution is stamped per field.
+    ///
+    /// A claim for a field the record does not actually supply is dropped: a
+    /// source can only be the origin of a value it gave us, and the same
+    /// `fields_said` that decides what the SQL moves decides what may be
+    /// claimed.
+    ///
+    /// **The user guard is on** unless every claim is the user's, which is the
+    /// one-source case [`guards_user`] already describes — reached through that
+    /// predicate rather than re-spelled, since `merge_set`'s value guard and
+    /// `field_provenance::stamp`'s stamp guard have to keep agreeing about which
+    /// rows are protected. A mixed set containing `Source::User` guards like any
+    /// other, which is the safe direction and is not a set any caller here
+    /// produces: a user edit names one source and comes through
+    /// [`Storage::enrich_book`].
+    pub async fn enrich_book_attributed(
+        &self,
+        book_id: i64,
+        book: &Book,
+        claims: &[(&'static str, Source)],
+    ) -> Result<()> {
+        let guard_user = claims.iter().all(|(_, s)| guards_user(Some(*s)));
         // ?1..?16 are the merge columns, ?17 is last_modified, ?18 the id.
         let sql = format!(
             "UPDATE books SET {}, last_modified = ?17 WHERE id = ?18",
-            merge_set(Winner::Incoming, guards_user(source), |i, _| format!(
-                "?{}",
-                i + 1
-            ))
+            merge_set(Winner::Incoming, guard_user, |i, _| format!("?{}", i + 1))
         );
         let mut tx = self.pool().begin().await?;
         bind_merge_columns(sqlx::query(&sql), book)?
@@ -463,8 +553,17 @@ impl Storage {
             .bind(book_id)
             .execute(&mut *tx)
             .await?;
-        if let Some(source) = source {
-            field_provenance::stamp(&mut tx, book_id, &fields_said(book), source).await?;
+
+        let said = fields_said(book);
+        for source in Source::ALL {
+            let fields: Vec<&'static str> = claims
+                .iter()
+                .filter(|(field, s)| *s == source && said.contains(field))
+                .map(|(field, _)| *field)
+                .collect();
+            if !fields.is_empty() {
+                field_provenance::stamp(&mut tx, book_id, &fields, source).await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -1380,6 +1479,104 @@ mod tests {
         );
     }
 
+    /// **Item 30's write, and the reason it is not one `UPDATE` per provider.**
+    ///
+    /// One record whose fields came from two sources: each is stamped with its
+    /// own, in a single statement, so the values are the federated merge's tuned
+    /// per-field preference rather than whichever provider happened to run
+    /// first.
+    #[tokio::test]
+    async fn an_attributed_merge_stamps_each_field_with_its_own_source() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+
+        s.enrich_book_attributed(
+            id,
+            &Book {
+                page_count: Some(490),
+                description: Some("a sweeping saga".into()),
+                publisher: Some("Grand Central".into()),
+                ..Default::default()
+            },
+            &[
+                ("page_count", Source::OpenLibrary),
+                ("description", Source::GoogleBooks),
+                // A claim for a field the record does not supply: dropped, since
+                // a source can only be the origin of a value it gave us.
+                ("language", Source::OpenLibrary),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.page_count, Some(490));
+        assert_eq!(got.description.as_deref(), Some("a sweeping saga"));
+        assert_eq!(got.publisher.as_deref(), Some("Grand Central"));
+
+        assert_eq!(
+            s.field_source(id, "page_count").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+        assert_eq!(
+            s.field_source(id, "description").await.unwrap().as_deref(),
+            Some("googlebooks")
+        );
+        assert_eq!(
+            s.field_source(id, "language").await.unwrap(),
+            None,
+            "a claim on a field the record is silent about must not be recorded"
+        );
+        assert_eq!(
+            s.field_source(id, "publisher").await.unwrap(),
+            None,
+            "a field written with no claim stays unattributed"
+        );
+    }
+
+    /// The user guard survives the multi-source form. `guards_user` is reached
+    /// through the same predicate rather than re-spelled, so a mixed claim set
+    /// guards — the safe direction — and a field the user owns is neither
+    /// overwritten nor re-claimed.
+    #[tokio::test]
+    async fn an_attributed_merge_still_cannot_take_a_user_field() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.enrich_book(
+            id,
+            &Book {
+                page_count: Some(496),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        s.enrich_book_attributed(
+            id,
+            &Book {
+                page_count: Some(490),
+                description: Some("a sweeping saga".into()),
+                ..Default::default()
+            },
+            &[
+                ("page_count", Source::OpenLibrary),
+                ("description", Source::OpenLibrary),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.page_count, Some(496));
+        assert_eq!(got.description.as_deref(), Some("a sweeping saga"));
+        assert_eq!(
+            s.field_source(id, "page_count").await.unwrap().as_deref(),
+            Some("user")
+        );
+    }
+
     /// Both books were being read. That is two open readings on one book the
     /// moment they fold together, which `idx_readings_one_open` forbids — so the
     /// older is closed as `abandoned` rather than deleted, because it is a
@@ -1511,6 +1708,55 @@ mod tests {
             .into_iter()
             .map(|f| (f.field, f.source))
             .collect()
+    }
+
+    /// `show` and `says` are two readings of one question, and they have to
+    /// agree on every column.
+    ///
+    /// `says` decides what the SQL moves and what may be claimed; `show` is what
+    /// item 30's report prints for a field a provider offered and was not
+    /// allowed to write. A column where they disagree is either a field that is
+    /// claimed and unprintable — a held-back value the user is told about by
+    /// name and never shown — or one that is printable and unclaimed.
+    ///
+    /// Swept over `PROBES`, so a seventeenth rule is covered by arriving rather
+    /// than by being remembered.
+    #[test]
+    fn show_and_says_agree_on_every_column() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let mut book = Book::default();
+            // Silent about this column: neither may speak.
+            assert!(!MERGE_RULES.iter().any(|r| r.col == col && (r.says)(&book)));
+            assert_eq!(field_value(&book, col), None, "{col} printed from nothing");
+
+            set(&mut book, 7);
+            let rule = MERGE_RULES
+                .iter()
+                .find(|r| r.col == col)
+                .expect("probes cover the table");
+            assert!(
+                (rule.says)(&book),
+                "{col}: says nothing about a value it has"
+            );
+            assert!(
+                field_value(&book, col).is_some(),
+                "{col}: claimed but unprintable"
+            );
+        }
+    }
+
+    /// `field_value` on a name the table does not govern is `None`, not a panic.
+    /// Every caller is downstream of `merge_columns`, but the function is the
+    /// wrong place to enforce that.
+    #[test]
+    fn an_unknown_column_prints_nothing() {
+        assert_eq!(field_value(&says_everything(1), "ko_percent"), None);
+        assert_eq!(
+            merge_columns().count(),
+            MERGE_RULES.len(),
+            "merge_columns must be the whole table"
+        );
     }
 
     /// **The three consumers of `MERGE_RULES` cannot disagree.**

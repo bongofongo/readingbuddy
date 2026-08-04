@@ -13,6 +13,12 @@ mod sidecar_seen;
 
 pub use book_files::BookFile;
 pub use books::{BookSort, MergeReport};
+/// The merge table's three crate-internal readers: which columns it governs,
+/// what a record says about one of them, and which it speaks to at all. Item
+/// 30's enrichment assembles per-field attribution and prints held-back values,
+/// and both have to name columns *this* table knows rather than strings that
+/// look like column names.
+pub(crate) use books::{field_value, fields_said, merge_columns};
 pub use device_books::LinkedBy;
 pub use field_provenance::{FieldSource, Source};
 pub use flashcards::FlashcardRow;

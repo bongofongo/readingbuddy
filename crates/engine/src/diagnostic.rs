@@ -234,6 +234,18 @@ pub enum DiagnosticKind {
     CalibreCoverUnreadable {
         path: PathBuf,
     },
+
+    // ---- enrichment (item 30) ---------------------------------------------
+    /// A provider gave us a cover URL that would not download. The metadata it
+    /// came with landed and is kept — the cover is the one field with a free
+    /// second chance, since the next enrichment of this book tries again.
+    ///
+    /// **The URL is not carried.** It is of no use to a user, and the rule that
+    /// nothing reaching a diagnostic may contain an API key is easier to keep
+    /// than to check.
+    CoverUnavailable {
+        class: ErrorClass,
+    },
 }
 
 /// One degradation, carried in-band on a partly-successful result.
@@ -371,6 +383,16 @@ impl Diagnostic {
         }
     }
 
+    pub fn cover_unavailable(err: &EngineError) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::CoverUnavailable {
+                class: ErrorClass::from(err),
+            },
+            severity: Severity::Warning,
+            detail: crate::providers::googlebooks::scrub_key(&err.to_string()),
+        }
+    }
+
     /// The provider this diagnostic is about, if any.
     pub fn provider(&self) -> Option<ProviderId> {
         match self.kind {
@@ -449,6 +471,9 @@ impl fmt::Display for Diagnostic {
             }
             DiagnosticKind::CalibreCoverUnreadable { path } => {
                 write!(f, "{}: {}", path.display(), self.detail)
+            }
+            DiagnosticKind::CoverUnavailable { .. } => {
+                write!(f, "cover: {}", self.detail)
             }
         }
     }

@@ -38,10 +38,67 @@ impl SearchOutcome {
     }
 }
 
+/// Which provider supplied each field of a merged record.
+///
+/// The merge below is **field-wise** — OpenLibrary wins the ISBNs and the page
+/// count, Google Books wins the description and the language, everything else
+/// is first-non-empty — so "which provider did this book come from" has no
+/// single answer and `sources` (the set that contributed *anything*) cannot be
+/// narrowed into one. This is the map [`merge_into`] already computes and used
+/// to throw away, and throwing it away is precisely why `Engine::save_book`
+/// stamps no provenance at all.
+///
+/// Kept crate-internal. Item 30 is its only reader, and a public map keyed on
+/// `&'static str` column names would be API surface with no DTO behind it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FieldClaims(Vec<(&'static str, ProviderId)>);
+
+impl FieldClaims {
+    /// Record that `provider` supplied `field`, replacing any earlier claim —
+    /// the merge overwrote the value, so the previous claimant is no longer the
+    /// origin of anything.
+    fn claim(&mut self, field: &'static str, provider: ProviderId) {
+        match self.0.iter_mut().find(|(f, _)| *f == field) {
+            Some(slot) => slot.1 = provider,
+            None => self.0.push((field, provider)),
+        }
+    }
+
+    /// Every claim, for the test that asserts these field names are columns the
+    /// merge table governs. Nothing in the engine iterates the whole map —
+    /// `enrich` asks per column, from `merge_columns` — so this exists for the
+    /// drift guard and is scoped to it rather than left as public surface.
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, ProviderId)> + '_ {
+        self.0.iter().copied()
+    }
+
+    pub(crate) fn source_of(&self, field: &str) -> Option<ProviderId> {
+        self.0.iter().find(|(f, _)| *f == field).map(|(_, p)| *p)
+    }
+}
+
 pub async fn federated_search(
     providers: &[Box<dyn MetadataProvider>],
     req: &SearchRequest,
 ) -> Result<SearchOutcome> {
+    let (results, warnings) = federated_search_claimed(providers, req).await?;
+    Ok(SearchOutcome {
+        results: results.into_iter().map(|(r, _)| r).collect(),
+        warnings,
+    })
+}
+
+/// [`federated_search`], keeping the per-field attribution the merge computed.
+///
+/// Each claim map is **paired with the result it describes** rather than
+/// returned as a second vector in the same order: a parallel array that has to
+/// be indexed in step with another is a correctness argument the type can make
+/// instead, and the caller here goes on to *sort* what it gets back.
+pub(crate) async fn federated_search_claimed(
+    providers: &[Box<dyn MetadataProvider>],
+    req: &SearchRequest,
+) -> Result<(Vec<(RankedResult, FieldClaims)>, Vec<Diagnostic>)> {
     let fetches = providers.iter().map(|p| async {
         let id = p.id();
         match tokio::time::timeout(PROVIDER_TIMEOUT, p.search(req)).await {
@@ -56,7 +113,7 @@ pub async fn federated_search(
     });
     let responses = futures::future::join_all(fetches).await;
 
-    let mut outcome = SearchOutcome::default();
+    let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut raw: Vec<ProviderBook> = Vec::new();
     for (id, diag, books) in responses {
         match (diag, books) {
@@ -68,7 +125,7 @@ pub async fn federated_search(
                 // Emitted here, beside the push, so the log line and the
                 // in-band diagnostic can never drift apart.
                 tracing::warn!(provider = %id, detail = %d.detail, "provider degraded");
-                outcome.warnings.push(d);
+                warnings.push(d);
             }
             (None, None) => {}
         }
@@ -79,21 +136,37 @@ pub async fn federated_search(
         m.score = rank(&m.book, &m.sources, m.best_position, req);
     }
     merged.sort_by(|a, b| b.score.total_cmp(&a.score));
-    outcome.results = merged
+    let results = merged
         .into_iter()
-        .map(|m| RankedResult {
-            book: m.book,
-            sources: m.sources,
-            score: m.score,
+        .map(|m| {
+            (
+                RankedResult {
+                    book: m.book,
+                    sources: m.sources,
+                    score: m.score,
+                },
+                m.claims,
+            )
         })
         .collect();
-    Ok(outcome)
+    Ok((results, warnings))
 }
 
 /// Merge per-provider lookups of the SAME edition (e.g. by_isbn results)
 /// into one Book. Returns None when the input is empty.
 pub fn merge_provider_books(raw: Vec<ProviderBook>) -> Option<Book> {
-    dedup(raw).into_iter().next().map(|m| m.book)
+    merge_provider_books_claimed(raw).map(|(book, _)| book)
+}
+
+/// [`merge_provider_books`], keeping the per-field attribution.
+///
+/// The ISBN half of item 30: every provider was asked about the *same* edition,
+/// so there is one record out of this — but its `page_count` may be
+/// OpenLibrary's while its `description` is Google Books', and that is the
+/// difference between a book whose fields are explicable and one stamped
+/// `None`.
+pub(crate) fn merge_provider_books_claimed(raw: Vec<ProviderBook>) -> Option<(Book, FieldClaims)> {
+    dedup(raw).into_iter().next().map(|m| (m.book, m.claims))
 }
 
 // ---- dedup -----------------------------------------------------------------
@@ -104,6 +177,10 @@ struct Merged {
     sources: Vec<ProviderId>,
     best_position: usize,
     score: f64,
+    /// Which provider is the origin of each field, after every merge into this
+    /// record. Computed whether or not anyone asks for it: the alternative is a
+    /// second traversal of the same decisions, which is the shape that drifts.
+    claims: FieldClaims,
 }
 
 /// Strip punctuation, lowercase, drop leading articles, collapse whitespace.
@@ -167,38 +244,101 @@ fn same_work(a: &Book, b: &Book) -> bool {
 
 /// Merge `b` into `a`. Default: fill missing fields. Provider priority:
 /// OpenLibrary wins ISBN/page_count, Google wins description/language.
-fn merge_into(a: &mut Book, b: &Book, b_provider: ProviderId) {
-    fn fill<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+///
+/// **`claims` records the answer to "who supplied this field", once, here.**
+/// Every write below is a change of origin, and the only place that knows it is
+/// the line making the write — reconstructing it afterwards by comparing the
+/// merged record against each provider's would be this preference table spelled
+/// a second time, which is the failure mode `MERGE_RULES` is arranged against on
+/// the storage side.
+fn merge_into(a: &mut Book, b: &Book, b_provider: ProviderId, claims: &mut FieldClaims) {
+    fn fill<T: Clone>(
+        field: &'static str,
+        dst: &mut Option<T>,
+        src: &Option<T>,
+        provider: ProviderId,
+        claims: &mut FieldClaims,
+    ) {
         if dst.is_none() && src.is_some() {
             *dst = src.clone();
+            claims.claim(field, provider);
         }
     }
-    fn prefer<T: Clone>(dst: &mut Option<T>, src: &Option<T>, src_wins: bool) {
+    fn prefer<T: Clone>(
+        field: &'static str,
+        dst: &mut Option<T>,
+        src: &Option<T>,
+        src_wins: bool,
+        provider: ProviderId,
+        claims: &mut FieldClaims,
+    ) {
         if src.is_some() && (dst.is_none() || src_wins) {
             *dst = src.clone();
+            claims.claim(field, provider);
         }
     }
     let is_ol = b_provider == ProviderId::OpenLibrary;
     let is_gb = b_provider == ProviderId::GoogleBooks;
+    let p = b_provider;
 
-    fill(&mut a.title, &b.title);
-    if a.authors.is_empty() {
+    fill("title", &mut a.title, &b.title, p, claims);
+    if a.authors.is_empty() && !b.authors.is_empty() {
         a.authors = b.authors.clone();
+        claims.claim("authors", p);
     }
-    if a.translators.is_empty() {
+    if a.translators.is_empty() && !b.translators.is_empty() {
         a.translators = b.translators.clone();
+        claims.claim("translators", p);
     }
-    prefer(&mut a.isbn_10, &b.isbn_10, is_ol);
-    prefer(&mut a.isbn_13, &b.isbn_13, is_ol);
-    prefer(&mut a.page_count, &b.page_count, is_ol);
-    prefer(&mut a.description, &b.description, is_gb);
-    prefer(&mut a.language, &b.language, is_gb);
-    fill(&mut a.publisher, &b.publisher);
-    fill(&mut a.publish_year, &b.publish_year);
-    fill(&mut a.first_sentence, &b.first_sentence);
-    fill(&mut a.cover_url, &b.cover_url);
-    fill(&mut a.openlibrary_key, &b.openlibrary_key);
-    fill(&mut a.googlebooks_id, &b.googlebooks_id);
+    prefer("isbn_10", &mut a.isbn_10, &b.isbn_10, is_ol, p, claims);
+    prefer("isbn_13", &mut a.isbn_13, &b.isbn_13, is_ol, p, claims);
+    prefer(
+        "page_count",
+        &mut a.page_count,
+        &b.page_count,
+        is_ol,
+        p,
+        claims,
+    );
+    prefer(
+        "description",
+        &mut a.description,
+        &b.description,
+        is_gb,
+        p,
+        claims,
+    );
+    prefer("language", &mut a.language, &b.language, is_gb, p, claims);
+    fill("publisher", &mut a.publisher, &b.publisher, p, claims);
+    fill(
+        "publish_year",
+        &mut a.publish_year,
+        &b.publish_year,
+        p,
+        claims,
+    );
+    fill(
+        "first_sentence",
+        &mut a.first_sentence,
+        &b.first_sentence,
+        p,
+        claims,
+    );
+    fill("cover_url", &mut a.cover_url, &b.cover_url, p, claims);
+    fill(
+        "openlibrary_key",
+        &mut a.openlibrary_key,
+        &b.openlibrary_key,
+        p,
+        claims,
+    );
+    fill(
+        "googlebooks_id",
+        &mut a.googlebooks_id,
+        &b.googlebooks_id,
+        p,
+        claims,
+    );
 }
 
 fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
@@ -220,7 +360,8 @@ fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
 
         match existing {
             Some(i) => {
-                merge_into(&mut merged[i].book, &pb.book, pb.provider);
+                let Merged { book, claims, .. } = &mut merged[i];
+                merge_into(book, &pb.book, pb.provider, claims);
                 if !merged[i].sources.contains(&pb.provider) {
                     merged[i].sources.push(pb.provider);
                 }
@@ -235,11 +376,21 @@ fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
                     by_isbn.insert(k, i);
                 }
                 by_fingerprint.entry(fingerprint(&pb.book)).or_insert(i);
+                // The first record claims every field it speaks to, and *what
+                // it speaks to* is asked of the merge table rather than
+                // re-listed here — `merge_into` above never touches `sort_title`
+                // or `cover_path`, so a list written out at this end would be
+                // the one place those two could go unattributed.
+                let mut claims = FieldClaims::default();
+                for field in crate::storage::fields_said(&pb.book) {
+                    claims.claim(field, pb.provider);
+                }
                 merged.push(Merged {
                     book: pb.book,
                     sources: vec![pb.provider],
                     best_position: pb.position,
                     score: 0.0,
+                    claims,
                 });
             }
         }
@@ -376,6 +527,107 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].book.page_count, Some(490));
         assert_eq!(merged[0].book.language.as_deref(), Some("en"));
+    }
+
+    /// **`merge_into`'s field names must be columns the merge table governs.**
+    ///
+    /// The claims cross into `Storage::enrich_book_attributed`, which stamps
+    /// `field_provenance` for exactly the names it is given. A typo — or a field
+    /// this merge learns about that `MERGE_RULES` does not have — would be a
+    /// claim silently dropped on the other side, which is the one failure this
+    /// arrangement has no other way to notice. Item 32 adds three columns to
+    /// both, and this is what makes it add them to both.
+    #[test]
+    fn every_claimed_field_is_a_merge_column() {
+        let columns: Vec<&str> = crate::storage::merge_columns().collect();
+        let mut a = book("Pachinko", "Min Jin Lee");
+        a.isbn_13 = Some("9781455563937".into());
+        a.page_count = Some(490);
+        a.description = Some("ol".into());
+        a.publisher = Some("Grand Central".into());
+        a.publish_year = Some(2017);
+        a.first_sentence = Some("History has failed us.".into());
+        a.cover_url = Some("https://example.invalid/c.jpg".into());
+        a.openlibrary_key = Some("/works/OL1W".into());
+        // `sort_title` and `cover_path` are the two columns `merge_into` never
+        // touches, which is exactly why the first record's claims are asked of
+        // the merge table rather than listed at that end.
+        a.sort_title = Some("Pachinko".into());
+        a.cover_path = Some("database/images/c.jpg".into());
+        a.translators = vec!["A Translator".into()];
+        let mut b = a.clone();
+        b.googlebooks_id = Some("gb1".into());
+        b.language = Some("en".into());
+        b.isbn_10 = Some("1455563935".into());
+
+        let merged = dedup(vec![
+            pb(ProviderId::OpenLibrary, 0, a),
+            pb(ProviderId::GoogleBooks, 0, b),
+        ]);
+        assert_eq!(merged.len(), 1);
+        let claimed: Vec<&str> = merged[0].claims.iter().map(|(f, _)| f).collect();
+        for field in &claimed {
+            assert!(
+                columns.contains(field),
+                "{field} is claimed but is not a MERGE_RULES column: {columns:?}"
+            );
+        }
+        // …and the two lists really do meet: a record supplying every column
+        // claims every column, so this is not vacuously true.
+        for col in &columns {
+            assert!(
+                claimed.contains(col),
+                "{col} was supplied but never claimed"
+            );
+        }
+    }
+
+    /// The claims follow the **preference table**, not the arrival order. This
+    /// is the fact item 30 relies on: enriching provider-by-provider would get
+    /// the description from whoever ran first, and would be right about who
+    /// supplied it and wrong about which value survived.
+    #[test]
+    fn a_claim_names_whoever_won_the_field_not_whoever_arrived_first() {
+        let mut ol = book("Pachinko", "Min Jin Lee");
+        ol.page_count = Some(490);
+        ol.description = Some("the openlibrary blurb".into());
+        let mut gb = book("Pachinko", "Min Jin Lee");
+        gb.page_count = Some(512);
+        gb.description = Some("the google books blurb".into());
+
+        // OpenLibrary arrives first and still loses the description.
+        let merged = dedup(vec![
+            pb(ProviderId::OpenLibrary, 0, ol.clone()),
+            pb(ProviderId::GoogleBooks, 0, gb.clone()),
+        ]);
+        assert_eq!(
+            merged[0].book.description.as_deref(),
+            Some("the google books blurb")
+        );
+        assert_eq!(
+            merged[0].claims.source_of("description"),
+            Some(ProviderId::GoogleBooks)
+        );
+        assert_eq!(
+            merged[0].claims.source_of("page_count"),
+            Some(ProviderId::OpenLibrary)
+        );
+
+        // Reversed, the answers are the same — the preference is the rule, and
+        // the claim is a reading of it.
+        let merged = dedup(vec![
+            pb(ProviderId::GoogleBooks, 0, gb),
+            pb(ProviderId::OpenLibrary, 0, ol),
+        ]);
+        assert_eq!(merged[0].book.page_count, Some(490));
+        assert_eq!(
+            merged[0].claims.source_of("page_count"),
+            Some(ProviderId::OpenLibrary)
+        );
+        assert_eq!(
+            merged[0].claims.source_of("description"),
+            Some(ProviderId::GoogleBooks)
+        );
     }
 
     #[test]

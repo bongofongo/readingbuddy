@@ -958,6 +958,11 @@ pub enum DiagnosticKindDto {
     StatisticsBookNotIdentified {
         title: String,
     },
+    /// A provider's cover URL would not download. The metadata it came with
+    /// landed; the URL itself is deliberately not carried across the wire.
+    CoverUnavailable {
+        class: ErrorClassDto,
+    },
 }
 
 impl From<DiagnosticKind> for DiagnosticKindDto {
@@ -1038,6 +1043,9 @@ impl From<DiagnosticKind> for DiagnosticKindDto {
             K::StatisticsBookNotIdentified { title } => {
                 DiagnosticKindDto::StatisticsBookNotIdentified { title }
             }
+            K::CoverUnavailable { class } => DiagnosticKindDto::CoverUnavailable {
+                class: class.into(),
+            },
         }
     }
 }
