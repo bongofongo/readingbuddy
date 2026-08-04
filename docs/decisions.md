@@ -427,3 +427,99 @@ detail, 14–16 as constraints to re-plan against.*
 15. KOReader plugin + wireless push.
 16. Everything under *Out of scope for now*, plus collections, the Tauri GUI and
     the Mac/iOS companions.
+
+Items 17–28 are the GUI wave (`docs/gui/spec-gui-17-28.md`). Items 29–32 are
+what the engine *keeps* rather than what it acquires
+(`docs/spec-engine-29-32.md`), and item 21 was pulled forward into that wave
+because item 31 needed somewhere to put reading time.
+
+21. `reading_events`, the source-agnostic activity log — migration `0011`.
+    - **Done**, ahead of the rest of its own wave. Three fillers that need no
+      device (highlight days, vault days, reading endpoints) plus the period
+      aggregates the engine had none of.
+    - **The stated grain and the only idempotent key are not the same thing.**
+      "A book, a read, a date" is the grain of an *occurrence*; the key is
+      `(book_id, day, source)`, and `reading_id` is deliberately outside it. It
+      is nullable `ON DELETE SET NULL`, so a key containing it needs a NULL
+      sentinel — and then deleting a reading with two events on one day collides,
+      which SQLite reports as a constraint error raised by a table nobody
+      touched. The read is therefore an *attribution*, the call
+      `attribute_highlights` already makes.
+    - **`source` names the filler's evidence, not the upstream system**, and one
+      token hosts several fillers only because the upsert is a no-clobber merge:
+      `COALESCE` on what a filler has no opinion about, `confidence` ratcheting
+      `inferred` → `measured` and never back. That is what makes "a later filler
+      changes no query" true rather than aspirational, and it is binding on 31.
+    - **`updated` had to mean *changed*, not *seen*** — an unconditional
+      `DO UPDATE` reports every row on every refill, which makes idempotency
+      literally unobservable. Same failure the tier-2 corpus recorded.
+    - **"Links created per period" is not answerable as asked.** `note_links`
+      carries no timestamp and `set_note_links` replaces a note's whole edge set
+      on save, so a link's own creation date is recorded nowhere; a `created_at`
+      there would record the date of the last edit to the *note*, dressed as the
+      link's birthday. Edges are attributed to `from_note.created_at` and the
+      doc comment says so.
+29. Field provenance — migration `0012`.
+    - **Done.** "Authority is per-field, provenance is recorded" has been in this
+      document since item 10 and the second half was not true;
+      `field_provenance(book_id, field, source, fetched_at)` makes it true, and
+      **`MERGE_RULES` generates it** rather than a parallel list — the same table
+      that already generated the upsert's `ON CONFLICT` and `enrich_book`'s
+      `UPDATE` now generates `merge_books`' fill and the field set each stamps.
+    - **`save_book` stamps nothing, deliberately.** It receives a record already
+      flattened by `search::merge_provider_books`, which keeps the winning value
+      per field and discards which provider supplied it; naming one would invent
+      exactly what the table exists to record. Item 30 is where the provider half
+      becomes answerable, because it merges provider by provider.
+    - **`import_epub` had two origins in one row** — the file's metadata folded
+      onto the provider's by a hand-written `is_none()` per column, which was
+      this merge spelled a second time and which no single stamp could describe.
+      Two writes now, through `fill_book`.
+    - **`merge_books` was already a second hand-written copy of `MERGE_RULES`**,
+      in the one statement where a forgotten column loses data rather than
+      failing to merge it. Generated now.
+    - **Provenance travels with the value, not the row.** The obvious
+      `UPDATE … SET book_id = dst` would stamp `dst`'s kept value with the source
+      of `src`'s discarded one, for every book older than the migration.
+    - **No back-fill, and that is the decision.** Every signal that might
+      attribute an existing row (`openlibrary_key`, `googlebooks_id`,
+      `external_ids`, `device_books`) records who was *consulted*, not who
+      supplied the field beside it. An absent row means unattributed, which every
+      caller has to handle anyway.
+    - Disagreement history — `(book_id, field, source, value, fetched_at)` — is a
+      real feature and a **second table beside this one**, not a wider key here:
+      a per-source row without a *value* column records who was asked, not what
+      they said.
+31. Reading time, from the device's own `statistics.sqlite3`.
+    - **Done**, as one more filler of item 21's table — day, minutes, pages,
+      `source = 'koreader'`, `confidence = 'measured'`. Its own module, not part
+      of `device.rs`: it reads SQLite rather than Lua, joins `device_books`
+      rather than matching, and **writes**, which is the thing `scan_device` is
+      defined by not doing. Not on `sync_device`'s path.
+    - **The database is WAL.** Copying only the main file reads the state as of
+      the last checkpoint and can silently miss an entire recent session, with a
+      plausible number where the right one belongs; the copy takes the `-wal` and
+      `-shm` siblings, and the test holds a connection open across the import
+      because a clean close deletes the WAL and would prove nothing.
+    - **"`stats.md5` does not exist" is a fact about the *sidecar's* `stats`
+      subtable, and it was read here as a blanket claim.** The statistics
+      database carries `book.md5 = util.partialMD5(file)`, so this join is exact
+      rather than fuzzy — the next reader of that line would otherwise have built
+      a title matcher.
+    - **The `page_stat` VIEW rescales pages onto the current page count** with
+      integer division and multiplied rows. It looks like the convenient thing to
+      read and is wrong on both columns; the raw table is read instead.
+    - **A measured twenty-second session records `Some(0)`, not `None`.** The
+      device is saying something; `None` is reserved for days nothing measured,
+      which write no row at all.
+    - **The day skew is left unfixed, on purpose.** A sidecar's `datetime` is
+      zoneless local wall clock while `start_time` is a real epoch, so off UTC a
+      session near midnight lands on adjacent days from the two fillers.
+      Correcting by this machine's offset would make an import's result depend on
+      where the laptop is, and re-importing after a flight would rewrite history.
+      The cost is bounded to a stray `inferred` row, never a wrong minute count.
+    - **The schema is source-derived and still unverified against hardware.**
+      `KNOWN_SCHEMA_VERSION` gates it, so an unknown version imports nothing and
+      says why rather than guessing. `docs/koreader-format.md` ranks the source
+      above a fixture, which is what made building without a device legitimate
+      rather than a shortcut.
