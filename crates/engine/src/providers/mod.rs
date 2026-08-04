@@ -80,6 +80,45 @@ pub trait MetadataProvider: Send + Sync {
     async fn by_isbn(&self, isbn: &str) -> Result<Option<ProviderBook>>;
 }
 
+/// Tidy a provider's subject list: trim, drop the empties, drop repeats.
+///
+/// **Shape only, never vocabulary.** The strings stay exactly as the provider
+/// spelled them — Google's BISAC paths (`Fiction / Literary`) and OpenLibrary's
+/// headings (`Korean Americans`) are two different systems of naming and
+/// mapping one onto the other is a *controlled vocabulary*, which is the same
+/// question `book_tags` deferred and is not answerable from two examples. The
+/// merge sidesteps it by taking one provider's set whole rather than mixing
+/// them; see `MERGE_RULES`.
+///
+/// Dedup is case-insensitive and keeps the **first** spelling, because a
+/// provider that says both `Fiction` and `fiction` said one thing twice and the
+/// order it published is the only ranking available.
+///
+/// **No cap.** OpenLibrary works genuinely carry a hundred subjects, many of
+/// them cataloguing artifacts (`Accessible book`, `Protected DAISY`,
+/// `In library`), and dropping the tail would be a silent truncation of exactly
+/// the sort this repo bans elsewhere — a caller cannot tell a trimmed list from
+/// a short one. Filtering the artifacts *is* a vocabulary decision, and it is
+/// left undone on purpose so it can be made against real data rather than
+/// against a guess.
+pub fn normalize_subjects<I, S>(raw: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for s in raw {
+        let t = s.as_ref().split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.is_empty() {
+            continue;
+        }
+        if !out.iter().any(|kept| kept.eq_ignore_ascii_case(&t)) {
+            out.push(t);
+        }
+    }
+    out
+}
+
 /// Normalize language tags across providers: OpenLibrary speaks MARC
 /// 3-letter codes ("eng"), Google Books BCP-47 2-letter ("en"). We store
 /// 2-letter where known, pass through otherwise.

@@ -3,7 +3,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use url::Url;
 
-use super::{MetadataProvider, ProviderBook, ProviderId, SearchRequest, year_of_date};
+use super::{
+    MetadataProvider, ProviderBook, ProviderId, SearchRequest, normalize_subjects, year_of_date,
+};
 use crate::book::{Book, normalize_isbn};
 use crate::error::{EngineError, Result};
 
@@ -109,6 +111,13 @@ struct VolumeInfo {
     page_count: Option<i64>,
     language: Option<String>,
     image_links: Option<ImageLinks>,
+    /// What Google says the book is about (migration `0013`).
+    ///
+    /// BISAC-shaped paths — `Fiction / Literary`, `History / Asia / Korea` —
+    /// and usually one or two of them, unlike OpenLibrary's long headings list.
+    /// Stored as published; see `normalize_subjects` for why they are not
+    /// mapped onto anything.
+    categories: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -146,6 +155,14 @@ impl Volume {
         book.description = info.description.clone();
         book.page_count = info.page_count;
         book.language = info.language.as_ref().map(|l| l.to_lowercase());
+        book.subjects = normalize_subjects(info.categories.iter().flatten());
+        // **No series.** `volumeInfo` has no documented series field: the
+        // `seriesInfo` block some volumes carry is absent from the API
+        // reference, so the only fixture possible is one written from memory —
+        // which would prove that we agree with ourselves and nothing else, the
+        // same argument `tests/fixtures/goodreads/README.md` makes for keeping
+        // recorded samples recorded. OpenLibrary's edition record carries the
+        // field outright, and that is where series comes from.
         book.cover_url = info.image_links.as_ref().and_then(|l| {
             l.thumbnail
                 .clone()
@@ -371,6 +388,7 @@ mod tests {
                     ],
                     "pageCount": 490,
                     "language": "en",
+                    "categories": ["Fiction / Literary", "  Fiction / Literary  ", "", "History"],
                     "imageLinks": {"thumbnail": "http://books.google.com/x.jpg"}
                 }
             }]
@@ -382,5 +400,18 @@ mod tests {
         assert_eq!(b.publish_year, Some(2017));
         assert_eq!(b.description.as_deref(), Some("A saga."));
         assert!(b.cover_url.unwrap().starts_with("https://"));
+        // Trimmed, deduped case-insensitively, empties dropped — and otherwise
+        // exactly what Google published, slashes and all.
+        assert_eq!(b.subjects, vec!["Fiction / Literary", "History"]);
+        assert_eq!(b.series, None);
+    }
+
+    /// A volume with no `categories` says *nothing* about subjects, which the
+    /// merge reads as silence rather than as "this book has none".
+    #[test]
+    fn a_volume_without_categories_claims_no_subjects() {
+        let json = r#"{"items": [{"id": "x", "volumeInfo": {"title": "T"}}]}"#;
+        let resp: VolumesResp = serde_json::from_str(json).unwrap();
+        assert!(resp.items.unwrap()[0].to_book().subjects.is_empty());
     }
 }

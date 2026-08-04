@@ -6,7 +6,7 @@ use url::Url;
 
 use super::{
     MetadataProvider, ProviderBook, ProviderId, SearchRequest, normalize_language,
-    to_marc_language, year_of_date,
+    normalize_subjects, to_marc_language, year_of_date,
 };
 use crate::book::{Book, normalize_isbn};
 use crate::error::{EngineError, Result};
@@ -157,6 +157,51 @@ struct EditionJson {
     key: Option<String>,
     languages: Option<Vec<Key>>,
     covers: Option<Vec<i64>>,
+    /// Free text, one entry per series the *edition* belongs to:
+    /// `["Dune Chronicles #2"]`, `["Penguin classics"]`. Only the first is
+    /// read — a book in two series is a shelving question and this column is a
+    /// scalar pair.
+    series: Option<Vec<String>>,
+    /// The work(s) this edition realises. Subjects live on the **work**, never
+    /// on the edition, which is why they cost a second request.
+    works: Option<Vec<Key>>,
+}
+
+/// The slice of `/works/{key}.json` this reads. Nothing else on a work is
+/// wanted: title, description and covers are edition-level facts here and the
+/// edition record already answered them.
+#[derive(Deserialize, Debug)]
+struct WorkJson {
+    subjects: Option<Vec<String>>,
+}
+
+/// Split `"Dune Chronicles #2"` into a name and a position.
+///
+/// **Two separators and no more.** OpenLibrary's `series` is free text and
+/// carries everything from `Dune Chronicles #2` to `Penguin classics` to
+/// `Bd. 3 : Der Zauberberg`, and a parser that keeps guessing eventually reads
+/// a number that is not an index — a wrong "#2" is a claim about *which book
+/// this is*, and nothing downstream can tell it from a right one. So: a
+/// trailing `#N` or `; N`, and otherwise the whole string is the name and the
+/// index is absent. Absence is the honest answer and the pair guard means it
+/// stays absent rather than being filled from somewhere else.
+fn split_series(raw: &str) -> Option<(String, Option<f64>)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    for sep in ['#', ';'] {
+        if let Some((name, tail)) = raw.rsplit_once(sep) {
+            let name = name.trim_end_matches([',', ' ', ':']).trim();
+            if let Ok(index) = tail.trim().parse::<f64>()
+                && index.is_finite()
+                && !name.is_empty()
+            {
+                return Some((name.to_string(), Some(index)));
+            }
+        }
+    }
+    Some((raw.to_string(), None))
 }
 
 async fn author_of_key(key: &Key, client: &Client) -> Result<Option<String>> {
@@ -175,14 +220,65 @@ async fn author_of_key(key: &Key, client: &Client) -> Result<Option<String>> {
     Ok(author.name)
 }
 
+/// Subjects, from the work this edition realises.
+///
+/// **One extra request per book looked up**, and that is the cost of this
+/// field: `by_isbn` was 1 + *authors* requests and is now 2 + *authors*.
+/// OpenLibrary's edition record does not carry subjects at all — they are a
+/// property of the *work* — so there is no cheaper form of the question. It is
+/// issued concurrently with the author lookups, so it costs a request rather
+/// than a round trip, and `search.json` deliberately does **not** ask for its
+/// `subject` facet: that would enlarge every response of every search by the
+/// noisiest form of this field for data only a saved book has any use for.
+///
+/// **A failure here is not a failure of the lookup.** The edition record has
+/// already answered the question that was asked; subjects are additive. So this
+/// degrades to none rather than propagating, which is the same rule the
+/// federated search applies one level up — and unlike the author resolution
+/// below, whose result is part of identity.
+async fn subjects_of_work(key: &Key, client: &Client) -> Vec<String> {
+    let Some(k) = key.key.as_deref() else {
+        return Vec::new();
+    };
+    let url = format!("https://openlibrary.org/{k}.json");
+    let fetched = async {
+        let text = client
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let work: WorkJson = serde_json::from_str(&text)?;
+        Ok::<_, EngineError>(work.subjects.unwrap_or_default())
+    }
+    .await;
+    match fetched {
+        Ok(subjects) => normalize_subjects(subjects),
+        Err(e) => {
+            tracing::debug!(provider = %ProviderId::OpenLibrary, work = %k, detail = %e,
+                "work subjects unavailable; the edition still answered");
+            Vec::new()
+        }
+    }
+}
+
 async fn edition_to_book(edition: EditionJson, client: &Client) -> Result<Book> {
-    // Resolve author keys to names concurrently.
+    // Resolve author keys to names concurrently, and ask the work about its
+    // subjects in the same flight.
     let keys = edition.authors.unwrap_or_default();
-    let authors: Vec<String> = try_join_all(keys.iter().map(|k| author_of_key(k, client)))
-        .await?
-        .into_iter()
-        .flatten()
-        .collect();
+    let work = edition.works.as_ref().and_then(|w| w.first());
+    let (authors, subjects) = futures::future::join(
+        try_join_all(keys.iter().map(|k| author_of_key(k, client))),
+        async {
+            match work {
+                Some(w) => subjects_of_work(w, client).await,
+                None => Vec::new(),
+            }
+        },
+    )
+    .await;
+    let authors: Vec<String> = authors?.into_iter().flatten().collect();
 
     let page_count = edition
         .number_of_pages
@@ -199,9 +295,19 @@ async fn edition_to_book(edition: EditionJson, client: &Client) -> Result<Book> 
         .and_then(|k| k.key.as_deref())
         .and_then(|k| k.rsplit('/').next().map(normalize_language));
 
+    let (series, series_index) = edition
+        .series
+        .as_ref()
+        .and_then(|v| v.first())
+        .and_then(|s| split_series(s))
+        .map_or((None, None), |(name, index)| (Some(name), index));
+
     Ok(Book {
         title: edition.title,
         authors,
+        subjects,
+        series,
+        series_index,
         publish_year: edition.publish_date.as_deref().and_then(year_of_date),
         openlibrary_key: edition.key,
         page_count,
@@ -318,6 +424,61 @@ mod tests {
         assert!(b.cover_url.unwrap().contains("OL26389265M"));
     }
 
+    /// The two shapes that are read, and the many that are deliberately not.
+    ///
+    /// The `None` cases matter more than the `Some` ones: an index parsed out of
+    /// `Bd. 3 : Der Zauberberg` would be a confident claim about which book this
+    /// is, and the pair guard cannot help with a wrong value — only with a
+    /// missing one.
+    #[test]
+    fn series_text_is_split_only_where_it_is_unambiguous() {
+        let cases = [
+            ("Dune Chronicles #2", Some(("Dune Chronicles", Some(2.0)))),
+            ("Dune Chronicles, #2", Some(("Dune Chronicles", Some(2.0)))),
+            ("Discworld ; 5", Some(("Discworld", Some(5.0)))),
+            // Novellas are numbered like this, which is why the column is REAL.
+            ("Wayfarers #1.5", Some(("Wayfarers", Some(1.5)))),
+            ("  Penguin classics  ", Some(("Penguin classics", None))),
+            // A number that is not an index, and a separator that is not one.
+            (
+                "Bd. 3 : Der Zauberberg",
+                Some(("Bd. 3 : Der Zauberberg", None)),
+            ),
+            (
+                "The Lord of the Rings, Part 1",
+                Some(("The Lord of the Rings, Part 1", None)),
+            ),
+            ("#3", Some(("#3", None))),
+            ("   ", None),
+        ];
+        for (raw, want) in cases {
+            let got = split_series(raw);
+            let want = want.map(|(n, i)| (n.to_string(), i));
+            assert_eq!(got, want, "{raw:?}");
+        }
+    }
+
+    /// An edition with no work and no authors reaches no network at all, which
+    /// is what makes the series half testable under the no-network rule. The
+    /// subjects half needs `/works/`, and there is no test double for it: the
+    /// URL is hardcoded, exactly as `author_of_key`'s is.
+    #[tokio::test]
+    async fn an_edition_carries_its_series_and_no_subjects_of_its_own() {
+        let json = r#"{
+            "title": "Dune Messiah",
+            "isbn_13": ["9780441013593"],
+            "series": ["Dune Chronicles #2"]
+        }"#;
+        let edition: EditionJson = serde_json::from_str(json).unwrap();
+        let book = edition_to_book(edition, &Client::new()).await.unwrap();
+        assert_eq!(book.series.as_deref(), Some("Dune Chronicles"));
+        assert_eq!(book.series_index, Some(2.0));
+        assert!(
+            book.subjects.is_empty(),
+            "subjects are a property of the work, never of the edition"
+        );
+    }
+
     #[test]
     fn edition_json_deserializes() {
         let json = r#"{
@@ -330,10 +491,16 @@ mod tests {
             "number_of_pages": 490,
             "key": "/books/OL26389265M",
             "languages": [{"key": "/languages/eng"}],
-            "covers": [8309121]
+            "covers": [8309121],
+            "works": [{"key": "/works/OL17553231W"}]
         }"#;
         let e: EditionJson = serde_json::from_str(json).unwrap();
         assert_eq!(e.number_of_pages, Some(490));
         assert_eq!(e.publish_date.as_deref(), Some("Aug 25, 2017"));
+        // The key the second request is made against. No work key, no request.
+        assert_eq!(
+            e.works.unwrap()[0].key.as_deref(),
+            Some("/works/OL17553231W")
+        );
     }
 }

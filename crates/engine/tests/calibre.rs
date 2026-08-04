@@ -244,6 +244,16 @@ async fn a_library_import_builds_the_command_line_and_lands_the_books() {
     assert_eq!(book.isbn_13.as_deref(), Some("9781455563937"));
     assert_eq!(book.publish_year, Some(2017));
     assert_eq!(book.language.as_deref(), Some("en"));
+    // Series used to be dropped outright for want of a column (migration
+    // `0013`). Calibre is the one origin here that curates it by hand.
+    assert_eq!(book.series.as_deref(), Some("Saga"));
+    assert_eq!(book.series_index, Some(1.0));
+    // …and its tags are still **shelves**, not subjects: they go to
+    // `book_tags`, which is a different table with a different meaning.
+    assert!(
+        book.subjects.is_empty(),
+        "a calibre tag is a minted shelf, never a bibliographic subject"
+    );
     // The cover was copied into our own images dir, under a name that cannot
     // collide — every cover in a calibre library is called `cover.jpg`.
     let cover = PathBuf::from(book.cover_path.expect("a cover path"));

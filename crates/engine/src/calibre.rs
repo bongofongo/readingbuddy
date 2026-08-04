@@ -287,6 +287,10 @@ pub struct CalibreBook {
     /// file that was opened whose `partial_md5` the sidecar carries.
     pub formats: Vec<PathBuf>,
     pub series: Option<String>,
+    /// The book's position in [`CalibreBook::series`]. Calibre writes it as a
+    /// float and numbers novellas 1.5, which is why `books.series_index` is
+    /// REAL.
+    pub series_index: Option<f64>,
     /// Calibre's `timestamp` — when the book was added to *that* library.
     pub added: Option<i64>,
 }
@@ -385,6 +389,8 @@ struct RawRow {
     tags: Option<StringOrList>,
     #[serde(default)]
     series: Option<String>,
+    #[serde(default)]
+    series_index: Option<f64>,
 }
 
 /// Parse `calibredb list --for-machine` output.
@@ -399,6 +405,7 @@ pub fn parse_library(json: &str) -> Result<Vec<CalibreBook>> {
 }
 
 fn row_to_book(r: RawRow) -> CalibreBook {
+    let series = r.series.clone().filter(|s| !s.trim().is_empty());
     // ISBN can arrive in either the dedicated column or the identifiers map,
     // and in practice the map is the one that is filled in. Both go through
     // `normalize_isbn` like every ISBN entering the system — calibre's field is
@@ -437,7 +444,13 @@ fn row_to_book(r: RawRow) -> CalibreBook {
             .formats
             .map(|f| f.values().into_iter().map(PathBuf::from).collect())
             .unwrap_or_default(),
-        series: r.series.filter(|s| !s.trim().is_empty()),
+        series: series.clone(),
+        // **`series_index` is 1.0 on a book with no series at all** — calibre's
+        // default rather than a claim, and it is in the recorded fixture on two
+        // of three rows. Taken at face value it would say every standalone book
+        // is the first of something. The index exists only where the name does;
+        // that is the same pair rule `MERGE_RULES` enforces one layer down.
+        series_index: series.as_ref().and(r.series_index),
         added: r.timestamp.as_deref().and_then(unix_of),
     }
 }
@@ -817,6 +830,18 @@ async fn apply(
         isbn_10: cb.isbn_10.clone(),
         isbn_13: cb.isbn_13.clone(),
         description: cb.description.clone(),
+        // **Series is no longer dropped** (migration `0013`). It used to be,
+        // with a note saying there was nowhere to put it; there is now, and
+        // calibre is the one origin here that has curated the field by hand.
+        // The pair moves together or not at all — an index without the name it
+        // indexes is not a fact about anything — which is the same rule the
+        // federated merge and `MERGE_RULES`' pair guard follow.
+        series: cb.series.clone(),
+        series_index: cb.series_index,
+        // Subjects stay empty on purpose: calibre's `tags` are **minted
+        // shelves**, which is `book_tags`, and folding them into `subjects`
+        // would merge the two vocabularies migration `0013` exists to keep
+        // apart.
         ..Default::default()
     };
     let created = book_id.is_none();
@@ -1003,6 +1028,7 @@ mod tests {
         );
         assert_eq!(p.tags, vec!["fiction", "korean-lit"]);
         assert_eq!(p.series.as_deref(), Some("Saga"));
+        assert_eq!(p.series_index, Some(1.0));
         assert_eq!(p.formats.len(), 2, "every format, not just the epub");
         assert!(p.cover.is_some());
     }
@@ -1033,6 +1059,11 @@ mod tests {
         assert_eq!(bare.title.as_deref(), Some("Untitled Draft"));
         assert!(bare.authors.is_empty());
         assert_eq!(bare.series, None);
+        assert_eq!(
+            bare.series_index, None,
+            "calibre writes series_index 1.0 on a book with no series; that is \
+             a default, not a claim that this is book one of something"
+        );
         assert_eq!(bare.publisher, None);
         assert_eq!(bare.isbn_10, None);
         assert_eq!(bare.isbn_13, None);
