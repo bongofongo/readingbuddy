@@ -6,6 +6,7 @@ mod highlights;
 mod notes;
 mod provenance;
 mod ratings;
+mod reading_events;
 mod readings;
 mod sidecar_seen;
 
@@ -18,6 +19,10 @@ pub use highlights::{Highlight, NewHighlight};
 pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit, OutgoingLink};
 pub use provenance::BookTag;
 pub use ratings::{Rating, RatingScale};
+pub use reading_events::{
+    ActivitySummary, Confidence, DayActivity, DayRange, FillStats, NewReadingEvent, ReadingEvent,
+    RefillReport, SOURCE_KOREADER, SOURCE_VAULT, day_of_ko_datetime, day_of_unix,
+};
 pub use readings::{
     Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
 };
