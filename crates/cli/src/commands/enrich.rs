@@ -63,6 +63,12 @@ pub async fn enrich(engine: &Engine, selector: &str) -> Result<()> {
                 println!("    wrong ISBN? readingbuddy set {selector} --isbn <isbn>");
             }
         }
+        EnrichOutcome::NoAnswer => {
+            // Deliberately not "no provider knows this book": one of them never
+            // spoke. A dead network must not read as a fact about the book.
+            println!("{title}: no answer — the providers above did not come back.");
+            println!("    nothing was written. try again in a moment.");
+        }
         EnrichOutcome::Unaskable => {
             println!("{title}: nothing to ask with — no ISBN, and no title to match on.");
             println!("    readingbuddy set {selector} --title \"...\" --author \"...\"");

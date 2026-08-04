@@ -107,6 +107,18 @@ pub enum EnrichOutcome {
     Refused { candidates: Vec<EnrichCandidate> },
     /// Every provider answered, and none of them knows this book.
     NothingFound,
+    /// Nothing came back and **somebody was never heard from**: a provider
+    /// failed or timed out, so nothing here is an answer about the book.
+    ///
+    /// Found by the first hand-run, where OpenLibrary timed out and Google
+    /// Books returned a keyless 429 and this reported *no provider knows this
+    /// book* — a dead network wearing the shape of a fact, which is the one
+    /// thing `docs/decisions.md`'s degradation rule exists to stop. It leans
+    /// deliberately: one provider failing while the other returns nothing is
+    /// still this, because "none of them knows it" cannot be said when one of
+    /// them did not speak. Under-claiming has a next move (try again);
+    /// over-claiming ends the conversation.
+    NoAnswer,
     /// There is nothing to ask with: no ISBN, and no title to match on.
     /// Absence reported, never a guess.
     Unaskable,
@@ -259,9 +271,10 @@ pub(crate) async fn enrich_metadata(
                     EnrichOutcome::Enriched(EnrichMatch::Isbn),
                 ),
                 None => {
+                    let outcome = silence(&warnings);
                     return Ok(EnrichReport {
                         warnings,
-                        ..EnrichReport::empty(book_id, EnrichOutcome::NothingFound)
+                        ..EnrichReport::empty(book_id, outcome)
                     });
                 }
             }
@@ -278,7 +291,7 @@ pub(crate) async fn enrich_metadata(
                 let outcome = if any_results {
                     EnrichOutcome::Refused { candidates }
                 } else {
-                    EnrichOutcome::NothingFound
+                    silence(&warnings)
                 };
                 return Ok(EnrichReport {
                     warnings,
@@ -358,6 +371,20 @@ pub(crate) async fn enrich_metadata(
         cover: None,
         warnings,
     })
+}
+
+/// What an empty answer means, which depends on whether anyone was heard from.
+///
+/// "No provider knows this book" is a claim about the book. It can only be made
+/// when every provider actually answered — otherwise the honest report is that
+/// we did not find out, and the difference is the whole reason `Diagnostic`
+/// exists rather than a `Vec<String>` nobody branches on.
+fn silence(warnings: &[Diagnostic]) -> EnrichOutcome {
+    if warnings.is_empty() {
+        EnrichOutcome::NothingFound
+    } else {
+        EnrichOutcome::NoAnswer
+    }
 }
 
 /// Every merge column whose value moved, with the provider now answerable.
@@ -807,6 +834,57 @@ mod tests {
             "an unknown ISBN must not fall through to the title search: {:?}",
             report.outcome
         );
+    }
+
+    /// **A dead network is not an answer about the book.**
+    ///
+    /// Found by the first hand-run: OpenLibrary timed out, Google Books returned
+    /// a keyless 429, and this reported "no provider knows this book" — which is
+    /// a claim about the book made out of two failures to reach anyone. It
+    /// leans, on purpose: one provider failing while the other returns nothing
+    /// is still `NoAnswer`, because "none of them knows it" cannot be said when
+    /// one of them did not speak.
+    #[tokio::test]
+    async fn every_provider_falling_over_is_no_answer_not_nothing_found() {
+        let (s, id) = sidecar_seeded("Pachinko", &["Min Jin Lee"]).await;
+        let both_down = vec![
+            Fake::new(ProviderId::OpenLibrary).broken().boxed(),
+            Fake::new(ProviderId::GoogleBooks).broken().boxed(),
+        ];
+        let report = enrich_metadata(&s, &both_down, id).await.unwrap();
+        assert!(
+            matches!(report.outcome, EnrichOutcome::NoAnswer),
+            "{:?}",
+            report.outcome
+        );
+        assert_eq!(report.warnings.len(), 2);
+        assert!(report.filled.is_empty());
+
+        // One down, one answering with nothing: still not a fact about the book.
+        let half = vec![
+            Fake::new(ProviderId::OpenLibrary).broken().boxed(),
+            Fake::new(ProviderId::GoogleBooks).boxed(),
+        ];
+        let report = enrich_metadata(&s, &half, id).await.unwrap();
+        assert!(matches!(report.outcome, EnrichOutcome::NoAnswer));
+
+        // The ISBN path takes the same care, and it is the path where a wrong
+        // "nobody knows this" would send the user editing a correct ISBN.
+        let s2 = Storage::connect("sqlite::memory:").await.unwrap();
+        let id2 = s2
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    isbn_13: Some("9781455563937".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let providers = vec![Fake::new(ProviderId::OpenLibrary).broken().boxed()];
+        let report = enrich_metadata(&s2, &providers, id2).await.unwrap();
+        assert!(matches!(report.outcome, EnrichOutcome::NoAnswer));
     }
 
     /// Nothing to ask with. Absence is reported, never guessed at.

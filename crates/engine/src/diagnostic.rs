@@ -380,6 +380,9 @@ impl Diagnostic {
             },
             severity: Severity::Warning,
             detail: "no md5 on the statistics row; nothing to join on".to_string(),
+        }
+    }
+
     pub fn cover_unavailable(err: &EngineError) -> Self {
         Diagnostic {
             kind: DiagnosticKind::CoverUnavailable {
