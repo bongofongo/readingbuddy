@@ -59,8 +59,8 @@
 //!    database is a different file and does.
 //! 2. **`page_stat_data.duration` is in seconds**, and `start_time` is
 //!    `os.time()` — a true unix epoch, unlike the sidecar's zoneless local
-//!    wall clock. See [`DAY_SKEW`] below, which is the sharpest correction this
-//!    item forced.
+//!    wall clock. See *The day skew* below, which is the sharpest correction
+//!    this item forced.
 //! 3. **The database is WAL** (`PRAGMA journal_mode=WAL` where the device
 //!    supports it), so copying only the main file loses every page turn since
 //!    the last checkpoint. [`copy_out`] takes the `-wal` and `-shm` siblings.
@@ -70,6 +70,35 @@
 //! 5. **There is a `page_stat` VIEW** that rescales page numbers onto the
 //!    book's current page count. This module reads the raw table instead — see
 //!    [`AGGREGATE`].
+//!
+//! # The day skew
+//!
+//! **The correction worth carrying out of this item.** The two KOReader sources
+//! disagree about what a timestamp is, and item 21's log has one `day` column
+//! for both:
+//!
+//! * A sidecar's `datetime` is `os.date("%Y-%m-%d %H:%M:%S")` — device-*local*
+//!   wall clock with no zone — which `ko_datetime_to_unix` and the highlight
+//!   filler both read as UTC. That is not a bug; no offset is recorded anywhere
+//!   in the file, so there is nothing else to read it as.
+//! * `page_stat_data.start_time` is `os.time()` — a genuine unix epoch, which
+//!   `date(start_time,'unixepoch')` turns into a genuine **UTC** day.
+//!
+//! So for **any reader not on UTC**, a session near their local midnight is
+//! stamped one day by the highlight filler and the adjacent day by this one,
+//! and the two land on different `(book_id, day, source)` rows instead of
+//! merging. It cuts both ways rather than favouring a hemisphere: at UTC+2 a
+//! 00:30 session reads as the new day from the sidecar and the old one from the
+//! statistics, and at UTC−5 a 21:00 session does the reverse.
+//!
+//! **Left as-is, deliberately.** Every alternative is worse: shifting
+//! `start_time` by a guessed offset invents data, and shifting it by *this*
+//! machine's offset would make an import's result depend on where the desktop
+//! happens to be, so re-importing on a laptop that had flown somewhere would
+//! rewrite history. Item 21 chose UTC for the whole table and this follows it.
+//! The visible cost is bounded and benign — an extra `inferred` row on an
+//! adjacent day, never a wrong minute count — and the honest fix is a device
+//! that records its offset, which no KOReader version does.
 //!
 //! # Privacy
 //!
@@ -99,32 +128,6 @@ pub const KNOWN_SCHEMA_VERSION: i64 = 20221111;
 /// install (`DataStorage:getSettingsDir()`).
 pub const STATS_DB_NAME: &str = "statistics.sqlite3";
 const SETTINGS_DIR: &str = "settings";
-
-/// **The correction worth carrying out of this item.**
-///
-/// The two KOReader sources disagree about what a timestamp is, and item 21's
-/// log has one `day` column for both:
-///
-/// * A sidecar's `datetime` is `os.date("%Y-%m-%d %H:%M:%S")` — device-*local*
-///   wall clock with no zone — which `ko_datetime_to_unix` and the highlight
-///   filler both read as UTC. That is not a bug; there is no offset recorded to
-///   read it any other way.
-/// * `page_stat_data.start_time` is `os.time()` — a genuine unix epoch, which
-///   `date(start_time,'unixepoch')` turns into a genuine **UTC** day.
-///
-/// So for a reader west of Greenwich, an evening's reading can be stamped one
-/// day by the highlight filler and the previous day by this one, and the two
-/// then land on different `(book_id, day, source)` rows instead of merging.
-///
-/// **Left as-is, deliberately.** The alternatives are all worse: shifting
-/// `start_time` by a guessed offset invents data, and shifting it by *this*
-/// machine's offset would make the import's result depend on where the desktop
-/// happens to be, so re-importing on a laptop that flew somewhere would rewrite
-/// history. Item 21 chose UTC for the whole table and this follows it. The
-/// visible consequence is bounded and benign — an extra `inferred` row on an
-/// adjacent day, never a wrong minute count — and the honest fix is for a
-/// device to record its offset, which no KOReader version does.
-pub const DAY_SKEW: () = ();
 
 /// What one pass over a device's statistics did.
 ///
@@ -364,13 +367,28 @@ async fn write_events(
     let mut events = Vec::new();
     let mut unmatched = std::collections::BTreeSet::new();
     let mut matched = std::collections::BTreeSet::new();
+    // The rows arrive grouped by md5 and a well-read book has hundreds of days,
+    // so the join is resolved once per *book* rather than once per row. On a
+    // real device that is the difference between one query and three hundred
+    // identical ones.
+    let mut seen: std::collections::HashMap<String, Option<i64>> = std::collections::HashMap::new();
 
     for m in measured {
-        let Some(book) = storage.find_book_by_partial_md5(&m.md5).await? else {
+        let book_id = match seen.get(&m.md5) {
+            Some(hit) => *hit,
+            None => {
+                let id = storage
+                    .find_book_by_partial_md5(&m.md5)
+                    .await?
+                    .and_then(|b| b.id);
+                seen.insert(m.md5.clone(), id);
+                id
+            }
+        };
+        let Some(book_id) = book_id else {
             unmatched.insert(m.md5);
             continue;
         };
-        let Some(book_id) = book.id else { continue };
         matched.insert(book_id);
 
         // Per-file statistics know nothing about rereads, so the attribution
