@@ -61,8 +61,9 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    BookFile, BookSort, BookTag, FlashcardRow, Highlight, MergeReport, NewHighlight, NoteRecord,
-    NoteSearchHit, OutgoingLink, Rating, RatingScale, Reading, Storage,
+    ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FlashcardRow,
+    Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit, OutgoingLink,
+    Rating, RatingScale, Reading, ReadingEvent, RefillReport, Storage,
 };
 pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 
@@ -417,6 +418,45 @@ impl Engine {
     /// Close the open reading and start a fresh one. Returns its id.
     pub async fn reread(&self, book_id: i64) -> Result<i64> {
         self.storage.reread(book_id).await
+    }
+
+    // ---- reading events ----------------------------------------------------
+
+    /// Rebuild the activity log from everything already in the database:
+    /// highlight stamps, note timestamps, reading endpoints.
+    ///
+    /// Explicit, and called by nothing here. An import that also refilled would
+    /// make the log a side effect of whichever importer ran last, and a filler
+    /// that needs a device (item 31) or a typed page (item 22) writes through
+    /// [`Storage::record_reading_events`] instead.
+    ///
+    /// Idempotent: a second call with nothing changed upstream reports zero
+    /// inserted and zero updated.
+    pub async fn refill_reading_events(&self) -> Result<RefillReport> {
+        self.storage.refill_reading_events().await
+    }
+
+    /// One book's activity log, oldest day first.
+    pub async fn reading_events(&self, book_id: i64) -> Result<Vec<ReadingEvent>> {
+        self.storage.reading_events(book_id).await
+    }
+
+    /// What is known about a period — books finished, days with activity, notes
+    /// and links written, and minutes and pages **where they were measured**.
+    ///
+    /// `minutes` and `pages` come back `None` when nothing in the period
+    /// measured them. That is not the same answer as zero and must not be
+    /// rendered as one: a reader whose library came from a Goodreads CSV has no
+    /// minutes at all, and a screen that shows them `0` has told them something
+    /// false about their own reading.
+    pub async fn activity_summary(&self, range: &DayRange) -> Result<ActivitySummary> {
+        self.storage.activity_summary(range).await
+    }
+
+    /// The days of a period that carry an event. The set behind
+    /// `ActivitySummary::activity_days`, for a caller that wants to show them.
+    pub async fn activity_by_day(&self, range: &DayRange) -> Result<Vec<DayActivity>> {
+        self.storage.activity_by_day(range).await
     }
 
     // ---- highlights --------------------------------------------------------
