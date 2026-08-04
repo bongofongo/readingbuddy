@@ -39,6 +39,20 @@ design has gone wrong.
 Refilling must be idempotent. A device is scanned repeatedly; the same day must
 not accumulate.
 
+**Three things item 21 settled that bind you**, discovered while building it and
+not in this prompt's first draft:
+
+- The primary key is **`(book_id, day, source)`** and you write `source =
+  'koreader'` — the *same* rows the highlight-day filler already writes. You are
+  upgrading its inferred days with measured minutes, not adding a parallel set.
+- The upsert is a **no-clobber merge**, not last-writer-wins: `COALESCE` the
+  fields you have no opinion about, and `confidence` ratchets `inferred` →
+  `measured` and never back. Follow it. **Do not delete-then-insert scoped by
+  source** — that wipes the highlight filler's days, and it is the one way to
+  break item 21's promise that a later filler changes no query.
+- `reading_id` is an **attribution**, not part of the key. Leave it NULL when the
+  day's evidence does not settle on one read.
+
 ## Three things it must get right
 
 - **Read-only, copy-then-read.** It is the user's device and a live SQLite file
