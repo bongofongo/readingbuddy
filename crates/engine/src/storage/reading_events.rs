@@ -641,10 +641,13 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, id)
@@ -1295,10 +1298,13 @@ mod props {
         let mut books = Vec::new();
         for n in 0..3 {
             books.push(
-                s.upsert_book(&Book {
-                    title: Some(format!("book {n}")),
-                    ..Default::default()
-                })
+                s.upsert_book(
+                    &Book {
+                        title: Some(format!("book {n}")),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             );

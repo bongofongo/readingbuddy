@@ -628,10 +628,13 @@ mod props {
     async fn library(storage: &Storage) {
         for book in 0..3 {
             let id = storage
-                .upsert_book(&Book {
-                    title: Some(format!("book {book}")),
-                    ..Default::default()
-                })
+                .upsert_book(
+                    &Book {
+                        title: Some(format!("book {book}")),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap();
             storage
