@@ -18,7 +18,7 @@ pub use books::{BookSort, MergeReport};
 /// 30's enrichment assembles per-field attribution and prints held-back values,
 /// and both have to name columns *this* table knows rather than strings that
 /// look like column names.
-pub(crate) use books::{field_value, fields_said, merge_columns};
+pub(crate) use books::{field_pair, field_value, fields_said, merge_columns};
 pub use device_books::LinkedBy;
 pub use field_provenance::{FieldSource, Source};
 pub use flashcards::FlashcardRow;

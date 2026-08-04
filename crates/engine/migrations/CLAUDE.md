@@ -30,7 +30,9 @@ The reasoning behind every migration lives beside the module that uses it:
 `0001`–`0002` and `0007`–`0008` in [`../CLAUDE.md`](../CLAUDE.md) under
 "notes.rs"; `0003`/`0006` under "device.rs"; `0004` under "koreader.rs"; `0005`
 and `0011`–`0012` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md);
-`0009` under "goodreads.rs"; `0010` under "files.rs".
+`0009` under "goodreads.rs"; `0010` under "files.rs"; `0013` in
+[`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what it
+deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md).
 
 `0012` is the repo's first **deliberate non-back-fill**, and the argument is in
 the file itself: every signal that might attribute an existing row

@@ -557,3 +557,57 @@ async fn highlights_for_reading_is_that_read_and_only_that_read() {
 fn unix(day: &str) -> Option<i64> {
     readingbuddy::storage::ko_datetime_to_unix(&format!("{day} 00:00:00"))
 }
+
+/// **The three fields migration `0013` added are the user's to correct**, and
+/// this is the assertion that says so — `docs/decisions.md` bans a field a
+/// provider can write and a user cannot, and the door is `set_book_fields`,
+/// which is field-generic through `MERGE_RULES` and therefore needed no code to
+/// carry them.
+///
+/// What is *not* here is the CLI half: `rb set` builds its `Book` from explicit
+/// flags, so `--series`, `--series-index` and `--subject` are three clap
+/// arguments this item deliberately did not add (it is engine-only). Until they
+/// land, the field is correctable through the API and not from a terminal.
+#[tokio::test]
+async fn subjects_and_series_can_be_made_the_users_own() {
+    let (_tmp, engine) = engine().await;
+    let saved = engine
+        .save_book(&Book {
+            title: Some("Dune Messiah".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = saved.id.unwrap();
+
+    let after = engine
+        .set_book_fields(
+            id,
+            &Book {
+                subjects: vec!["Science fiction".into()],
+                series: Some("Dune".into()),
+                series_index: Some(2.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.series.as_deref(), Some("Dune"));
+    assert_eq!(after.series_index, Some(2.0));
+    assert_eq!(after.subjects, vec!["Science fiction"]);
+
+    let mine: Vec<String> = engine
+        .field_provenance(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.source == "user")
+        .map(|f| f.field)
+        .collect();
+    for field in ["subjects", "series", "series_index"] {
+        assert!(
+            mine.iter().any(|f| f == field),
+            "{field} is not claimed: {mine:?}"
+        );
+    }
+}

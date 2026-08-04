@@ -393,6 +393,20 @@ pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
         .and_then(|r| (r.show)(book))
 }
 
+/// The column whose user-ownership also protects `col` — see [`Rule::pair`].
+///
+/// `pub(crate)` for `enrich.rs`, whose *report* has to ask the same question the
+/// merge clause asks: a field held back because the user owns its partner is a
+/// field silently not updated, which is the state `EnrichReport::held` exists to
+/// remove. Asked of the table rather than re-derived, for the reason every other
+/// consumer is.
+pub(crate) fn field_pair(col: &str) -> Option<&'static str> {
+    MERGE_RULES
+        .iter()
+        .find(|r| r.col == col)
+        .and_then(|r| r.pair)
+}
+
 /// Which side of a merge wins where both have something to say.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Winner {

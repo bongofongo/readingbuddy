@@ -68,7 +68,7 @@ use crate::error::{EngineError, Result};
 use crate::matching::{CANDIDATE_MIN, Prepared, Query};
 use crate::providers::{MetadataProvider, ProviderBook, ProviderId, SearchRequest};
 use crate::search::{self, FieldClaims};
-use crate::storage::{Source, Storage, field_value, merge_columns};
+use crate::storage::{Source, Storage, field_pair, field_value, merge_columns};
 
 /// How the record that was written was found.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -342,7 +342,14 @@ pub(crate) async fn enrich_metadata(
             claim_list.push((field, source.into()));
         }
         let kept = field_value(&before, field);
-        if owned.contains(field) && kept.as_deref() != Some(offered.as_str()) {
+        // **Owning half a pair holds the whole pair** (`Rule::pair`), so the
+        // report has to read ownership the same way the merge clause does.
+        // Otherwise a `series_index` held back because the user named the
+        // series is a field that silently did not update — precisely what this
+        // list exists to make impossible.
+        let held_back =
+            owned.contains(field) || field_pair(field).is_some_and(|p| owned.contains(p));
+        if held_back && kept.as_deref() != Some(offered.as_str()) {
             held.push(HeldField {
                 field,
                 offered,
@@ -952,6 +959,62 @@ mod tests {
         assert_eq!(held.offered_by, Some(Source::OpenLibrary));
         assert!(
             !report.filled.iter().any(|c| c.field == "page_count"),
+            "a held field is not also reported as filled"
+        );
+    }
+
+    /// **A held *pair* is reported as held, not silently skipped.**
+    ///
+    /// The user names the series and never says which number it is. A provider
+    /// that knows a different series then offers an index, and the merge refuses
+    /// it — because "Dune" plus "#2 of Dune Chronicles" is a row that
+    /// contradicts itself. The report has to say so: an index that quietly did
+    /// not land looks exactly like a provider that had none, which is the state
+    /// `held` exists to remove.
+    #[tokio::test]
+    async fn an_index_held_because_the_user_owns_the_series_is_reported() {
+        let (s, id) = sidecar_seeded("Dune Messiah", &["Frank Herbert"]).await;
+        s.enrich_book(
+            id,
+            &Book {
+                series: Some("Dune".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        let providers = vec![
+            Fake::new(ProviderId::OpenLibrary)
+                .finds(vec![Book {
+                    series: Some("Dune Chronicles".into()),
+                    series_index: Some(2.0),
+                    ..record("Dune Messiah", &["Frank Herbert"])
+                }])
+                .boxed(),
+        ];
+        let report = enrich_metadata(&s, &providers, id).await.unwrap();
+
+        let book = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(book.series.as_deref(), Some("Dune"));
+        assert_eq!(book.series_index, None);
+
+        let mut held: Vec<&str> = report.held.iter().map(|h| h.field).collect();
+        held.sort_unstable();
+        assert_eq!(held, vec!["series", "series_index"], "{:?}", report.held);
+        let index = report
+            .held
+            .iter()
+            .find(|h| h.field == "series_index")
+            .unwrap();
+        assert_eq!(index.offered, "#2");
+        assert_eq!(
+            index.kept, None,
+            "nothing was kept — the field is empty and stays empty"
+        );
+        assert!(
+            !report.filled.iter().any(|c| c.field == "series_index"),
             "a held field is not also reported as filled"
         );
     }
