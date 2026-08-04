@@ -15,6 +15,7 @@ pub mod files;
 pub mod flashcards;
 pub mod goodreads;
 pub mod images;
+pub mod ko_statistics;
 pub mod koreader;
 /// The one answer to "is this the book I already have". Internal: a frontend
 /// asks an import path, never the matcher.
@@ -51,6 +52,7 @@ pub use goodreads::{
     GoodreadsBookReport, GoodreadsMatch, GoodreadsReport, ImportOptions as GoodreadsImportOptions,
     TextOutcome, UnmatchedRow,
 };
+pub use ko_statistics::{StatsImportReport, statistics_db};
 pub use koreader::{
     BookImportStats, ImportReport, KoStats, KoStatus, KoSummary, MatchCandidate, MatchMethod,
     PullReport,
@@ -677,8 +679,26 @@ impl Engine {
     }
 
     /// Pull a selection of the device in: one report per book.
+    ///
+    /// **Deliberately does not import statistics.** See
+    /// [`Engine::import_device_statistics`].
     pub async fn sync_device(&self, paths: &[PathBuf]) -> Result<Vec<PullReport>> {
         device::sync_device(&self.storage, paths).await
+    }
+
+    /// Import measured reading time from a mounted device's
+    /// `statistics.sqlite3` into the activity log.
+    ///
+    /// **A verb of its own, and not part of [`Engine::sync_device`].**
+    /// `docs/decisions.md` makes arrival read-only, and a device scan that
+    /// silently began importing months of timing data would not be read-only in
+    /// spirit even though every byte written is ours. The user asks for this by
+    /// name.
+    ///
+    /// Absence is ordinary: a device whose owner never enabled the statistics
+    /// plugin returns an empty report carrying a `Diagnostic`, not an error.
+    pub async fn import_device_statistics(&self, mount: &Path) -> Result<StatsImportReport> {
+        ko_statistics::import_device_statistics(&self.storage, mount).await
     }
 
     /// Library books that look like this sidecar's book but not enough to link

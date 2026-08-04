@@ -933,6 +933,31 @@ pub enum DiagnosticKindDto {
     CalibreCoverUnreadable {
         path: String,
     },
+    // ---- koreader statistics (item 31) -------------------------------------
+    //
+    // These cross the seam as five variants rather than folding into one
+    // "statistics unavailable", because *absence is the ordinary path* here and
+    // a frontend's next move differs for each: no database is a device whose
+    // owner never enabled the plugin (say nothing, or offer to explain), an
+    // unknown schema is a readingbuddy that needs updating, and an unmatched
+    // book is an invitation to link it.
+    StatisticsDbAbsent {
+        path: String,
+    },
+    StatisticsDbUnreadable {
+        path: String,
+        class: ErrorClassDto,
+    },
+    StatisticsSchemaUnknown {
+        path: String,
+        version: i64,
+    },
+    StatisticsBookUnmatched {
+        md5: String,
+    },
+    StatisticsBookNotIdentified {
+        title: String,
+    },
 }
 
 impl From<DiagnosticKind> for DiagnosticKindDto {
@@ -992,6 +1017,27 @@ impl From<DiagnosticKind> for DiagnosticKindDto {
             K::CalibreCoverUnreadable { path } => DiagnosticKindDto::CalibreCoverUnreadable {
                 path: path_str(&path),
             },
+            K::StatisticsDbAbsent { path } => DiagnosticKindDto::StatisticsDbAbsent {
+                path: path_str(&path),
+            },
+            K::StatisticsDbUnreadable { path, class } => {
+                DiagnosticKindDto::StatisticsDbUnreadable {
+                    path: path_str(&path),
+                    class: class.into(),
+                }
+            }
+            K::StatisticsSchemaUnknown { path, version } => {
+                DiagnosticKindDto::StatisticsSchemaUnknown {
+                    path: path_str(&path),
+                    version,
+                }
+            }
+            K::StatisticsBookUnmatched { md5 } => {
+                DiagnosticKindDto::StatisticsBookUnmatched { md5 }
+            }
+            K::StatisticsBookNotIdentified { title } => {
+                DiagnosticKindDto::StatisticsBookNotIdentified { title }
+            }
         }
     }
 }

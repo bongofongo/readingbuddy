@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 72fa7d0bfc9dcb15bed1c525148b201612852d75288bb4e26caf7d514dbdb7cc # shrinks to sessions = [Session { book: 0, day: 7, seconds: 0 }], (a, b) = (0, 7)

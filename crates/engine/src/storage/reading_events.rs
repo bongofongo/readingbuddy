@@ -37,6 +37,7 @@
 
 use sqlx::{Row, Sqlite, Transaction};
 
+use super::readings::READING_WINDOWS;
 use super::{Storage, now_unix};
 use crate::error::{EngineError, Result};
 
@@ -414,6 +415,48 @@ impl Storage {
         Ok(stats)
     }
 
+    /// Which read a **day** belongs to, or `None` when the evidence does not
+    /// settle on one.
+    ///
+    /// The day analogue of [`Storage::attribute_highlights`], and it goes
+    /// through the *same* [`READING_WINDOWS`] rather than a second copy — the
+    /// derivation of a missing `started_at` is the part that was wrong once
+    /// already, and a reread must not silently collect an earlier read's
+    /// minutes.
+    ///
+    /// Item 31 needs this because KOReader's `statistics.sqlite3` is **per
+    /// file**: it knows how long you read, and nothing whatever about rereads.
+    ///
+    /// Two deliberate calls:
+    ///
+    /// * The test is **overlap**, not containment. A day is 86 400 seconds
+    ///   wide and a reading can end at noon inside it; that read did hold part
+    ///   of the day, and a containment test would attribute the whole day to
+    ///   nobody every time a read ended mid-morning.
+    /// * Overlapping *two* windows yields `None` rather than the later one.
+    ///   `attribute_highlights` can prefer the later window because a highlight
+    ///   is an instant and the tie is genuinely near-arbitrary; a day that
+    ///   straddles a reread boundary is not a tie, it is a day whose minutes
+    ///   belong to both reads and cannot be split at this grain.
+    pub async fn reading_for_day(&self, book_id: i64, day: &str) -> Result<Option<i64>> {
+        if !is_day(day) {
+            return Err(EngineError::InvalidInput(format!(
+                "{day:?} is not a YYYY-MM-DD day"
+            )));
+        }
+        Ok(sqlx::query_scalar(&format!(
+            "WITH windows AS ({READING_WINDOWS}),
+                  span AS (SELECT CAST(strftime('%s', ?2 || ' 00:00:00') AS INTEGER) AS d0)
+             SELECT CASE WHEN count(*) = 1 THEN min(w.reading_id) END
+               FROM windows w, span
+              WHERE w.win_start <= span.d0 + 86399 AND w.win_end >= span.d0"
+        ))
+        .bind(book_id)
+        .bind(day)
+        .fetch_one(self.pool())
+        .await?)
+    }
+
     /// One book's log, oldest day first.
     pub async fn reading_events(&self, book_id: i64) -> Result<Vec<ReadingEvent>> {
         let rows = sqlx::query(&format!(
@@ -598,10 +641,13 @@ mod tests {
     async fn seeded() -> (Storage, i64) {
         let s = Storage::connect("sqlite::memory:").await.unwrap();
         let id = s
-            .upsert_book(&Book {
-                title: Some("Pachinko".into()),
-                ..Default::default()
-            })
+            .upsert_book(
+                &Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .unwrap();
         (s, id)
@@ -1252,10 +1298,13 @@ mod props {
         let mut books = Vec::new();
         for n in 0..3 {
             books.push(
-                s.upsert_book(&Book {
-                    title: Some(format!("book {n}")),
-                    ..Default::default()
-                })
+                s.upsert_book(
+                    &Book {
+                        title: Some(format!("book {n}")),
+                        ..Default::default()
+                    },
+                    None,
+                )
                 .await
                 .unwrap(),
             );
