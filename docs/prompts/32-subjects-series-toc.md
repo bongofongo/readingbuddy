@@ -63,6 +63,29 @@ providers' sets means (union? does an empty set mean "none" or "don't know"?) an
 write it down, because `MERGE_RULES` has no vocabulary for a set today and you
 are the one adding it.
 
+**Items 29, 30 and 31 have all landed since this prompt was written.** Three
+things they changed under you:
+
+- `MERGE_RULES` now generates **five** things, not two: the upsert's
+  `ON CONFLICT`, `enrich_book`'s `UPDATE`, `merge_books`' `dst`-wins fill, the
+  `field_provenance` stamps, and `Rule::show` (how a held-back field's offered
+  value prints). A new column is a new row there and nothing else — but check all
+  five, and note `PROBES` in `tests_support`, whose column list is asserted to
+  equal `MERGE_RULES`' in order, so your three fields will fail those sweeps with
+  a message rather than going quietly uncovered. That is deliberate; extend it.
+- **`rb set` exists** (item 30), and it is how a field becomes the user's. Decide
+  whether your new fields belong on it. A field a provider can write and a user
+  cannot correct is the dead end the axiom bans.
+- **Per-field provenance cannot protect a field *pair*, and yours is one.**
+  Item 30 hit this for real: a user-owned `isbn_13` held while the unowned
+  `isbn_10` landed from a *different edition*, so the row now carries two ISBNs
+  of two editions. `series` + `series_index` has exactly that shape — owning
+  "Dune" without owning "#2" is not a coherent state. Item 30 left the ISBN case
+  recorded rather than patched because the fix is a design decision (does a claim
+  attach to an identifier or to an edition?), and it needs a claim without a
+  value. **You are the second instance, which is what makes it worth deciding.**
+  Say what you concluded even if you conclude it is still not this item's to fix.
+
 ## Must not
 
 - **No new provider.** Out of scope for this wave. OpenLibrary's `/works/`
