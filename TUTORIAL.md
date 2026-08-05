@@ -153,7 +153,7 @@ rb notes --search "dignity"     # full-text search (FTS5) with snippets:
       Sunja's >>dignity<< under pressure
 ```
 
-Heads-up: if you edit a note file externally (Obsidian/vim), the full-text index does **not** pick up the change yet — the engine has the refresh hook (`refresh_note_from_disk`) but no `notes sync` CLI command exposes it so far. The file itself is always the source of truth.
+Edit a note file externally (Obsidian, vim, anything) and the full-text index catches up on its own: `rb notes --search` and `rb links` bring the index in line with the vault before they read it, and the TUI, the daemon and the desktop app follow the vault live while they run. There is nothing to run and no `notes sync` to remember. **The file is the source of truth**, in both directions — a file that disappears is never taken as a note you deleted, because other tools move files around and only deleting a note here deletes one.
 
 ### tmux binding
 
