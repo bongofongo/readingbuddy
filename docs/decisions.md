@@ -821,3 +821,26 @@ because item 31 needed somewhere to put reading time.
       *unobserved* in `docs/koreader-format.md` and wants a real PDF sidecar in
       the corpus before anything is built on it. And no CLI or TUI surface,
       which `files.rs` has never had.
+    - **The one gap item 22 opened and closed: per-reading progress on the
+      wire.** `ReadingDto` had `current_page` and no `progress`, so a screen
+      showing a *named* reading had only `BookDto::progress` — which is
+      `Progress::of_book`, the **current** read's numbers, printed under an
+      older read's heading on any reread. `Progress::of_reading` had existed
+      since item 17 and was reachable only by a frontend that links the engine,
+      so the GUI's only move was `current_page / page_count` above the API: the
+      row-state derivation `gui/CLAUDE.md` bans, and all three hazards
+      `Progress` was built to remove. The pairing is a derivation and now lives
+      in the engine (`Engine::readings_with_progress` and its two siblings),
+      because `readings` carries no length; `From<Reading> for ReadingDto` was
+      **removed** rather than made to guess, since filling the field with
+      `of_reading(&r, None)` would report "no percentage" for every book whose
+      length is known.
+    - **Two gaps found and deliberately left as later items.**
+      `MatchCandidate` keeps only a title and a score though `koreader::band`
+      is holding the whole `Book`, so the chooser a refusal leads to — the
+      screen where *which Dune is this* is the entire question — cannot show an
+      author without an N+1 `get_book`. And `reading_events` is per
+      `(book, day, source)` with no per-book day aggregate, so a log that shows
+      one row per day with the device's and your own claims summed would be
+      doing arithmetic above the seam. Neither blocks item 22; both are narrow,
+      migration-free engine items.

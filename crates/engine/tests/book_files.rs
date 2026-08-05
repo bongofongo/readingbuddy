@@ -828,3 +828,94 @@ async fn the_extension_decides_the_format_and_case_does_not() {
         "a partial download is not a pdf, whatever its bytes look like"
     );
 }
+
+// ---- item 22: a named reading's own progress --------------------------------
+
+/// The gap item 22 opened and closed: a screen showing one *specific* reading
+/// must not print the book's projection.
+///
+/// `Progress::of_book` reads `books.current_page`, which is a projection of the
+/// **current** read — so on a reread it prints today's numbers under the first
+/// read's heading. `Progress::of_reading` was already the right answer and had
+/// no way onto the API, which left a frontend computing `current_page /
+/// page_count` itself. `Engine::readings_with_progress` is the pairing, done
+/// where the page count lives.
+#[tokio::test]
+async fn each_reading_carries_its_own_progress_and_not_the_books() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Pachinko.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(500, None));
+    let id = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap()
+        .book_id
+        .unwrap();
+
+    // Read it once to page 500 and finish; then start again and get to 100.
+    engine
+        .update_progress(id, Some(500), Some(true))
+        .await
+        .unwrap();
+    engine.reread(id).await.unwrap();
+    engine.update_progress(id, Some(100), None).await.unwrap();
+
+    let reads = engine.readings_with_progress(id).await.unwrap();
+    assert_eq!(reads.len(), 2, "a reread is a row, not a flag");
+
+    // The first read is finished; the second is a fifth of the way in — and the
+    // fraction exists at all only because the PDF supplied a denominator.
+    assert_eq!(reads[0].1, readingbuddy::Progress::Finished);
+    assert_eq!(reads[1].1.percent(), Some(20));
+    assert_eq!(reads[1].1.page(), Some(100));
+
+    // The book's own projection is the *current* read's, which is the number
+    // that would have been printed under the first read's heading.
+    let book = engine.storage().get_book(id).await.unwrap().unwrap();
+    assert_eq!(readingbuddy::Progress::of_book(&book).percent(), Some(20));
+}
+
+/// A book read once: the two forms agree, which is what makes the pair form
+/// safe to use everywhere rather than only on rereads.
+#[tokio::test]
+async fn one_read_makes_the_two_progress_forms_agree() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Anna.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(200, None));
+    let id = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap()
+        .book_id
+        .unwrap();
+    engine.update_progress(id, Some(50), None).await.unwrap();
+
+    let book = engine.storage().get_book(id).await.unwrap().unwrap();
+    let reads = engine.readings_with_progress(id).await.unwrap();
+    assert_eq!(reads[0].1, readingbuddy::Progress::of_book(&book));
+
+    let active = engine.active_reading_with_progress(id).await.unwrap();
+    assert_eq!(active.unwrap().1, reads[0].1);
+    let one = engine.reading_with_progress(reads[0].0.id).await.unwrap();
+    assert_eq!(one.unwrap().1, reads[0].1);
+}
+
+/// A book with no length still reports a page, and no fraction. The case
+/// `pdf.rs` exists to keep reachable: `Started { page: Some(n), of: None }`.
+#[tokio::test]
+async fn a_reading_with_no_denominator_reports_a_page_and_no_fraction() {
+    let (_tmp, engine) = engine().await;
+    let book = engine
+        .save_book(&Book {
+            title: Some("Unmeasured".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = book.id.unwrap();
+    engine.update_progress(id, Some(42), None).await.unwrap();
+
+    let p = engine.readings_with_progress(id).await.unwrap()[0].1;
+    assert_eq!(p.page(), Some(42));
+    assert_eq!(p.percent(), None, "no denominator is no percentage, not 0%");
+}

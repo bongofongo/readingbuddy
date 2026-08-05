@@ -35,6 +35,8 @@ Three things that pass added here, and each is load-bearing:
   exhaustive over today's codes while the wire is not. The four warnings that
   names on every run are not silenced on purpose.
 
+- **`ReadingDto.progress` and the loss of `From<Reading>` (item 22).** A screen showing one *named* reading had no honest number on the wire: `BookDto::progress` is `Progress::of_book`, which reads the projections of the **current** read and therefore prints today's numbers under an older read's heading — `progress.rs` says so in its own doc. `Progress::of_reading` was already the right answer and was reachable only by a frontend that links the engine, i.e. by the TUI and not by the GUI, so the GUI's only move was `current_page / page_count` above the API — the row-state derivation `gui/CLAUDE.md` bans, walking into all three hazards `ProgressDto` documents. The pairing is a **derivation and lives in the engine** (`Engine::readings_with_progress` / `reading_with_progress` / `active_reading_with_progress`), because `readings` carries no length and deciding which book's length belongs to which read is not a projection. Above the seam there is deliberately **no `From<Reading> for ReadingDto`**: a bare `Reading` cannot answer the field, and an impl that filled it with `of_reading(&r, None)` would report "no percentage" for every book whose length is perfectly well known. `ReadingDto::new(reading, progress)` is the only constructor.
+
 Siblings: [`../daemon/CLAUDE.md`](../daemon/CLAUDE.md) (the transport) ·
 [`../engine/CLAUDE.md`](../engine/CLAUDE.md) (what this wraps)
 

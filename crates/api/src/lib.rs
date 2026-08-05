@@ -222,16 +222,36 @@ impl Api {
 
     // ---- readings ----------------------------------------------------------
 
+    /// Every reading of a book, oldest first, each carrying **its own**
+    /// progress (item 22).
+    ///
+    /// Through `readings_with_progress` rather than `list_readings`, because
+    /// pairing a read with the book's length is a derivation and this layer
+    /// must not do it — see `ReadingDto::progress`.
     pub async fn list_readings(&self, book_id: i64) -> ApiResult<Vec<ReadingDto>> {
-        Ok(map(self.engine.list_readings(book_id).await?))
+        Ok(self
+            .engine
+            .readings_with_progress(book_id)
+            .await?
+            .into_iter()
+            .map(|(r, p)| ReadingDto::new(r, p))
+            .collect())
     }
 
     pub async fn get_reading(&self, id: i64) -> ApiResult<Option<ReadingDto>> {
-        Ok(self.engine.get_reading(id).await?.map(Into::into))
+        Ok(self
+            .engine
+            .reading_with_progress(id)
+            .await?
+            .map(|(r, p)| ReadingDto::new(r, p)))
     }
 
     pub async fn active_reading(&self, book_id: i64) -> ApiResult<Option<ReadingDto>> {
-        Ok(self.engine.active_reading(book_id).await?.map(Into::into))
+        Ok(self
+            .engine
+            .active_reading_with_progress(book_id)
+            .await?
+            .map(|(r, p)| ReadingDto::new(r, p)))
     }
 
     pub async fn update_progress(

@@ -555,11 +555,35 @@ pub struct ReadingDto {
     pub ko_rating: Option<i64>,
     pub created_at: i64,
     pub last_modified: i64,
+    /// **This** reading's progress, not the book's (item 22).
+    ///
+    /// `BookDto::progress` is the *current* read's, which on a reread would
+    /// print today's numbers under an older read's heading —
+    /// `readingbuddy::Progress::of_book` says so in as many words. The pairing
+    /// with the book's length is done in the engine
+    /// (`Engine::readings_with_progress`), because `readings` has no page count
+    /// and deciding which length goes with which read is a derivation, not a
+    /// projection.
+    pub progress: ProgressDto,
 }
 
-impl From<Reading> for ReadingDto {
-    fn from(r: Reading) -> Self {
+impl ReadingDto {
+    /// A reading beside the progress the engine computed for it.
+    ///
+    /// There is deliberately **no `From<Reading>`**: a `Reading` alone cannot
+    /// answer `progress`, and an impl that filled it with
+    /// `Progress::of_reading(&r, None)` would quietly report "no percentage"
+    /// for every book whose length we know perfectly well.
+    pub fn new(r: Reading, progress: Progress) -> ReadingDto {
         ReadingDto {
+            progress: progress.into(),
+            ..ReadingDto::bare(r)
+        }
+    }
+
+    fn bare(r: Reading) -> ReadingDto {
+        ReadingDto {
+            progress: ProgressDto::Untouched,
             id: r.id,
             book_id: r.book_id,
             started_at: r.started_at,
@@ -834,9 +858,15 @@ pub struct OpenReadingDto {
 
 impl From<(Book, Reading)> for OpenReadingDto {
     fn from((book, reading): (Book, Reading)) -> Self {
+        // The reading's own progress, through the engine's own function. The
+        // length is right here on the book, so this is the one place the pair
+        // needs no round trip — and calling `Progress::of_reading` is not the
+        // derivation `ReadingDto::progress` warns about, it *is* the one
+        // implementation of it.
+        let progress = Progress::of_reading(&reading, book.page_count);
         OpenReadingDto {
             book: book.into(),
-            reading: reading.into(),
+            reading: ReadingDto::new(reading, progress),
         }
     }
 }

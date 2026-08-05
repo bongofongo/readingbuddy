@@ -529,7 +529,19 @@ source: string, current_page: number | null,
  * The device's own status, typed — [`KoStatusDto`] already existed and was
  * not being used here.
  */
-ko_status: KoStatusDto | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, };
+ko_status: KoStatusDto | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, 
+/**
+ * **This** reading's progress, not the book's (item 22).
+ *
+ * `BookDto::progress` is the *current* read's, which on a reread would
+ * print today's numbers under an older read's heading —
+ * `readingbuddy::Progress::of_book` says so in as many words. The pairing
+ * with the book's length is done in the engine
+ * (`Engine::readings_with_progress`), because `readings` has no page count
+ * and deciding which length goes with which read is a derivation, not a
+ * projection.
+ */
+progress: ProgressDto, };
 
 /**
  * One day of one book, as one source saw it.
