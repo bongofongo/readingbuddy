@@ -26,6 +26,10 @@ pub(crate) mod matching;
 pub mod names;
 pub mod notes;
 pub mod partial_md5;
+/// A PDF's length and, occasionally, its name — item 22. `epub`'s twin, and the
+/// module that makes "there is a page and no percentage" reachable rather than
+/// a divide by a sentinel.
+pub mod pdf;
 /// How far into a book a reading is, as a value — item 17b.
 pub mod progress;
 pub mod providers;
@@ -69,6 +73,7 @@ pub use koreader::{
 };
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use partial_md5::partial_md5;
+pub use pdf::{PdfInfo, pdf_info};
 pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
