@@ -204,6 +204,7 @@ fn the_subcommand_set_is_what_we_decided() {
     found.dedup();
 
     let expected = [
+        "activity",
         "add",
         "calibre",
         "cards",
@@ -229,6 +230,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "search",
         "set",
         "show",
+        "toc",
     ];
     assert_eq!(
         found, expected,
@@ -497,4 +499,111 @@ fn a_bad_selector_fails_loudly_and_an_underspecified_sync_writes_nothing() {
     let vague = cli.run(&["ko", "sync", device.to_str().unwrap()]);
     vague.has("--all");
     cli.run(&["list"]).has("library is empty");
+}
+
+/// The activity log, end to end — and the two rules it exists to keep.
+///
+/// **One: an empty log is not "you did not read", it is "nobody has built it
+/// yet".** No importer fills `reading_events` (deliberately — a log that filled
+/// itself as a side effect would be whichever importer ran last), so a fresh
+/// library reports nothing and has to name the move that changes that. A dead
+/// end here is exactly what `docs/decisions.md` bans.
+///
+/// **Two: absence is not zero.** A sidecar's highlight stamps say which days you
+/// were in the book and measure nothing at all, so the minutes total must read
+/// as unmeasured. `0` there is a false statement about the user's own reading,
+/// and it is one `unwrap_or(0)` away at every layer between the SQL and this
+/// line.
+#[test]
+fn an_empty_activity_log_names_the_move_and_a_refill_measures_nothing_it_did_not() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+    let id = cli.run(&["list"]).book_id();
+
+    // Nothing has filled the log, so it says so and names what does.
+    cli.run(&["activity", "--from", "2020-01-01", "--to", "2035-01-01"])
+        .has("nothing recorded here yet")
+        .has("activity --refill");
+
+    let refilled = cli.run(&[
+        "activity",
+        "--refill",
+        "--days",
+        "--from",
+        "2020-01-01",
+        "--to",
+        "2035-01-01",
+    ]);
+    refilled.has("rebuilt from what was already here");
+    // Highlight stamps place the days. They do not time them.
+    refilled.has("not measured").lacks("nothing recorded here");
+    // Nothing counts what was not done — no streak, no "n of 30".
+    refilled.lacks("streak").lacks("goal");
+
+    // The per-book view says who supplied each day and how much it claims —
+    // and here that is the sharpest form of the rule: these days are
+    // `measured`, because a reading's own endpoints are dates somebody
+    // recorded, and they still carry **no minutes**. Confidence is about the
+    // day, not about the columns beside it, and a renderer that read
+    // `measured` as "so there is a number" would print a zero nobody measured.
+    cli.run(&["activity", "--book", &id])
+        .has("koreader")
+        .has("measured")
+        .has("—");
+}
+
+/// A book with no owned file has **no chapter list to read**, which is not the
+/// same answer as an epub carrying no TOC — and the command has to say which.
+#[test]
+fn a_book_with_no_epub_says_there_is_no_file_rather_than_no_chapters() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+    let id = cli.run(&["list"]).book_id();
+
+    cli.run(&["toc", &id])
+        .has("no epub here")
+        .has("readingbuddy epub");
+}
+
+/// `set` writes the three columns item 32 added, echoes them, and refuses half a
+/// pair — a number with no series to belong to.
+#[test]
+fn set_writes_the_series_pair_and_refuses_half_of_it() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+    let id = cli.run(&["list"]).book_id();
+
+    let orphan = cli.try_run(&["set", &id, "--series-index", "2"]);
+    assert!(!orphan.ok, "an index with no series is not a correction");
+    assert!(orphan.stderr.contains("in no series"), "{}", orphan.stderr);
+
+    cli.run(&[
+        "set",
+        &id,
+        "--series",
+        "Dune",
+        "--series-index",
+        "2",
+        "--subject",
+        "Fiction / Literary",
+    ])
+    .has("series")
+    .has("Fiction / Literary");
+
+    // The pair reads as one fact, written the way a person writes it.
+    cli.run(&["show", &id])
+        .has("Dune #2")
+        .has("Fiction / Literary");
+
+    // …and numbering a book whose series is already recorded is allowed, which
+    // is the ordinary use of the flag the refusal above must not block.
+    cli.run(&["set", &id, "--series-index", "3"])
+        .has("series_index");
+    cli.run(&["show", &id]).has("Dune #3");
 }

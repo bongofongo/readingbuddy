@@ -15,6 +15,7 @@
 use anyhow::{Result, bail};
 use readingbuddy::{
     Book, Engine, EnrichCandidate, EnrichMatch, EnrichOutcome, FieldChange, HeldField, Source,
+    series_index_text,
 };
 
 use super::resolve_one;
@@ -199,6 +200,9 @@ fn flag_of(field: &str) -> Option<&'static str> {
         "page_count" => "page-count",
         "description" => "description",
         "isbn_10" | "isbn_13" => "isbn",
+        "subjects" => "subject",
+        "series" => "series",
+        "series_index" => "series-index",
         _ => return None,
     })
 }
@@ -244,6 +248,18 @@ pub struct SetArgs {
     pub page_count: Option<i64>,
     #[arg(long)]
     pub description: Option<String>,
+    /// Repeatable; replaces the subject set. A provider's subjects, not a shelf
+    /// — `docs/decisions.md` defers collections, and this is not one.
+    #[arg(long = "subject")]
+    pub subjects: Vec<String>,
+    #[arg(long)]
+    pub series: Option<String>,
+    /// Fractional is fine — novellas are 0.5. Refused when the book is in no
+    /// series and `--series` does not name one: an index alone is a number
+    /// under no name, which is the incoherent half-pair `Rule::pair` exists to
+    /// prevent.
+    #[arg(long = "series-index")]
+    pub series_index: Option<f64>,
 }
 
 /// Record what the user says, and that it was the user who said it.
@@ -265,6 +281,9 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
         language: args.language.clone(),
         page_count: args.page_count,
         description: args.description.clone(),
+        subjects: args.subjects.clone(),
+        series: args.series.clone(),
+        series_index: args.series_index,
         ..Default::default()
     };
     if let Some(raw) = &args.isbn {
@@ -284,6 +303,13 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
     if is_empty(&fields) {
         bail!("nothing to set — name at least one field (--help lists them)");
     }
+    if let Some(orphan) = orphan_index(&fields, &book) {
+        bail!(
+            "{} is in no series — name it too: --series \"…\" --series-index {}",
+            book.display_title(),
+            series_index_text(orphan)
+        );
+    }
 
     let after = engine.set_book_fields(id, &fields).await?;
     println!("{} — set, and recorded as yours:", after.display_title());
@@ -291,6 +317,18 @@ pub async fn set(engine: &Engine, args: &SetArgs) -> Result<()> {
         println!("    {field:<16}{}", clip(&value));
     }
     println!("    no provider merge will overwrite these.");
+    // `set_book_fields` sets and cannot clear, so renaming a series leaves the
+    // old number behind — silently, and reading as a fact about the new one.
+    // Saying so beats a `#2` that belongs to a different shelf.
+    if fields.series.is_some() && fields.series_index.is_none() && after.series_index.is_some() {
+        println!(
+            "    note: still numbered {} — --series-index changes it.",
+            after
+                .series_index
+                .map(series_index_text)
+                .expect("checked just above")
+        );
+    }
     Ok(())
 }
 
@@ -322,11 +360,30 @@ fn changed(fields: &Book) -> Vec<(&'static str, String)> {
     push("isbn_13", fields.isbn_13.clone());
     push("page_count", fields.page_count.map(|n| n.to_string()));
     push("description", fields.description.clone());
+    push(
+        "subjects",
+        (!fields.subjects.is_empty()).then(|| fields.subjects.join(", ")),
+    );
+    push("series", fields.series.clone());
+    push("series_index", fields.series_index.map(series_index_text));
     out
 }
 
 fn is_empty(fields: &Book) -> bool {
     changed(fields).is_empty()
+}
+
+/// An index with no series to belong to, if that is what was asked for.
+///
+/// Half a pair is not a correction — it is a number under no name, which is the
+/// incoherent row `Rule::pair` exists to prevent one layer down. Checked against
+/// the **stored** series as well as the flag, because numbering a book whose
+/// series is already recorded is the ordinary use of `--series-index` and
+/// demanding the name back would be a refusal with nothing wrong behind it.
+fn orphan_index(fields: &Book, stored: &Book) -> Option<f64> {
+    fields
+        .series_index
+        .filter(|_| fields.series.is_none() && stored.series.is_none())
 }
 
 #[cfg(test)]
@@ -404,6 +461,9 @@ mod tests {
             "isbn_10",
             "isbn_13",
             "translators",
+            "subjects",
+            "series",
+            "series_index",
         ] {
             let flag = flag_of(field).unwrap_or_else(|| panic!("{field} has no `set` flag"));
             assert!(
@@ -413,6 +473,58 @@ mod tests {
         }
         // A column `set` does not reach offers no move rather than a wrong one.
         assert_eq!(flag_of("cover_url"), None);
+    }
+
+    /// A series index alone is a number under no name — unless the book is
+    /// already in a series, which is the ordinary way this flag gets used.
+    #[test]
+    fn an_index_is_refused_only_when_no_series_names_it() {
+        let numbered = |n: f64| Book {
+            series_index: Some(n),
+            ..Default::default()
+        };
+        let in_dune = Book {
+            series: Some("Dune".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            orphan_index(&numbered(2.0), &Book::default()),
+            Some(2.0),
+            "nothing names this number"
+        );
+        // Renumbering a book whose series is on the row already.
+        assert_eq!(orphan_index(&numbered(2.5), &in_dune), None);
+        // Both halves in one command.
+        assert_eq!(
+            orphan_index(
+                &Book {
+                    series: Some("Dune".into()),
+                    ..numbered(2.0)
+                },
+                &Book::default()
+            ),
+            None
+        );
+        // A name with no number is not half a pair — an unnumbered series is an
+        // ordinary thing for a provider to know.
+        assert_eq!(orphan_index(&in_dune, &Book::default()), None);
+    }
+
+    /// The echo names every field `set` can write, including the three item 32
+    /// added — a field written and not echoed is a silent write, which is the
+    /// state this command exists to be the opposite of.
+    #[test]
+    fn the_echo_names_the_pair_and_the_subjects() {
+        let fields = Book {
+            subjects: vec!["Fiction / Literary".into()],
+            series: Some("Dune".into()),
+            series_index: Some(2.0),
+            ..Default::default()
+        };
+        let named: Vec<&str> = changed(&fields).iter().map(|(f, _)| *f).collect();
+        assert_eq!(named, ["subjects", "series", "series_index"]);
+        // Whole numbers print as whole numbers, not `2.0`.
+        assert_eq!(changed(&fields)[2].1, "2");
     }
 
     /// `set` with no field named must refuse rather than write an empty record

@@ -72,6 +72,26 @@ enum Cmd {
     },
     /// Show one book (selector: id, ISBN, or title fragment)
     Show { book: String },
+    /// The chapter list, read from the epub we own (item 32)
+    Toc { book: String },
+    /// What a period of reading held: days, minutes where measured, notes (item 21)
+    Activity {
+        /// One book's day-by-day log instead of the whole library's period
+        #[arg(long)]
+        book: Option<String>,
+        /// YYYY-MM-DD, inclusive. Defaults to the last 30 days
+        #[arg(long)]
+        from: Option<String>,
+        /// YYYY-MM-DD, inclusive. Defaults to today
+        #[arg(long)]
+        to: Option<String>,
+        /// List the days rather than only counting them
+        #[arg(long)]
+        days: bool,
+        /// Rebuild the log from what is already stored, then show it
+        #[arg(long)]
+        refill: bool,
+    },
     /// Ask the providers about a book you already have (item 30)
     Enrich { book: String },
     /// Correct a book's metadata, and record that you are the one who said so
@@ -327,6 +347,15 @@ enum KoCmd {
     },
     /// Wait for a reader to be plugged in and scan it. Read-only, ctrl-c to stop
     Watch,
+    /// Import measured reading time from the reader's own statistics (item 31)
+    ///
+    /// A verb of its own, and deliberately not part of `sync`: arrival is
+    /// read-only, and a scan that quietly imported months of timing data would
+    /// not be read-only in spirit. You ask for this by name.
+    Stats {
+        /// The mount to read `statistics.sqlite3` from
+        path: PathBuf,
+    },
     /// Pull books in from a mounted reader
     Sync {
         /// The mount to sync from
@@ -397,6 +426,26 @@ async fn main() -> Result<()> {
         Cmd::Epub { path } => commands::book::import_epub(&engine, &path).await?,
         Cmd::List { limit, sort } => commands::book::list(&engine, limit, &sort).await?,
         Cmd::Show { book } => commands::book::show(&engine, &book).await?,
+        Cmd::Toc { book } => commands::book::toc(&engine, &book).await?,
+        Cmd::Activity {
+            book,
+            from,
+            to,
+            days,
+            refill,
+        } => {
+            commands::activity::run(
+                &engine,
+                commands::activity::Args {
+                    book,
+                    from,
+                    to,
+                    days,
+                    refill,
+                },
+            )
+            .await?
+        }
         Cmd::Enrich { book } => commands::enrich::enrich(&engine, &book).await?,
         Cmd::Set(args) => commands::enrich::set(&engine, &args).await?,
         Cmd::Rm { book, yes } => commands::book::remove(&engine, &book, yes).await?,
@@ -481,6 +530,7 @@ async fn main() -> Result<()> {
             KoCmd::Link { path, book } => commands::ko::link(&engine, &path, &book).await?,
             KoCmd::Scan { path } => commands::ko::scan(&engine, path.as_deref()).await?,
             KoCmd::Watch => commands::ko::watch(&engine).await?,
+            KoCmd::Stats { path } => commands::ko::stats(&engine, &path).await?,
             KoCmd::Sync { path, all, books } => {
                 commands::ko::sync(&engine, &path, all, &books).await?
             }

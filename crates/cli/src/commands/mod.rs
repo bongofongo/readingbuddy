@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod book;
 pub mod calibre;
 pub mod cards;

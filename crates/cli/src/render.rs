@@ -88,6 +88,13 @@ pub fn book_details(b: &Book) -> String {
     push("language", b.language.clone());
     push("isbn-10", b.isbn_10.clone());
     push("isbn-13", b.isbn_13.clone());
+    // One line, because the pair is one fact: `Dune #2`, not a name and a
+    // number on separate rows for the reader to put back together.
+    push("series", b.series_label());
+    push(
+        "subjects",
+        (!b.subjects.is_empty()).then(|| b.subjects.join(", ")),
+    );
     push("pages", b.page_count.map(|p| p.to_string()));
     push("current page", b.current_page.map(|p| p.to_string()));
     push("finished", b.finished.then(|| "yes".to_string()));

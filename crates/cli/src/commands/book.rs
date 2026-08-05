@@ -70,6 +70,50 @@ pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
     Ok(())
 }
 
+/// The book's own chapter list, read out of the epub on every run.
+///
+/// **Three answers, not two**, and the middle one is why this command exists in
+/// the shape it does: no file we can read, a file that carries no navigable TOC,
+/// and the list. `docs/decisions.md` bans a dead end, and "nothing here" printed
+/// for both of the first two would make an ordinary EPUB3 book — whose `nav`
+/// document `epub =2.1.4` cannot read — look identical to a book with no file at
+/// all, with no move to offer for either.
+pub async fn toc(engine: &Engine, selector: &str) -> Result<()> {
+    let book = resolve_one(engine, selector).await?;
+    let id = book.id.expect("a stored book has an id");
+    let title = book.display_title();
+
+    let Some(toc) = engine.table_of_contents(id).await? else {
+        println!("{title}: no epub here to read a chapter list from.");
+        // Naming the command rather than "import one first": the move is a
+        // file, and `rb epub` is what takes one.
+        println!("    readingbuddy epub <path>");
+        return Ok(());
+    };
+    if toc.entries.is_empty() {
+        // Not an error and not a gap in the library — plenty of files carry no
+        // `toc.ncx` at all. Saying which file was read makes it checkable.
+        println!("{title}: this epub carries no table of contents.");
+        println!("    read from {}", short_sha(&toc.sha256));
+        return Ok(());
+    }
+
+    println!("{title} — {} chapters", toc.entries.len());
+    for e in &toc.entries {
+        // Depth is a column rather than a tree, so the indent is arithmetic.
+        // Two spaces per level on top of the two every detail line carries.
+        println!("  {}{}", "  ".repeat(e.depth), e.label);
+    }
+    println!("    read from {}", short_sha(&toc.sha256));
+    Ok(())
+}
+
+/// Enough of a content address to check one against another, and not the
+/// sixty-four characters that would wrap in every pane.
+fn short_sha(sha256: &str) -> String {
+    sha256.chars().take(12).collect()
+}
+
 pub async fn remove(engine: &Engine, selector: &str, yes: bool) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     let id = book.id.expect("stored book has id");

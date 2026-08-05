@@ -338,3 +338,55 @@ fn print_candidates(candidates: &[MatchCandidate]) {
         );
     }
 }
+
+/// `ko stats` — measured reading time out of the device's own
+/// `statistics.sqlite3` (item 31).
+///
+/// **Its own verb, and not part of `sync`.** `docs/decisions.md` makes arrival
+/// read-only, and a scan that quietly began importing months of timing data
+/// would not be read-only in spirit even though every byte written is ours.
+///
+/// The counts are printed even when nothing was imported, because
+/// `books_in_db` against `books_matched` is the whole answer to "why did this
+/// import so little" — a device full of books none of which the library holds
+/// is a linking problem, and a device with no statistics database at all is a
+/// plugin that was never enabled. Those need different next moves, so they must
+/// not print the same line.
+pub async fn stats(engine: &Engine, path: &Path) -> Result<()> {
+    let report = engine.import_device_statistics(path).await?;
+
+    for w in &report.warnings {
+        // Absence is ordinary here: no database, an unknown schema, a book the
+        // library does not hold. None of it is an error and none of it stops
+        // the rest, so these are warnings and the report below still prints.
+        eprintln!("warning: {w}");
+    }
+
+    match report.schema_version {
+        Some(v) => println!("{}: statistics database, schema {v}", path.display()),
+        // Not "0 books": there was nothing to read, which is a different fact
+        // from a database that held nothing.
+        None => {
+            println!("{}: no statistics database here.", path.display());
+            println!("    enable KOReader's statistics plugin on the device, then read a page.");
+            return Ok(());
+        }
+    }
+
+    println!(
+        "  {} of {} books are in your library",
+        report.books_matched, report.books_in_db
+    );
+    println!("  {} days measured", report.days);
+    println!(
+        "  {} new, {} changed",
+        report.events.inserted, report.events.updated
+    );
+    if report.books_in_db > 0 && report.books_matched == 0 {
+        // A linking problem wearing the shape of an empty import. `ko scan`
+        // is what shows which books the library does not hold.
+        println!("    nothing here matches a book you have.");
+        println!("    readingbuddy ko scan {}", path.display());
+    }
+    Ok(())
+}
