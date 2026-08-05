@@ -287,9 +287,9 @@ mod tests {
         );
     }
 
-    /// The prompt's invariant, stated as its own test because it is the whole
-    /// argument for filling absence at all: an invented thickness must be an
-    /// ordinary book, not a rail.
+    /// The condition that makes filling an absence defensible at all: an
+    /// invented thickness must land on an ordinary book, not on a rail. A book
+    /// nobody measured must not read as remarkably thin or remarkably fat.
     #[test]
     fn an_unknown_length_lands_inside_the_range_not_at_an_edge() {
         let s = EditionShape::new(None, None);
