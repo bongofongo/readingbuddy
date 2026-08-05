@@ -729,3 +729,116 @@ because item 31 needed somewhere to put reading time.
       device percentage where it previously showed nothing, because the fallback
       is no longer home-screen-only. And `rb book list` prints `[p.12]` where it
       printed `[12/0]`.
+
+20. **Covers a grid can actually use.** Migration `0014`. Its subject is a live
+    bug that three handoffs carried, and it is the reason the item went first.
+    - **Every Google Books cover collided on one filename**, and nothing in this
+      repo could see it. `filename_from_url` named a file from the URL's last
+      path segment; a Google Books thumbnail is `.../books/content?id=…`, so the
+      last segment is the literal string `content` for every cover Google has
+      ever served. Every GB-sourced jacket in a library wrote
+      `images_dir/content` and the last import won — two books rendering each
+      other's cover, permanently, with nothing on either screen looking wrong.
+      Epub extraction collided the same way on `slugify(title)` (two editions of
+      one book), and the `"cover.jpg"` fallback made a third reachable. Invisible
+      in a single-provider library, and `make dev-db` generates its own covers,
+      which is exactly how it survived.
+    - **Named by content hash**, the pattern `book_files` set in `0010`, with the
+      extension read from the bytes rather than from the URL or from the epub's
+      declared mime type. The path-traversal guard is **kept and re-argued
+      rather than deleted**: what changed is that both halves of the name are now
+      closed sets, so the property it asserts is provable instead of true by
+      accident of what `Url::parse` normalizes.
+    - **Two things content addressing bought, and one it broke.** The write is
+      idempotent and skip-if-present is free. But two books can now legitimately
+      share one file, and both `delete_book` and `merge_books` used to hand the
+      caller a path to unlink on the assumption that nothing else held it — which
+      would take a surviving book's cover with it. Both now ask the database.
+      `book_files` gets to skip that check because it is keyed on the sha alone
+      and a second holder is unrepresentable there; `books` holds a plain column
+      and a second holder is ordinary.
+    - **`cover_width`/`cover_height`/`cover_accent`/`cover_thumb_path` are not
+      `MERGE_RULES` rows**, and that is the decision this migration exists to
+      record. `MERGE_RULES` governs what a *record* can carry, with a source to
+      attribute; no provider publishes a width, and the only honest answer to
+      "where did this come from" is "we decoded the file". A `Federated::Local`
+      row would have said that in the table's vocabulary and would then have
+      handed every record-shaped writer a way to move one of them **without**
+      moving `cover_path` — a row whose stored dimensions describe a different
+      image, which nothing downstream can tell from a correct one.
+    - **`Rule::pair` is not that fix, and the reasons are worth keeping.** It is
+      binary and asserted symmetric, where this is a star of four columns around
+      a fifth; it guards against a *user claim* rather than against incoherence;
+      and `merge_books`' fill — the one place the incoherence was genuinely
+      reachable — runs with the user guard off, so the pair guard would never
+      have fired there at all.
+    - **One writer was not enough, and the test said so.** `Storage::set_cover`
+      writes all five columns or none, but `cover_path` *is* a `MERGE_RULES`
+      column with three other writers, and `Merge::Coalesce` under
+      `Winner::Incoming` means an incoming record's path wins — so a calibre row
+      or an `rb set` carrying a cover repointed the row and left the previous
+      jacket's measurements behind it. `merge_set` now also generates
+      `invalidate_cover_metrics`: a write that moves the path sets the four back
+      to NULL, from the same expression that stores the path, so it cannot fall
+      out of step with the merge rule, the user guard or the `dst`-wins
+      inversion. Between the two halves the bad row is unrepresentable rather
+      than guarded against.
+    - **`set_cover` replaces where every other writer coalesces**, which fixed a
+      latent bug rather than introducing an exception: `download_cover` went
+      through the no-clobber merge, so a re-fetch producing a *different* file
+      left the row pointing at the old one. Under URL naming the new file usually
+      had the same name, so nothing ever looked wrong.
+    - **The accent is stored unclamped.** `render3d` pushes it into a legible
+      luma band so a white jacket still reads as a board; that band is a
+      renderer's policy about its own lighting, not a fact about the file. The
+      engine stores the measurement and each frontend decides what it can see —
+      the same line item 17 drew. The border-median arithmetic is briefly
+      **duplicated** between `images.rs` and `render3d/texture.rs`; item 19 owns
+      the renderer and deletes its copy when it rewires onto the column.
+    - **Both halves of 20c are one change.** OpenLibrary `-M` → `-L`, Google
+      Books reads all six documented `imageLinks` sizes largest-first — and a
+      shelf tier is generated locally, because asking for the large size
+      *without* one makes every list strictly heavier than it was. `edge=curl`
+      is stripped: it composites a page-curl graphic onto the jacket, which is
+      somebody else's decoration baked into bytes we store for ever and take the
+      border colour off.
+    - **The back-fill is a command, not SQL**, because SQLite cannot decode a
+      PNG. `Engine::measure_stored_covers` reads each file and writes through the
+      same `set_cover` the download path uses, so a back-filled row and a fresh
+      one are the same row. It does **not rename**: the stored `cover_path` is
+      what a webview resolves, and renaming every image would be a destructive
+      change dressed as a measurement. `cover_width IS NULL` therefore means *not
+      measured yet*, never *no cover*.
+    - **`sort_author` was considered and deliberately not carried**, though this
+      item owned the wave's only migration and item 17 had deferred it for
+      exactly that reason. It is not one migration: SQLite cannot compute the
+      value, so the column is NULL for every existing row and `ORDER BY
+      sort_author` is silently **wrong** until a back-fill command nobody has run
+      yet runs — and the fallback for that window is `list_books_by_author`, the
+      whole-table read the column exists to remove. Carrying it adds an arm
+      beside the slow one instead of replacing it. The write side is now cheap
+      (`invalidate_cover_metrics` is the pattern: a companion clause generated
+      from another column's value expression), which makes it a smaller item than
+      it was, not a reason to bolt it onto one whose subject is images.
+      **`sort_title` is the warning**: it is a `MERGE_RULES` column,
+      `Federated::Local`, on `Book` and on the DTO — and nothing in this repo has
+      ever computed it. `BookSort::Title` orders by `books.title COLLATE
+      NOCASE`. A sort-key column added without a writer looks answered and is
+      not.
+    - **A `covers` table keyed on the content hash was the other design, and it
+      loses.** The spec's own argument — a shelf query needing a join per row —
+      is the weakest one available, since a single `LEFT JOIN` against a primary
+      key is not what makes a list slow. The real argument is ownership: a shared
+      `covers` table makes the sharing explicit and then owes an answer for
+      reference counting, garbage collection, and what `merge_books` does to a
+      row two books point at. That is a lifecycle, in a codebase whose one rule
+      about ownership is per-field provenance on `books`. Four columns beside the
+      path they describe need no lifecycle at all — and the invalidation clause
+      above is only expressible *because* they sit in the same statement as the
+      path.
+    - **The thumbnail tier is on disk, not in the database.** It is a sibling of
+      the cover, named from the same hash, so `MergeReport` did not need a second
+      orphan field and a caller holding a `cover_path` can always derive it.
+      `Book::shelf_cover_path` is where "thumb, else the original" is decided —
+      once, because a frontend reading `cover_thumb_path` directly shows nothing
+      for every cover small enough not to have one.

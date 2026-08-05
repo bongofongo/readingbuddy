@@ -212,6 +212,18 @@ absolutizes, and the asset-protocol scope is set at runtime from the opened
 engine's `images_dir` — not in `tauri.conf.json`, which cannot know the path.
 Never join `images_dir` with `cover_path`: that doubles the prefix.
 
+**A grid loads `cover_shelf_path`, not `cover_path`** (item 20c). Providers are
+now asked for the largest cover they publish, so `cover_path` is a hero-shot
+file and a shelf of sixty tiles would load sixty of them; `cover_shelf_path` is
+the downscaled tier where there is one and the original where there is not, and
+the engine decides which — a frontend reading `cover_thumb_path` itself shows
+nothing for every cover small enough not to have a tier. It is a whole path with
+exactly the same shape and the same asset-protocol scope. `cover_aspect` is the
+box a tile reserves before the image loads (`null` until
+`Engine::measure_stored_covers` has run over a pre-`0014` library, never
+"no cover"), and `cover_accent` is the jacket's border colour as channels — what
+a placeholder gets instead of grey.
+
 `tauri-driver` does **not** run on macOS (no WKWebView driver exists). That is
 why the visual gate is Playwright's **WebKit** — the engine WKWebView is built on
 — and not a stand-in for an E2E suite that could exist. E2E is a Linux CI job, or
