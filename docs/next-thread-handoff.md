@@ -12,9 +12,12 @@ previous conversation.
 
 ## Where things stand
 
-Main is **`99ba512`**, green: `make ci` exit 0 (engine lib 320, TUI 291),
-`cargo deny check bans licenses sources` ok. Working tree clean, no unpushed
-remote (nothing is pushed; this repo commits straight to `main`).
+Green: `make ci` exit 0 (engine lib 323, TUI 291), `cargo deny check bans
+licenses sources` ok. Working tree clean, no unpushed remote (nothing is pushed;
+this repo commits straight to `main`).
+
+**Updated 2026-08-05**: options B and C below are done — the wave is surfaced
+and the `MERGE_RULES` debt is closed. **A is what is left.**
 
 The last wave — items **29–32 plus 21** — is about what the engine *keeps*
 rather than what it acquires. What landed:
@@ -42,9 +45,9 @@ record it.
 duplicate. A branch holding `0015` before `0014` merges is red until its
 predecessor lands — expected; rebase, never renumber.
 
-## Pick one of these three
+## What is left
 
-### A. The GUI wave, items 17–28 — the obvious continuation
+### A. The GUI wave, items 17–28 — **the remaining path, and now the only one**
 
 `docs/gui/spec-gui-17-28.md` is written and unstarted except for 21. **Item 17
 is first and is the highest-value item in that wave** — the derived-facts layer,
@@ -64,37 +67,31 @@ Two things that wave should now know, which its spec predates:
   whose no-ISBN branch is an unconditional insert ignoring `Book::id`, which
   produced a *second book row* instead of a cover.
 
-### B. Surface the wave — the CLI/API items it deliberately did not build
+### B. Surface the wave — **done**, 2026-08-05
 
-Everything from items 21, 31 and 32 is **engine-only**. There is no way to see
-any of it from a frontend:
+Everything from items 21, 29, 30, 31 and 32 now has a CLI and an API. `rb toc`,
+`rb activity [--book|--days|--refill]`, `rb ko stats`, `rb set
+--subject/--series/--series-index`; on the API, `table_of_contents`,
+`import_device_statistics`, the activity log's four, and item 30's
+`enrich_book`/`set_book_fields`/`field_provenance` — which the original version
+of this list missed, and which were engine-and-CLI-only. `subjects`/`series`/
+`series_index` cross in `BookDto`, so timestamps are the only field the DTO
+round trip deliberately drops. No migration; nothing new the engine could not
+already do.
 
-- `reading_events` and its aggregates — no CLI, no API DTO, no TUI.
-- `import_device_statistics` — not on `sync_device`'s path (deliberately), and
-  no command invokes it.
-- `subjects` / `series` / `series_index` — no `rb set` flags (though
-  `Engine::set_book_fields` already carries them), and `From<BookDto> for Book`
-  has an asserted gap rather than a silent drop.
-- `Engine::table_of_contents` — no caller.
+### C. The `MERGE_RULES` debt — **done**, same pass
 
-This is small, mechanical, and it is what makes the wave visible. Worth doing
-before the GUI consumes any of it, so the GUI consumes an API rather than
-inventing one. Run the **`api-surface-auditor`** agent first.
-
-### C. The one real debt the wave left
-
-**`search::merge_into` is a fourth consumer of `MERGE_RULES` that is not
-generated from it.** Adding a book column compiles cleanly and is *silently lost
-in federated search*; only `every_claimed_field_is_a_merge_column` catches it,
-and it caught item 32 doing exactly that. Item 32 had evidence to observe it, not
-to fix it. Generating it — or at minimum a comment at the top of `merge_into`
-naming the trap — is a contained job.
+`search::merge_into` is generated. `Rule::federated` is the sixth thing the
+table produces and it makes the arrangement total: a new book column does not
+compile without saying how it merges in a federated search. See
+`docs/decisions.md` entry 33 and `crates/engine/src/storage/CLAUDE.md`.
 
 ## Traps that will bite a thread touching engine internals
 
-- **`MERGE_RULES` (`crates/engine/src/storage/books.rs`) generates five things**:
+- **`MERGE_RULES` (`crates/engine/src/storage/books.rs`) generates six things**:
   the upsert's `ON CONFLICT`, `enrich_book`'s `UPDATE`, `merge_books`' `dst`-wins
-  fill, the `field_provenance` stamps, and `Rule::show`. Plus `PROBES` in
+  fill, the `field_provenance` stamps, `Rule::show`, and — since the surfacing
+  pass — `Rule::federated`, which is `search::merge_provider_record`. Plus `PROBES` in
   `tests_support`, whose column list is *asserted* equal to `MERGE_RULES`' in
   order — a new column fails those sweeps with a message rather than going
   quietly uncovered. That is deliberate; extend it.

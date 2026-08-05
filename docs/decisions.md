@@ -594,3 +594,53 @@ because item 31 needed somewhere to put reading time.
       `MERGE_RULES` that is *not* generated from it, so a new column compiles
       cleanly and is silently lost in federated search. Only
       `every_claimed_field_is_a_merge_column` catches it — and it did.
+      **Fixed by the surfacing item below.**
+
+33. **Surfacing 21/29/30/31/32 — the CLI and API the wave did not build.** Five
+    engine items had landed with no way to see any of them: no CLI, no DTO, no
+    request. This is that surface and nothing more — no new capability, no
+    migration.
+    - **`search::merge_into` is now generated**, closing the debt above.
+      `Rule::federated` is the sixth thing `MERGE_RULES` produces, and it makes
+      the arrangement total: a new column does not compile without saying how it
+      merges in a federated search. The variants carry their own setter, so a
+      column that is never merged (`sort_title`, `cover_path`) has no dead
+      function pointer beside it — and `only_our_own_columns_sit_out_the_federated_merge`
+      names those two, so `Local` cannot become the quiet way to skip the
+      question. The merge itself moved to `books.rs` beside the table;
+      `search::merge_into` is now the claim bookkeeping and nothing else.
+    - **`subjects`/`series`/`series_index` cross the wire.** They were an
+      asserted gap in `BookDto` and are now three fields, so timestamps are the
+      only field the DTO round trip deliberately drops. `rb set` gained
+      `--subject`, `--series` and `--series-index`.
+    - **Half a pair is refused, at the frontend and only there.** `rb set
+      --series-index` with no series — neither on the flag nor on the row — is
+      an error naming the move, because a number under no name is the incoherent
+      state `Rule::pair` exists to prevent. It is checked against the *stored*
+      series too: renumbering a book already in a series is the ordinary use of
+      the flag. The API deliberately does **not** enforce this — a rule
+      implemented at the seam is a rule the in-process caller never meets, which
+      is the argument `crates/api/CLAUDE.md` already makes about `dispatch`.
+    - **`Book::series_label` is a derived fact, so it is the engine's.** `Dune
+      #2` is one fact printed on one line; the *phrasing* is a frontend's but
+      deciding what the pair means together is not, and `series_index` is a REAL
+      so two frontends formatting it themselves would eventually disagree.
+      `series_index_text` is public for the one case with no series beside it.
+    - **`rb activity` says "not measured", never `0`.** A library that arrived as
+      a Goodreads CSV has no minutes; the CLI prints `—` in a column and the
+      words in a total, and `nothing_measured_is_never_printed_as_zero` pins it.
+      Nothing counts what the user has not done — no streak, no "4 of 30" — and
+      the test asserts those words are absent rather than trusting the author.
+    - **An empty log names the move.** No importer fills `reading_events`, so a
+      fresh library reports nothing and cannot tell that from "you did not
+      read". `readingbuddy activity --refill` is named in the output rather than
+      being a verb somebody has to find.
+    - **`ko stats` is its own verb**, matching the engine: arrival is read-only,
+      and a scan that quietly imported months of timing data would not be
+      read-only in spirit. It prints `books_in_db` against `books_matched` even
+      when nothing imported, because "no statistics database" and "none of these
+      books are yours" need different next moves.
+    - **`rb toc` has three answers, not two** — no readable file, an epub with no
+      TOC, and the list — for the reason item 32 gave: collapsing the first two
+      makes an ordinary EPUB3 book look like a missing file, with no move for
+      either.

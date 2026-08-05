@@ -84,7 +84,7 @@ There is no `ts-rs`, `specta`, `typeshare` or `tauri` in any `Cargo.toml`
 today, so this seam does not exist yet — which means it can be done right the
 first time.
 
-The numbers: **52 DTO types** in `crates/api/src/dto.rs` and **77 request
+The numbers: **70 DTO types** in `crates/api/src/dto.rs` and **86 request
 variants** in `protocol.rs`. Hand-written TypeScript mirrors of those will
 drift, and the drift is invisible until runtime — in a webview, where a wrong
 field name is a blank panel and a console error nobody is reading.
