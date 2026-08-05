@@ -523,3 +523,74 @@ because item 31 needed somewhere to put reading time.
       says why rather than guessing. `docs/koreader-format.md` ranks the source
       above a fixture, which is what made building without a device legitimate
       rather than a shortcut.
+30. Look a book up again — `rb enrich`, and `rb set` to answer it back.
+    - **Done.** `Storage::enrich_book` existed and only calibre called it, so
+      every book created without an ISBN — a sidecar pull, a file matched by its
+      stem — had no cover, description or page count, permanently.
+    - **Attribution is reported, not applied provider-by-provider**, and that is
+      the item's central decision. Applying each provider in turn gets the
+      attribution right and the *values* wrong: no-clobber means whichever
+      provider runs first wins every field it speaks to, so OpenLibrary's
+      description would beat Google Books' — a second dialect of `search.rs`'s
+      tuned per-field preference. `search::FieldClaims` carries the per-field
+      attribution the merge always computed and threw away.
+    - **`download_cover` created a duplicate row on exactly this item's path.**
+      It wrote back through `upsert_book`, whose no-ISBN branch is an
+      unconditional insert that ignores `Book::id`, so a stored sidecar-seeded
+      book got a *second row* instead of a cover. Reachable from `fetch_cover`
+      before this item existed.
+    - **A dead network read as a fact about the book.** `NoAnswer` separates
+      "no provider knows it" from "no provider answered", and refuses the former
+      when one of them never spoke.
+    - **The override is `rb set`, not a `--new`-shaped flag.** `--new` means
+      "create a book" in three other commands and there is no book to create
+      here; `--accept 2` would index into a candidate list the next run cannot
+      reproduce. `set` also makes `field_provenance`'s `user` reachable from
+      outside a test, without which item 29's guard protected nothing in
+      production.
+    - **No ISBN → title fallback.** An ISBN is an identity, so "no provider knows
+      this ISBN" is an answer about *this edition*; a title search answers a
+      different question and writes another edition's page count over an
+      edition-specific one.
+    - **Disagreement history still does not earn its place** (agreeing with 29):
+      re-asking makes the *value* half of the case, since `held` is useless
+      without the offered value, but the report carries that in-band and nothing
+      yet compares across runs.
+32. Subjects, series, and the chapter list — migration `0013`.
+    - **Done.** Three fields nothing captured. `subjects` merges as a set,
+      `series`/`series_index` as a guarded pair, and the chapter list is derived.
+    - **A claim protects a field *pair*, not a field**, and this is the item that
+      settled the question item 30 left open. Owning either half of
+      `series`/`series_index` or `isbn_13`/`isbn_10` holds both. The fix is a
+      **guard rather than a new kind of claim**: the incoherence is only ever
+      introduced by a write to the *unowned* half, so guarding the pair off
+      either claim is strictly weaker than "a claim with no value" and
+      sufficient. **The ISBN instance is fixed by this item.**
+    - **A held value and a granted claim is a half-protected field.** The guard
+      lives in two places from one rule — the merge clause and the stamp —
+      because a column held by its *partner's* claim has no `user` row of its own
+      for `stamp`'s `WHERE` to catch. And a held field must be *reported* held,
+      or a held `series_index` is indistinguishable from a provider that had
+      none.
+    - **Sets merge by replacement, never union.** `field_provenance` holds one
+      source per field, so a unioned value would name one of two origins for a
+      value that came from both. Union is unrepresentable here, not untidy.
+    - **A provider subject is not a collection**: it is a bibliographic fact with
+      an origin and merges like `publisher`. `book_tags` stays minted shelves.
+      Stored **raw** — a controlled vocabulary is not answerable from two
+      examples, and storing raw is what makes it answerable later against real
+      data.
+    - **A chapter list is derived from the owned file and never stored**, and the
+      deciding argument is not staleness: it has no *origin*. It is a pure
+      function of a sha256, so a provenance stamp naming `epub` would attribute a
+      value nobody claimed and `rb set` could not let the user own it. `None` is
+      no readable file; `Some([])` is an epub with no TOC.
+    - **Series is not read from Google Books** — `volumeInfo` has no documented
+      series field and `seriesInfo` is absent from the API reference, so the only
+      possible fixture is one written from memory. Calibre stopped dropping
+      series; its `series_index` is `1.0` on a book with no series at all, so the
+      index is read only where the name is.
+    - **Recorded, unfixed:** `search::merge_into` is a fourth consumer of
+      `MERGE_RULES` that is *not* generated from it, so a new column compiles
+      cleanly and is silently lost in federated search. Only
+      `every_claimed_field_is_a_merge_column` catches it — and it did.
