@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord};
+use readingbuddy::{Book, FlashcardRow, Highlight, NoteRecord, Progress};
 
 use super::{BookLayout, book_layout, book_rects};
 use crate::app::{App, BOOK_TABS, BookTab, BookView};
@@ -132,14 +132,21 @@ fn draw_header(f: &mut Frame, view: &BookView, object: Rect) {
 }
 
 /// Progress as a compact one-liner for the floating header.
+///
+/// This screen's *words*, over [`Progress`](readingbuddy::Progress)' arithmetic
+/// — item 17b. "not started" stays the phrasing for `Untouched`: it is this
+/// header's wording for a book with nothing recorded, and deliberately not a
+/// name the engine gives the state (see `Progress::Untouched`).
 fn progress_text(b: &Book) -> String {
-    match (b.finished, b.current_page, b.page_count) {
-        (true, _, _) => "finished".to_string(),
-        (_, Some(p), Some(t)) if t > 0 => {
-            let pct = (p * 100 / t).min(100);
-            format!("{p} / {t} · {pct}%")
-        }
-        (_, Some(p), _) => format!("page {p}"),
+    let p = Progress::of_book(b);
+    match (p, p.page(), p.of(), p.percent()) {
+        (Progress::Finished, ..) => "finished".to_string(),
+        (Progress::Untouched, ..) => "not started".to_string(),
+        (_, Some(page), Some(of), Some(pct)) => format!("{page} / {of} · {pct}%"),
+        (_, Some(page), _, _) => format!("page {page}"),
+        // A device percentage with no page — the KOReader-pulled book that used
+        // to read "not started" here while the home shelf showed 43%.
+        (_, None, _, Some(pct)) => format!("{pct}%"),
         _ => "not started".to_string(),
     }
 }

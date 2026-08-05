@@ -1,4 +1,4 @@
-use readingbuddy::{Book, RankedResult, Reading};
+use readingbuddy::{Book, Progress, RankedResult, Reading};
 
 /// One reading of a book: which of how many, its dates, and where it got to.
 ///
@@ -53,10 +53,16 @@ pub fn book_line(b: &Book) -> String {
         .publish_year
         .map(|y| format!(" ({y})"))
         .unwrap_or_default();
-    let progress = match (b.current_page, b.page_count) {
-        _ if b.finished => "  [finished]".to_string(),
-        (Some(p), Some(t)) => format!("  [{p}/{t}]"),
-        (Some(p), None) => format!("  [p.{p}]"),
+    // Item 17b fixed a real bug here on its way past: this arm had no `t > 0`
+    // guard, so the dev library's zero-page book printed `[12/0]` — a false
+    // denominator rather than a crash, which is why nothing ever caught it.
+    // `Progress` normalises a zero length to absence, so the `[p.12]` arm now
+    // takes it.
+    let p = Progress::of_book(b);
+    let progress = match (p.is_finished(), p.page(), p.of()) {
+        (true, ..) => "  [finished]".to_string(),
+        (_, Some(page), Some(of)) => format!("  [{page}/{of}]"),
+        (_, Some(page), None) => format!("  [p.{page}]"),
         _ => String::new(),
     };
     format!(

@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding};
-use readingbuddy::Book;
+use readingbuddy::{Book, Progress, names};
 
 use crate::app::App;
 use crate::theme;
@@ -16,9 +16,15 @@ use crate::theme;
 /// here. `refresh_library` fetches a fixed page of the library by recency and
 /// then narrows and orders it in Rust — so changing the sort re-orders *the
 /// same books* rather than swapping which ones are on screen, which is what a
-/// SQL `ORDER BY … LIMIT` would do. It is also the only place [`Sort::Author`]
-/// can live at all: "alphabetically by last name" is a parse of a human name,
-/// and SQLite has nothing to parse one with.
+/// SQL `ORDER BY … LIMIT` would do.
+///
+/// This is a **policy about a fixed page**, and item 17 was careful not to
+/// delete it. `BookSort` now has `Author` and `Year` too, and its contract is
+/// the other one — the first N *by that key*, which is what `LIMIT` means and
+/// what a paginated shelf needs. The two coexist; what must not happen is one
+/// being mistaken for the other. The name parsing itself is no longer here:
+/// [`readingbuddy::names`] owns it, so a GUI sorting by author gets the same
+/// answer as this list rather than filing *The Overstory* under nothing.
 ///
 /// The variant order is the cycle order, and it starts at the default so one
 /// press moves away from it and four come back.
@@ -84,95 +90,13 @@ impl Sort {
         match self {
             Sort::Recent => {}
             Sort::Title => books.sort_by_key(|b| b.display_title().to_lowercase()),
-            Sort::Author => books.sort_by_key(author_key),
+            Sort::Author => books.sort_by_key(|b| names::sort_key(&b.authors)),
             // `Reverse` on the year alone: the `None` arm must stay *last*, so
             // it cannot ride along inside the reversal.
             Sort::Year => books.sort_by_key(|b| match b.publish_year {
                 Some(y) => (0, std::cmp::Reverse(y)),
                 None => (1, std::cmp::Reverse(0)),
             }),
-        }
-    }
-}
-
-/// The sort key for [`Sort::Author`]: `(no-author flag, last name, full name)`.
-///
-/// The flag is what keeps an authorless book at the bottom rather than at the
-/// top under an empty string, and the full name breaks ties between two people
-/// who share a surname.
-fn author_key(b: &Book) -> (u8, String, String) {
-    match b.authors.first() {
-        Some(a) if !a.trim().is_empty() => {
-            (0, last_name(a).to_lowercase(), a.trim().to_lowercase())
-        }
-        _ => (1, String::new(), String::new()),
-    }
-}
-
-/// Name particles that belong to the surname rather than to the given names —
-/// "Ursula K. **Le Guin**", "Vincent **van Gogh**", "Simone **de Beauvoir**".
-///
-/// Matched case-insensitively, because the same particle is capitalised in one
-/// language and not in the next, and a person writing their own name does not
-/// consult a table.
-const PARTICLES: [&str; 18] = [
-    "de", "del", "della", "der", "den", "di", "da", "du", "la", "le", "van", "von", "ten", "ter",
-    "af", "av", "bin", "ibn",
-];
-
-/// Honorific and generational suffixes, which are never the name to file under.
-const SUFFIXES: [&str; 8] = ["jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "phd"];
-
-fn is_suffix(word: &str) -> bool {
-    SUFFIXES.contains(&word.trim_matches(',').to_lowercase().as_str())
-}
-
-/// The name to file an author under.
-///
-/// Three shapes, in the order they are decided:
-///
-/// 1. **`Surname, Given`** — the author already said which half is the surname,
-///    so nothing is guessed. This is the form a Goodreads export and half the
-///    providers use, so it is worth handling first rather than as a curiosity.
-/// 2. **Suffixes are dropped** — "Kurt Vonnegut Jr." files under Vonnegut.
-/// 3. **The last word, plus any particle in front of it.** "Emily St. John
-///    Mandel" → Mandel, because "John" is not a particle; "Ursula K. Le Guin"
-///    → Le Guin, because "Le" is.
-///
-/// A single word is itself: a mononym is a surname as far as this is concerned,
-/// and the alternative is filing Homer under nothing.
-pub fn last_name(author: &str) -> String {
-    let author = author.trim();
-    if let Some((head, tail)) = author.split_once(',') {
-        let head = head.trim();
-        // **Unless the comma is only holding a suffix.** "Martin Luther King,
-        // Jr." is the same name as "Martin Luther King" and files under King,
-        // not under Martin — so a tail that is nothing but suffixes is not the
-        // inverted form, however much it looks like it from the comma alone.
-        let inverted = !head.is_empty() && !tail.split_whitespace().all(is_suffix);
-        if inverted {
-            return head.to_string();
-        }
-    }
-    // Commas are separators here, not part of a word: the only ones left are
-    // the suffix-holding kind the branch above declined.
-    let mut words: Vec<&str> = author
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|w| !w.is_empty())
-        .collect();
-    while words.len() > 1 && is_suffix(words[words.len() - 1]) {
-        words.pop();
-    }
-    match words.len() {
-        0 => String::new(),
-        1 => words[0].to_string(),
-        n => {
-            let particle = PARTICLES.contains(&words[n - 2].to_lowercase().as_str());
-            if particle {
-                format!("{} {}", words[n - 2], words[n - 1])
-            } else {
-                words[n - 1].to_string()
-            }
         }
     }
 }
@@ -278,14 +202,32 @@ fn key_bar(filtered: bool) -> Line<'static> {
 }
 
 /// Short right-hand progress marker.
+///
+/// The **words** are this screen's; the arithmetic is
+/// [`Progress`](readingbuddy::Progress)'. Item 17b: the four implementations of
+/// "how far in is this" disagreed about a zero page count and about whether the
+/// device's own percentage counts, and only one of them had the fallback.
 pub fn progress_tag(b: &Book) -> String {
-    if b.finished {
-        return "done".to_string();
-    }
-    match (b.current_page, b.page_count) {
-        (Some(p), Some(t)) if t > 0 => format!("{}%", (p * 100 / t).min(100)),
-        (Some(p), _) => format!("p.{p}"),
-        _ => String::new(),
+    tag(Progress::of_book(b))
+}
+
+/// The same words, for a progress the caller resolved itself — the home shelf
+/// has the [`Reading`](readingbuddy::Reading) beside the book and should ask
+/// about *that* read rather than about the book's current one, which on a
+/// reread is not always the same thing.
+pub fn tag(p: Progress) -> String {
+    match p {
+        Progress::Finished => "done".to_string(),
+        Progress::Untouched => String::new(),
+        p => match (p.percent(), p.page()) {
+            (Some(pct), _) => format!("{pct}%"),
+            (None, Some(page)) => format!("p.{page}"),
+            // A device fraction with no page is now a percentage above, so this
+            // arm is a `Started` carrying neither — which the constructor
+            // returns `Untouched` for. Kept rather than `unreachable!`: a panic
+            // in a draw call wrecks the user's pane.
+            (None, None) => String::new(),
+        },
     }
 }
 
@@ -315,45 +257,15 @@ mod tests {
         assert_eq!(progress_tag(&book(Some(50), Some(0), false)), "p.50");
     }
 
-    /// The name parse, on the shapes a real library actually contains. Every
-    /// one of these is a book somebody owns rather than an invented edge case,
-    /// which is the only reason to handle any of them.
+    /// **New in item 17b**, and the visible half of the unification: this list
+    /// used to show nothing for a KOReader-pulled book with a device percentage
+    /// and no page, because the fallback lived in `home.rs` alone. Now one row
+    /// of the library and the same row of the home shelf say the same thing.
     #[test]
-    fn a_last_name_survives_particles_initials_and_suffixes() {
-        // The ordinary case, and the one a naive `split().last()` gets right.
-        assert_eq!(last_name("Min Jin Lee"), "Lee");
-        // Initials and a compound given name: "John" is not a particle, so the
-        // surname is the last word alone.
-        assert_eq!(last_name("Emily St. John Mandel"), "Mandel");
-        // Particles, capitalised and not — the whole reason `PARTICLES` exists.
-        assert_eq!(last_name("Ursula K. Le Guin"), "Le Guin");
-        assert_eq!(last_name("Vincent van Gogh"), "van Gogh");
-        assert_eq!(last_name("Simone de Beauvoir"), "de Beauvoir");
-        // A suffix is never the name to file under.
-        assert_eq!(last_name("Kurt Vonnegut Jr."), "Vonnegut");
-        // A comma that is only holding a suffix is **not** the inverted form.
-        // Read as one, this would file under Martin.
-        assert_eq!(last_name("Martin Luther King, Jr."), "King");
-        // Already inverted: the author said which half is the surname, so
-        // nothing is guessed.
-        assert_eq!(last_name("Mandel, Emily St. John"), "Mandel");
-        assert_eq!(last_name("King, Martin Luther Jr."), "King");
-        // A trailing comma with nothing after it is a typo, not an inversion.
-        assert_eq!(last_name("Min Jin Lee,"), "Lee");
-        // A mononym is its own surname; the alternative is filing Homer under
-        // nothing at all.
-        assert_eq!(last_name("Homer"), "Homer");
-        // Degenerate input answers rather than panicking.
-        assert_eq!(last_name(""), "");
-        assert_eq!(last_name("   "), "");
-    }
-
-    /// A name that is *only* a suffix keeps it. The loop stops at one word
-    /// left, so there is no input that strips a name down to nothing.
-    #[test]
-    fn stripping_suffixes_never_empties_a_name() {
-        assert_eq!(last_name("Jr."), "Jr.");
-        assert_eq!(last_name("III"), "III");
+    fn the_device_percentage_reaches_this_list_too() {
+        let mut b = book(None, None, false);
+        b.ko_percent = Some(0.43);
+        assert_eq!(progress_tag(&b), "43%");
     }
 
     fn titled(title: &str, author: &str, year: Option<i64>) -> Book {

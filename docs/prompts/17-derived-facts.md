@@ -8,6 +8,13 @@ follows: sessions/2026-08-05-gui-scaffold-and-the-seam.md
 
 # Item 17 — the derived-facts layer
 
+> **Landed 2026-08-05.** Kept as the record of what was asked and what was
+> decided — including the four things deliberately *not* moved, which are the
+> part a later thread is most likely to re-open by accident. The rulings are in
+> `docs/decisions.md` entry 17; the session log is
+> `sessions/2026-08-05-the-derived-facts-layer.md`. Everything below is the
+> brief as written, unedited.
+
 Paste this into a fresh session at the repo root. Read `CLAUDE.md`, then
 `crates/engine/src/storage/CLAUDE.md`, then item 17 in
 `docs/gui/spec-gui-17-28.md`. **No migration** — this item is projections and

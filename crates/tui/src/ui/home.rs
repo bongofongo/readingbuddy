@@ -16,7 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding, Paragraph};
-use readingbuddy::{Book, Reading};
+use readingbuddy::{Book, Progress, Reading};
 
 use crate::app::App;
 use crate::theme;
@@ -95,30 +95,16 @@ fn row(b: &Book, r: &Reading, selected: bool) -> Line<'static> {
         format!("  {}", b.display_authors()),
         theme::dim(),
     ));
-    let tag = progress(b, r);
+    // **This** reading's progress, not the book's current one — the row is about
+    // the open read it is listing. The device-percentage fallback that used to
+    // live here as `fn progress` is `Progress`' now (item 17b), so the library
+    // list gets it too instead of showing nothing for the commonest row in a
+    // KOReader-sourced library.
+    let tag = super::library::tag(Progress::of_reading(r, b.page_count));
     if !tag.is_empty() {
         spans.push(Span::styled(format!("  {tag}"), theme::accent()));
     }
     Line::from(spans)
-}
-
-/// How far in this reading is: the library's own tag, and the device's own
-/// percentage when the library has no page to show.
-///
-/// This is what the [`Reading`] beside the [`Book`] is for. `Book`'s progress
-/// fields are projections of the *current* reading, and a book pulled from a
-/// KOReader sidecar routinely has `ko_percent` and no `current_page` at all —
-/// so without the second half of the pair the commonest row on this screen
-/// would show nothing.
-fn progress(b: &Book, r: &Reading) -> String {
-    let tag = super::library::progress_tag(b);
-    if !tag.is_empty() {
-        return tag;
-    }
-    match r.ko_percent {
-        Some(p) => format!("{:.0}%", (p * 100.0).clamp(0.0, 100.0)),
-        None => String::new(),
-    }
 }
 
 /// The keys, in the bottom border. `e` / `w` are the reflection and the review;
@@ -156,7 +142,11 @@ mod tests {
     use super::*;
     use ratatui::style::Modifier;
 
-    fn reading(ko_percent: Option<f64>) -> Reading {
+    /// The page lives on the **reading** here, not on the book: this row is
+    /// about one open read, and `Book`'s own `current_page` is a projection of
+    /// whichever read is current. On real data they agree; a fixture that let
+    /// them disagree would be testing the fixture.
+    fn reading(page: Option<i64>, ko_percent: Option<f64>) -> Reading {
         Reading {
             id: 1,
             book_id: 1,
@@ -164,7 +154,7 @@ mod tests {
             finished_at: None,
             status: "reading".into(),
             source: "manual".into(),
-            current_page: None,
+            current_page: page,
             ko_status: None,
             ko_percent,
             ko_rating: None,
@@ -182,10 +172,17 @@ mod tests {
         }
     }
 
+    /// The rule itself now lives in `Progress` and is tested there. What these
+    /// two pin is that **this screen still asks the question it used to** —
+    /// item 17b deleted a local `fn progress` and the way to break that quietly
+    /// is to stop consulting the device at all.
     #[test]
     fn a_page_beats_the_devices_percentage() {
         assert_eq!(
-            progress(&book(Some(50), Some(200)), &reading(Some(0.9))),
+            super::super::library::tag(Progress::of_reading(
+                &reading(Some(50), Some(0.9)),
+                Some(200)
+            )),
             "25%"
         );
     }
@@ -195,15 +192,18 @@ mod tests {
     #[test]
     fn the_devices_percentage_fills_in_for_a_missing_page() {
         assert_eq!(
-            progress(&book(None, Some(200)), &reading(Some(0.42))),
+            super::super::library::tag(Progress::of_reading(&reading(None, Some(0.42)), Some(200))),
             "42%"
         );
-        assert_eq!(progress(&book(None, None), &reading(None)), "");
+        assert_eq!(
+            super::super::library::tag(Progress::of_reading(&reading(None, None), None)),
+            ""
+        );
     }
 
     #[test]
     fn selection_reverses_the_title_only() {
-        let line = row(&book(Some(50), Some(200)), &reading(None), true);
+        let line = row(&book(Some(50), Some(200)), &reading(Some(50), None), true);
         let reversed: Vec<bool> = line
             .spans
             .iter()

@@ -644,3 +644,88 @@ because item 31 needed somewhere to put reading time.
       TOC, and the list — for the reason item 32 gave: collapsing the first two
       makes an ordinary EPUB3 book look like a missing file, with no move for
       either.
+
+17. **The derived-facts layer.** No migration; projections and pure functions
+    over columns that already existed. Its subject is a line the codebase had
+    over-applied: *the engine does no terminal I/O* is right, and it had been
+    read as *the engine does no derivation*, so each frontend independently
+    wrote the sorting, the arithmetic, the state vocabulary and the row-state
+    joins. A second frontend was not extending the app, it was re-deriving it.
+    - **`Progress` is one value type and there were four implementations.** They
+      disagreed. The CLI had no `total > 0` guard, so `make dev-db`'s
+      zero-page-count book printed `[12/0]` — a **false denominator**, not a
+      crash, which is why nothing caught it. `Progress` normalises a zero length
+      to *absence*, so a caller cannot reach one; a `NULL` length is absence
+      too, and neither is zero.
+    - **Pages win where they can answer; the device fills in where they
+      cannot.** The `ko_percent` fallback existed in one screen of one frontend
+      (`tui/src/ui/home.rs`), which meant every list built off `Book` alone —
+      every GUI list — showed nothing for the commonest row in a
+      KOReader-sourced library. Deciding between the two is domain knowledge and
+      is now decided once.
+    - **`Book` gained a sixth reading projection, `ko_percent`.** Not a schema
+      change — `readings.ko_percent` has existed since `0005`. It is what makes
+      `Progress` computable from a `Book`, which is what a list needs.
+    - **`percent` crosses the wire beside `fraction`, and is not redundant.**
+      The page-based percentage is an *integer division*; `29/100` is
+      `0.28999999999999998` in binary, so flooring the float says 28 where the
+      division says 29. Two frontends already did it in integers.
+    - **`ReadingState` is typed and `readings.status` stays a `String`.** The
+      argument for the string was about *storage* — an importer can write a
+      status this build does not know, and a parse that refused one would turn a
+      foreign device's vocabulary into an error on the read path. It was never
+      an argument for handing every frontend the same `switch` over three magic
+      words. `Other(raw)` carries the unknown value whole, the shape `KoStatus`
+      already had.
+    - **There is no `NeverOpened` variant, and that is the ruling.** A book with
+      no reading is absence, not a state. Naming it puts *unread* into the type
+      system, and a variant is a thing a UI filters on, counts, and eventually
+      puts a badge beside — which is the completion framing this document bans.
+      Absence is also honest: the engine knows there is no reading, not that the
+      book has not been read.
+    - **Author names moved into `readingbuddy::names`.** `last_name` and its
+      particle/suffix tables were the TUI's private knowledge; a GUI without them
+      files *The Overstory* under nothing. `display_order` is the same reading of
+      the comma run backwards, and the two share `comma_is_only_a_suffix` so the
+      sort and the label can never name different surnames — asserted as a
+      property, not by example. The **join** between names stays phrasing.
+    - **`BookSort` gained `Author` and `Year`, and `limit` selects along the sort
+      key in every arm.** That is what `LIMIT` means. The TUI's opposite policy —
+      fetch one page by recency, reorder *that page* in Rust, so pressing `s`
+      reorders the list rather than swapping its contents — is a decision about a
+      fixed page and stays in the TUI. The two coexist; mistaking one for the
+      other is the bug. `Author` cannot be an `ORDER BY` at all (SQLite has
+      nothing to parse a human name with), so it reads the library, sorts, and
+      truncates. A `sort_author` column is the follow-on and needs a migration,
+      so it is not this item's.
+    - **`CalibreReport::row_state` and `CalibreRowState::is_importable` moved
+      down** (17d/17e). The state was a join across three fields of the report,
+      done by a frontend; the predicate's twin, `DeviceState::is_syncable`, was
+      already in the engine, which is what made its absence conspicuous.
+      `Candidates` is still not importable: that row is a question, and a sweep
+      answering it by creating a duplicate is what the candidate band exists to
+      prevent.
+    - **`ReadNumbering` moved down** (17c). It silently depended on
+      `list_readings`' oldest-first ordering contract, so a second frontend
+      numbering reads off a differently-ordered list would disagree with `rb
+      show` about which read a highlight came from — with nothing on either
+      screen looking wrong.
+    - **Decided to stay in the frontend, explicitly.** *Dates*: nothing was
+      moved. Relative time needs an answer to "what is today", the engine's day
+      convention is UTC, and inventing a local-time answer is what item 31
+      deliberately refused for reading minutes — the same refusal applies.
+      *Absence wording*: the engine states the absence (`title` is `NULL`,
+      `authors` is `[]`) and the frontend words it — *Untitled* is a word.
+      *`ReadingDto.source`*: still a `String`. It is the name of a writer, it
+      grows by one per importer, and nothing branches on it; an enum would be a
+      second list of importers to keep in step with the first.
+    - **A per-row summary of what is behind a book — highlights, notes, a file —
+      is item 18's, not this one's.** It is a query shape, not a derivation: the
+      detail screen makes four calls for one book, which for a list is eight
+      hundred. Note the axiom line it sits against — a count of *your own
+      highlights* is past tense and allowed; a count of what you have not done is
+      not.
+    - **Two behaviour changes worth knowing.** The TUI library list now shows a
+      device percentage where it previously showed nothing, because the fallback
+      is no longer home-screen-only. And `rb book list` prints `[p.12]` where it
+      printed `[12/0]`.

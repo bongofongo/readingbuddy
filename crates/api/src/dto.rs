@@ -45,12 +45,12 @@ use readingbuddy::{
     CalibreBookReport, CalibreMatch, CalibreReport, Confidence, CreatedNote, DayActivity, DayRange,
     DeviceBook, DeviceScan, DeviceState, Diagnostic, DiagnosticKind, EnrichCandidate, EnrichMatch,
     EnrichOutcome, EnrichReport, ErrorClass, FieldChange, FieldSource, FileIdentity,
-    FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow, GoodreadsBookReport,
-    GoodreadsReport, HeldField, Highlight, ImportReport, KoStatus, MatchCandidate, MatchMethod,
-    MergeReport, NewNoteInput, NoteKind, NoteRecord, NoteSearchHit, OutgoingLink, PullReport,
-    RankedResult, Rating, RatingScale, Reading, ReadingEvent, RefillReport, SearchOutcome,
-    SearchRequest, Severity, Source, StatsImportReport, TableOfContents, TextOutcome, TocEntry,
-    UnmatchedRow,
+    FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow, FractionSource,
+    GoodreadsBookReport, GoodreadsReport, HeldField, Highlight, ImportReport, KoStatus,
+    MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind, NoteRecord, NoteSearchHit,
+    OutgoingLink, Progress, PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent,
+    ReadingState, RefillReport, SearchOutcome, SearchRequest, Severity, Source, StatsImportReport,
+    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -132,17 +132,59 @@ pub struct BookDto {
     pub current_page: Option<i64>,
     #[serde(default)]
     pub finished: bool,
-    /// `reading` | `finished` | `abandoned`, or absent when the book has no
-    /// reading at all — which is the commonest state in a real library and the
-    /// one `finished: false` cannot be told apart from *abandoned*. See
-    /// [`readingbuddy::Book::reading_status`] for why this is a `String` and not
-    /// an enum, and why it sits beside `finished` rather than replacing it.
+    /// The current reading's state, or absent when the book has no reading at
+    /// all — which is the commonest state in a real library and the one
+    /// `finished: false` cannot be told apart from *abandoned*.
+    ///
+    /// **Typed since item 17**, where it crossed as a bare `String`. It is
+    /// stored as one and always will be (an importer can write a status this
+    /// build does not know, and a parse that refused one would turn a foreign
+    /// device's vocabulary into an error on the read path) — but a *wire* that
+    /// hands a frontend a bare string hands every frontend the same `switch`
+    /// with the same three magic words in it, and the one that misspells
+    /// `abandoned` styles a put-down book as an active read. `Other { raw }`
+    /// carries the unknown value whole, so nothing is lost. See
+    /// [`readingbuddy::ReadingState`], and note there is deliberately **no
+    /// variant for "no reading"** — that is this field's `None`.
     #[serde(default)]
-    pub reading_status: Option<String>,
+    pub reading_state: Option<ReadingStateDto>,
     #[serde(default)]
     pub date_started: Option<i64>,
     #[serde(default)]
     pub date_finished: Option<i64>,
+    /// How far into the current reading this is — item 17b.
+    ///
+    /// **Derived, read-only, and ignored on the way in.** Here rather than left
+    /// to each frontend because the arithmetic has three hazards that a
+    /// frontend reading `current_page` and `page_count` cannot see: a real book
+    /// with `page_count = 0` (a false denominator, not a length), a real book
+    /// with `page_count = NULL` (absence, not zero), and the device's own
+    /// `ko_percent`, which is the better answer for a book whose length we do
+    /// not know and which no `BookDto` field exposes. See
+    /// [`readingbuddy::Progress`].
+    #[serde(default)]
+    pub progress: ProgressDto,
+    /// The series and its place in it, written the way a person writes it:
+    /// `Dune #2`, never `Dune #2.0`.
+    ///
+    /// **Derived, read-only.** `series_index` is a `REAL`, so a frontend
+    /// formatting the pair itself will eventually print `#2.5` one way and
+    /// `#2.50` another — `readingbuddy::Book::series_label` exists precisely so
+    /// two frontends cannot disagree, and until item 17 it was not on this
+    /// struct at all, so the GUI reconstructed the pair and happened to agree
+    /// because JS prints whole floats without a decimal point. That is
+    /// agreement by coincidence.
+    #[serde(default)]
+    pub series_label: Option<String>,
+    /// The authors, each written the way a person says it — `Jorge Luis
+    /// Borges`, never `Borges, Jorge Luis`.
+    ///
+    /// **Derived, read-only.** `authors` stays exactly as the origin spelled
+    /// it, because that is the record; this is the parse. The **join** between
+    /// names is still phrasing and still the frontend's, which is why this is a
+    /// list and not a sentence.
+    #[serde(default)]
+    pub authors_display: Vec<String>,
     /// Unix seconds. `OffsetDateTime`'s own serde format is a dependency's
     /// choice; an integer is ours.
     #[serde(default)]
@@ -153,6 +195,13 @@ pub struct BookDto {
 
 impl From<Book> for BookDto {
     fn from(b: Book) -> Self {
+        // Derived first, because the literal below moves the fields they read.
+        // Every one of these is a value the engine decided; none of them is a
+        // word a user sees.
+        let reading_state = b.reading_state().map(ReadingStateDto::from);
+        let progress = ProgressDto::from(Progress::of_book(&b));
+        let series_label = b.series_label();
+        let authors_display = b.authors_in_display_order();
         BookDto {
             id: b.id,
             title: b.title,
@@ -176,9 +225,12 @@ impl From<Book> for BookDto {
             series_index: b.series_index,
             current_page: b.current_page,
             finished: b.finished,
-            reading_status: b.reading_status,
+            reading_state,
             date_started: b.date_started,
             date_finished: b.date_finished,
+            progress,
+            series_label,
+            authors_display,
             created_at: b.created_at.map(|t| t.unix_timestamp()),
             last_modified: b.last_modified.map(|t| t.unix_timestamp()),
         }
@@ -190,10 +242,18 @@ impl From<BookDto> for Book {
     ///
     /// `created_at`/`last_modified` are **dropped, not parsed back**: they are
     /// the storage layer's to stamp, and a client that could set them could
-    /// backdate a row by mistake. The four reading projections are carried
+    /// backdate a row by mistake. The reading projections are carried
     /// through because the struct has the fields, and are ignored downstream by
     /// `upsert_book` — which is where that rule already lives, and where it
     /// should stay rather than being re-implemented here.
+    ///
+    /// The **derived** fields — `progress`, `series_label`, `authors_display` —
+    /// are dropped outright. They are readings of other columns and there is
+    /// nothing to write them to; a client that sends a `series_label` of "Dune
+    /// #2" and a `series_index` of 3 has not asked for anything, and taking
+    /// the label would be inventing a second writer for a pair that already has
+    /// one. `ko_percent` is dropped for the same reason it is not on this
+    /// struct: it is device-owned and `update_progress` is its writer.
     fn from(d: BookDto) -> Self {
         Book {
             id: d.id,
@@ -215,7 +275,8 @@ impl From<BookDto> for Book {
             first_sentence: d.first_sentence,
             current_page: d.current_page,
             finished: d.finished,
-            reading_status: d.reading_status,
+            reading_status: d.reading_state.map(|s| ReadingState::from(s).to_string()),
+            ko_percent: None,
             date_started: d.date_started,
             date_finished: d.date_finished,
             subjects: d.subjects,
@@ -223,6 +284,135 @@ impl From<BookDto> for Book {
             series_index: d.series_index,
             created_at: None,
             last_modified: None,
+        }
+    }
+}
+
+/// A reading's state, typed. The mirror of [`readingbuddy::ReadingState`], and
+/// deliberately the same shape as [`KoStatusDto`] — one is our vocabulary, the
+/// other is the device's, and both have to survive a word neither build knows.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ReadingStateDto {
+    Reading,
+    Finished,
+    /// Put down. Never *failed*, never *did not finish* — the word a frontend
+    /// chooses is its own, but this is the state it must be able to see, and
+    /// before item 17 it could not without a stringly comparison.
+    Abandoned,
+    Other {
+        raw: String,
+    },
+}
+
+impl From<ReadingState> for ReadingStateDto {
+    fn from(s: ReadingState) -> Self {
+        match s {
+            ReadingState::Reading => ReadingStateDto::Reading,
+            ReadingState::Finished => ReadingStateDto::Finished,
+            ReadingState::Abandoned => ReadingStateDto::Abandoned,
+            ReadingState::Other(raw) => ReadingStateDto::Other { raw },
+        }
+    }
+}
+
+impl From<ReadingStateDto> for ReadingState {
+    fn from(s: ReadingStateDto) -> Self {
+        match s {
+            ReadingStateDto::Reading => ReadingState::Reading,
+            ReadingStateDto::Finished => ReadingState::Finished,
+            ReadingStateDto::Abandoned => ReadingState::Abandoned,
+            ReadingStateDto::Other { raw } => ReadingState::Other(raw),
+        }
+    }
+}
+
+/// Where a fraction came from. A frontend may say so or not; what it may not do
+/// is compute one and forget which it was.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FractionSourceDto {
+    /// `current_page / page_count`, with an honest denominator.
+    Pages,
+    /// The device's own percentage, for a book whose length we do not know.
+    Device,
+}
+
+impl From<FractionSource> for FractionSourceDto {
+    fn from(s: FractionSource) -> Self {
+        match s {
+            FractionSource::Pages => FractionSourceDto::Pages,
+            FractionSource::Device => FractionSourceDto::Device,
+        }
+    }
+}
+
+/// How far into a book a reading is. The mirror of [`readingbuddy::Progress`],
+/// and item 17b's whole point: the arithmetic crosses the wire as a value so
+/// that neither frontend does it.
+///
+/// `percent` is carried beside `fraction` rather than left to
+/// `Math.round(fraction * 100)` on the other side, and it is not redundant: the
+/// page-based percentage is an **integer division**, and `29/100` is
+/// `0.28999999999999998` in binary, so flooring the float gives 28 where the
+/// division gives 29. Two frontends already did it in integers and were right
+/// to; this is how the third gets the same number.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "progress", rename_all = "snake_case")]
+pub enum ProgressDto {
+    /// Nothing recorded. **Not zero**, and not *unread* — a book nobody opened
+    /// and a book opened at page one are the same here, and the difference is
+    /// `reading_state`.
+    #[default]
+    Untouched,
+    Started {
+        #[serde(default)]
+        page: Option<i64>,
+        /// The length. **Never `Some(0)`**: a zero page count is a false
+        /// denominator and is absence by the time it reaches here.
+        #[serde(default)]
+        of: Option<i64>,
+        /// `0.0..=1.0`, or absent — a page with no length has no percentage,
+        /// and a bar must not draw an empty track over one.
+        #[serde(default)]
+        fraction: Option<f64>,
+        #[serde(default)]
+        percent: Option<i64>,
+        #[serde(default)]
+        source: Option<FractionSourceDto>,
+    },
+    /// Closed as read. Carries no page: every frontend that had this case
+    /// dropped the numbers for a word.
+    Finished,
+}
+
+impl From<Progress> for ProgressDto {
+    fn from(p: Progress) -> Self {
+        match p {
+            Progress::Untouched => ProgressDto::Untouched,
+            Progress::Finished => ProgressDto::Finished,
+            Progress::Started { page, of, fraction } => ProgressDto::Started {
+                page,
+                of,
+                fraction: fraction.map(|f| f.value),
+                percent: p.percent(),
+                source: fraction.map(|f| f.source.into()),
+            },
         }
     }
 }
@@ -239,6 +429,12 @@ pub enum BookSortDto {
     LastModified,
     Title,
     Progress,
+    /// Alphabetically by the first author's last name, authorless books last —
+    /// item 17. The one key SQL cannot express, since it is a parse of a human
+    /// name; see [`BookSort::Author`].
+    Author,
+    /// Newest first, undated last.
+    Year,
 }
 
 impl From<BookSortDto> for BookSort {
@@ -247,6 +443,8 @@ impl From<BookSortDto> for BookSort {
             BookSortDto::LastModified => BookSort::LastModified,
             BookSortDto::Title => BookSort::Title,
             BookSortDto::Progress => BookSort::Progress,
+            BookSortDto::Author => BookSort::Author,
+            BookSortDto::Year => BookSort::Year,
         }
     }
 }
@@ -331,12 +529,26 @@ pub struct ReadingDto {
     /// `null` means open, and at most one reading per book may be.
     #[serde(default)]
     pub finished_at: Option<i64>,
-    pub status: String,
+    /// Typed since item 17 — see [`BookDto::reading_state`] for the argument.
+    /// The column stays a `String`; the wire does not.
+    pub status: ReadingStateDto,
+    /// `manual` | `koreader` | `migrated` | `goodreads` | `calibre`, and
+    /// deliberately still a `String`.
+    ///
+    /// Item 17 typed `status` and stopped here on purpose. `status` had an
+    /// engine type to mirror, a fixed three-word vocabulary, and frontends
+    /// branching on it. `source` has none of the three: it is the *name of a
+    /// writer*, it grows by one every time an importer is added, and nothing
+    /// branches on it — it is shown. An enum here would be a second list of
+    /// importers to keep in step with the first, which is the shape this repo
+    /// spends `MERGE_RULES` avoiding.
     pub source: String,
     #[serde(default)]
     pub current_page: Option<i64>,
+    /// The device's own status, typed — [`KoStatusDto`] already existed and was
+    /// not being used here.
     #[serde(default)]
-    pub ko_status: Option<String>,
+    pub ko_status: Option<KoStatusDto>,
     #[serde(default)]
     pub ko_percent: Option<f64>,
     #[serde(default)]
@@ -352,10 +564,10 @@ impl From<Reading> for ReadingDto {
             book_id: r.book_id,
             started_at: r.started_at,
             finished_at: r.finished_at,
-            status: r.status,
+            status: ReadingState::from(r.status.as_str()).into(),
             source: r.source,
             current_page: r.current_page,
-            ko_status: r.ko_status,
+            ko_status: r.ko_status.map(|s| KoStatus::from(s.as_str()).into()),
             ko_percent: r.ko_percent,
             ko_rating: r.ko_rating,
             created_at: r.created_at,
@@ -2559,6 +2771,7 @@ mod tests {
             current_page: Some(12),
             finished: true,
             reading_status: Some("finished".into()),
+            ko_percent: Some(0.5),
             date_started: Some(1),
             date_finished: Some(2),
             subjects: vec!["Fiction / Literary".into()],
@@ -2600,6 +2813,107 @@ mod tests {
         // Storage stamps these; a client must not be able to backdate a row.
         assert_eq!(back.created_at, None);
         assert_eq!(back.last_modified, None);
+        // **And `ko_percent` does not come back**, which is deliberate rather
+        // than a drop: it is a read-only projection of a device-owned column
+        // whose writer is `update_progress`. The four fields beside it survive
+        // only because `upsert_book` ignores them, which is where that rule
+        // lives; carrying a value nothing can write would be the worse of the
+        // two.
+        assert_eq!(back.ko_percent, None);
+    }
+
+    /// The derived fields are **readings, not columns**: they arrive on the way
+    /// out and are dropped on the way in, because there is nothing to write
+    /// them to. A `series_label` of "Dune #2" beside a `series_index` of 3 is
+    /// not a request.
+    #[test]
+    fn the_derived_fields_cross_outward_only() {
+        let book = Book {
+            authors: vec!["Borges, Jorge Luis".into()],
+            series: Some("Dune".into()),
+            // A REAL that must not print as `#2.0` — the drift `series_label`
+            // exists to prevent.
+            series_index: Some(2.0),
+            current_page: Some(50),
+            page_count: Some(200),
+            ..Book::default()
+        };
+        let dto = BookDto::from(book);
+        assert_eq!(dto.series_label.as_deref(), Some("Dune #2"));
+        assert_eq!(dto.authors_display, vec!["Jorge Luis Borges".to_string()]);
+        // The record itself is untouched: `authors` is what the origin spelled.
+        assert_eq!(dto.authors, vec!["Borges, Jorge Luis".to_string()]);
+        assert_eq!(
+            dto.progress,
+            ProgressDto::Started {
+                page: Some(50),
+                of: Some(200),
+                fraction: Some(0.25),
+                percent: Some(25),
+                source: Some(FractionSourceDto::Pages),
+            }
+        );
+
+        let back = Book::from(dto);
+        assert_eq!(back.series, Some("Dune".to_string()));
+        assert_eq!(back.series_index, Some(2.0));
+        assert_eq!(back.authors, vec!["Borges, Jorge Luis".to_string()]);
+    }
+
+    /// The false denominator, at the seam. A real book in `make dev-db` has
+    /// `page_count = 0`; before item 17b the CLI printed `[12/0]` over it.
+    #[test]
+    fn a_zero_page_count_never_reaches_a_client_as_a_denominator() {
+        let dto = BookDto::from(Book {
+            current_page: Some(12),
+            page_count: Some(0),
+            ..Book::default()
+        });
+        assert_eq!(
+            dto.progress,
+            ProgressDto::Started {
+                page: Some(12),
+                of: None,
+                fraction: None,
+                percent: None,
+                source: None,
+            }
+        );
+    }
+
+    /// An importer can write a status this build does not know, and it must
+    /// cross whole rather than collapsing to a placeholder or failing to parse.
+    #[test]
+    fn an_unknown_reading_state_survives_the_wire() {
+        let dto = BookDto::from(Book {
+            reading_status: Some("tsundoku".into()),
+            ..Book::default()
+        });
+        assert_eq!(
+            dto.reading_state,
+            Some(ReadingStateDto::Other {
+                raw: "tsundoku".into()
+            })
+        );
+        let json = serde_json::to_string(&dto).unwrap();
+        let round: BookDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.reading_state, dto.reading_state);
+        // And back to the column's own word, unchanged.
+        assert_eq!(
+            Book::from(round).reading_status.as_deref(),
+            Some("tsundoku")
+        );
+    }
+
+    /// No reading at all is **absence**, not a state. There is no `NeverOpened`
+    /// variant and this is what asserts it stays that way — a named state is
+    /// one a UI filters on, counts, and eventually puts a badge beside, which
+    /// is the framing `docs/decisions.md` bans.
+    #[test]
+    fn no_reading_is_absence_rather_than_a_variant() {
+        let dto = BookDto::from(Book::default());
+        assert_eq!(dto.reading_state, None);
+        assert_eq!(dto.progress, ProgressDto::Untouched);
     }
 
     /// The whole argument for mirroring `DiagnosticKind` in full rather than

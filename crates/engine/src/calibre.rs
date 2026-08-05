@@ -569,6 +569,119 @@ impl CalibreReport {
             .filter(|b| b.matched_by == CalibreMatch::New)
             .count()
     }
+
+    /// What this report says about one calibre row.
+    ///
+    /// Item 17d. This was `calibre_state_for` in `crates/tui/src/app.rs` — a
+    /// **join across three fields of this struct**, done by a frontend, which is
+    /// a data-model question and not a presentation one. A second frontend
+    /// reimplementing it inexactly gets a shelf that disagrees with the TUI's
+    /// about the same library, and the disagreement is invisible from either
+    /// side.
+    ///
+    /// The third branch is why this is not a lookup into `books`: a row calibre
+    /// gave no title is in **neither** list and survives only as a warning, so
+    /// its absence *is* its state. Deriving a shelf from `books` alone drops it
+    /// silently.
+    pub fn row_state(&self, calibre_id: i64) -> CalibreRowState {
+        if let Some(b) = self.books.iter().find(|b| b.calibre_id == calibre_id) {
+            return match b.matched_by {
+                CalibreMatch::New => CalibreRowState::New,
+                matched_by => CalibreRowState::Linked {
+                    matched_by,
+                    tags: b.tags_added,
+                    cover: b.cover,
+                    files: b.files_linked,
+                },
+            };
+        }
+        if let Some(u) = self.unmatched.iter().find(|u| u.calibre_id == calibre_id) {
+            return CalibreRowState::Candidates(u.candidates.clone());
+        }
+        // Neither list: the import skipped it and said why. Its own diagnostic,
+        // never a re-worded one — `Diagnostic`'s `Display` is user-visible
+        // output.
+        let warning = self.warnings.iter().find(|w| {
+            matches!(
+                w.kind,
+                DiagnosticKind::CalibreRowSkipped { calibre_id: id } if id == calibre_id
+            )
+        });
+        match warning {
+            Some(d) => CalibreRowState::Unreadable(d.clone()),
+            // Not skipped, not matched, not offered. Nothing claims to know what
+            // this is, so the row says exactly that rather than guessing at
+            // "new".
+            None => CalibreRowState::Unreadable(Diagnostic {
+                kind: DiagnosticKind::CalibreRowSkipped { calibre_id },
+                severity: Severity::Warning,
+                detail: "calibre listed it but the import had nothing to say about it".to_string(),
+            }),
+        }
+    }
+}
+
+/// What a dry run says about one calibre row.
+///
+/// The vocabulary is the device screen's wherever it can be — `New` and
+/// `Unreadable` mean here what they mean in [`DeviceState`](crate::DeviceState).
+/// `Unchanged`/`Updated` have no analogue: a calibre import re-enriches every
+/// matched book, so "nothing would change" is not a thing the report claims.
+#[derive(Debug, Clone)]
+pub enum CalibreRowState {
+    /// Already ours, on the rung that found it.
+    ///
+    /// Deliberately carries no `book_id`: nothing that shows this navigates into
+    /// the book, and a field held "in case" is a field the next reader has to
+    /// work out the absence of a use for. The report has it when one is wanted.
+    Linked {
+        matched_by: CalibreMatch,
+        /// What a fresh import would add — tags, a cover, file identities. Zero
+        /// across the board is an honest "nothing new".
+        tags: usize,
+        cover: bool,
+        files: usize,
+    },
+    /// Not here yet; importing would create it.
+    New,
+    /// In the candidate band. A decision, not a dead end.
+    Candidates(Vec<MatchCandidate>),
+    /// calibre gave us nothing to match on — a row with no title. Carries the
+    /// engine's own diagnostic rather than a re-worded one.
+    Unreadable(Diagnostic),
+}
+
+impl CalibreRowState {
+    /// Is there anything an import of this row would do?
+    ///
+    /// Item 17e, and the calibre twin of
+    /// [`DeviceState::is_syncable`](crate::DeviceState::is_syncable) — which was
+    /// already here, which is what made this one's absence conspicuous.
+    ///
+    /// `Candidates` is deliberately **not** importable: that row is a question,
+    /// and a sweep answering it by creating a duplicate is exactly what the
+    /// candidate band exists to prevent. Linking it, one row at a time, is the
+    /// answer.
+    pub fn is_importable(&self) -> bool {
+        matches!(self, CalibreRowState::New | CalibreRowState::Linked { .. })
+    }
+
+    /// True while the row is still a question nobody has answered.
+    pub fn is_undecided(&self) -> bool {
+        matches!(self, CalibreRowState::Candidates(_))
+    }
+
+    /// One word, for a list row. The **vocabulary**, not a frontend's phrasing —
+    /// `DeviceState::label`'s twin, and the same argument: two frontends calling
+    /// the same state different words is the drift, not the styling.
+    pub fn label(&self) -> &'static str {
+        match self {
+            CalibreRowState::Linked { .. } => "in library",
+            CalibreRowState::New => "new",
+            CalibreRowState::Candidates(_) => "maybe",
+            CalibreRowState::Unreadable(_) => "unreadable",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -2,7 +2,7 @@
   import { page } from '$app/state';
   import { client, type StoredBook } from '$lib/api/client';
   import type { HighlightDto, NoteDto, ReadingDto } from '$lib/api/bindings';
-  import { authorsLabel, readingStateLabel, seriesLabel, titleLabel } from '$lib/phrasing';
+  import { authorsLabel, progressDetail, readingStateLabel, titleLabel } from '$lib/phrasing';
 
   const id = $derived(Number(page.params.id));
 
@@ -35,7 +35,6 @@
   });
 
   const cover = $derived(book ? client().coverSrc(book) : null);
-  const series = $derived(book ? seriesLabel(book.series, book.series_index) : null);
 </script>
 
 <svelte:head><title>{book ? titleLabel(book.title) : 'Book'} — readingbuddy</title></svelte:head>
@@ -61,29 +60,36 @@
 
     <div class="body">
       <h1>{titleLabel(book.title)}</h1>
-      {#if authorsLabel(book.authors)}
-        <p class="by">{authorsLabel(book.authors)}</p>
+      {#if authorsLabel(book.authors_display)}
+        <!-- `authors_display`: the engine read the comma, this joins. -->
+        <p class="by">{authorsLabel(book.authors_display)}</p>
       {/if}
 
       <dl>
-        {#if readingStateLabel(book.reading_status)}
+        {#if readingStateLabel(book.reading_state)}
           <dt>State</dt>
-          <dd>{readingStateLabel(book.reading_status)}</dd>
+          <dd>{readingStateLabel(book.reading_state)}</dd>
         {/if}
-        {#if book.current_page !== null}
-          <!-- The page, not a percentage. A percentage needs a denominator, and
-               `page_count` is 0 for one book in the dev library and NULL for
-               another — item 17b owns that arithmetic, absence and all. -->
-          <dt>Page</dt>
-          <dd>{book.current_page}</dd>
-        {/if}
-        {#if book.page_count !== null}
+        {#if progressDetail(book.progress)}
+          <!-- The long phrasing, because this screen has room for the page a
+               reader recognises. The engine decided which numbers are in it: a
+               percentage needs a denominator, and `page_count` is 0 for one book
+               in the dev library and NULL for another; `Progress` normalises
+               both to absence, so this says the page alone without knowing why.
+               -->
+          <dt>Progress</dt>
+          <dd>{progressDetail(book.progress)}</dd>
+        {:else if book.page_count !== null}
+          <!-- Only where the progress line did not already carry it. -->
           <dt>Pages</dt>
           <dd>{book.page_count}</dd>
         {/if}
-        {#if series}
+        {#if book.series_label}
+          <!-- The engine's label, not the pair reassembled here: `series_index`
+               is a REAL and two frontends formatting it will eventually print
+               `#2.5` two ways. -->
           <dt>Series</dt>
-          <dd>{series}</dd>
+          <dd>{book.series_label}</dd>
         {/if}
         {#if book.publisher}
           <dt>Publisher</dt>

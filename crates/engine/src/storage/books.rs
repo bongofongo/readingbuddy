@@ -8,11 +8,43 @@ use super::{Storage, now_unix};
 use crate::book::{Book, series_index_text};
 use crate::error::{EngineError, Result};
 
+/// What [`Storage::list_books`] orders by.
+///
+/// **`limit` selects along the sort key, in every arm alike.** `list_books(200,
+/// Title)` is the first two hundred books alphabetically, not two hundred
+/// arbitrary books shown alphabetically — which is what `LIMIT` means and what
+/// a paginated shelf needs. The TUI wants the *other* thing, deliberately: it
+/// fetches one page by recency and reorders that same page in Rust, so pressing
+/// `s` reorders the list rather than swapping its contents
+/// (`crates/tui/src/app.rs`). That is a frontend policy about a fixed page and
+/// it stays there; the two are not in tension as long as nobody mistakes one for
+/// the other, which is what this paragraph is for.
+///
+/// [`BookSort::Author`] is the one key SQL cannot express — see its own note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BookSort {
     LastModified,
     Title,
     Progress,
+    /// Alphabetically by the first author's **last name**, authorless books
+    /// last.
+    ///
+    /// The only arm not ordered by `ORDER BY`, and it cannot be: "last name" is
+    /// a parse of a human name ([`crate::names`]) and SQLite has nothing to
+    /// parse one with. So this arm reads the library, sorts in Rust and *then*
+    /// truncates — which keeps the contract above (the first N by this key) at
+    /// the cost of a whole-table read.
+    ///
+    /// A `sort_author` column computed on write is the obvious follow-on and is
+    /// deliberately not done here: it is a migration, and item 17 has none. Do
+    /// the simple thing, then measure — a library where this hurts is a library
+    /// large enough to have said so.
+    Author,
+    /// Newest first, undated last.
+    ///
+    /// Descending like every other list in this app. An ascending year sort
+    /// would be the one place the newest thing is at the bottom.
+    Year,
 }
 
 /// What [`Storage::merge_books`] actually moved.
@@ -51,10 +83,14 @@ pub struct MergeReport {
     pub orphaned_cover: Option<String>,
 }
 
-/// The `books` columns plus the four reading-state **projections**.
+/// The `books` columns plus the reading-state **projections**.
 ///
-/// `current_page`, `finished`, `date_started` and `date_finished` left `books`
-/// with migration `0005` and now come off the current reading. Keeping them on
+/// Six of them now. `current_page`, `finished`, `date_started` and
+/// `date_finished` left `books`
+/// with migration `0005` and now come off the current reading; `reading_status`
+/// (item 25) and `ko_percent` (item 17) joined them, both because a value a
+/// frontend needs *per row* is a value a list cannot afford one query each for.
+/// Keeping them on
 /// [`Book`] as read-only projections is what left every consumer — the CLI's
 /// `render.rs`, the TUI's `progress_tag` and `progress_text`, the note page
 /// auto-anchor — untouched by that move, and [`row_to_book`] unchanged with it.
@@ -68,7 +104,7 @@ pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, 
      books.subjects, books.series, books.series_index, \
      cur.current_page AS current_page, \
      CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
-     cur.status AS reading_status, \
+     cur.status AS reading_status, cur.ko_percent AS ko_percent, \
      cur.started_at AS date_started, cur.finished_at AS date_finished, \
      books.created_at, books.last_modified";
 
@@ -115,6 +151,7 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
         current_page: row.try_get("current_page")?,
         finished: row.try_get::<i64, _>("finished")? != 0,
         reading_status: row.try_get("reading_status")?,
+        ko_percent: row.try_get("ko_percent")?,
         date_started: row.try_get("date_started")?,
         date_finished: row.try_get("date_finished")?,
         created_at: OffsetDateTime::from_unix_timestamp(created).ok(),
@@ -932,6 +969,8 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
+    /// The first `limit` books by `sort`. See [`BookSort`] for what that means
+    /// about membership — it is a contract, not an accident of `LIMIT`.
     pub async fn list_books(&self, limit: i64, sort: BookSort) -> Result<Vec<Book>> {
         let order = match sort {
             BookSort::LastModified => "books.last_modified DESC",
@@ -940,10 +979,31 @@ impl Storage {
             BookSort::Progress => {
                 "CAST(cur.current_page AS REAL) / NULLIF(books.page_count, 0) DESC NULLS LAST"
             }
+            // Undated last, so the `NULL` arm must sit outside the reversal.
+            BookSort::Year => "books.publish_year DESC NULLS LAST",
+            // SQL cannot answer this one. Read, sort, truncate — see the
+            // variant's own note for why that is the whole design and not a
+            // stopgap hiding a missing column.
+            BookSort::Author => return self.list_books_by_author(limit).await,
         };
         let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} ORDER BY {order} LIMIT ?");
         let rows = sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?;
         rows.iter().map(row_to_book).collect()
+    }
+
+    /// [`BookSort::Author`]'s arm: the whole library, sorted in Rust, truncated.
+    ///
+    /// The base order is recency and it is load-bearing rather than arbitrary:
+    /// `sort_by_key` is **stable**, so two books by one author keep the order
+    /// the library screen would otherwise have shown them in. That is a better
+    /// tie-break than any second key, and it costs nothing.
+    async fn list_books_by_author(&self, limit: i64) -> Result<Vec<Book>> {
+        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} ORDER BY books.last_modified DESC");
+        let rows = sqlx::query(&sql).fetch_all(self.pool()).await?;
+        let mut books: Vec<Book> = rows.iter().map(row_to_book).collect::<Result<_>>()?;
+        books.sort_by_key(|b| crate::names::sort_key(&b.authors));
+        books.truncate(limit.max(0) as usize);
+        Ok(books)
     }
 
     /// Fold `src` into `dst`: move highlights, notes, flashcards, readings,

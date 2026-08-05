@@ -31,7 +31,16 @@ import type {
 } from './bindings';
 import type { LibraryClient, StoredBook } from './client';
 
-/** Every field, so a new DTO column shows up here as a type error. */
+/**
+ * Every field, so a new DTO column shows up here as a type error.
+ *
+ * **The derived fields are literals, never computed here.** `progress`,
+ * `series_label`, `reading_state` and `authors_display` are the engine's
+ * answers (spec item 17), and a fake that re-derived them would be a second
+ * implementation of the rules this app exists not to have twice — and one that
+ * agreed with itself no matter how wrong it was. Spelling them out is the point:
+ * each one below states what the engine *should* say about that row.
+ */
 function book(id: number, over: Partial<BookDto>): StoredBook {
   return {
     id,
@@ -56,9 +65,12 @@ function book(id: number, over: Partial<BookDto>): StoredBook {
     series_index: null,
     current_page: null,
     finished: false,
-    reading_status: null,
+    reading_state: null,
     date_started: null,
     date_finished: null,
+    progress: { progress: 'untouched' },
+    series_label: null,
+    authors_display: ['Ada Ordinary'],
     created_at: 1735689600,
     last_modified: 1735689600 + id,
     ...over,
@@ -73,12 +85,39 @@ function book(id: number, over: Partial<BookDto>): StoredBook {
  */
 const BOOKS: StoredBook[] = [
   // page_count = 0 — item 17b's false denominator. Any percentage over this is a
-  // divide by zero and the honest answer is that there is no percentage.
-  book(1, { title: 'A Book Of Zero Pages', page_count: 0, reading_status: 'reading', current_page: 0 }),
+  // divide by zero, so `of` is **absent** here and not zero: that is the whole
+  // normalisation, stated as a fixture.
+  book(1, {
+    title: 'A Book Of Zero Pages',
+    page_count: 0,
+    reading_state: { state: 'reading' },
+    current_page: 0,
+    progress: { progress: 'started', page: 0, of: null, fraction: null, percent: null, source: null },
+  }),
   // page_count NULL — absence, not zero. A progress bar has nothing to draw.
-  book(2, { title: 'A Book Of Unknown Length', page_count: null, reading_status: 'reading', current_page: 40 }),
-  // The fat end of item 19's thickness scale.
-  book(3, { title: 'The Doorstop', page_count: 1408, reading_status: 'reading', current_page: 500 }),
+  book(2, {
+    title: 'A Book Of Unknown Length',
+    page_count: null,
+    reading_state: { state: 'reading' },
+    current_page: 40,
+    progress: { progress: 'started', page: 40, of: null, fraction: null, percent: null, source: null },
+  }),
+  // The fat end of item 19's thickness scale, and the ordinary progress case.
+  book(3, {
+    title: 'The Doorstop',
+    page_count: 1408,
+    reading_state: { state: 'reading' },
+    current_page: 500,
+    progress: {
+      progress: 'started',
+      page: 500,
+      of: 1408,
+      fraction: 500 / 1408,
+      // Integer division, not `Math.floor(fraction * 100)` — see `ProgressDto`.
+      percent: 35,
+      source: 'pages',
+    },
+  }),
   // And the thin end, where a spine has no room for a title.
   book(4, { title: 'A Pamphlet', page_count: 48 }),
   // No cover. Not a broken image and not an apology.
@@ -88,49 +127,90 @@ const BOOKS: StoredBook[] = [
     title:
       'A Title Of Such Considerable And Frankly Self-Indulgent Length That It Cannot Possibly Fit In A Shelf Tile Or A Column Header, Being In The Manner Of The Long Eighteenth Century, Wherein The Title Was Also The Blurb',
   }),
-  // `Surname, Given` — the calibre and Goodreads form. Displaying it the other
-  // way round is author-name parsing, which is item 17's and not a template's.
-  book(7, { title: 'A Book Filed Under Surname', authors: ['Borges, Jorge Luis'] }),
-  // A mononym. Any name-splitting rule breaks here.
-  book(8, { title: 'A Book By One Name', authors: ['Colette'] }),
+  // `Surname, Given` — the calibre and Goodreads form. Item 17 moved the flip
+  // into the engine, so the record keeps the origin's spelling and
+  // `authors_display` carries the parse.
+  book(7, {
+    title: 'A Book Filed Under Surname',
+    authors: ['Borges, Jorge Luis'],
+    authors_display: ['Jorge Luis Borges'],
+  }),
+  // A mononym. Any name-splitting rule breaks here, and the answer is to leave
+  // it alone.
+  book(8, { title: 'A Book By One Name', authors: ['Colette'], authors_display: ['Colette'] }),
   // No author at all — a real state after a bare epub import, not an error.
-  book(9, { title: 'A Book By Nobody', authors: [] }),
-  book(10, { title: 'A Book By Three People', authors: ['Ada Ordinary', 'Grace Second', 'Bea Third'] }),
+  book(9, { title: 'A Book By Nobody', authors: [], authors_display: [] }),
+  book(10, {
+    title: 'A Book By Three People',
+    authors: ['Ada Ordinary', 'Grace Second', 'Bea Third'],
+    authors_display: ['Ada Ordinary', 'Grace Second', 'Bea Third'],
+  }),
   // An abandoned reading. Never styled as failure — and note it is `finished:
   // false` with a `current_page`, identical to the open read above, which is the
-  // whole reason `reading_status` had to cross.
-  book(11, { title: 'A Book I Put Down', reading_status: 'abandoned', current_page: 60 }),
-  book(12, { title: 'A Book I Went Back To', reading_status: 'reading', current_page: 150 }),
+  // whole reason the state had to cross. Its `progress` is `started` like any
+  // other: putting a book down is not a bar that stopped short.
+  book(11, {
+    title: 'A Book I Put Down',
+    reading_state: { state: 'abandoned' },
+    current_page: 60,
+    progress: { progress: 'started', page: 60, of: 300, fraction: 0.2, percent: 20, source: 'pages' },
+  }),
+  book(12, {
+    title: 'A Book I Went Back To',
+    reading_state: { state: 'reading' },
+    current_page: 150,
+    progress: { progress: 'started', page: 150, of: 300, fraction: 0.5, percent: 50, source: 'pages' },
+  }),
   book(13, {
     title: 'A Book I Finished',
-    reading_status: 'finished',
+    reading_state: { state: 'finished' },
     finished: true,
     current_page: 300,
     isbn_13: '9780000000017',
+    // Finished carries no page: every frontend that had this case dropped the
+    // numbers for a word.
+    progress: { progress: 'finished' },
   }),
   // CJK. Font fallback, and character-count clipping being wrong.
-  book(14, { title: '北回帰線のあたりで', authors: ['村上 春樹'] }),
+  book(14, { title: '北回帰線のあたりで', authors: ['村上 春樹'], authors_display: ['村上 春樹'] }),
   // RTL. Bidi layout, and a left-aligned column that should not be.
-  book(15, { title: 'الكتاب الذي يقرأ من اليمين', authors: ['ابن خلدون'] }),
+  book(15, {
+    title: 'الكتاب الذي يقرأ من اليمين',
+    authors: ['ابن خلدون'],
+    authors_display: ['ابن خلدون'],
+  }),
   book(16, { title: "Ærøskøbing: Ångström's Œuvre — a Naïve Façade" }),
   // An empty title — the schema's own default, reachable from a sidecar with no
   // doc_props. `titleLabel` is what stops this rendering as a blank line.
   book(17, { title: null }),
-  // `series_index` is a REAL and must print as `#2`, never `#2.0`.
-  book(18, { title: 'The Claw Of The Conciliator', series: 'The Book Of The New Sun', series_index: 2 }),
-  // A series naming no index. The pair moves together or not at all.
-  book(19, { title: 'A Book In A Series With No Number', series: 'An Unnumbered Sequence' }),
+  // `series_index` is a REAL and must print as `#2`, never `#2.0`. The label is
+  // the engine's since item 17; the frontend no longer builds it.
+  book(18, {
+    title: 'The Claw Of The Conciliator',
+    series: 'The Book Of The New Sun',
+    series_index: 2,
+    series_label: 'The Book Of The New Sun #2',
+  }),
+  // A series naming no index. The pair moves together or not at all, and nothing
+  // is invented to fill the gap.
+  book(19, {
+    title: 'A Book In A Series With No Number',
+    series: 'An Unnumbered Sequence',
+    series_label: 'An Unnumbered Sequence',
+  }),
   book(20, {
     title: 'A Book With Subjects And Shelves',
     subjects: ['Philosophy', 'Essays', 'Nineteenth century'],
-    reading_status: 'finished',
+    reading_state: { state: 'finished' },
     finished: true,
+    progress: { progress: 'finished' },
     description:
       'Provider subjects beside minted shelves — two different things that look alike, and one of the separations migration 0013 rests on.',
   }),
-  // A status this build does not know. `reading_status` crosses as a string
-  // precisely because an importer can write one.
-  book(21, { title: 'A Book Some Other App Touched', reading_status: 'paused' }),
+  // A status this build does not know. The state is typed and still open: ts-rs
+  // gives an exhaustive union over today's variants, and `other` is how a word
+  // from a newer importer degrades instead of failing to parse.
+  book(21, { title: 'A Book Some Other App Touched', reading_state: { state: 'other', raw: 'paused' } }),
 ];
 
 const HIGHLIGHTS: Record<number, HighlightDto[]> = {
@@ -195,8 +275,8 @@ const READINGS: Record<number, ReadingDto[]> = {
   // Two readings, one closed and one open. Item 28's card is per reading, so
   // this book has two of them.
   12: [
-    reading(1, 12, { status: 'finished', finished_at: 1738368000, current_page: 300 }),
-    reading(2, 12, { status: 'reading', current_page: 150 }),
+    reading(1, 12, { status: { state: 'finished' }, finished_at: 1738368000, current_page: 300 }),
+    reading(2, 12, { status: { state: 'reading' }, current_page: 150 }),
   ],
 };
 
@@ -206,7 +286,7 @@ function reading(id: number, bookId: number, over: Partial<ReadingDto>): Reading
     book_id: bookId,
     started_at: 1735689600,
     finished_at: null,
-    status: 'reading',
+    status: { state: 'reading' },
     source: 'koreader',
     current_page: null,
     ko_status: null,
@@ -255,8 +335,8 @@ export class FakeClient implements LibraryClient {
     const own = READINGS[bookId];
     if (own) return own;
     const b = BOOKS.find((x) => x.id === bookId);
-    if (!b || b.reading_status === null) return [];
-    return [reading(100 + bookId, bookId, { status: b.reading_status })];
+    if (!b || b.reading_state === null) return [];
+    return [reading(100 + bookId, bookId, { status: b.reading_state })];
   }
 
   /**

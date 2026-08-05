@@ -77,6 +77,22 @@ pub struct Book {
     /// status this build does not know, and a parse that refuses one would turn
     /// a foreign device's vocabulary into an error on the read path.
     pub reading_status: Option<String>,
+    /// The current reading's `ko_percent` — the **device's** own fraction of
+    /// the book, `0.0..=1.0`. See [`Book::current_page`].
+    ///
+    /// A sixth projection, added by item 17 for one reason: without it
+    /// [`Progress`](crate::Progress) cannot be computed from a `Book`, and the
+    /// commonest row in a KOReader-sourced library has a device percentage and
+    /// no `current_page` at all. That fallback lived in one screen of one
+    /// frontend (`tui/src/ui/home.rs`), which meant a list built off `Book`
+    /// alone — every GUI list — could not show progress for the books that had
+    /// it. It is a projection and not a schema change: `readings.ko_percent`
+    /// has existed since migration `0005`.
+    ///
+    /// Device-owned and refreshed by straight assignment, so it can disagree
+    /// with `current_page`. Which wins is [`Progress`](crate::Progress)'
+    /// question and is answered there, once.
+    pub ko_percent: Option<f64>,
     /// The current reading's `started_at`. See [`Book::current_page`].
     pub date_started: Option<i64>,
     /// The current reading's `finished_at`. See [`Book::current_page`].
@@ -123,12 +139,108 @@ impl Book {
         })
     }
 
+    /// The current reading's state, typed.
+    ///
+    /// `None` is "no reading at all", and stays **absence rather than a
+    /// variant** — see [`ReadingState`] for the argument.
+    pub fn reading_state(&self) -> Option<ReadingState> {
+        self.reading_status.as_deref().map(ReadingState::from)
+    }
+
+    /// The authors, each written the way a person says it — `Jorge Luis
+    /// Borges`, never `Borges, Jorge Luis`.
+    ///
+    /// The **order within a name** is a parse and is the engine's
+    /// ([`crate::names`]); the **join between names** is wording and is the
+    /// frontend's, which is why this returns a list and not a sentence.
+    pub fn authors_in_display_order(&self) -> Vec<String> {
+        self.authors
+            .iter()
+            .map(|a| crate::names::display_order(a))
+            .collect()
+    }
+
     /// Canonical dedup key: ISBN-13, converting a lone ISBN-10 when possible.
     pub fn canonical_isbn13(&self) -> Option<String> {
         if let Some(i13) = &self.isbn_13 {
             return Some(i13.clone());
         }
         self.isbn_10.as_deref().and_then(isbn10_to_13)
+    }
+}
+
+/// What a reading's `status` says, typed.
+///
+/// Item 17's answer to the question item 25 left open. `readings.status` — and
+/// therefore [`Book::reading_status`] — crosses as a `String` because an
+/// importer can write a status this build does not know, and a parse that
+/// *refused* one would turn a foreign device's vocabulary into an error on the
+/// read path. That argument is about the **storage and transport** of the value
+/// and it still holds. It was never an argument against naming the three we do
+/// know: a frontend matching on `"abandoned"` is a stringly comparison in every
+/// frontend, and the one that misspells it styles a put-down book as an active
+/// read with no compiler anywhere in the way.
+///
+/// So: **the raw string stays, and this is read off it.** `Other` carries the
+/// unknown value rather than collapsing it, exactly as
+/// [`KoStatus`](crate::KoStatus) does for the device's own vocabulary — that is
+/// the precedent, and the two enums are deliberately the same shape.
+///
+/// **There is no `NeverOpened` variant, and that is a decision.** A book with no
+/// reading is `Option::None`, not a named state. Naming it would put *unread*
+/// into the type system, and "unread" is the completion framing `decisions.md`
+/// bans by name — a variant is a thing a UI filters on, counts, and eventually
+/// puts a badge beside. Absence is also what every consumer already branches on,
+/// and it is honest: the engine knows there is no reading, not that the book has
+/// not been read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadingState {
+    Reading,
+    /// Closed as read. The one state [`Book::finished`] also carries, and both
+    /// stay: `finished` is load-bearing for `render.rs` and `progress_tag`.
+    Finished,
+    /// Put down. **Not a failure and never styled as one** —
+    /// `Storage::abandon_reading` leaves the reading *open* for exactly that
+    /// reason, which is also why `finished: false` cannot tell this apart from
+    /// an active read and why this enum has to exist.
+    Abandoned,
+    /// A status this build does not model. Kept whole; showing it verbatim beats
+    /// inventing a word for it.
+    Other(String),
+}
+
+impl ReadingState {
+    /// True when the value was not one this build writes. The signal that an
+    /// importer grew a vocabulary we do not model — the same question
+    /// [`KoStatus::is_unknown`](crate::KoStatus::is_unknown) answers.
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, ReadingState::Other(_))
+    }
+}
+
+impl From<&str> for ReadingState {
+    fn from(s: &str) -> Self {
+        match s {
+            "reading" => ReadingState::Reading,
+            "finished" => ReadingState::Finished,
+            "abandoned" => ReadingState::Abandoned,
+            other => ReadingState::Other(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for ReadingState {
+    /// Round-trips through `From<&str>`, so an unknown status survives a
+    /// parse/render cycle unchanged rather than collapsing to a placeholder.
+    /// This is the **stored** vocabulary, not a label: `abandoned` is the word
+    /// in the column, and *Put down* is a frontend's.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadingState::Reading => write!(f, "reading"),
+            ReadingState::Finished => write!(f, "finished"),
+            ReadingState::Abandoned => write!(f, "abandoned"),
+            ReadingState::Other(s) => write!(f, "{s}"),
+        }
     }
 }
 
@@ -210,6 +322,33 @@ pub fn isbn10_to_13(isbn10: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reading_state_round_trips_through_its_stored_word() {
+        for w in ["reading", "finished", "abandoned", "tsundoku"] {
+            assert_eq!(ReadingState::from(w).to_string(), w);
+        }
+        assert!(ReadingState::from("tsundoku").is_unknown());
+        assert!(!ReadingState::from("abandoned").is_unknown());
+    }
+
+    #[test]
+    fn no_reading_is_absence_rather_than_a_state() {
+        let b = Book::default();
+        assert_eq!(b.reading_state(), None);
+    }
+
+    #[test]
+    fn authors_are_handed_over_one_at_a_time_in_reading_order() {
+        let b = Book {
+            authors: vec!["Borges, Jorge Luis".into(), "Colette".into()],
+            ..Book::default()
+        };
+        assert_eq!(
+            b.authors_in_display_order(),
+            ["Jorge Luis Borges", "Colette"]
+        );
+    }
 
     #[test]
     fn normalizes_hyphens_and_prefixes() {

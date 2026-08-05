@@ -34,7 +34,7 @@ pub use reading_events::{
     RefillReport, SOURCE_KOREADER, SOURCE_VAULT, day_of_ko_datetime, day_of_unix,
 };
 pub use readings::{
-    Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
+    ReadNumbering, Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
 };
 pub use sidecar_seen::SidecarFacts;
 

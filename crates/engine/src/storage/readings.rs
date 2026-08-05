@@ -16,6 +16,61 @@ use crate::book::Book;
 use crate::error::{EngineError, Result};
 use crate::koreader::KoStatus;
 
+/// Which read a highlight belongs to, as a person counts them.
+///
+/// Item 17c. This was `BookView::read_number` and `shows_read_gutter` in the
+/// TUI's own state (`crates/tui/src/app.rs`) — a domain rule sitting in a
+/// frontend, and one that **silently depends on the ordering contract of
+/// [`Storage::list_readings`]** (oldest first). A second frontend numbering
+/// reads off a differently-ordered list would disagree with the CLI's
+/// `reading 2/3` about which read a highlight came from, and nothing would look
+/// wrong on either screen. `decisions.md` already calls the read gutter
+/// load-bearing: *a column that nothing renders is a claim nothing can check*.
+///
+/// Borrowed rather than owning: the caller has the list already, and the type
+/// exists to name the rule, not to hold data.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadNumbering<'a> {
+    readings: &'a [Reading],
+}
+
+impl<'a> ReadNumbering<'a> {
+    /// `readings` must be in [`Storage::list_readings`] order — oldest first.
+    /// That is the order the 1-based numbers are counted in and the order
+    /// `rb show` prints.
+    pub fn new(readings: &'a [Reading]) -> ReadNumbering<'a> {
+        ReadNumbering { readings }
+    }
+
+    /// Which read, 1-based, or `None`.
+    ///
+    /// `None` covers three things and the caller wants the same answer to all
+    /// of them: the highlight is unattributed (no reading's window held its
+    /// timestamp — `attribute_highlights` leaves those `NULL` on purpose), the
+    /// reading it names is not in this list, or **the book has been read once**.
+    /// A single-read book has nothing to tell apart, and a number on every row
+    /// of it is a column that always reads `1`.
+    pub fn number_of(&self, reading_id: Option<i64>) -> Option<usize> {
+        if !self.is_meaningful() {
+            return None;
+        }
+        let rid = reading_id?;
+        self.readings
+            .iter()
+            .position(|r| r.id == rid)
+            .map(|i| i + 1)
+    }
+
+    /// Is there more than one read to tell apart?
+    ///
+    /// Asked once for a whole list rather than per row, so every row is laid out
+    /// the same: deciding per row leaves an unattributed highlight flush against
+    /// the border while its neighbours are indented.
+    pub fn is_meaningful(&self) -> bool {
+        self.readings.len() > 1
+    }
+}
+
 /// Our own status vocabulary. Distinct from `ko_status`, which mirrors what the
 /// *device* said and is never written by us.
 pub const STATUS_READING: &str = "reading";

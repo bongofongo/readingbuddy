@@ -19,7 +19,9 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem};
 
-use crate::app::{App, CalibreRow, CalibreRowState};
+use readingbuddy::CalibreRowState;
+
+use crate::app::{App, CalibreRow};
 use crate::theme;
 
 /// What the screen says with no rows on it.

@@ -136,6 +136,16 @@ the rules, and the reasons — the reasons are the part that matters.
   both need. Add to `ErrorClass` instead.
 - **`EngineError::Other` is last-resort.** If a caller might branch on it, it
   deserves a variant.
+- **Derived facts live here, phrasing does not** (item 17). "The engine does no
+  terminal I/O" is right and had been over-read as "the engine does no
+  derivation", which made a second frontend a *re-derivation* of the app rather
+  than an extension of it. The test is: a `Progress` enum is not terminal I/O;
+  `"p.42"` is. So sorting keys, progress arithmetic, author-name parsing
+  (`names.rs`), row-state joins and selection predicates are the engine's, and
+  pluralisation, wording and layout are a frontend's. `progress.rs` and
+  `names.rs` are the pattern to copy; `docs/decisions.md` entry 17 records the
+  four things that were deliberately **not** moved and why, which is the half a
+  later thread is likeliest to re-open by accident.
 - **No silently-skipping tests.** A test that `return`s when its fixture is
   absent is green without asserting anything — `epub.rs` had two of those for
   months. Every skip prints `SKIPPED:` and honours

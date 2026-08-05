@@ -21,8 +21,13 @@ pub mod koreader;
 /// The one answer to "is this the book I already have". Internal: a frontend
 /// asks an import path, never the matcher.
 pub(crate) mod matching;
+/// Human names, parsed — item 17. Filing order and display order, off one
+/// reading of the comma.
+pub mod names;
 pub mod notes;
 pub mod partial_md5;
+/// How far into a book a reading is, as a value — item 17b.
+pub mod progress;
 pub mod providers;
 pub mod search;
 pub mod storage;
@@ -33,9 +38,9 @@ use std::sync::{Arc, RwLock};
 
 use reqwest::Client;
 
-pub use book::{Book, isbn10_to_13, normalize_isbn, series_index_text};
+pub use book::{Book, ReadingState, isbn10_to_13, normalize_isbn, series_index_text};
 pub use calibre::{
-    Calibre, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport,
+    Calibre, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport, CalibreRowState,
     ImportOptions as CalibreImportOptions, UnmatchedCalibreBook,
 };
 pub use config::EngineConfig;
@@ -64,14 +69,15 @@ pub use koreader::{
 };
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use partial_md5::partial_md5;
+pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FieldSource,
     FillStats, FlashcardRow, Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord,
-    NoteSearchHit, OutgoingLink, Rating, RatingScale, Reading, ReadingEvent, RefillReport, Source,
-    Storage,
+    NoteSearchHit, OutgoingLink, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent,
+    RefillReport, Source, Storage,
 };
 pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 

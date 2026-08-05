@@ -12,9 +12,9 @@ use ratatui::backend::Backend;
 use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
-    Book, BookSort, DeviceBook, DeviceState, Diagnostic, Engine, EngineError, FlashcardRow,
-    Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput, NoteKind, NoteRecord,
-    RankedResult, Reading, SearchRequest,
+    Book, BookSort, CalibreRowState, DeviceBook, DeviceState, Diagnostic, Engine, EngineError,
+    FlashcardRow, Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput, NoteKind,
+    NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest,
 };
 
 use crossterm::event::KeyModifiers;
@@ -249,31 +249,23 @@ impl BookView {
         }
     }
 
+    /// The read numbering for this book — [`ReadNumbering`]'s two questions,
+    /// which moved into the engine with item 17c. Kept as accessors here
+    /// because `readings` is the field this screen owns and the borrow is
+    /// cheaper to spell once.
+    fn reads(&self) -> ReadNumbering<'_> {
+        ReadNumbering::new(&self.readings)
+    }
+
     /// Which read a highlight came from, 1-based, the way `rb show` numbers
     /// them.
-    ///
-    /// `None` covers both "no reading's window held it" and "this book has been
-    /// read once", and the caller wants the same thing in both cases: no gutter.
-    /// A single-read book has nothing to tell apart, and a number on every row
-    /// of it would be a column that is always `1`.
     pub fn read_number(&self, h: &Highlight) -> Option<usize> {
-        if self.readings.len() < 2 {
-            return None;
-        }
-        let rid = h.reading_id?;
-        self.readings
-            .iter()
-            .position(|r| r.id == rid)
-            .map(|i| i + 1)
+        self.reads().number_of(h.reading_id)
     }
 
     /// Does the highlight list need a gutter column at all?
-    ///
-    /// Asked once for the whole list rather than per row, so that every row is
-    /// indented the same amount — deciding per row would leave an unattributed
-    /// highlight flush against the border while its neighbours were indented.
     pub fn shows_read_gutter(&self) -> bool {
-        self.readings.len() > 1
+        self.reads().is_meaningful()
     }
 }
 
@@ -330,59 +322,15 @@ pub struct CalibreRow {
 impl CalibreRow {
     /// Is there anything an import of this row would do?
     ///
-    /// `Candidates` is deliberately **not** syncable: that row is a question, and
-    /// `s` answering it by creating a duplicate is exactly what the candidate
-    /// band exists to prevent. `n` is the answer, one row at a time.
+    /// The predicate itself is [`CalibreRowState::is_importable`] — item 17e
+    /// moved it beside `DeviceState::is_syncable`, which was already in the
+    /// engine and is what made this one's absence conspicuous.
     pub fn is_importable(&self) -> bool {
-        matches!(
-            self.state,
-            CalibreRowState::New | CalibreRowState::Linked { .. }
-        )
+        self.state.is_importable()
     }
 
     pub fn authors_line(&self) -> Option<String> {
         (!self.authors.is_empty()).then(|| self.authors.join(", "))
-    }
-}
-
-/// What the dry run said about one calibre row.
-///
-/// The vocabulary is the device screen's wherever it can be — `New` and
-/// `Unreadable` mean here what they mean there. `Unchanged`/`Updated` have no
-/// analogue: a calibre import re-enriches every matched book, so "nothing would
-/// change" is not a thing the report claims.
-pub enum CalibreRowState {
-    /// Already ours, on the rung that found it.
-    ///
-    /// Deliberately carries no `book_id`: nothing on this screen navigates into
-    /// the book, and a field held "in case" is a field the next reader has to
-    /// work out the absence of a use for. The report has it when one is wanted.
-    Linked {
-        matched_by: readingbuddy::CalibreMatch,
-        /// What a fresh import would add — tags, a cover, file identities. Zero
-        /// across the board is an honest "nothing new".
-        tags: usize,
-        cover: bool,
-        files: usize,
-    },
-    /// Not here yet; importing would create it.
-    New,
-    /// In the candidate band. A decision, not a dead end: `l` links it to one of
-    /// these, `n` says it is none of them.
-    Candidates(Vec<MatchCandidate>),
-    /// calibre gave us nothing to match on — a row with no title. Carries the
-    /// engine's own diagnostic rather than a re-worded one.
-    Unreadable(Diagnostic),
-}
-
-impl CalibreRowState {
-    pub fn label(&self) -> &'static str {
-        match self {
-            CalibreRowState::Linked { .. } => "in library",
-            CalibreRowState::New => "new",
-            CalibreRowState::Candidates(_) => "maybe",
-            CalibreRowState::Unreadable(_) => "unreadable",
-        }
     }
 }
 
@@ -605,47 +553,6 @@ pub struct GoodreadsJob {
     /// False is the dry run — the preview. True writes.
     pub apply: bool,
     pub create_ambiguous: bool,
-}
-
-/// Join one calibre row against the dry run that described the library.
-///
-/// A row appears in exactly one of three places, and the third is the reason this
-/// is not a lookup into `report.books`: a row calibre gave no title is in neither
-/// list and survives only as a warning, so its absence *is* its state. Deriving
-/// the shelf from the report alone would drop it silently.
-fn calibre_state_for(calibre_id: i64, report: &readingbuddy::CalibreReport) -> CalibreRowState {
-    if let Some(b) = report.books.iter().find(|b| b.calibre_id == calibre_id) {
-        return match b.matched_by {
-            readingbuddy::CalibreMatch::New => CalibreRowState::New,
-            matched_by => CalibreRowState::Linked {
-                matched_by,
-                tags: b.tags_added,
-                cover: b.cover,
-                files: b.files_linked,
-            },
-        };
-    }
-    if let Some(u) = report.unmatched.iter().find(|u| u.calibre_id == calibre_id) {
-        return CalibreRowState::Candidates(u.candidates.clone());
-    }
-    // Neither list: the import skipped it and said why. Its own diagnostic, never
-    // a re-worded one — `Diagnostic`'s `Display` is user-visible output.
-    let warning = report.warnings.iter().find(|w| {
-        matches!(
-            w.kind,
-            readingbuddy::DiagnosticKind::CalibreRowSkipped { calibre_id: id } if id == calibre_id
-        )
-    });
-    match warning {
-        Some(d) => CalibreRowState::Unreadable(d.clone()),
-        // Not skipped, not matched, not offered. Nothing claims to know what this
-        // is, so the row says exactly that rather than guessing at "new".
-        None => CalibreRowState::Unreadable(Diagnostic {
-            kind: readingbuddy::DiagnosticKind::CalibreRowSkipped { calibre_id },
-            severity: readingbuddy::Severity::Warning,
-            detail: "calibre listed it but the import had nothing to say about it".to_string(),
-        }),
-    }
 }
 
 /// Why a calibre read produced nothing.
@@ -2304,7 +2211,7 @@ impl App {
         self.calibre = books
             .into_iter()
             .map(|cb| {
-                let state = calibre_state_for(cb.calibre_id, &report);
+                let state = report.row_state(cb.calibre_id);
                 let title = cb.display_title().to_string();
                 CalibreRow {
                     calibre_id: cb.calibre_id,

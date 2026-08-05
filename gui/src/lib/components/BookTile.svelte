@@ -1,12 +1,17 @@
 <script lang="ts">
   import { client, type StoredBook } from '$lib/api/client';
-  import { authorsLabel, readingStateLabel, titleLabel } from '$lib/phrasing';
+  import { authorsLabel, progressLabel, readingStateLabel, titleLabel } from '$lib/phrasing';
 
   let { book }: { book: StoredBook } = $props();
 
   const cover = $derived(client().coverSrc(book));
-  const state = $derived(readingStateLabel(book.reading_status));
-  const authors = $derived(authorsLabel(book.authors));
+  const state = $derived(readingStateLabel(book.reading_state));
+  // `authors_display`, never `authors`: the flip out of `Surname, Given` is the
+  // engine's (item 17) and the record keeps the origin's own spelling.
+  const authors = $derived(authorsLabel(book.authors_display));
+  // Beside the state, not instead of it — "Reading · 35%" — and absent for a
+  // book with nothing recorded. Every number in it was computed by the engine.
+  const progress = $derived(progressLabel(book.progress));
 </script>
 
 <a class="tile" href={`/book/${book.id}`}>
@@ -27,8 +32,8 @@
     {#if authors}
       <span class="authors">{authors}</span>
     {/if}
-    {#if state}
-      <span class="state">{state}</span>
+    {#if state || progress}
+      <span class="state">{[state, progress].filter(Boolean).join(' · ')}</span>
     {/if}
   </div>
 </a>

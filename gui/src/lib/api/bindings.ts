@@ -54,13 +54,58 @@ series_index: number | null,
  */
 current_page: number | null, finished: boolean, 
 /**
- * `reading` | `finished` | `abandoned`, or absent when the book has no
- * reading at all — which is the commonest state in a real library and the
- * one `finished: false` cannot be told apart from *abandoned*. See
- * [`readingbuddy::Book::reading_status`] for why this is a `String` and not
- * an enum, and why it sits beside `finished` rather than replacing it.
+ * The current reading's state, or absent when the book has no reading at
+ * all — which is the commonest state in a real library and the one
+ * `finished: false` cannot be told apart from *abandoned*.
+ *
+ * **Typed since item 17**, where it crossed as a bare `String`. It is
+ * stored as one and always will be (an importer can write a status this
+ * build does not know, and a parse that refused one would turn a foreign
+ * device's vocabulary into an error on the read path) — but a *wire* that
+ * hands a frontend a bare string hands every frontend the same `switch`
+ * with the same three magic words in it, and the one that misspells
+ * `abandoned` styles a put-down book as an active read. `Other { raw }`
+ * carries the unknown value whole, so nothing is lost. See
+ * [`readingbuddy::ReadingState`], and note there is deliberately **no
+ * variant for "no reading"** — that is this field's `None`.
  */
-reading_status: string | null, date_started: number | null, date_finished: number | null, 
+reading_state: ReadingStateDto | null, date_started: number | null, date_finished: number | null, 
+/**
+ * How far into the current reading this is — item 17b.
+ *
+ * **Derived, read-only, and ignored on the way in.** Here rather than left
+ * to each frontend because the arithmetic has three hazards that a
+ * frontend reading `current_page` and `page_count` cannot see: a real book
+ * with `page_count = 0` (a false denominator, not a length), a real book
+ * with `page_count = NULL` (absence, not zero), and the device's own
+ * `ko_percent`, which is the better answer for a book whose length we do
+ * not know and which no `BookDto` field exposes. See
+ * [`readingbuddy::Progress`].
+ */
+progress: ProgressDto, 
+/**
+ * The series and its place in it, written the way a person writes it:
+ * `Dune #2`, never `Dune #2.0`.
+ *
+ * **Derived, read-only.** `series_index` is a `REAL`, so a frontend
+ * formatting the pair itself will eventually print `#2.5` one way and
+ * `#2.50` another — `readingbuddy::Book::series_label` exists precisely so
+ * two frontends cannot disagree, and until item 17 it was not on this
+ * struct at all, so the GUI reconstructed the pair and happened to agree
+ * because JS prints whole floats without a decimal point. That is
+ * agreement by coincidence.
+ */
+series_label: string | null, 
+/**
+ * The authors, each written the way a person says it — `Jorge Luis
+ * Borges`, never `Borges, Jorge Luis`.
+ *
+ * **Derived, read-only.** `authors` stays exactly as the origin spelled
+ * it, because that is the record; this is the parse. The **join** between
+ * names is still phrasing and still the frontend's, which is why this is a
+ * list and not a sentence.
+ */
+authors_display: Array<string>, 
 /**
  * Unix seconds. `OffsetDateTime`'s own serde format is a dependency's
  * choice; an integer is ours.
@@ -80,7 +125,7 @@ updated: number,
  */
 skipped: number, flashcards: number, matched_by: MatchMethodDto, percent_finished: number | null, status: KoStatusDto | null, rating: number | null, };
 
-export type BookSortDto = "last_modified" | "title" | "progress";
+export type BookSortDto = "last_modified" | "title" | "progress" | "author" | "year";
 
 export type BookTagDto = { tag: string, source: string, 
 /**
@@ -286,6 +331,12 @@ export type FillStatsDto = { inserted: number, updated: number, };
 
 export type FlashcardDto = { id: number, word: string, context: string | null, book_title: string, exported: boolean, };
 
+/**
+ * Where a fraction came from. A frontend may say so or not; what it may not do
+ * is compute one and forget which it was.
+ */
+export type FractionSourceDto = "pages" | "device";
+
 export type GoodreadsBookReportDto = { book_id: number | null, title: string, matched_by: GoodreadsMatchDto, readings_added: number, tags_added: number, review: TextOutcomeDto, private_notes: TextOutcomeDto, rating: number | null, };
 
 export type GoodreadsMatchDto = "external_id" | "isbn" | "title" | "new";
@@ -392,6 +443,30 @@ note: NoteDto | null, };
  */
 export type PathsDto = { db_url: string, images_dir: string, vault_dir: string, files_dir: string, log_dir: string, };
 
+/**
+ * How far into a book a reading is. The mirror of [`readingbuddy::Progress`],
+ * and item 17b's whole point: the arithmetic crosses the wire as a value so
+ * that neither frontend does it.
+ *
+ * `percent` is carried beside `fraction` rather than left to
+ * `Math.round(fraction * 100)` on the other side, and it is not redundant: the
+ * page-based percentage is an **integer division**, and `29/100` is
+ * `0.28999999999999998` in binary, so flooring the float gives 28 where the
+ * division gives 29. Two frontends already did it in integers and were right
+ * to; this is how the third gets the same number.
+ */
+export type ProgressDto = { "progress": "untouched" } | { "progress": "started", page: number | null, 
+/**
+ * The length. **Never `Some(0)`**: a zero page count is a false
+ * denominator and is absence by the time it reaches here.
+ */
+of: number | null, 
+/**
+ * `0.0..=1.0`, or absent — a page with no length has no percentage,
+ * and a bar must not draw an empty track over one.
+ */
+fraction: number | null, percent: number | null, source: FractionSourceDto | null, } | { "progress": "finished" };
+
 export type ProviderIdDto = "open_library" | "google_books";
 
 export type PullReportDto = { stats: BookImportStatsDto, warnings: Array<DiagnosticDto>, };
@@ -422,7 +497,30 @@ export type ReadingDto = { id: number, book_id: number, started_at: number | nul
 /**
  * `null` means open, and at most one reading per book may be.
  */
-finished_at: number | null, status: string, source: string, current_page: number | null, ko_status: string | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, };
+finished_at: number | null, 
+/**
+ * Typed since item 17 — see [`BookDto::reading_state`] for the argument.
+ * The column stays a `String`; the wire does not.
+ */
+status: ReadingStateDto, 
+/**
+ * `manual` | `koreader` | `migrated` | `goodreads` | `calibre`, and
+ * deliberately still a `String`.
+ *
+ * Item 17 typed `status` and stopped here on purpose. `status` had an
+ * engine type to mirror, a fixed three-word vocabulary, and frontends
+ * branching on it. `source` has none of the three: it is the *name of a
+ * writer*, it grows by one every time an importer is added, and nothing
+ * branches on it — it is shown. An enum here would be a second list of
+ * importers to keep in step with the first, which is the shape this repo
+ * spends `MERGE_RULES` avoiding.
+ */
+source: string, current_page: number | null, 
+/**
+ * The device's own status, typed — [`KoStatusDto`] already existed and was
+ * not being used here.
+ */
+ko_status: KoStatusDto | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, };
 
 /**
  * One day of one book, as one source saw it.
@@ -450,6 +548,13 @@ day: string, minutes: number | null, pages: number | null,
  * and a closed enum here would make it a wire-breaking change to add one.
  */
 source: string, confidence: ConfidenceDto, created_at: number, };
+
+/**
+ * A reading's state, typed. The mirror of [`readingbuddy::ReadingState`], and
+ * deliberately the same shape as [`KoStatusDto`] — one is our vocabulary, the
+ * other is the device's, and both have to survive a word neither build knows.
+ */
+export type ReadingStateDto = { "state": "reading" } | { "state": "finished" } | { "state": "abandoned" } | { "state": "other", raw: string, };
 
 /**
  * One pass of every filler that needs no device.
