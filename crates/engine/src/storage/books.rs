@@ -2247,6 +2247,45 @@ mod tests {
         }
     }
 
+    /// The cover metrics are **not** merge columns, and `cover_path` **is** —
+    /// stated by name, so neither half can drift without a failure that says so.
+    ///
+    /// The mirror of `only_our_own_columns_sit_out_the_federated_merge`, and
+    /// here for the same reason: "add a `Rule` for `cover_width`, it compiles,
+    /// nothing notices" is the quiet move, and migration `0014` is three
+    /// paragraphs of why not. The other direction matters as much —
+    /// `invalidate_cover_metrics` is generated from the value expression
+    /// `merge_set` builds for `cover_path`, so a `cover_path` that stopped being
+    /// a merge column would take the invalidation with it and leave nothing in
+    /// its place.
+    #[test]
+    fn the_cover_metrics_sit_outside_the_merge_table_and_the_path_does_not() {
+        let ruled: Vec<&str> = MERGE_RULES.iter().map(|r| r.col).collect();
+        for col in COVER_METRICS {
+            assert!(
+                !ruled.contains(&col),
+                "{col} became a MERGE_RULES column — read migration 0014 before \
+                 deleting this assertion, including why Rule::pair is not the fix"
+            );
+        }
+        assert!(
+            ruled.contains(&"cover_path"),
+            "cover_path left the merge table, and invalidate_cover_metrics is \
+             generated from its value expression"
+        );
+        // …and the clause really does reach every statement the table builds.
+        // Asserted on the SQL, because "one writer" was the claim that turned
+        // out to be false and the guard that replaced it is generated text.
+        for winner in [Winner::Incoming, Winner::Stored] {
+            for guard in [false, true] {
+                let sql = merge_set(winner, guard, |i, _| format!("?{}", i + 1));
+                for col in COVER_METRICS {
+                    assert!(sql.contains(&format!("{col} = CASE WHEN")), "{col}: {sql}");
+                }
+            }
+        }
+    }
+
     /// **The four measurements are not `MERGE_RULES` columns, and this is the
     /// assertion of their absence.**
     ///
