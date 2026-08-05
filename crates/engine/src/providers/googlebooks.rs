@@ -128,11 +128,78 @@ struct IndustryId {
     identifier: String,
 }
 
+/// Every size Google documents for `volumeInfo.imageLinks`, largest first in
+/// [`ImageLinks::best`].
+///
+/// Only `thumbnail` and `smallThumbnail` were read before item 20c, and a
+/// `thumbnail` is 128px on its long edge — under a third of what a shelf tile
+/// wants and a tenth of a hero shot. The other four are in the same documented
+/// object and are simply absent for volumes Google has no larger scan of,
+/// which is what the fallback chain is for.
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct ImageLinks {
+    extra_large: Option<String>,
+    large: Option<String>,
+    medium: Option<String>,
+    small: Option<String>,
     thumbnail: Option<String>,
     small_thumbnail: Option<String>,
+}
+
+impl ImageLinks {
+    /// The largest published size, cleaned up.
+    ///
+    /// Two fixes travel with the URL, and both are about what is *in* the image
+    /// rather than how big it is:
+    ///
+    /// - `https`, as before. Covers must be fetchable outside a browser session.
+    /// - **`edge=curl` is dropped.** It asks Google to composite a page-curl
+    ///   graphic onto the jacket — a skeuomorphic fold in the corner — which is
+    ///   a decoration in somebody else's taste, baked into bytes we then store
+    ///   for ever and take the border colour of. A cover is a scan of an object;
+    ///   the curl is not on the object.
+    ///
+    /// Nothing here carries an API key (`imageLinks` URLs are keyless, unlike
+    /// the query), and nothing here is logged, so [`scrub_key`] is not being
+    /// leaned on either way.
+    fn best(&self) -> Option<String> {
+        [
+            &self.extra_large,
+            &self.large,
+            &self.medium,
+            &self.small,
+            &self.thumbnail,
+            &self.small_thumbnail,
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        .map(|u| u.replace("http://", "https://"))
+        .map(|u| strip_param(&u, "edge"))
+    }
+}
+
+/// Remove one `key=value` pair from a URL's query string, leaving the rest
+/// exactly as it was.
+///
+/// String surgery rather than `Url::query_pairs_mut`, deliberately: that
+/// round-trip re-escapes every *other* parameter, so a URL Google returned
+/// byte-for-byte would be stored in a different spelling — and `cover_url` is a
+/// stored value that two records get compared on.
+fn strip_param(url: &str, key: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|p| p.split('=').next().unwrap_or(p) != key)
+        .collect();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
 }
 
 impl Volume {
@@ -163,13 +230,7 @@ impl Volume {
         // same argument `tests/fixtures/goodreads/README.md` makes for keeping
         // recorded samples recorded. OpenLibrary's edition record carries the
         // field outright, and that is where series comes from.
-        book.cover_url = info.image_links.as_ref().and_then(|l| {
-            l.thumbnail
-                .clone()
-                .or_else(|| l.small_thumbnail.clone())
-                // Covers must be fetchable outside a browser session.
-                .map(|u| u.replace("http://", "https://"))
-        });
+        book.cover_url = info.image_links.as_ref().and_then(ImageLinks::best);
         for iid in info.industry_identifiers.iter().flatten() {
             if let Some(norm) = normalize_isbn(&iid.identifier) {
                 match iid.kind.as_str() {
@@ -413,5 +474,70 @@ mod tests {
         let json = r#"{"items": [{"id": "x", "volumeInfo": {"title": "T"}}]}"#;
         let resp: VolumesResp = serde_json::from_str(json).unwrap();
         assert!(resp.items.unwrap()[0].to_book().subjects.is_empty());
+    }
+
+    /// **The largest published size wins** (item 20c), and the chain falls all
+    /// the way back to `smallThumbnail` — Google publishes the big ones only
+    /// for volumes it has a big scan of, which is most but not all of them.
+    #[test]
+    fn the_cover_url_is_the_largest_size_google_published() {
+        let mk = |body: &str| {
+            let json = format!(
+                r#"{{"items": [{{"id": "x", "volumeInfo": {{"title": "T", "imageLinks": {body}}}}}]}}"#
+            );
+            serde_json::from_str::<VolumesResp>(&json)
+                .unwrap()
+                .items
+                .unwrap()[0]
+                .to_book()
+                .cover_url
+        };
+        assert_eq!(
+            mk(
+                r#"{"smallThumbnail": "https://x/s", "thumbnail": "https://x/t",
+                   "small": "https://x/1", "medium": "https://x/2",
+                   "large": "https://x/3", "extraLarge": "https://x/4"}"#
+            )
+            .as_deref(),
+            Some("https://x/4")
+        );
+        assert_eq!(
+            mk(r#"{"smallThumbnail": "https://x/s", "thumbnail": "https://x/t"}"#).as_deref(),
+            Some("https://x/t")
+        );
+        assert_eq!(
+            mk(r#"{"smallThumbnail": "https://x/s"}"#).as_deref(),
+            Some("https://x/s")
+        );
+        assert_eq!(mk("{}"), None);
+    }
+
+    /// The page-curl graphic is not on the book.
+    ///
+    /// `edge=curl` asks Google to composite a skeuomorphic fold onto the
+    /// jacket. It is somebody else's decoration, and item 20 stores these bytes
+    /// for ever *and* takes the border colour off them — a fold in the corner
+    /// is exactly where that border is.
+    #[test]
+    fn the_page_curl_is_stripped_and_nothing_else_is_touched() {
+        let url = "http://books.google.com/books/content?id=AAA&printsec=frontcover\
+                   &img=1&zoom=1&edge=curl&source=gbs_api";
+        let links: ImageLinks =
+            serde_json::from_str(&format!(r#"{{"extraLarge": "{url}"}}"#)).unwrap();
+        let got = links.best().unwrap();
+        assert!(got.starts_with("https://"), "{got}");
+        assert!(!got.contains("edge=curl"), "{got}");
+        // Every other parameter survives, in the spelling Google used — a cover
+        // URL is a stored value that two records get compared on.
+        assert_eq!(
+            got,
+            "https://books.google.com/books/content?id=AAA&printsec=frontcover\
+             &img=1&zoom=1&source=gbs_api"
+                .replace(char::is_whitespace, "")
+        );
+        // A URL with no query at all is returned untouched.
+        assert_eq!(strip_param("https://x/y.jpg", "edge"), "https://x/y.jpg");
+        // …and one whose only parameter was the curl loses the `?` with it.
+        assert_eq!(strip_param("https://x/y?edge=curl", "edge"), "https://x/y");
     }
 }

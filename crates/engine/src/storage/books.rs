@@ -95,6 +95,13 @@ pub struct MergeReport {
 /// `render.rs`, the TUI's `progress_tag` and `progress_text`, the note page
 /// auto-anchor — untouched by that move, and [`row_to_book`] unchanged with it.
 ///
+/// The four **cover metrics** (item 20, migration `0014`) are read here and
+/// written nowhere else in this file: they are not `MERGE_RULES` columns, they
+/// are what the engine measured about the file at `cover_path`, and
+/// [`Storage::set_cover`] is their only writer. Same arrangement as the reading
+/// projections above and for the same reason — one writer means the four can
+/// never describe an image the row is not pointing at.
+///
 /// Every `books` column is qualified: `readings` carries `id`, `created_at` and
 /// `last_modified` of its own, and an unqualified name would be ambiguous.
 pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, books.authors, \
@@ -102,6 +109,7 @@ pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, 
      books.isbn_13, books.openlibrary_key, books.googlebooks_id, books.cover_url, \
      books.cover_path, books.page_count, books.description, books.first_sentence, \
      books.subjects, books.series, books.series_index, \
+     books.cover_width, books.cover_height, books.cover_accent, books.cover_thumb_path, \
      cur.current_page AS current_page, \
      CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
      cur.status AS reading_status, cur.ko_percent AS ko_percent, \
@@ -148,6 +156,10 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
         subjects: serde_json::from_str(&subjects).unwrap_or_default(),
         series: row.try_get("series")?,
         series_index: row.try_get("series_index")?,
+        cover_width: row.try_get("cover_width")?,
+        cover_height: row.try_get("cover_height")?,
+        cover_accent: row.try_get("cover_accent")?,
+        cover_thumb_path: row.try_get("cover_thumb_path")?,
         current_page: row.try_get("current_page")?,
         finished: row.try_get::<i64, _>("finished")? != 0,
         reading_status: row.try_get("reading_status")?,
@@ -587,7 +599,11 @@ enum Winner {
 /// `dst` wins there anyway, so a `user` field is only ever *filled* when `dst`
 /// has no value for the user to have corrected.
 fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> String) -> String {
-    MERGE_RULES
+    // The expression this statement will actually store in `cover_path`, kept
+    // so the cover metrics can be invalidated against it — see
+    // `invalidate_cover_metrics`.
+    let mut cover_value: Option<String> = None;
+    let mut sets: Vec<String> = MERGE_RULES
         .iter()
         .enumerate()
         .map(|(i, rule)| {
@@ -598,12 +614,12 @@ fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> Stri
                 Winner::Incoming => (&new, &stored),
                 Winner::Stored => (&stored, &new),
             };
-            let value = match rule.merge {
+            let merged = match rule.merge {
                 Merge::NonEmptyText => format!("CASE WHEN {a} != '' THEN {a} ELSE {b} END"),
                 Merge::NonEmptyList => format!("CASE WHEN {a} != '[]' THEN {a} ELSE {b} END"),
                 Merge::Coalesce => format!("COALESCE({a}, {b})"),
             };
-            if guard_user {
+            let value = if guard_user {
                 // A paired column is guarded by *either* half's claim — see
                 // `Rule::pair`. Without it, owning one half of a pair invites
                 // the other half to be filled from a record about something
@@ -617,11 +633,52 @@ fn merge_set(winner: Winner, guard_user: bool, src: impl Fn(usize, &str) -> Stri
                     ),
                     None => field_provenance::user_owns("books.id", col),
                 };
-                format!("{col} = CASE WHEN {owned} THEN {stored} ELSE {value} END")
+                format!("CASE WHEN {owned} THEN {stored} ELSE {merged} END")
             } else {
-                format!("{col} = {value}")
+                merged
+            };
+            if col == "cover_path" {
+                cover_value = Some(value.clone());
             }
+            format!("{col} = {value}")
         })
+        .collect();
+    if let Some(cover) = cover_value {
+        sets.push(invalidate_cover_metrics(&cover));
+    }
+    sets.join(",\n            ")
+}
+
+/// The cover columns that came off `cover_path`, and are worthless the moment
+/// it moves. Not `MERGE_RULES` rows — migration `0014` argues why — but every
+/// statement that can move a path has to know about them.
+const COVER_METRICS: [&str; 4] = [
+    "cover_width",
+    "cover_height",
+    "cover_accent",
+    "cover_thumb_path",
+];
+
+/// **A write that moves `cover_path` throws away what was measured from the old
+/// file.**
+///
+/// This is what makes "the stored dimensions describe a different image"
+/// unrepresentable rather than merely unlikely, and it is generated from the
+/// *same expression* that stores the path — so it cannot fall out of step with
+/// the merge rule, the user guard or the `dst`-wins inversion.
+///
+/// One writer was not enough, and the test that failed said so:
+/// [`Storage::set_cover`] is the only writer of these four, but `cover_path` is
+/// a `MERGE_RULES` column with three other writers, and `Merge::Coalesce` under
+/// `Winner::Incoming` means an incoming record's path *wins*. A calibre row or
+/// an `rb set` carrying a cover therefore repointed the row and left a width,
+/// a height and an accent belonging to the jacket before it. `IS` rather than
+/// `=` because both sides are nullable and `NULL = NULL` is not true, which is
+/// exactly the case where a book gains its first cover.
+fn invalidate_cover_metrics(cover_value: &str) -> String {
+    COVER_METRICS
+        .iter()
+        .map(|col| format!("{col} = CASE WHEN ({cover_value}) IS books.cover_path THEN books.{col} ELSE NULL END"))
         .collect::<Vec<_>>()
         .join(",\n            ")
 }
@@ -1236,8 +1293,25 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
 
-        if dst_book.cover_path.is_some() {
-            report.orphaned_cover = src_book.cover_path.clone();
+        // `dst` keeps its own cover, so `src`'s file is now unreferenced —
+        // **unless another row references it**, which is new since item 20.
+        // Covers are named by content hash, so two books that fetched the same
+        // jacket genuinely share one file, and handing the caller a path it is
+        // about to unlink out from under a surviving book is a blank tile
+        // nothing on screen explains. Asked of the database rather than assumed,
+        // for the reason `book_files` gets to assume the opposite: that table is
+        // keyed on the sha alone, so a second holder is unrepresentable there and
+        // perfectly ordinary here.
+        if dst_book.cover_path.is_some()
+            && let Some(src_cover) = &src_book.cover_path
+        {
+            let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")
+                .bind(src_cover)
+                .fetch_one(&mut *tx)
+                .await?;
+            if others == 0 {
+                report.orphaned_cover = Some(src_cover.clone());
+            }
         }
 
         // dst wins: `src` fills only what `dst` does not already have. The
@@ -1261,6 +1335,28 @@ impl Storage {
             .execute(&mut *tx)
             .await?;
 
+        // **The cover metrics travel with the path.** The fill above moves
+        // `cover_path` in exactly one case — `dst` had none and takes `src`'s —
+        // and the four measurements describe *that* file, so they move with it
+        // or the row claims a width belonging to an image it is not pointing at.
+        // They are not `MERGE_RULES` columns precisely so that no generated
+        // statement can move one without the other; this is that rule at the one
+        // place a cover changes hands. Nothing is written when `dst` kept its
+        // own: `src`'s numbers are about a file `dst` is not using.
+        if dst_book.cover_path.is_none() && src_book.cover_path.is_some() {
+            sqlx::query(
+                "UPDATE books SET cover_width = ?1, cover_height = ?2, cover_accent = ?3,
+                        cover_thumb_path = ?4 WHERE id = ?5",
+            )
+            .bind(src_book.cover_width)
+            .bind(src_book.cover_height)
+            .bind(src_book.cover_accent)
+            .bind(src_book.cover_thumb_path.clone())
+            .bind(dst)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         tx.commit().await?;
         Ok(report)
     }
@@ -1281,18 +1377,115 @@ impl Storage {
         Ok(())
     }
 
-    /// Delete a book; returns its cover_path (if any) so the caller can
-    /// clean up the image file.
+    /// Record a cover file and everything measured about it — **one statement,
+    /// five columns, or none of them**.
+    ///
+    /// This is the only writer of `cover_width`/`cover_height`/`cover_accent`/
+    /// `cover_thumb_path`, and it writes them beside the `cover_path` they
+    /// describe. That is what makes "the stored dimensions belong to a different
+    /// image" unrepresentable rather than merely guarded against — see migration
+    /// `0014` for why these are deliberately not `MERGE_RULES` columns and why
+    /// `Rule::pair` would not have covered the one case that matters.
+    ///
+    /// **Straight assignment, not the no-clobber merge.** Every other writer of
+    /// `cover_path` `COALESCE`s, which is right for a partial record and wrong
+    /// here: it meant a re-fetch that produced a *different* file left the row
+    /// pointing at the old one, invisibly, because under URL naming the new file
+    /// usually had the same name anyway. Content-addressed names make that
+    /// divergence real, so the dedicated writer replaces.
+    ///
+    /// **`source` claims `cover_path` and nothing else.** The four
+    /// measurements have no origin to name — the engine decoded the file, which
+    /// is not a claim `field_provenance` has vocabulary for or a reader has any
+    /// use for — but the *file* does: whoever supplied the URL it was fetched
+    /// from. `None` is the honest answer for a writer that cannot say, which is
+    /// every caller but enrichment: `download_cover` is handed a `cover_url`
+    /// somebody else put on the record, and the back-fill is measuring a file
+    /// that has been on disk for months. It is a parameter and not a default for
+    /// the reason [`Storage::upsert_book`] gives: a writer that does not answer
+    /// is a field that goes on claiming whatever it claimed last.
+    pub async fn set_cover(
+        &self,
+        book_id: i64,
+        cover: &crate::images::CoverFile,
+        source: Option<Source>,
+    ) -> Result<()> {
+        let metrics = cover.metrics;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "UPDATE books SET cover_path = ?1, cover_thumb_path = ?2, cover_width = ?3,
+                    cover_height = ?4, cover_accent = ?5, last_modified = ?6
+             WHERE id = ?7",
+        )
+        .bind(cover.path.display().to_string())
+        .bind(cover.thumb_path.as_ref().map(|p| p.display().to_string()))
+        .bind(metrics.map(|m| m.width))
+        .bind(metrics.map(|m| m.height))
+        .bind(metrics.map(|m| m.accent))
+        .bind(now_unix())
+        .bind(book_id)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(source) = source {
+            field_provenance::stamp(&mut tx, book_id, &["cover_path"], source).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The back-fill's work list: books whose cover is on disk and unmeasured.
+    ///
+    /// `cover_width IS NULL` is *not measured yet*, never *no cover* — the
+    /// two are told apart by `cover_path`, which is why this predicate is
+    /// stated once here rather than in the command that consumes it. Every row
+    /// predating migration `0014` is in this list, and so is every cover whose
+    /// bytes this build could not decode; the second kind is re-attempted on
+    /// each run, which costs one file read and is the honest behaviour when a
+    /// later build learns a new format.
+    pub async fn unmeasured_covers(&self) -> Result<Vec<(i64, String)>> {
+        let rows = sqlx::query(
+            "SELECT id, cover_path FROM books
+              WHERE cover_path IS NOT NULL AND cover_width IS NULL
+              ORDER BY id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|r| Ok((r.try_get("id")?, r.try_get("cover_path")?)))
+            .collect()
+    }
+
+    /// Delete a book; returns its cover_path when **no other book is using it**,
+    /// so the caller can clean up the image file.
+    ///
+    /// The qualifier is item 20's. Covers are named by content hash, so two
+    /// books that fetched the same jacket point at one file and deleting either
+    /// one used to take the other's cover with it. `book_files` gets to skip
+    /// this check because it is keyed on the sha alone and a second holder is
+    /// unrepresentable there; `books` holds the path in a plain column and a
+    /// second holder is ordinary.
     pub async fn delete_book(&self, id: i64) -> Result<Option<String>> {
+        let mut tx = self.pool().begin().await?;
         let cover: Option<Option<String>> =
             sqlx::query_scalar("DELETE FROM books WHERE id = ? RETURNING cover_path")
                 .bind(id)
-                .fetch_optional(self.pool())
+                .fetch_optional(&mut *tx)
                 .await?;
-        match cover {
-            None => Err(EngineError::NotFound(format!("book id {id}"))),
-            Some(path) => Ok(path),
+        let Some(cover) = cover else {
+            return Err(EngineError::NotFound(format!("book id {id}")));
+        };
+        let mut orphaned = None;
+        if let Some(path) = cover {
+            let others: i64 = sqlx::query_scalar("SELECT count(*) FROM books WHERE cover_path = ?")
+                .bind(&path)
+                .fetch_one(&mut *tx)
+                .await?;
+            if others == 0 {
+                orphaned = Some(path);
+            }
         }
+        tx.commit().await?;
+        Ok(orphaned)
     }
 }
 
@@ -2037,6 +2230,320 @@ mod tests {
         assert!(
             s.get_book(id).await.unwrap().is_some(),
             "must not self-delete"
+        );
+    }
+
+    // ---- covers (item 20, migration 0014) ----------------------------------
+
+    fn cover_at(path: &str) -> crate::images::CoverFile {
+        crate::images::CoverFile {
+            path: path.into(),
+            thumb_path: Some(crate::images::thumb_path_of(std::path::Path::new(path))),
+            metrics: Some(crate::images::CoverMetrics {
+                width: 600,
+                height: 900,
+                accent: 0x00a0_2020,
+            }),
+        }
+    }
+
+    /// **The four measurements are not `MERGE_RULES` columns, and this is the
+    /// assertion of their absence.**
+    ///
+    /// Migration `0014`'s whole argument is that a record-shaped writer able to
+    /// move `cover_width` without moving `cover_path` produces a row whose
+    /// stored dimensions describe a different image — so the fix is not a guard
+    /// but the absence of a path. This is the same shape as
+    /// `a_provider_upsert_never_touches_reading_state`: the failure it catches
+    /// is somebody adding a fifth `Rule` for tidiness, and nothing else would
+    /// notice.
+    #[tokio::test]
+    async fn a_provider_write_never_touches_the_cover_metrics() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.set_cover(id, &cover_at("/img/aaa.jpg"), None)
+            .await
+            .unwrap();
+
+        // Every record-shaped writer, each handed a record that speaks to
+        // everything the merge table governs. `cover_path` is cleared from it
+        // on purpose: a record that *moves* the path is supposed to invalidate
+        // these four, and that is the test below. This one is about a record
+        // that says nothing about the cover and must therefore change nothing
+        // about it.
+        let loud = Book {
+            cover_path: None,
+            ..says_everything(9)
+        };
+        s.enrich_book(id, &loud, Some(Source::GoogleBooks))
+            .await
+            .unwrap();
+        s.fill_book(id, &loud, Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+        // …and a record that speaks to the measurements themselves, from the
+        // one source that outranks every guard. The fields are on `Book`
+        // because they are read there; no statement reads them.
+        s.enrich_book(
+            id,
+            &Book {
+                cover_width: Some(1),
+                cover_height: Some(1),
+                cover_accent: Some(1),
+                cover_thumb_path: Some("/img/lie.jpg".into()),
+                ..Default::default()
+            },
+            Some(Source::User),
+        )
+        .await
+        .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/aaa.thumb.jpg"));
+        assert_eq!((got.cover_width, got.cover_height), (Some(600), Some(900)));
+        assert_eq!(got.cover_accent, Some(0x00a0_2020));
+        assert_eq!(got.cover_path.as_deref(), Some("/img/aaa.jpg"));
+    }
+
+    /// …and where a record **does** move `cover_path`, the measurements do not
+    /// survive it.
+    ///
+    /// The other half of the rule above, and the one a first cut got wrong. One
+    /// dedicated writer is not enough on its own: `cover_path` is a
+    /// `MERGE_RULES` column, `Merge::Coalesce` under `Winner::Incoming` means an
+    /// incoming record's path wins, and a calibre row or an `rb set` carrying a
+    /// cover therefore repointed the row and left a width, a height and an
+    /// accent belonging to the jacket before it. `merge_set` now generates the
+    /// invalidation from the same expression that stores the path.
+    #[tokio::test]
+    async fn moving_the_cover_path_throws_away_what_was_measured_from_the_old_one() {
+        for user in [false, true] {
+            let s = Storage::connect("sqlite::memory:").await.unwrap();
+            let id = s.upsert_book(&sample(), None).await.unwrap();
+            s.set_cover(id, &cover_at("/img/aaa.jpg"), None)
+                .await
+                .unwrap();
+
+            let source = user.then_some(Source::User).or(Some(Source::Calibre));
+            s.enrich_book(
+                id,
+                &Book {
+                    cover_path: Some("/img/bbb.jpg".into()),
+                    ..Default::default()
+                },
+                source,
+            )
+            .await
+            .unwrap();
+
+            let got = s.get_book(id).await.unwrap().unwrap();
+            assert_eq!(got.cover_path.as_deref(), Some("/img/bbb.jpg"));
+            assert_eq!(
+                (
+                    got.cover_width,
+                    got.cover_height,
+                    got.cover_accent,
+                    got.cover_thumb_path
+                ),
+                (None, None, None, None),
+                "user={user}: the row kept the old jacket's dimensions"
+            );
+            // And a write that leaves the path alone leaves them alone.
+            s.set_cover(id, &cover_at("/img/bbb.jpg"), None)
+                .await
+                .unwrap();
+            s.enrich_book(
+                id,
+                &Book {
+                    publisher: Some("Grand Central".into()),
+                    ..Default::default()
+                },
+                source,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                s.get_book(id).await.unwrap().unwrap().cover_width,
+                Some(600),
+                "user={user}: a write that did not touch the cover cleared it"
+            );
+        }
+    }
+
+    /// `set_cover` **replaces**, where every other writer of `cover_path`
+    /// fills.
+    ///
+    /// The bug this pins was latent and invisible: `download_cover` went
+    /// through the no-clobber merge, so a re-fetch producing a *different* file
+    /// left the row pointing at the old one. Under URL naming the new file
+    /// usually had the same name, so nothing ever looked wrong; content
+    /// addressing makes the divergence real.
+    #[tokio::test]
+    async fn refetching_a_cover_repoints_the_row() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let id = s.upsert_book(&sample(), None).await.unwrap();
+        s.set_cover(id, &cover_at("/img/old.jpg"), None)
+            .await
+            .unwrap();
+        s.set_cover(id, &cover_at("/img/new.jpg"), Some(Source::OpenLibrary))
+            .await
+            .unwrap();
+
+        let got = s.get_book(id).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/new.jpg"));
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/new.thumb.jpg"));
+        // The one field with an origin is claimed; the measurements are not.
+        assert_eq!(
+            s.field_source(id, "cover_path").await.unwrap().as_deref(),
+            Some("openlibrary")
+        );
+    }
+
+    /// **Two books may now share one file**, which is what content addressing
+    /// bought and what nothing in the delete path used to allow for.
+    ///
+    /// `book_files` gets to skip this check because it is keyed on the sha
+    /// alone and a second holder is unrepresentable there. `books` holds the
+    /// path in a plain column, so a second holder is ordinary — and handing the
+    /// caller a path it unlinks out from under the survivor is a blank tile
+    /// nothing on screen explains.
+    #[tokio::test]
+    async fn a_shared_cover_survives_deleting_one_of_its_books() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+        let a = s.upsert_book(&mk("a"), None).await.unwrap();
+        let b = s.upsert_book(&mk("b"), None).await.unwrap();
+        let shared = cover_at("/img/shared.jpg");
+        s.set_cover(a, &shared, None).await.unwrap();
+        s.set_cover(b, &shared, None).await.unwrap();
+
+        assert_eq!(
+            s.delete_book(a).await.unwrap(),
+            None,
+            "the surviving book is still using this file"
+        );
+        assert_eq!(
+            s.delete_book(b).await.unwrap(),
+            Some("/img/shared.jpg".to_string()),
+            "the last holder is gone; now it is an orphan"
+        );
+    }
+
+    /// The cover and its measurements change hands **together**, or not at all.
+    ///
+    /// Three cases, and the middle one is the reason this is not left to the
+    /// generated fill: a `dst` that kept its own jacket must not inherit `src`'s
+    /// dimensions, which describe an image it is not pointing at. That row is
+    /// the cover-shaped version of *Dune #2* under a different series' name.
+    #[tokio::test]
+    async fn a_cover_and_its_measurements_change_hands_together() {
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+
+        // 1. `dst` has no cover: the whole group moves.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        s.set_cover(src, &cover_at("/img/src.jpg"), None)
+            .await
+            .unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/src.jpg"));
+        assert_eq!(got.cover_width, Some(600));
+        assert_eq!(got.cover_thumb_path.as_deref(), Some("/img/src.thumb.jpg"));
+        assert_eq!(report.orphaned_cover, None, "the file is in use by dst");
+
+        // 2. `dst` has its own: nothing moves, and src's file is the orphan.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        s.set_cover(src, &cover_at("/img/src.jpg"), None)
+            .await
+            .unwrap();
+        // A `dst` whose cover predates migration `0014`: a path, no metrics.
+        // This is the row that would have inherited src's width.
+        s.enrich_book(
+            dst,
+            &Book {
+                cover_path: Some("/img/dst.jpg".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        let got = s.get_book(dst).await.unwrap().unwrap();
+        assert_eq!(got.cover_path.as_deref(), Some("/img/dst.jpg"));
+        assert_eq!(
+            (got.cover_width, got.cover_height, got.cover_accent),
+            (None, None, None),
+            "dst kept its own jacket and took src's dimensions for it"
+        );
+        assert_eq!(got.cover_thumb_path, None);
+        assert_eq!(report.orphaned_cover.as_deref(), Some("/img/src.jpg"));
+
+        // 3. Both point at the same file — ordinary since covers are named by
+        //    content — so there is nothing to orphan.
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let src = s.upsert_book(&mk("src"), None).await.unwrap();
+        let dst = s.upsert_book(&mk("dst"), None).await.unwrap();
+        let shared = cover_at("/img/same.jpg");
+        s.set_cover(src, &shared, None).await.unwrap();
+        s.set_cover(dst, &shared, None).await.unwrap();
+        let report = s.merge_books(src, dst).await.unwrap();
+        assert_eq!(
+            report.orphaned_cover, None,
+            "unlinking this would take the surviving book's cover with it"
+        );
+        assert_eq!(
+            s.get_book(dst).await.unwrap().unwrap().cover_width,
+            Some(600)
+        );
+    }
+
+    /// The back-fill's work list says *unmeasured*, which is not the same
+    /// question as "has a cover".
+    #[tokio::test]
+    async fn the_backfill_list_is_covers_on_disk_without_measurements() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mk = |t: &str| Book {
+            title: Some(t.into()),
+            ..Default::default()
+        };
+        let none = s.upsert_book(&mk("no cover at all"), None).await.unwrap();
+        let old = s.upsert_book(&mk("pre-0014"), None).await.unwrap();
+        let fresh = s.upsert_book(&mk("measured"), None).await.unwrap();
+        s.enrich_book(
+            old,
+            &Book {
+                cover_path: Some("/img/old.jpg".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        s.set_cover(fresh, &cover_at("/img/fresh.jpg"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            s.unmeasured_covers().await.unwrap(),
+            vec![(old, "/img/old.jpg".to_string())]
+        );
+        assert!(
+            !s.unmeasured_covers()
+                .await
+                .unwrap()
+                .iter()
+                .any(|(id, _)| { *id == none || *id == fresh })
         );
     }
 

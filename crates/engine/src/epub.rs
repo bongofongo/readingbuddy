@@ -4,7 +4,6 @@ use epub::doc::EpubDoc;
 
 use crate::book::normalize_isbn;
 use crate::error::{EngineError, Result};
-use crate::notes::slugify;
 
 #[derive(Debug, Default)]
 pub struct EpubInfo {
@@ -139,25 +138,22 @@ fn flatten<R: std::io::Read + std::io::Seek>(
     }
 }
 
-/// Extract the embedded cover image into `images_dir`; returns the written
-/// path. Extension guessed from the cover's mime type.
-pub fn extract_cover(path: &Path, images_dir: &Path) -> Result<Option<PathBuf>> {
+/// Extract the embedded cover image into `images_dir`, measured and named by
+/// content like every other cover.
+///
+/// **This used to name the file `slugify(title).ext`**, which collides on two
+/// editions of one title — the same class of bug as the Google Books one, minus
+/// the URL. It also trusted the OPF's declared mime type for the extension,
+/// which is an epub author's claim about their own file rather than a reading
+/// of it. Both go through [`crate::images::store_cover`] now, which hashes the
+/// bytes and takes the extension from what they actually are.
+pub fn extract_cover(path: &Path, images_dir: &Path) -> Result<Option<crate::images::CoverFile>> {
     let mut doc =
         EpubDoc::new(path).map_err(|e| EngineError::Epub(format!("{}: {e}", path.display())))?;
-    let Some((data, mime)) = doc.get_cover() else {
+    let Some((data, _mime)) = doc.get_cover() else {
         return Ok(None);
     };
-    let ext = match mime.as_str() {
-        "image/png" => "png",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => "jpg",
-    };
-    let title = doc.mdata("title").unwrap_or_else(|| "cover".to_string());
-    std::fs::create_dir_all(images_dir)?;
-    let file = images_dir.join(format!("{}.{ext}", slugify(&title)));
-    std::fs::write(&file, &data)?;
-    Ok(Some(file))
+    crate::images::store_cover(&data, images_dir).map(Some)
 }
 
 #[cfg(test)]
@@ -341,8 +337,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rb-epub-test-{}", std::process::id()));
         let cover = extract_cover(&path, &dir).unwrap();
         if let Some(c) = cover {
-            assert!(c.exists());
-            assert!(std::fs::metadata(&c).unwrap().len() > 0);
+            assert!(c.path.exists());
+            assert!(std::fs::metadata(&c.path).unwrap().len() > 0);
+            // Named by content, not by `slugify(title)` — so two editions of
+            // one book no longer overwrite each other's jacket.
+            let stem = c.path.file_stem().unwrap().to_string_lossy().to_string();
+            assert_eq!(stem.len(), 64, "{stem}");
         }
         std::fs::remove_dir_all(&dir).ok();
     }

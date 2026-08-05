@@ -32,6 +32,12 @@ strsim.workspace = true
 mlua.workspace = true
 sha2.workspace = true
 md-5.workspace = true
+# Item 20: covers are measured (width, height, border accent) and downscaled
+# once, at the moment they are written, so a shelf of three hundred spines is
+# one query rather than three hundred image decodes. The same crate the TUI's
+# renderer already links, at the same workspace feature set — the engine is now
+# where a cover is *decoded*, `render3d` is where one is drawn.
+image.workspace = true
 regex.workspace = true
 csv.workspace = true
 tracing.workspace = true

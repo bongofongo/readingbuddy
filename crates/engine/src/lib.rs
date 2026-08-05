@@ -98,6 +98,22 @@ fn build_providers(client: &Client, key: Option<String>) -> Vec<Box<dyn Metadata
 /// the engine is a library, and neither of the two values behind these locks has
 /// an invariant a half-finished write could break — each is replaced wholesale
 /// or not at all.
+/// Copy a stored cover onto an in-memory record — the `&mut Book` half of
+/// [`Engine::download_cover`], which the CLI's add-flow holds before there is a
+/// row to write to.
+///
+/// All five fields together, here as everywhere: `Storage::set_cover` is the
+/// only writer of the four measurements *because* a width without the path it
+/// measures is a record describing an image it is not pointing at, and a helper
+/// that set three of them would be the first way to build one.
+fn write_cover_onto(book: &mut Book, cover: &images::CoverFile) {
+    book.cover_path = Some(cover.path.display().to_string());
+    book.cover_thumb_path = cover.thumb_path.as_ref().map(|p| p.display().to_string());
+    book.cover_width = cover.metrics.map(|m| m.width);
+    book.cover_height = cover.metrics.map(|m| m.height);
+    book.cover_accent = cover.metrics.map(|m| m.accent);
+}
+
 fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     lock.read().unwrap_or_else(|e| e.into_inner())
 }
@@ -370,9 +386,17 @@ impl Engine {
     /// the delete because after it there is nothing left to list them by — and
     /// they are safe to remove unconditionally: `book_files` is keyed on the
     /// sha256 alone, so no other book can be holding this content.
+    ///
+    /// The **cover** no longer gets that guarantee for free — content-addressed
+    /// names mean two books can share one jacket — so `Storage::delete_book`
+    /// hands back a path only when nothing else references it. The shelf tier
+    /// goes with it, derived from the cover's own name rather than read back
+    /// from a row that no longer exists.
     pub async fn delete_book(&self, id: i64) -> Result<()> {
         let files = self.storage.book_files(id).await?;
         if let Some(cover) = self.storage.delete_book(id).await? {
+            let cover = PathBuf::from(cover);
+            std::fs::remove_file(images::thumb_path_of(&cover)).ok();
             std::fs::remove_file(cover).ok();
         }
         for file in &files {
@@ -381,19 +405,13 @@ impl Engine {
         Ok(())
     }
 
-    /// Download `cover_url` into the images dir and persist `cover_path`.
+    /// Download `cover_url` into the images dir and persist the cover.
     pub async fn download_cover(&self, book: &mut Book) -> Result<Option<PathBuf>> {
         let Some(url) = book.cover_url.clone() else {
             return Ok(None);
         };
-        let path = self.download_cover_file(&url).await?;
-        book.cover_path = Some(path.display().to_string());
-        // Unattributed for the same reason `save_book` is, and with an extra
-        // one: this writes the *whole* book back, not the one field it changed,
-        // so any source named here would be claimed for fifteen fields it had
-        // nothing to do with. `cover_url` — the only thing this path really
-        // knows the origin of — was set by whoever built the record, which is
-        // where it will be stamped.
+        let cover = self.download_cover_file(&url).await?;
+        write_cover_onto(book, &cover);
         match book.id {
             // **Not `upsert_book`.** Its third branch — no `isbn_10`, no
             // `isbn_13` — is a plain unconditional insert that ignores
@@ -402,25 +420,68 @@ impl Engine {
             // path matters most for: a sidecar-seeded one. Found by running
             // item 30's enrichment against exactly that case, and reachable
             // before it through `Engine::fetch_cover`.
-            Some(id) => {
-                self.storage.enrich_book(id, book, None).await?;
-            }
+            //
+            // **And not `enrich_book` either, since item 20.** This used to
+            // write the *whole* record back to move one field — which is why it
+            // could not name a source without claiming fifteen columns it had
+            // nothing to do with — and, worse, it went through the no-clobber
+            // merge, so a re-fetch that produced a *different* file left the row
+            // pointing at the old one. `set_cover` writes the path and the four
+            // measurements together and replaces rather than fills.
+            Some(id) => self.storage.set_cover(id, &cover, None).await?,
             None if book.isbn_10.is_some() || book.isbn_13.is_some() => {
-                self.storage.upsert_book(book, None).await?;
+                let id = self.storage.upsert_book(book, None).await?;
+                self.storage.set_cover(id, &cover, None).await?;
             }
             // An unsaved candidate with no ISBN: the caller is holding it and
-            // the path has been written onto it, which is all it asked for.
+            // the cover has been written onto it, which is all it asked for.
             None => {}
         }
-        Ok(Some(path))
+        Ok(Some(cover.path))
     }
 
     /// Fetch the bytes at a cover URL. The half of [`Engine::download_cover`]
-    /// that is not about *which* row to write, so enrichment can attribute the
-    /// file it fetched to the provider that supplied the URL rather than writing
-    /// the whole record back unattributed.
-    async fn download_cover_file(&self, url: &str) -> Result<PathBuf> {
+    /// that is not about *which* row to write, so enrichment can persist the
+    /// file it fetched without writing the whole record back.
+    async fn download_cover_file(&self, url: &str) -> Result<images::CoverFile> {
         images::image_from_url(&self.client, url, &self.config.images_dir).await
+    }
+
+    /// Measure the covers already on disk — item 20's back-fill.
+    ///
+    /// **A command and not a migration**, and it could not have been a
+    /// migration: `cover_width` is the result of decoding a PNG and SQLite
+    /// cannot decode one. `Storage::unmeasured_covers` states the work list
+    /// (`cover_path IS NOT NULL AND cover_width IS NULL`) and this reads each
+    /// file, measures it, writes the shelf tier where one is worth having, and
+    /// persists all five columns through the same `set_cover` the download path
+    /// uses — so a back-filled row and a freshly-downloaded one are the same
+    /// row, which is the property a second code path would have quietly given
+    /// up.
+    ///
+    /// Files are **not renamed**. A cover written before content addressing is
+    /// not named after its own hash, but the stored `cover_path` is what a
+    /// webview resolves and `docs/gui/` documents its shape; renaming every
+    /// image would be a destructive change dressed as a measurement, and buys
+    /// nothing — the collision it would fix is in the *write* path, which is
+    /// already fixed.
+    ///
+    /// Returns `(measured, unreadable)`. A file that has gone missing or will
+    /// not decode is counted and skipped, never an error: one bad image must not
+    /// stop the other two hundred, and the next run retries it for free.
+    pub async fn measure_stored_covers(&self) -> Result<(usize, usize)> {
+        let mut measured = 0;
+        let mut unreadable = 0;
+        for (id, path) in self.storage.unmeasured_covers().await? {
+            match images::measure_stored(Path::new(&path)) {
+                Ok(cover) if cover.metrics.is_some() => {
+                    self.storage.set_cover(id, &cover, None).await?;
+                    measured += 1;
+                }
+                _ => unreadable += 1,
+            }
+        }
+        Ok((measured, unreadable))
     }
 
     // ---- looking a book up again (item 30) ---------------------------------
@@ -458,23 +519,16 @@ impl Engine {
             && let Some(url) = book.cover_url.as_deref()
         {
             match self.download_cover_file(url).await {
-                Ok(path) => {
+                Ok(cover) => {
                     // One field, one claim: whoever supplied the URL is the
                     // origin of the file fetched from it. `None` when the URL
                     // predates this run, which is the honest answer — we did not
-                    // learn it here and cannot say who did.
+                    // learn it here and cannot say who did. The claim is on
+                    // `cover_path` alone; the measurements beside it have no
+                    // origin to name.
                     let source = report.source_of("cover_url");
-                    self.storage
-                        .enrich_book(
-                            book_id,
-                            &Book {
-                                cover_path: Some(path.display().to_string()),
-                                ..Default::default()
-                            },
-                            source,
-                        )
-                        .await?;
-                    report.cover = Some(path);
+                    self.storage.set_cover(book_id, &cover, source).await?;
+                    report.cover = Some(cover.path);
                 }
                 // A cover that will not download degrades; it does not fail the
                 // call. The metadata landed and is worth keeping, and the next
@@ -692,14 +746,29 @@ impl Engine {
             seed.isbn_10.clone_from(&from_epub.isbn_10);
             seed.isbn_13.clone_from(&from_epub.isbn_13);
         }
-        if let Some(cover) = epub::extract_cover(path, &self.config.images_dir)? {
-            from_epub.cover_path = Some(cover.display().to_string());
+        let cover = epub::extract_cover(path, &self.config.images_dir)?;
+        if let Some(cover) = &cover {
+            from_epub.cover_path = Some(cover.path.display().to_string());
         }
 
         let id = self.storage.upsert_book(&seed, None).await?;
         self.storage
             .fill_book(id, &from_epub, Some(storage::Source::Epub))
             .await?;
+        // The measurements go in beside the path the fill just wrote — but only
+        // when the fill actually took *this* cover. `fill_book` lets the stored
+        // row win, so a book that already had a jacket keeps it, and writing
+        // the epub's dimensions over that row would describe an image it is not
+        // pointing at. Read back rather than predicted: the merge is the
+        // authority on which path survived.
+        if let Some(cover) = &cover
+            && let Some(stored) = self.storage.get_book(id).await?
+            && stored.cover_path.as_deref() == Some(cover.path.display().to_string().as_str())
+        {
+            self.storage
+                .set_cover(id, cover, Some(storage::Source::Epub))
+                .await?;
+        }
         let saved = self
             .get_book(id)
             .await?
@@ -902,7 +971,12 @@ impl Engine {
     pub async fn merge_books(&self, src: i64, dst: i64) -> Result<MergeReport> {
         let report = self.storage.merge_books(src, dst).await?;
         if let Some(cover) = &report.orphaned_cover {
-            // Same resolution as `delete_book`: the stored path as written.
+            // Same resolution as `delete_book`: the stored path as written, and
+            // the shelf tier derived from it. `merge_books` has already checked
+            // that nothing else points at this file — two books sharing one
+            // content-addressed jacket is ordinary since item 20.
+            let cover = PathBuf::from(cover);
+            std::fs::remove_file(images::thumb_path_of(&cover)).ok();
             std::fs::remove_file(cover).ok();
         }
         Ok(report)

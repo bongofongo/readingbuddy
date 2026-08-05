@@ -1,0 +1,66 @@
+-- What we measured about the cover file on this machine (item 20b).
+--
+-- Four columns, and — unlike `0013` — **none of them is a `MERGE_RULES` row**.
+-- That is the decision this migration exists to record, so read the argument
+-- before adding a fifth.
+--
+-- `MERGE_RULES` governs the columns a *record* can carry: a partial `Book` from
+-- a provider, an epub, calibre or the user, merged by one generated statement
+-- and stamped with one `field_provenance` claim. These four are not that. No
+-- provider publishes them, no file carries them, and there is no source to
+-- attribute: they are what the engine measured when it wrote the bytes, and the
+-- only honest answer to "where did `cover_width` come from" is "we decoded the
+-- file". A `Federated::Local` row would say that in the table's vocabulary and
+-- would then hand every record-shaped writer — `upsert_book`, `enrich_book`,
+-- `fill_book`, `set_book_fields` — a way to move one of these columns *without*
+-- moving `cover_path`, which is a row whose stored dimensions describe a
+-- different image and which nothing downstream can tell from a correct one.
+-- `Rule::pair` cannot fix that: it is binary and asserted symmetric, it guards
+-- against a *user claim* rather than against incoherence, and `merge_books`'
+-- fill — the one place the incoherence is genuinely reachable — runs with the
+-- user guard off, so the pair guard would never have fired there at all.
+--
+-- So they take the shape reading state already has here: **written by exactly
+-- one statement** (`Storage::set_cover`, which assigns all four beside
+-- `cover_path` or none of them), read as projections on `Book`, and ignored by
+-- every merge — the same arrangement `0005` gave `current_page`, asserted the
+-- same way by a test that pins the *absence*
+-- (`a_provider_write_never_touches_the_cover_metrics`).
+--
+-- **One writer turned out not to be enough, and the second half of the rule is
+-- the interesting one.** `cover_path` *is* a `MERGE_RULES` column with three
+-- other writers, and `Merge::Coalesce` under `Winner::Incoming` means an
+-- incoming record's path wins — so a calibre row or an `rb set` carrying a
+-- cover repointed the row and left a width, a height and an accent belonging to
+-- the jacket before it. `merge_set` therefore also generates
+-- `invalidate_cover_metrics`: **a write that moves `cover_path` sets these four
+-- back to NULL**, from the same expression that stores the path, so it cannot
+-- fall out of step with the merge rule, the user guard or the `dst`-wins
+-- inversion. Between the two halves, a row carrying measurements of an image it
+-- is not pointing at is unrepresentable rather than merely guarded against.
+--
+-- `cover_accent` is the median RGB of a 2px frame around the image, packed
+-- `0xRRGGBB`. It is what gives a spine a colour when there is no spine art,
+-- which is every book — providers ship front covers only. Stored **unclamped**:
+-- the TUI pushes it into a legible luma band so a white jacket still reads as a
+-- board, and that band is a renderer's policy about its own lighting, not a
+-- fact about the file. The engine stores the measurement; a frontend decides
+-- what it can see.
+--
+-- `cover_thumb_path` is the second tier, written only when the stored cover is
+-- larger than the shelf needs. It is a sibling of the cover, named from the
+-- same content hash, so a caller holding a `cover_path` can always derive it —
+-- which is why `MergeReport` did not need a second orphan field.
+--
+-- **No back-fill, and this one could not have had one.** `database/images/` has
+-- real files in it and every one of them needs measuring, but SQLite cannot
+-- decode a PNG: the back-fill is `Engine::measure_stored_covers`, a command
+-- that reads each file and writes these columns through the same `set_cover`
+-- the download path uses. NULL here therefore means *not measured yet* and
+-- never *no cover* — `cover_path IS NOT NULL AND cover_width IS NULL` is
+-- exactly the back-fill's work list, and a frontend meeting it falls back to
+-- decoding, which is what it does today.
+ALTER TABLE books ADD COLUMN cover_width INTEGER;
+ALTER TABLE books ADD COLUMN cover_height INTEGER;
+ALTER TABLE books ADD COLUMN cover_accent INTEGER; -- packed 0xRRGGBB, unclamped
+ALTER TABLE books ADD COLUMN cover_thumb_path TEXT;

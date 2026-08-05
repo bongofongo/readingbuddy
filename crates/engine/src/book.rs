@@ -45,6 +45,42 @@ pub struct Book {
     /// novellas are numbered 0.5 and 1.5 by calibre, Goodreads and publishers
     /// alike.
     pub series_index: Option<f64>,
+    /// What the engine measured about the file at [`Book::cover_path`], the
+    /// moment it wrote it (item 20, migration `0014`).
+    ///
+    /// **Read-only projections, like the reading state below**, and for a
+    /// sharper version of the same reason: they are written by exactly one
+    /// statement ([`Storage::set_cover`](crate::Storage::set_cover)) beside the
+    /// path they describe, and every merge ignores them. They are deliberately
+    /// not `MERGE_RULES` columns — no provider publishes a width, there is no
+    /// source to attribute, and a record-shaped writer able to move one of them
+    /// without moving `cover_path` is a row whose stored dimensions belong to a
+    /// different image. The converse is closed in the generated SQL: a write
+    /// that *moves* `cover_path` sets these four back to NULL. Migration `0014`
+    /// carries the full argument, including why `Rule::pair` is not the fix.
+    ///
+    /// `None` means **not measured yet**, never "no cover": a library predating
+    /// `0014` has files on disk and NULLs here until
+    /// [`Engine::measure_stored_covers`](crate::Engine::measure_stored_covers)
+    /// runs, and a frontend meeting that state falls back to decoding, which is
+    /// what it does today.
+    pub cover_width: Option<i64>,
+    /// See [`Book::cover_width`].
+    pub cover_height: Option<i64>,
+    /// The median colour of a 2px frame around the cover, packed `0xRRGGBB` —
+    /// what gives a spine its colour when there is no spine art, which is every
+    /// book, since providers ship front covers only.
+    ///
+    /// **Unclamped**: `render3d` pushes it into a legible luma band so a white
+    /// jacket still reads as a board, and that band is a renderer's policy about
+    /// its own lighting rather than a fact about the file.
+    /// [`Book::cover_accent_rgb`] is the one place the packing comes apart.
+    pub cover_accent: Option<i64>,
+    /// The shelf tier: a downscaled sibling of the cover, written only when the
+    /// original is bigger than a grid cell can use. `None` when the cover is
+    /// already its own thumbnail — see [`Book::shelf_cover_path`], which is
+    /// where that fallback is decided once rather than in each frontend.
+    pub cover_thumb_path: Option<String>,
     /// Reading state, as a **read-only projection of the current reading** —
     /// the open one if there is one, else the most recent. Since migration
     /// `0005` these are not `books` columns and
@@ -117,6 +153,43 @@ impl Book {
     /// Any ISBN, preferring 13.
     pub fn any_isbn(&self) -> Option<&str> {
         self.isbn_13.as_deref().or(self.isbn_10.as_deref())
+    }
+
+    /// The cover's shape, width over height — what a grid reserves a box with,
+    /// and what the 3D renderer draws the front face at.
+    ///
+    /// Derived here for item 17's reason and not as a convenience: it is the
+    /// *whole* purpose of storing the dimensions. Both frontends previously
+    /// answered it by **decoding the image** (`render3d`'s `Cover::aspect`), so
+    /// a shelf of three hundred spines decoded three hundred files to find out
+    /// how wide to draw them. `None` when the cover is unmeasured, which is the
+    /// state that still needs a decode — a zero height is refused rather than
+    /// divided by, since a stored 0 is a broken measurement and not a shape.
+    pub fn cover_aspect(&self) -> Option<f64> {
+        match (self.cover_width, self.cover_height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some(w as f64 / h as f64),
+            _ => None,
+        }
+    }
+
+    /// [`Book::cover_accent`] as its three channels. The one place the packing
+    /// comes apart, so two frontends cannot unpack it differently.
+    pub fn cover_accent_rgb(&self) -> Option<[u8; 3]> {
+        self.cover_accent.map(crate::images::accent_channels)
+    }
+
+    /// The file a **shelf** should load: the downscaled tier when there is one,
+    /// else the cover itself.
+    ///
+    /// One line, and it is in the engine rather than in each frontend because
+    /// the alternative is a frontend that reads `cover_thumb_path` and shows
+    /// nothing for every cover small enough not to have one. That is the class
+    /// of bug item 17 exists to stop: a fallback each frontend re-derives is a
+    /// fallback one of them gets wrong.
+    pub fn shelf_cover_path(&self) -> Option<&str> {
+        self.cover_thumb_path
+            .as_deref()
+            .or(self.cover_path.as_deref())
     }
 
     /// The series this book sits in, written the way a person writes it:

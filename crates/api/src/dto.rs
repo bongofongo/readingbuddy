@@ -125,6 +125,39 @@ pub struct BookDto {
     /// Fractional on purpose: novellas are 0.5.
     #[serde(default)]
     pub series_index: Option<f64>,
+    /// The **shelf tier** of the cover: a downscaled sibling written when the
+    /// stored jacket is bigger than a grid cell can use, else the jacket
+    /// itself, else absent (item 20c).
+    ///
+    /// **Derived, read-only, and the field a grid should load.** Providers are
+    /// now asked for the largest cover they publish, which is right for a hero
+    /// shot and wrong for sixty tiles; this is the one place "thumb, else the
+    /// original" is decided, because a frontend reading `cover_thumb_path`
+    /// directly shows nothing for every cover small enough not to have one.
+    /// `cover_path` stays exactly what it was — a **whole path** — and is still
+    /// the field a detail view wants.
+    #[serde(default)]
+    pub cover_shelf_path: Option<String>,
+    /// Width over height of the stored cover — the box a tile reserves before
+    /// the image loads.
+    ///
+    /// **Derived, read-only.** `None` means the cover has not been measured
+    /// (a library predating migration `0014`, until
+    /// `Engine::measure_stored_covers` runs), never that there is no cover; a
+    /// frontend meeting `None` falls back to whatever it did before, which for
+    /// the GUI is a fixed box and for the TUI is decoding the file.
+    #[serde(default)]
+    pub cover_aspect: Option<f64>,
+    /// The cover's border colour, which is what a spine or a placeholder gets
+    /// when there is no spine art — and there never is, since providers ship
+    /// front covers only.
+    ///
+    /// **Derived, read-only, and a value rather than a name.** Channels, not a
+    /// hex string: `#a02020` is CSS's spelling and a terminal wants floats, so
+    /// the wire carries the measurement and each frontend writes it its own
+    /// way. Unclamped — the TUI's legibility band is its own policy.
+    #[serde(default)]
+    pub cover_accent: Option<AccentDto>,
     /// Read-only projections of the **current** reading. Sending them back in a
     /// `save_book` changes nothing: `upsert_book` has ignored them since
     /// migration `0005`, and `update_progress` is the writer.
@@ -202,6 +235,9 @@ impl From<Book> for BookDto {
         let progress = ProgressDto::from(Progress::of_book(&b));
         let series_label = b.series_label();
         let authors_display = b.authors_in_display_order();
+        let cover_shelf_path = b.shelf_cover_path().map(str::to_string);
+        let cover_aspect = b.cover_aspect();
+        let cover_accent = b.cover_accent_rgb().map(AccentDto::from);
         BookDto {
             id: b.id,
             title: b.title,
@@ -223,6 +259,9 @@ impl From<Book> for BookDto {
             subjects: b.subjects,
             series: b.series,
             series_index: b.series_index,
+            cover_shelf_path,
+            cover_aspect,
+            cover_accent,
             current_page: b.current_page,
             finished: b.finished,
             reading_state,
@@ -247,13 +286,17 @@ impl From<BookDto> for Book {
     /// `upsert_book` — which is where that rule already lives, and where it
     /// should stay rather than being re-implemented here.
     ///
-    /// The **derived** fields — `progress`, `series_label`, `authors_display` —
-    /// are dropped outright. They are readings of other columns and there is
-    /// nothing to write them to; a client that sends a `series_label` of "Dune
-    /// #2" and a `series_index` of 3 has not asked for anything, and taking
-    /// the label would be inventing a second writer for a pair that already has
-    /// one. `ko_percent` is dropped for the same reason it is not on this
-    /// struct: it is device-owned and `update_progress` is its writer.
+    /// The **derived** fields — `progress`, `series_label`, `authors_display`,
+    /// and item 20's three cover readings — are dropped outright. They are
+    /// readings of other columns and there is nothing to write them to; a client
+    /// that sends a `series_label` of "Dune #2" and a `series_index` of 3 has
+    /// not asked for anything, and taking the label would be inventing a second
+    /// writer for a pair that already has one. The cover measurements are
+    /// stronger than that: `Storage::set_cover` is their only writer *by
+    /// design*, since a width arriving without the file it measures is a row
+    /// describing an image it is not pointing at. `ko_percent` is dropped for
+    /// the same reason it is not on this struct: it is device-owned and
+    /// `update_progress` is its writer.
     fn from(d: BookDto) -> Self {
         Book {
             id: d.id,
@@ -282,9 +325,45 @@ impl From<BookDto> for Book {
             subjects: d.subjects,
             series: d.series,
             series_index: d.series_index,
+            // Not on this struct at all, and that is the point: the wire carries
+            // the three *readings* above and no way to write the columns behind
+            // them. `Storage::set_cover` writes all four beside the file it
+            // measured, or none of them.
+            cover_width: None,
+            cover_height: None,
+            cover_accent: None,
+            cover_thumb_path: None,
             created_at: None,
             last_modified: None,
         }
+    }
+}
+
+/// A colour as its three channels, 0–255.
+///
+/// The wire shape of a cover's border accent. **Channels rather than a hex
+/// string**: `#a02020` is CSS's spelling and the TUI wants floats in 0..1, so a
+/// hex string would be one frontend's dialect crossing the seam and the other
+/// one parsing it back out. This is the measurement; the spelling stays where
+/// the spelling belongs.
+///
+/// It is not a colour *name* and never will be — `docs/decisions.md`'s "no
+/// prose" applies to a value a user never reads as words.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccentDto {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl From<[u8; 3]> for AccentDto {
+    fn from([r, g, b]: [u8; 3]) -> Self {
+        AccentDto { r, g, b }
     }
 }
 
@@ -2777,6 +2856,10 @@ mod tests {
             subjects: vec!["Fiction / Literary".into()],
             series: Some("Dune".into()),
             series_index: Some(2.0),
+            cover_width: Some(600),
+            cover_height: Some(900),
+            cover_accent: Some(0x00a0_2020),
+            cover_thumb_path: Some("images/y.thumb.jpg".into()),
             created_at: Some(time::OffsetDateTime::from_unix_timestamp(1000).unwrap()),
             last_modified: Some(time::OffsetDateTime::from_unix_timestamp(2000).unwrap()),
         };
@@ -2784,7 +2867,7 @@ mod tests {
         assert_eq!(dto.created_at, Some(1000));
         assert_eq!(dto.last_modified, Some(2000));
 
-        let back = Book::from(dto);
+        let back = Book::from(dto.clone());
         assert_eq!(back.id, book.id);
         assert_eq!(back.title, book.title);
         assert_eq!(back.sort_title, book.sort_title);
@@ -2820,6 +2903,26 @@ mod tests {
         // lives; carrying a value nothing can write would be the worse of the
         // two.
         assert_eq!(back.ko_percent, None);
+        // **And neither do the four cover columns**, for a stronger version of
+        // `ko_percent`'s reason: `Storage::set_cover` is their only writer *by
+        // design*, since a width arriving without the file it measures is a row
+        // describing an image it is not pointing at. The wire carries the three
+        // readings of them (`cover_aspect`, `cover_accent`,
+        // `cover_shelf_path`) and no way to write them back.
+        assert_eq!(dto.cover_aspect, Some(600.0 / 900.0));
+        assert_eq!(
+            dto.cover_accent,
+            Some(AccentDto {
+                r: 0xa0,
+                g: 0x20,
+                b: 0x20
+            })
+        );
+        assert_eq!(dto.cover_shelf_path.as_deref(), Some("images/y.thumb.jpg"));
+        assert_eq!(back.cover_width, None);
+        assert_eq!(back.cover_height, None);
+        assert_eq!(back.cover_accent, None);
+        assert_eq!(back.cover_thumb_path, None);
     }
 
     /// The derived fields are **readings, not columns**: they arrive on the way

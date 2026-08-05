@@ -4013,6 +4013,7 @@ dependencies = [
  "csv",
  "epub",
  "futures",
+ "image",
  "md-5",
  "mlua",
  "notify",

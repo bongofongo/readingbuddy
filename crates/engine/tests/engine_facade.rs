@@ -99,6 +99,122 @@ async fn delete_book_removes_the_row_and_its_cover_file() {
     assert!(!cover.exists(), "cover file was orphaned on disk");
 }
 
+/// **Item 20's back-fill, end to end.**
+///
+/// `database/images/` has real files in it and a migration cannot decode a PNG,
+/// so the back-fill is a command rather than SQL. The state it starts from is
+/// exactly reachable in a fully-migrated database — a `cover_path` written by a
+/// record-shaped writer, with no measurements beside it — which is what a
+/// library predating migration `0014` looks like from the day it opens.
+#[tokio::test]
+async fn measuring_stored_covers_fills_in_what_a_migration_could_not() {
+    let (tmp, engine) = engine().await;
+    let images = tmp.path().join("database/images");
+    std::fs::create_dir_all(&images).unwrap();
+
+    // A cover named the old way, which the back-fill must measure **without
+    // renaming**: the stored path is what a webview resolves.
+    let legacy = images.join("content");
+    std::fs::write(&legacy, red_bordered_png(500, 700)).unwrap();
+    // …and a file that is not an image at all, which must be counted and
+    // skipped rather than failing the other two hundred.
+    let junk = images.join("broken.jpg");
+    std::fs::write(&junk, b"not really a jpeg").unwrap();
+
+    let measured = engine
+        .save_book(&Book {
+            cover_path: Some(legacy.display().to_string()),
+            ..book("Pachinko")
+        })
+        .await
+        .unwrap();
+    let unreadable = engine
+        .save_book(&Book {
+            cover_path: Some(junk.display().to_string()),
+            ..book("Piranesi")
+        })
+        .await
+        .unwrap();
+    let coverless = engine.save_book(&book("Station Eleven")).await.unwrap();
+
+    assert_eq!(measured.cover_width, None, "the state before the back-fill");
+    assert_eq!(engine.measure_stored_covers().await.unwrap(), (1, 1));
+
+    let got = engine
+        .get_book(measured.id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.cover_path.as_deref(), legacy.to_str());
+    assert_eq!((got.cover_width, got.cover_height), (Some(500), Some(700)));
+    assert_eq!(got.cover_accent_rgb(), Some([160, 32, 32]));
+    assert_eq!(got.cover_aspect(), Some(500.0 / 700.0));
+    // Bigger than a grid cell, so it got a shelf tier — and that is the file a
+    // list should load.
+    let thumb = got.cover_thumb_path.clone().expect("a shelf tier");
+    assert!(std::path::Path::new(&thumb).exists());
+    assert_eq!(got.shelf_cover_path(), Some(thumb.as_str()));
+
+    // Nothing was invented for the other two.
+    for id in [unreadable.id.unwrap(), coverless.id.unwrap()] {
+        let b = engine.get_book(id).await.unwrap().unwrap();
+        assert_eq!(b.cover_width, None);
+        assert_eq!(b.cover_accent, None);
+    }
+    // Idempotent: the readable one is done, the unreadable one is retried for
+    // the price of one file read, which is what a later build learning a new
+    // format is worth.
+    assert_eq!(engine.measure_stored_covers().await.unwrap(), (0, 1));
+}
+
+/// A cover whose content-addressed name is shared by two books — ordinary since
+/// item 20 — must not be unlinked while one of them is still using it.
+#[tokio::test]
+async fn deleting_one_of_two_books_sharing_a_jacket_leaves_the_file_alone() {
+    let (tmp, engine) = engine().await;
+    let images = tmp.path().join("database/images");
+    std::fs::create_dir_all(&images).unwrap();
+    let shared = images.join("shared.png");
+    std::fs::write(&shared, red_bordered_png(40, 60)).unwrap();
+
+    let mut ids = Vec::new();
+    for title in ["Pachinko", "Pachinko (again)"] {
+        ids.push(
+            engine
+                .save_book(&Book {
+                    cover_path: Some(shared.display().to_string()),
+                    ..book(title)
+                })
+                .await
+                .unwrap()
+                .id
+                .unwrap(),
+        );
+    }
+
+    engine.delete_book(ids[0]).await.unwrap();
+    assert!(shared.exists(), "the surviving book lost its cover");
+    engine.delete_book(ids[1]).await.unwrap();
+    assert!(!shared.exists(), "the last holder is gone; so is the file");
+}
+
+/// A dark red 2px frame around a near-white field, so the border median has an
+/// unambiguous answer.
+fn red_bordered_png(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbImage::from_fn(w, h, |x, y| {
+        if x < 2 || y < 2 || x + 2 >= w || y + 2 >= h {
+            image::Rgb([160, 32, 32])
+        } else {
+            image::Rgb([250, 250, 250])
+        }
+    });
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
 #[tokio::test]
 async fn deleting_a_book_whose_cover_is_already_gone_is_not_an_error() {
     let (tmp, engine) = engine().await;

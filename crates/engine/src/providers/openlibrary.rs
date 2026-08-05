@@ -43,10 +43,24 @@ struct Works {
 }
 
 impl Works {
+    /// `-L`, not `-M` (item 20c).
+    ///
+    /// OpenLibrary publishes three sizes off one key: `-S` (~40px), `-M`
+    /// (~180px) and `-L` (whatever the scan actually is, usually 500px+). `-M`
+    /// was picked when the only consumer was a terminal drawing a book in
+    /// Unicode half-blocks, where 180px is already more than the framebuffer
+    /// can show. A cover-forward detail page on a 2× display is not that
+    /// consumer, and there is no fourth size to ask for.
+    ///
+    /// The shelf does not pay for it: `images::store_cover` writes a downscaled
+    /// tier beside anything over `THUMB_MAX` and `Book::shelf_cover_path` is
+    /// what a grid loads. Asking for the large size *without* that tier would
+    /// make every list strictly heavier than it was, which is why the two
+    /// halves of 20c are one change and not two.
     fn cover_url(&self) -> Option<String> {
         self.cover_edition_key
             .as_deref()
-            .map(|k| format!("https://covers.openlibrary.org/b/olid/{k}-M.jpg"))
+            .map(|k| format!("https://covers.openlibrary.org/b/olid/{k}-L.jpg"))
     }
 
     fn to_book(&self) -> Book {
