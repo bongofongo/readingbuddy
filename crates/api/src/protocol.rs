@@ -93,6 +93,28 @@ pub enum Request {
     BookTags {
         book_id: i64,
     },
+    /// Ask the providers about a book already in the library (item 30).
+    ///
+    /// No bulk form, here or on the facade: the per-book cost is a provider
+    /// fan-out and a loop over the shelf is a rate-limit policy nobody has
+    /// decided.
+    EnrichBook {
+        book_id: i64,
+    },
+    /// Record what the user says, and that it was the user who said it.
+    ///
+    /// **Sets and cannot clear** — the merge is the ordinary partial-record one,
+    /// so a field the record is silent about is left alone. Every field written
+    /// is stamped `user` and is from then on held against every provider merge.
+    SetBookFields {
+        book_id: i64,
+        fields: BookDto,
+    },
+    /// Where each field of a book came from, and when (item 29). An **absent**
+    /// field means nobody has claimed it.
+    FieldProvenance {
+        book_id: i64,
+    },
     CurrentlyReading {
         limit: i64,
     },
@@ -164,6 +186,11 @@ pub enum Request {
     BookFiles {
         book_id: i64,
     },
+    /// The chapter list, read out of the owned epub on every call and stored
+    /// nowhere — see [`TableOfContentsDto`].
+    TableOfContents {
+        book_id: i64,
+    },
     FilePath {
         sha256: String,
     },
@@ -198,6 +225,38 @@ pub enum Request {
     },
     SyncDevice {
         paths: Vec<String>,
+    },
+    /// Measured reading time out of the device's `statistics.sqlite3`.
+    ///
+    /// **A method of its own, and deliberately not part of `sync_device`** —
+    /// `docs/decisions.md` makes arrival read-only, and a scan that quietly
+    /// began importing months of timing data would not be read-only in spirit.
+    /// The user asks for this by name, and so does a client.
+    ImportDeviceStatistics {
+        mount: String,
+    },
+
+    // ---- the activity log ----
+    /// Rebuild the log from everything already stored: highlight stamps, note
+    /// timestamps, reading endpoints. Idempotent, and called by no importer —
+    /// a log that refilled itself as a side effect would be whichever importer
+    /// ran last.
+    RefillReadingEvents,
+    ReadingEvents {
+        book_id: i64,
+    },
+    /// Both ends inclusive, `YYYY-MM-DD`. An inverted range is a
+    /// [`crate::error::ErrorCode::InvalidInput`], never a confident empty
+    /// answer.
+    ActivitySummary {
+        from: String,
+        to: String,
+    },
+    /// The days behind `ActivitySummary::activity_days`. Only days carrying an
+    /// event come back.
+    ActivityByDay {
+        from: String,
+        to: String,
     },
 
     // ---- notes ----
@@ -407,6 +466,18 @@ pub enum Response {
     BookFiles(Vec<BookFileDto>),
     FileIdentity(FileIdentityDto),
     FileImport(FileImportReportDto),
+    /// `null` is "no file here we can read a chapter list from", which is a
+    /// different answer from a present value with no entries.
+    TableOfContents(Option<TableOfContentsDto>),
+
+    EnrichReport(EnrichReportDto),
+    FieldProvenance(Vec<FieldSourceDto>),
+
+    ReadingEvents(Vec<ReadingEventDto>),
+    RefillReport(RefillReportDto),
+    ActivitySummary(ActivitySummaryDto),
+    ActivityByDay(Vec<DayActivityDto>),
+    StatsImport(StatsImportReportDto),
 
     ImportReport(ImportReportDto),
     PullReport(PullReportDto),

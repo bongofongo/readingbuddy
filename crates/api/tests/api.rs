@@ -414,3 +414,150 @@ fn an_import_request_without_only_still_means_the_whole_library() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The activity log crosses whole, and **absence survives the trip**.
+///
+/// Items 21 and 31 are built on one distinction — `minutes: null` is "we have no
+/// data" and `0` is a measured near-nothing — and a wire that flattened one into
+/// the other would put the lie on every reading screen at once. A fresh library
+/// has no minutes at all, which is the case that catches a `unwrap_or(0)`
+/// anywhere between the SQL and the JSON.
+#[tokio::test]
+async fn a_period_with_no_device_data_has_no_minutes_rather_than_zero() {
+    let (api, _tmp) = api().await;
+    seed(&api).await;
+
+    let typed = api
+        .activity_summary("2026-01-01", "2026-12-31")
+        .await
+        .unwrap();
+    assert_eq!(typed.minutes, None, "no device has ever spoken here");
+    assert_eq!(typed.pages, None);
+    // A count the engine fully originates: zero is knowable and is not absence.
+    assert_eq!(typed.books_finished, 0);
+    assert_eq!(typed.range.from, "2026-01-01");
+
+    let json = serde_json::to_string(&typed).unwrap();
+    assert!(json.contains("\"minutes\":null"), "{json}");
+
+    match ok(api
+        .dispatch(Request::ActivitySummary {
+            from: "2026-01-01".into(),
+            to: "2026-12-31".into(),
+        })
+        .await)
+    {
+        Response::ActivitySummary(d) => assert_eq!(d, typed),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A backwards range is an error, **not an empty answer**.
+///
+/// `DayRange::new` refuses one because every aggregate over an inverted span
+/// reports a confident, wrong zero. That refusal has to survive this layer: if
+/// the API validated more loosely than the engine — or not at all, by reaching
+/// past `DayRange` — a client would get the zero the engine exists to refuse.
+#[tokio::test]
+async fn a_backwards_range_is_refused_rather_than_answered() {
+    let (api, _tmp) = api().await;
+
+    let err = api
+        .activity_summary("2026-12-31", "2026-01-01")
+        .await
+        .expect_err("an inverted range is not a question with an answer");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    match api
+        .dispatch(Request::ActivityByDay {
+            from: "2026-13-45".into(),
+            to: "2026-12-31".into(),
+        })
+        .await
+    {
+        Err(e) => assert_eq!(e.code, ErrorCode::InvalidInput),
+        Ok(r) => panic!("a non-day was answered: {r:?}"),
+    }
+}
+
+/// Refilling twice changes nothing the second time, and the report says so per
+/// filler rather than as one total.
+#[tokio::test]
+async fn refilling_the_log_is_idempotent_across_the_seam() {
+    let (api, _tmp) = api().await;
+    seed(&api).await;
+
+    api.refill_reading_events().await.unwrap();
+    match ok(api.dispatch(Request::RefillReadingEvents).await) {
+        Response::RefillReport(r) => {
+            assert_eq!(r.highlights.inserted, 0);
+            assert_eq!(r.notes.updated, 0);
+            assert_eq!(r.readings.inserted, 0);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **`null` is not the same as an empty chapter list.**
+///
+/// A book owning no epub cannot be asked; an epub with no `toc.ncx` was asked
+/// and had nothing to say. A client that collapsed the two would tell its reader
+/// the same thing about a missing file and an ordinary EPUB3 book, so the
+/// distinction has to reach the wire — and the seeded book, which owns no file
+/// at all, is the first half of it.
+#[tokio::test]
+async fn a_book_with_no_file_has_no_chapter_list_to_read() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+
+    assert_eq!(api.table_of_contents(id).await.unwrap(), None);
+    match ok(api.dispatch(Request::TableOfContents { book_id: id }).await) {
+        Response::TableOfContents(t) => assert_eq!(t, None),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A correction crosses as the user's, and the provenance says so afterwards.
+///
+/// This is item 29's table getting its first client: `set_book_fields` stamps
+/// `user`, which is the rank no provider merge outranks, and a frontend showing
+/// "who said this" reads it back here. It also pins the three columns item 32
+/// added, which had no wire field at all until this — a `save_book` round trip
+/// used to drop them silently.
+#[tokio::test]
+async fn a_correction_crosses_as_the_users_and_is_recorded_that_way() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+
+    let after = ok(api
+        .dispatch(Request::SetBookFields {
+            book_id: id,
+            fields: BookDto {
+                subjects: vec!["Fiction / Dystopian".into()],
+                series: Some("Dune".into()),
+                series_index: Some(2.0),
+                ..Default::default()
+            },
+        })
+        .await);
+    match after {
+        Response::Book(Some(b)) => {
+            assert_eq!(b.subjects, ["Fiction / Dystopian"]);
+            assert_eq!(b.series.as_deref(), Some("Dune"));
+            assert_eq!(b.series_index, Some(2.0));
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let provenance = api.field_provenance(id).await.unwrap();
+    let claimed: Vec<&str> = provenance
+        .iter()
+        .filter(|f| f.source == "user")
+        .map(|f| f.field.as_str())
+        .collect();
+    assert!(claimed.contains(&"subjects"), "{provenance:?}");
+    assert!(claimed.contains(&"series"), "{provenance:?}");
+    assert!(claimed.contains(&"series_index"), "{provenance:?}");
+    // A field nobody has claimed is simply absent — never "unknown provider".
+    assert!(!provenance.iter().any(|f| f.field == "publisher"));
+}

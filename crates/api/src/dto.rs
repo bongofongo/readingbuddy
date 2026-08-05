@@ -41,13 +41,16 @@ use readingbuddy::GoodreadsMatch;
 use readingbuddy::koreader::UnmatchedSidecar;
 use readingbuddy::providers::ProviderId;
 use readingbuddy::{
-    Book, BookFile, BookImportStats, BookSort, BookTag, CalibreBook, CalibreBookReport,
-    CalibreMatch, CalibreReport, CreatedNote, DeviceBook, DeviceScan, DeviceState, Diagnostic,
-    DiagnosticKind, ErrorClass, FileIdentity, FileImportReport, FileMatch, FileOutcome,
-    FlashcardRow, GoodreadsBookReport, GoodreadsReport, Highlight, ImportReport, KoStatus,
-    MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind, NoteRecord, NoteSearchHit,
-    OutgoingLink, PullReport, RankedResult, Rating, RatingScale, Reading, SearchOutcome,
-    SearchRequest, Severity, TextOutcome, UnmatchedRow,
+    ActivitySummary, Book, BookFile, BookImportStats, BookSort, BookTag, CalibreBook,
+    CalibreBookReport, CalibreMatch, CalibreReport, Confidence, CreatedNote, DayActivity, DayRange,
+    DeviceBook, DeviceScan, DeviceState, Diagnostic, DiagnosticKind, EnrichCandidate, EnrichMatch,
+    EnrichOutcome, EnrichReport, ErrorClass, FieldChange, FieldSource, FileIdentity,
+    FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow, GoodreadsBookReport,
+    GoodreadsReport, HeldField, Highlight, ImportReport, KoStatus, MatchCandidate, MatchMethod,
+    MergeReport, NewNoteInput, NoteKind, NoteRecord, NoteSearchHit, OutgoingLink, PullReport,
+    RankedResult, Rating, RatingScale, Reading, ReadingEvent, RefillReport, SearchOutcome,
+    SearchRequest, Severity, Source, StatsImportReport, TableOfContents, TextOutcome, TocEntry,
+    UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -97,6 +100,26 @@ pub struct BookDto {
     pub description: Option<String>,
     #[serde(default)]
     pub first_sentence: Option<String>,
+    /// What a provider says this book is about (migration `0013`). **Not
+    /// `book_tags`**, which are minted shelves — see `Book::subjects`.
+    ///
+    /// Merges as a set, whole or not at all: `[]` on the way in means "this
+    /// record does not say", never "this book has no subjects", so a client
+    /// cannot clear them by omission and `save_book` has no way to clear them at
+    /// all. That is `Engine::set_book_fields`' rule, not a wire limitation.
+    #[serde(default)]
+    pub subjects: Vec<String>,
+    /// The series, and the place in it. **A pair**: `series_index` is only
+    /// meaningful beside `series`, and sending an index alone writes a number
+    /// under whatever name the row already had. The engine's own merge refuses
+    /// that (`Rule::pair`), but this struct is a record rather than a merge, and
+    /// a rule enforced here would be a rule the in-process caller never meets —
+    /// which is the argument `crates/api/CLAUDE.md` makes about `dispatch`.
+    #[serde(default)]
+    pub series: Option<String>,
+    /// Fractional on purpose: novellas are 0.5.
+    #[serde(default)]
+    pub series_index: Option<f64>,
     /// Read-only projections of the **current** reading. Sending them back in a
     /// `save_book` changes nothing: `upsert_book` has ignored these four since
     /// migration `0005`, and `update_progress` is the writer.
@@ -136,6 +159,9 @@ impl From<Book> for BookDto {
             page_count: b.page_count,
             description: b.description,
             first_sentence: b.first_sentence,
+            subjects: b.subjects,
+            series: b.series,
+            series_index: b.series_index,
             current_page: b.current_page,
             finished: b.finished,
             date_started: b.date_started,
@@ -178,17 +204,9 @@ impl From<BookDto> for Book {
             finished: d.finished,
             date_started: d.date_started,
             date_finished: d.date_finished,
-            // `subjects`, `series` and `series_index` (migration `0013`) have
-            // **no DTO field yet**, deliberately: item 32 is engine-only, and a
-            // wire field added before a client needs it is a public promise
-            // made on spec. The gap is safe in exactly this direction because
-            // the merge reads them as "this record does not say" — an empty set
-            // and a NULL index clobber nothing — so a client that round-trips a
-            // book through `save_book` cannot erase them. Adding them is an API
-            // item, which is the rule `crates/api/CLAUDE.md` states.
-            subjects: Vec::new(),
-            series: None,
-            series_index: None,
+            subjects: d.subjects,
+            series: d.series,
+            series_index: d.series_index,
             created_at: None,
             last_modified: None,
         }
@@ -1625,6 +1643,494 @@ impl From<CalibreReport> for CalibreReportDto {
     }
 }
 
+// ---- the chapter list (item 32) --------------------------------------------
+
+/// One line of a book's table of contents.
+///
+/// Flat with a `depth`, exactly as the engine has it — a tree here would make
+/// "the entries, in order" the awkward shape on the wire too, and every consumer
+/// walks them in reading order. The nesting is a column, not a loss.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocEntryDto {
+    pub label: String,
+    /// 0 for a top-level entry, 1 for a section inside one.
+    pub depth: usize,
+    /// The book's own name for the place (`OEBPS/ch2.xhtml#part-two`), not a
+    /// path on this machine — a client on another machine can still match it
+    /// against the file it is rendering.
+    pub target: String,
+    /// Where `target` sits in the spine, where it names a spine item at all.
+    /// Absent is ordinary and is **not** a page number.
+    #[serde(default)]
+    pub spine_index: Option<usize>,
+}
+
+impl From<TocEntry> for TocEntryDto {
+    fn from(e: TocEntry) -> Self {
+        TocEntryDto {
+            label: e.label,
+            depth: e.depth,
+            target: e.target,
+            spine_index: e.spine_index,
+        }
+    }
+}
+
+/// A book's chapter list, and the file it was read from.
+///
+/// **Derived on every call and stored nowhere** — see `epub::table_of_contents`
+/// for the argument. What that means on the wire is that `sha256` is not
+/// decoration: it is how a client knows *which* file answered, since a book may
+/// own several and a better one may be attached tomorrow.
+///
+/// The method returns `null` for "no file here we can read" and this struct with
+/// an empty `entries` for "this epub carries no TOC". Two different answers; a
+/// client that collapses them tells the user the same thing about a missing file
+/// and an ordinary EPUB3 book.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableOfContentsDto {
+    pub sha256: String,
+    pub entries: Vec<TocEntryDto>,
+}
+
+impl From<TableOfContents> for TableOfContentsDto {
+    fn from(t: TableOfContents) -> Self {
+        TableOfContentsDto {
+            sha256: t.sha256,
+            entries: t.entries.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+// ---- the activity log (items 21 and 31) ------------------------------------
+
+/// How much a row is willing to claim.
+///
+/// Mirrored as an enum rather than crossing as the `"measured"`/`"inferred"`
+/// text the column holds: the engine reads an unrecognised token *back* as
+/// `inferred` on purpose, and a client doing its own string comparison would
+/// get the opposite default — claiming a measurement nobody made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceDto {
+    Measured,
+    Inferred,
+}
+
+impl From<Confidence> for ConfidenceDto {
+    fn from(c: Confidence) -> Self {
+        match c {
+            Confidence::Measured => ConfidenceDto::Measured,
+            Confidence::Inferred => ConfidenceDto::Inferred,
+        }
+    }
+}
+
+/// One day of one book, as one source saw it.
+///
+/// **`minutes` and `pages` absent means "not known", never zero**, and that is
+/// the whole reason this table exists rather than a KOReader-shaped one. A
+/// library that arrived as a Goodreads CSV has no minutes at all; a screen that
+/// renders `null` as `0` has told its reader something false about their own
+/// reading. A measured twenty-second session, by contrast, really does record
+/// `0`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingEventDto {
+    pub book_id: i64,
+    /// Which read this day belongs to, where the evidence agrees on one.
+    /// Absent when no reading's window holds it, or when two do.
+    #[serde(default)]
+    pub reading_id: Option<i64>,
+    /// `YYYY-MM-DD`, UTC.
+    pub day: String,
+    #[serde(default)]
+    pub minutes: Option<i64>,
+    #[serde(default)]
+    pub pages: Option<i64>,
+    /// Free text (`koreader`, `vault`, a reading's own source). Not an enum:
+    /// the vocabulary lives in a comment rather than a `CHECK` so it can grow,
+    /// and a closed enum here would make it a wire-breaking change to add one.
+    pub source: String,
+    pub confidence: ConfidenceDto,
+    pub created_at: i64,
+}
+
+impl From<ReadingEvent> for ReadingEventDto {
+    fn from(e: ReadingEvent) -> Self {
+        ReadingEventDto {
+            book_id: e.book_id,
+            reading_id: e.reading_id,
+            day: e.day,
+            minutes: e.minutes,
+            pages: e.pages,
+            source: e.source,
+            confidence: e.confidence.into(),
+            created_at: e.created_at,
+        }
+    }
+}
+
+/// What one filler pass did. `updated` counts rows that **actually changed**.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FillStatsDto {
+    pub inserted: u64,
+    pub updated: u64,
+}
+
+impl From<FillStats> for FillStatsDto {
+    fn from(s: FillStats) -> Self {
+        FillStatsDto {
+            inserted: s.inserted,
+            updated: s.updated,
+        }
+    }
+}
+
+/// One pass of every filler that needs no device.
+///
+/// Broken out per filler rather than totalled, because a refill reporting `0`
+/// overall and `0` for the vault are different facts — the second says the
+/// notes filler ran and found nothing, which is what a second identical run is
+/// supposed to say.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefillReportDto {
+    pub highlights: FillStatsDto,
+    pub notes: FillStatsDto,
+    pub readings: FillStatsDto,
+}
+
+impl From<RefillReport> for RefillReportDto {
+    fn from(r: RefillReport) -> Self {
+        RefillReportDto {
+            highlights: r.highlights.into(),
+            notes: r.notes.into(),
+            readings: r.readings.into(),
+        }
+    }
+}
+
+/// The period a summary is about, echoed back.
+///
+/// Echoed rather than assumed: the caller sent two strings and the engine
+/// validated them, so a reply carrying the range it actually used is what lets a
+/// client label a chart without re-deriving what it asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayRangeDto {
+    pub from: String,
+    pub to: String,
+}
+
+impl From<&DayRange> for DayRangeDto {
+    fn from(r: &DayRange) -> Self {
+        DayRangeDto {
+            from: r.from().to_string(),
+            to: r.to().to_string(),
+        }
+    }
+}
+
+/// What is known about a period.
+///
+/// The counts are `i64` because the engine fully originates the evidence behind
+/// them — a zero there is knowable. `minutes` and `pages` are not: read them as
+/// "we have no data", and see [`ReadingEventDto`] for why that distinction is
+/// carried this far.
+///
+/// There is deliberately nothing here counting what the user has *not* done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivitySummaryDto {
+    pub range: DayRangeDto,
+    pub books_finished: i64,
+    pub activity_days: i64,
+    pub notes_created: i64,
+    pub links_created: i64,
+    #[serde(default)]
+    pub minutes: Option<i64>,
+    #[serde(default)]
+    pub pages: Option<i64>,
+}
+
+impl From<ActivitySummary> for ActivitySummaryDto {
+    fn from(s: ActivitySummary) -> Self {
+        ActivitySummaryDto {
+            range: DayRangeDto::from(&s.range),
+            books_finished: s.books_finished,
+            activity_days: s.activity_days,
+            notes_created: s.notes_created,
+            links_created: s.links_created,
+            minutes: s.minutes,
+            pages: s.pages,
+        }
+    }
+}
+
+/// One day of a period. **Only days carrying an event appear** — the gaps are
+/// the client's to draw, and filling them with zero rows here would be the same
+/// lie `minutes: null` exists to avoid, spread across a calendar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayActivityDto {
+    pub day: String,
+    /// Distinct books with an event that day.
+    pub books: i64,
+    #[serde(default)]
+    pub minutes: Option<i64>,
+    #[serde(default)]
+    pub pages: Option<i64>,
+}
+
+impl From<DayActivity> for DayActivityDto {
+    fn from(d: DayActivity) -> Self {
+        DayActivityDto {
+            day: d.day,
+            books: d.books,
+            minutes: d.minutes,
+            pages: d.pages,
+        }
+    }
+}
+
+/// What an import of the device's `statistics.sqlite3` did (item 31).
+///
+/// Every field is a number a user could check against their device, which is
+/// the point: `books_in_db` against `books_matched` is the whole of "why did
+/// this import so little", and answering it without a round trip is why the
+/// counts cross rather than just the `FillStats`.
+///
+/// A device whose owner never enabled the statistics plugin comes back here with
+/// a `warnings` entry and every count zero — **not an error**. Absence is
+/// ordinary; `schema_version` absent is how a client tells "no database" from
+/// "a database with nothing in it".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsImportReportDto {
+    #[serde(default)]
+    pub schema_version: Option<i64>,
+    pub books_in_db: usize,
+    pub books_matched: usize,
+    pub days: usize,
+    pub events: FillStatsDto,
+    pub warnings: Vec<DiagnosticDto>,
+}
+
+impl From<StatsImportReport> for StatsImportReportDto {
+    fn from(r: StatsImportReport) -> Self {
+        StatsImportReportDto {
+            schema_version: r.schema_version,
+            books_in_db: r.books_in_db,
+            books_matched: r.books_matched,
+            days: r.days,
+            events: r.events.into(),
+            warnings: r.warnings.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+// ---- enrichment and provenance (items 29 and 30) ---------------------------
+
+/// Who supplied a field. Mirrored in full, for `DiagnosticKind`'s reason: a
+/// client branches on `user` — the rank that outranks every provider — and
+/// flattening this to a string would make that branch a string comparison
+/// against a vocabulary nothing on the wire pins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceDto {
+    OpenLibrary,
+    GoogleBooks,
+    Calibre,
+    Epub,
+    Koreader,
+    Goodreads,
+    User,
+}
+
+impl From<Source> for SourceDto {
+    fn from(s: Source) -> Self {
+        match s {
+            Source::OpenLibrary => SourceDto::OpenLibrary,
+            Source::GoogleBooks => SourceDto::GoogleBooks,
+            Source::Calibre => SourceDto::Calibre,
+            Source::Epub => SourceDto::Epub,
+            Source::KOReader => SourceDto::Koreader,
+            Source::Goodreads => SourceDto::Goodreads,
+            Source::User => SourceDto::User,
+        }
+    }
+}
+
+/// Where one field came from, and when (item 29).
+///
+/// **An absent entry means nobody has claimed the field** — every book predating
+/// migration `0012` reports an empty list however well-populated it is. So a
+/// client must render "unattributed", never "unknown provider".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldSourceDto {
+    pub field: String,
+    /// The stored token. Text rather than [`SourceDto`] because this is read
+    /// straight off the column, whose vocabulary deliberately lives in a comment
+    /// rather than a `CHECK` — a closed enum here would fail to parse a row a
+    /// newer engine wrote.
+    pub source: String,
+    pub fetched_at: i64,
+}
+
+impl From<FieldSource> for FieldSourceDto {
+    fn from(f: FieldSource) -> Self {
+        FieldSourceDto {
+            field: f.field,
+            source: f.source,
+            fetched_at: f.fetched_at,
+        }
+    }
+}
+
+/// How a provider record was tied to the book.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrichMatchDto {
+    /// By ISBN, which is an identity — this is about *this edition*.
+    Isbn,
+    /// By title and author, at this score.
+    Title { score: f64 },
+}
+
+impl From<EnrichMatch> for EnrichMatchDto {
+    fn from(m: EnrichMatch) -> Self {
+        match m {
+            EnrichMatch::Isbn => EnrichMatchDto::Isbn,
+            EnrichMatch::Title(score) => EnrichMatchDto::Title { score },
+        }
+    }
+}
+
+/// A record that looked like this book but not enough to write unasked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnrichCandidateDto {
+    pub book: BookDto,
+    pub score: f64,
+    pub sources: Vec<ProviderIdDto>,
+}
+
+impl From<EnrichCandidate> for EnrichCandidateDto {
+    fn from(c: EnrichCandidate) -> Self {
+        EnrichCandidateDto {
+            book: c.book.into(),
+            score: c.score,
+            sources: c.sources.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// What happened, at the granularity a frontend branches on.
+///
+/// The five are not interchangeable and collapsing any two of them is the bug
+/// this enum was carved to prevent: `nothing_found` is a fact about the book,
+/// `no_answer` is a fact about the network wearing the same shape, `refused`
+/// means results came back and none was certainly this book, and `unaskable`
+/// means there was nothing to ask with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnrichOutcomeDto {
+    Enriched { matched_by: EnrichMatchDto },
+    Refused { candidates: Vec<EnrichCandidateDto> },
+    NothingFound,
+    NoAnswer,
+    Unaskable,
+}
+
+impl From<EnrichOutcome> for EnrichOutcomeDto {
+    fn from(o: EnrichOutcome) -> Self {
+        match o {
+            EnrichOutcome::Enriched(how) => EnrichOutcomeDto::Enriched {
+                matched_by: how.into(),
+            },
+            EnrichOutcome::Refused { candidates } => EnrichOutcomeDto::Refused {
+                candidates: candidates.into_iter().map(Into::into).collect(),
+            },
+            EnrichOutcome::NothingFound => EnrichOutcomeDto::NothingFound,
+            EnrichOutcome::NoAnswer => EnrichOutcomeDto::NoAnswer,
+            EnrichOutcome::Unaskable => EnrichOutcomeDto::Unaskable,
+        }
+    }
+}
+
+/// One field that changed, and who is now answerable for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FieldChangeDto {
+    pub field: String,
+    /// Absent where the write could not name an origin, which is not the same
+    /// as an origin nobody recognises.
+    #[serde(default)]
+    pub source: Option<SourceDto>,
+    #[serde(default)]
+    pub before: Option<String>,
+    pub after: String,
+}
+
+impl From<FieldChange> for FieldChangeDto {
+    fn from(c: FieldChange) -> Self {
+        FieldChangeDto {
+            field: c.field.to_string(),
+            source: c.source.map(Into::into),
+            before: c.before,
+            after: c.after,
+        }
+    }
+}
+
+/// A field a provider offered and was not allowed to write.
+///
+/// **The value the provider offered is carried, not just the field name.** A
+/// held-back field reported by name alone is indistinguishable from a field the
+/// provider had nothing for, which is the "silently not updated" state the whole
+/// report exists to remove.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeldFieldDto {
+    pub field: String,
+    pub offered: String,
+    #[serde(default)]
+    pub offered_by: Option<SourceDto>,
+    /// What was kept instead. Absent where the user owns the field's *pair*
+    /// rather than the field, so there is nothing of theirs in this column.
+    #[serde(default)]
+    pub kept: Option<String>,
+}
+
+impl From<HeldField> for HeldFieldDto {
+    fn from(h: HeldField) -> Self {
+        HeldFieldDto {
+            field: h.field.to_string(),
+            offered: h.offered,
+            offered_by: h.offered_by.map(Into::into),
+            kept: h.kept,
+        }
+    }
+}
+
+/// What one run of `enrich_book_from_providers` did (item 30).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnrichReportDto {
+    pub book_id: i64,
+    pub outcome: EnrichOutcomeDto,
+    pub filled: Vec<FieldChangeDto>,
+    pub held: Vec<HeldFieldDto>,
+    /// Where the cover landed, if one was fetched.
+    #[serde(default)]
+    pub cover: Option<String>,
+    pub warnings: Vec<DiagnosticDto>,
+}
+
+impl From<EnrichReport> for EnrichReportDto {
+    fn from(r: EnrichReport) -> Self {
+        EnrichReportDto {
+            book_id: r.book_id,
+            outcome: r.outcome.into(),
+            filled: r.filled.into_iter().map(Into::into).collect(),
+            held: r.held.into_iter().map(Into::into).collect(),
+            cover: opt_path(&r.cover),
+            warnings: r.warnings.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 // ---- where things live -----------------------------------------------------
 
 /// The paths a settings screen shows. Not handles — a client that is not on
@@ -1666,12 +2172,11 @@ mod tests {
     }
 
     /// `Book -> BookDto -> Book` must not quietly drop a field, which is the
-    /// one bug a hand-written `From` invites. Timestamps are the deliberate
-    /// exception and are asserted as such — as are `subjects`/`series`/
-    /// `series_index` (migration `0013`), which have no DTO field yet because
-    /// item 32 was engine-only. Asserted rather than omitted: a field this
-    /// struct cannot carry is an **API gap with a name**, which is what
-    /// `crates/api/CLAUDE.md` asks a frontend need to become.
+    /// one bug a hand-written `From` invites. **Timestamps are now the only
+    /// deliberate exception**, and are asserted as such —
+    /// `subjects`/`series`/`series_index` were the other three until this
+    /// surfacing item, and their assertions were what made the gap an API gap
+    /// with a name rather than a silent drop.
     #[test]
     fn the_trip_through_the_dto_keeps_every_field_but_the_stamps() {
         let book = Book {
@@ -1728,15 +2233,12 @@ mod tests {
         assert_eq!(back.finished, book.finished);
         assert_eq!(back.date_started, book.date_started);
         assert_eq!(back.date_finished, book.date_finished);
+        assert_eq!(back.subjects, book.subjects);
+        assert_eq!(back.series, book.series);
+        assert_eq!(back.series_index, book.series_index);
         // Storage stamps these; a client must not be able to backdate a row.
         assert_eq!(back.created_at, None);
         assert_eq!(back.last_modified, None);
-        // No wire field yet. Harmless in this direction — the merge reads an
-        // empty set and a NULL index as "this record does not say", so a client
-        // round-tripping a book cannot erase either.
-        assert!(back.subjects.is_empty());
-        assert_eq!(back.series, None);
-        assert_eq!(back.series_index, None);
     }
 
     /// The whole argument for mirroring `DiagnosticKind` in full rather than

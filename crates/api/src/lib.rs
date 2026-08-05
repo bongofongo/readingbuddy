@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use readingbuddy::{
-    BookSort, CalibreImportOptions, Engine, EngineError, FileImportOptions, GoodreadsImportOptions,
-    NoteKind, NoteRecord, RatingScale,
+    Book, BookSort, CalibreImportOptions, DayRange, Engine, EngineError, FileImportOptions,
+    GoodreadsImportOptions, NoteKind, NoteRecord, RatingScale,
 };
 
 pub use dto::*;
@@ -152,6 +152,34 @@ impl Api {
         Ok(map(self.engine.book_tags(book_id).await?))
     }
 
+    /// Ask the providers about a book we already have (item 30).
+    pub async fn enrich_book(&self, book_id: i64) -> ApiResult<EnrichReportDto> {
+        Ok(self
+            .engine
+            .enrich_book_from_providers(book_id)
+            .await?
+            .into())
+    }
+
+    /// Record a correction as the user's, and return the book as it now stands.
+    ///
+    /// Takes a `BookDto` and not a set of named columns, because the engine's
+    /// own signature is a partial `Book` and a second vocabulary here would be
+    /// a rule the in-process caller never meets. The four reading projections
+    /// on it are ignored downstream, where that rule already lives.
+    pub async fn set_book_fields(&self, book_id: i64, fields: BookDto) -> ApiResult<BookDto> {
+        Ok(self
+            .engine
+            .set_book_fields(book_id, &Book::from(fields))
+            .await?
+            .into())
+    }
+
+    /// Where each field of a book came from, and when (item 29).
+    pub async fn field_provenance(&self, book_id: i64) -> ApiResult<Vec<FieldSourceDto>> {
+        Ok(map(self.engine.field_provenance(book_id).await?))
+    }
+
     pub async fn currently_reading(&self, limit: i64) -> ApiResult<Vec<OpenReadingDto>> {
         Ok(map(self.engine.currently_reading(limit).await?))
     }
@@ -251,6 +279,19 @@ impl Api {
         Ok(map(self.engine.book_files(book_id).await?))
     }
 
+    /// The book's own chapter list, from the first epub it owns.
+    ///
+    /// `None` means there is no file here we can read; `Some` with no entries
+    /// means the epub carries no navigable TOC. Both are ordinary and they are
+    /// different — see [`TableOfContentsDto`].
+    pub async fn table_of_contents(&self, book_id: i64) -> ApiResult<Option<TableOfContentsDto>> {
+        Ok(self
+            .engine
+            .table_of_contents(book_id)
+            .await?
+            .map(Into::into))
+    }
+
     /// Where a file's bytes are, from its content address.
     ///
     /// By sha256, not by the `BookFile` the facade takes: see the crate doc on
@@ -309,6 +350,45 @@ impl Api {
 
     pub async fn sync_device(&self, paths: &[PathBuf]) -> ApiResult<Vec<PullReportDto>> {
         Ok(map(self.engine.sync_device(paths).await?))
+    }
+
+    /// Measured reading time out of a mounted device's `statistics.sqlite3`
+    /// (item 31), as rows in the activity log.
+    ///
+    /// **Not on `sync_device`'s path**, deliberately — see the request's doc.
+    /// A device whose owner never enabled the statistics plugin comes back with
+    /// an empty report carrying a warning, never an error.
+    pub async fn import_device_statistics(&self, mount: &Path) -> ApiResult<StatsImportReportDto> {
+        Ok(self.engine.import_device_statistics(mount).await?.into())
+    }
+
+    // ---- the activity log --------------------------------------------------
+
+    /// Rebuild the log from what is already stored. Idempotent.
+    pub async fn refill_reading_events(&self) -> ApiResult<RefillReportDto> {
+        Ok(self.engine.refill_reading_events().await?.into())
+    }
+
+    /// One book's activity log, oldest day first.
+    pub async fn reading_events(&self, book_id: i64) -> ApiResult<Vec<ReadingEventDto>> {
+        Ok(map(self.engine.reading_events(book_id).await?))
+    }
+
+    /// What is known about a period.
+    ///
+    /// The two days are validated **here**, by the engine's own `DayRange`, so
+    /// an inverted or malformed span is an `InvalidInput` rather than a
+    /// confident zero — the failure `DayRange::new` exists to prevent, and one
+    /// this layer must not be able to route around.
+    pub async fn activity_summary(&self, from: &str, to: &str) -> ApiResult<ActivitySummaryDto> {
+        let range = DayRange::new(from, to)?;
+        Ok(self.engine.activity_summary(&range).await?.into())
+    }
+
+    /// The days of a period that carry an event, oldest first.
+    pub async fn activity_by_day(&self, from: &str, to: &str) -> ApiResult<Vec<DayActivityDto>> {
+        let range = DayRange::new(from, to)?;
+        Ok(map(self.engine.activity_by_day(&range).await?))
     }
 
     // ---- notes -------------------------------------------------------------
@@ -643,6 +723,13 @@ impl Api {
             R::GetBook { id } => Response::Book(self.get_book(id).await?),
             R::ResolveBooks { selector } => Response::Books(self.resolve_books(&selector).await?),
             R::BookTags { book_id } => Response::BookTags(self.book_tags(book_id).await?),
+            R::EnrichBook { book_id } => Response::EnrichReport(self.enrich_book(book_id).await?),
+            R::SetBookFields { book_id, fields } => {
+                Response::Book(Some(self.set_book_fields(book_id, fields).await?))
+            }
+            R::FieldProvenance { book_id } => {
+                Response::FieldProvenance(self.field_provenance(book_id).await?)
+            }
             R::CurrentlyReading { limit } => {
                 Response::OpenReadings(self.currently_reading(limit).await?)
             }
@@ -691,6 +778,9 @@ impl Api {
                 Response::FileIdentity(self.identify_file(Path::new(&path)).await?)
             }
             R::BookFiles { book_id } => Response::BookFiles(self.book_files(book_id).await?),
+            R::TableOfContents { book_id } => {
+                Response::TableOfContents(self.table_of_contents(book_id).await?)
+            }
             R::FilePath { sha256 } => Response::Text(self.file_path(&sha256).await?),
             R::RemoveFile { sha256 } => Response::Bool(self.remove_file(&sha256).await?),
 
@@ -715,6 +805,20 @@ impl Api {
             R::SyncDevice { paths } => {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 Response::PullReports(self.sync_device(&paths).await?)
+            }
+            R::ImportDeviceStatistics { mount } => {
+                Response::StatsImport(self.import_device_statistics(Path::new(&mount)).await?)
+            }
+
+            R::RefillReadingEvents => Response::RefillReport(self.refill_reading_events().await?),
+            R::ReadingEvents { book_id } => {
+                Response::ReadingEvents(self.reading_events(book_id).await?)
+            }
+            R::ActivitySummary { from, to } => {
+                Response::ActivitySummary(self.activity_summary(&from, &to).await?)
+            }
+            R::ActivityByDay { from, to } => {
+                Response::ActivityByDay(self.activity_by_day(&from, &to).await?)
             }
 
             R::CreateNote { note } => Response::CreatedNote(self.create_note(note).await?),
