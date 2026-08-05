@@ -26,6 +26,10 @@ pub(crate) mod matching;
 pub mod names;
 pub mod notes;
 pub mod partial_md5;
+/// A PDF's length and, occasionally, its name — item 22. `epub`'s twin, and the
+/// module that makes "there is a page and no percentage" reachable rather than
+/// a divide by a sentinel.
+pub mod pdf;
 /// How far into a book a reading is, as a value — item 17b.
 pub mod progress;
 pub mod providers;
@@ -69,6 +73,7 @@ pub use koreader::{
 };
 pub use notes::{CreatedNote, NewNoteInput, NoteKind};
 pub use partial_md5::partial_md5;
+pub use pdf::{PdfInfo, pdf_info};
 pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
@@ -608,6 +613,77 @@ impl Engine {
     /// One reading by id.
     pub async fn get_reading(&self, id: i64) -> Result<Option<Reading>> {
         self.storage.get_reading(id).await
+    }
+
+    /// Every reading of this book, oldest first, **each with its own
+    /// progress**.
+    ///
+    /// The pairing is the derivation, and it is why this is a facade method and
+    /// not a `From` impl above the seam. `readings` has no page count — length
+    /// is bibliographic and lives on `books` — so a caller holding only a
+    /// `Reading` cannot reach [`Progress::of_reading`] at all, and a caller
+    /// holding both has to know which book's length goes with which read. Item
+    /// 22 is where that bit: a frontend showing a reread's second read would
+    /// otherwise print `BookDto::progress`, which `progress.rs` warns in so many
+    /// words "will show the current read's numbers under an older read's
+    /// heading". The alternative it was reaching for is `current_page /
+    /// page_count` computed above the API, which is the row-state derivation
+    /// `gui/CLAUDE.md` bans and which walks into all three hazards
+    /// [`Progress`] documents.
+    ///
+    /// One book read once returns one pair, and it agrees with
+    /// [`Progress::of_book`] — the two forms differ only where there is more
+    /// than one read to disagree about.
+    pub async fn readings_with_progress(&self, book_id: i64) -> Result<Vec<(Reading, Progress)>> {
+        let length = self.length_of(book_id).await?;
+        Ok(self
+            .storage
+            .list_readings(book_id)
+            .await?
+            .into_iter()
+            .map(|r| {
+                let p = Progress::of_reading(&r, length);
+                (r, p)
+            })
+            .collect())
+    }
+
+    /// One named reading with its own progress. See
+    /// [`Engine::readings_with_progress`].
+    pub async fn reading_with_progress(&self, id: i64) -> Result<Option<(Reading, Progress)>> {
+        let Some(r) = self.storage.get_reading(id).await? else {
+            return Ok(None);
+        };
+        let length = self.length_of(r.book_id).await?;
+        let p = Progress::of_reading(&r, length);
+        Ok(Some((r, p)))
+    }
+
+    /// The book's open reading with its own progress, if it has one.
+    pub async fn active_reading_with_progress(
+        &self,
+        book_id: i64,
+    ) -> Result<Option<(Reading, Progress)>> {
+        let Some(r) = self.storage.active_reading(book_id).await? else {
+            return Ok(None);
+        };
+        let length = self.length_of(book_id).await?;
+        let p = Progress::of_reading(&r, length);
+        Ok(Some((r, p)))
+    }
+
+    /// A book's length, or absence.
+    ///
+    /// A missing *book* answers `None` rather than erroring: the three callers
+    /// above are already holding a reading, whose foreign key guarantees the
+    /// book exists, so the only way to reach the `None` arm is a race — and a
+    /// read with no denominator is a state [`Progress`] already handles.
+    async fn length_of(&self, book_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .storage
+            .get_book(book_id)
+            .await?
+            .and_then(|b| b.page_count))
     }
 
     /// The book's open reading, if it has one. At most one can exist —

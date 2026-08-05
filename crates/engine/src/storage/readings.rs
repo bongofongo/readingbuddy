@@ -87,7 +87,25 @@ pub struct Reading {
     /// invariant rather than a convention.
     pub finished_at: Option<i64>,
     pub status: String,
-    /// `manual` | `koreader` | `migrated`.
+    /// Who wrote this row: `manual` | `koreader` | `goodreads` | `migrated`.
+    ///
+    /// **This doc comment is the vocabulary.** Migration `0005` carries the
+    /// original list in a SQL comment and it has been stale since item 15 added
+    /// `goodreads`; it cannot be corrected, because a migration is append-only
+    /// and CI has a job that refuses a modified one. So the list lives here,
+    /// beside the type every reader of the column goes through, and the SQL
+    /// comment is a historical note about what the vocabulary was in `0005`.
+    ///
+    /// A `String` and deliberately not an enum (item 17): it names a *writer*,
+    /// it grows by one every time an importer is added, and nothing branches on
+    /// it. An enum would be a second list of importers to keep in step with the
+    /// first.
+    ///
+    /// **Item 22 considered adding `local` here and did not** — see
+    /// `docs/decisions.md`, entry 22. Nothing new writes readings, so `local`
+    /// would have been a synonym for `manual`; the word it earned is in
+    /// `reading_events.source`, where sources are claimants rather than writers
+    /// and a typed page is a genuinely new claimant.
     pub source: String,
     pub current_page: Option<i64>,
     /// The device-owned mirror. Refreshed by **straight assignment**, never
@@ -501,6 +519,16 @@ impl Storage {
     /// reading behind and start an empty new one every time it was pressed.
     /// Un-finishing reopens the most recent reading instead, which is what the
     /// user meant.
+    ///
+    /// **It also files the day in the activity log** (item 22). A typed page is
+    /// the one piece of reading evidence readingbuddy fully originates, and
+    /// before this the log knew only the day a read *opened* and the day it
+    /// closed — so a reader who typed a page every evening for six weeks had one
+    /// event for it. The write goes through
+    /// [`Storage::record_typed_page`](super::Storage::record_typed_page), and it
+    /// happens here rather than in a frontend for the reason `progress.rs` gives
+    /// about derivation: two frontends each remembering to log would be two
+    /// frontends that eventually disagree about whether today counted.
     pub async fn update_progress(
         &self,
         id: i64,
@@ -532,6 +560,15 @@ impl Storage {
             None => self.open_reading(id, Some(now), "manual").await?,
         };
 
+        // Read before the write: the delta the activity log records is against
+        // where the reading *was*, and one statement later that is gone.
+        let previous_page: Option<i64> =
+            sqlx::query_scalar("SELECT current_page FROM readings WHERE id = ?")
+                .bind(reading_id)
+                .fetch_optional(self.pool())
+                .await?
+                .flatten();
+
         sqlx::query(
             r#"UPDATE readings SET
                    current_page  = COALESCE(?2, current_page),
@@ -559,6 +596,14 @@ impl Storage {
             .bind(now)
             .execute(self.pool())
             .await?;
+
+        // Item 22's fifth filler. Only a *page* files a day — toggling finished
+        // says nothing about today's reading, and `fill_events_from_readings`
+        // already owns the two endpoints of a read.
+        if let Some(page) = page {
+            self.record_typed_page(id, reading_id, previous_page, page, now)
+                .await?;
+        }
 
         self.get_book(id)
             .await?

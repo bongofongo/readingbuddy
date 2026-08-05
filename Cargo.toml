@@ -79,6 +79,26 @@ url = { version = "2.5.7", features = ["serde"] }
 # `cargo update`. Unpinning means porting epub.rs, and gains nothing until this
 # dependency is replaced outright (see the GPL-3.0 note in deny.toml).
 epub = "=2.1.4"
+# The PDF twin of `epub` above, and the licence gate was run before a line was
+# written against it (item 22). **MIT**, and its whole transitive tree is
+# permissive, so no new `deny.toml` exception. That matters here more than
+# anywhere else: the engine already links GPL-3.0 `epub`, and a second copyleft
+# reader would make that situation worse rather than merely unchanged.
+# Evaluated beside `pdf` 0.10 (pdf-rs, also MIT), which lost on weight — it
+# drags in `jpeg-decoder`, `fax`, `snafu`, the unmaintained `md5` 0.7 and a
+# second `syn 1.0`, all to answer two fields.
+#
+# Pinned EXACTLY for `epub`'s reason and not out of superstition: this crate is
+# read for *metadata*, which is precisely the surface `epub` broke in a patch
+# release, and a wrong page count is a false denominator nothing downstream can
+# tell from a right one.
+#
+# `default-features = false` drops chrono, jiff, rayon and `time` — date
+# parsing and parallelism, for a page count and a title. What is left still
+# includes an AES/RustCrypto stack (PDF encryption is not feature-gated
+# upstream), which is where the new duplicate-version warnings come from: lopdf
+# is on the `digest` 0.11 line and the engine is on 0.10.
+lopdf = { version = "=0.44.0", default-features = false }
 tokio = { version = "1" }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio-rustls", "json", "time"] }
 anyhow = "1.0.100"

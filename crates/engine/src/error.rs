@@ -35,6 +35,17 @@ pub enum EngineError {
     InvalidInput(String),
     #[error("epub error: {0}")]
     Epub(String),
+    /// The bytes are not a PDF this engine can parse. Its own variant beside
+    /// `Epub` for the same reason that one has one: `import_file` reads a
+    /// file's metadata opportunistically and needs to tell "this format has
+    /// nothing to say" apart from "the database is unreachable", and the two
+    /// readers fail for entirely different causes.
+    ///
+    /// **A PDF that parses and will not give a length is not this.** That is
+    /// `PdfInfo { page_count: None, .. }` — absence, which the caller stores as
+    /// `NULL`. See `crates/engine/src/pdf.rs`.
+    #[error("pdf error: {0}")]
+    Pdf(String),
     #[error("koreader sidecar error: {0}")]
     Sidecar(String),
     /// Calibre is not installed, or not the half of it this feature needs.

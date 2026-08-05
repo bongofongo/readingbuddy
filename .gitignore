@@ -26,6 +26,15 @@ anki.tsv
 !/crates/engine/tests/fixtures/koreader/real/README.md
 !/crates/engine/tests/fixtures/koreader/real/.gitkeep
 
+# Same shape, for item 22: drop a real PDF here and `pdf.rs`'s fixture test
+# reads it. The synthetic documents in that module cover shape; only a file a
+# real producer wrote covers a cross-reference *stream*. Never commit one — a
+# `.pdf` in the tree is the fixture nobody can read a diff of, and it is very
+# likely to be someone's book.
+/crates/engine/tests/fixtures/pdf/real/*
+!/crates/engine/tests/fixtures/pdf/real/README.md
+!/crates/engine/tests/fixtures/pdf/real/.gitkeep
+
 # Tier-2 corpus: fetched Gutenberg epubs and the sidecars derived from them.
 # corpus/manifest.json IS committed (ids + checksums); the payload is not.
 /corpus/epub

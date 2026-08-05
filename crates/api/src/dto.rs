@@ -634,11 +634,35 @@ pub struct ReadingDto {
     pub ko_rating: Option<i64>,
     pub created_at: i64,
     pub last_modified: i64,
+    /// **This** reading's progress, not the book's (item 22).
+    ///
+    /// `BookDto::progress` is the *current* read's, which on a reread would
+    /// print today's numbers under an older read's heading —
+    /// `readingbuddy::Progress::of_book` says so in as many words. The pairing
+    /// with the book's length is done in the engine
+    /// (`Engine::readings_with_progress`), because `readings` has no page count
+    /// and deciding which length goes with which read is a derivation, not a
+    /// projection.
+    pub progress: ProgressDto,
 }
 
-impl From<Reading> for ReadingDto {
-    fn from(r: Reading) -> Self {
+impl ReadingDto {
+    /// A reading beside the progress the engine computed for it.
+    ///
+    /// There is deliberately **no `From<Reading>`**: a `Reading` alone cannot
+    /// answer `progress`, and an impl that filled it with
+    /// `Progress::of_reading(&r, None)` would quietly report "no percentage"
+    /// for every book whose length we know perfectly well.
+    pub fn new(r: Reading, progress: Progress) -> ReadingDto {
         ReadingDto {
+            progress: progress.into(),
+            ..ReadingDto::bare(r)
+        }
+    }
+
+    fn bare(r: Reading) -> ReadingDto {
+        ReadingDto {
+            progress: ProgressDto::Untouched,
             id: r.id,
             book_id: r.book_id,
             started_at: r.started_at,
@@ -913,9 +937,15 @@ pub struct OpenReadingDto {
 
 impl From<(Book, Reading)> for OpenReadingDto {
     fn from((book, reading): (Book, Reading)) -> Self {
+        // The reading's own progress, through the engine's own function. The
+        // length is right here on the book, so this is the one place the pair
+        // needs no round trip — and calling `Progress::of_reading` is not the
+        // derivation `ReadingDto::progress` warns about, it *is* the one
+        // implementation of it.
+        let progress = Progress::of_reading(&reading, book.page_count);
         OpenReadingDto {
             book: book.into(),
-            reading: reading.into(),
+            reading: ReadingDto::new(reading, progress),
         }
     }
 }
@@ -1081,6 +1111,14 @@ pub struct FileIdentityDto {
     pub size: i64,
     #[serde(default)]
     pub title: Option<String>,
+    /// How long the file says it is — pdf only, and absent far more often than
+    /// present (item 22).
+    ///
+    /// **Absent is not zero**, and a client must not render it as one: a `0`
+    /// here would be a false denominator, which is the exact thing
+    /// `ProgressDto` was built to make unrepresentable.
+    #[serde(default)]
+    pub page_count: Option<i64>,
     #[serde(default)]
     pub matched_book_id: Option<i64>,
     #[serde(default)]
@@ -1101,6 +1139,7 @@ impl From<FileIdentity> for FileIdentityDto {
             format: i.format,
             size: i.size,
             title: i.title,
+            page_count: i.page_count,
             matched_book_id: i.matched.map(|(id, _)| id),
             matched_by: i.matched.map(|(_, m)| m.into()),
             candidates: i.candidates.into_iter().map(Into::into).collect(),
@@ -2547,6 +2586,10 @@ pub enum SourceDto {
     GoogleBooks,
     Calibre,
     Epub,
+    /// A PDF we own said so — item 22. Beside `Epub` because the two answer
+    /// different questions: an epub supplies a title and an ISBN and never a
+    /// length, a pdf supplies a length and nothing else.
+    Pdf,
     Koreader,
     Goodreads,
     User,
@@ -2559,6 +2602,7 @@ impl From<Source> for SourceDto {
             Source::GoogleBooks => SourceDto::GoogleBooks,
             Source::Calibre => SourceDto::Calibre,
             Source::Epub => SourceDto::Epub,
+            Source::Pdf => SourceDto::Pdf,
             Source::KOReader => SourceDto::Koreader,
             Source::Goodreads => SourceDto::Goodreads,
             Source::User => SourceDto::User,

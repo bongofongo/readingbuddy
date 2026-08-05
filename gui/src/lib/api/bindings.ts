@@ -366,7 +366,16 @@ export type FieldSourceDto = { field: string,
  */
 source: string, fetched_at: number, };
 
-export type FileIdentityDto = { path: string, sha256: string, partial_md5: string, format: string, size: number, title: string | null, matched_book_id: number | null, matched_by: FileMatchDto | null, candidates: Array<MatchCandidateDto>, };
+export type FileIdentityDto = { path: string, sha256: string, partial_md5: string, format: string, size: number, title: string | null, 
+/**
+ * How long the file says it is — pdf only, and absent far more often than
+ * present (item 22).
+ *
+ * **Absent is not zero**, and a client must not render it as one: a `0`
+ * here would be a false denominator, which is the exact thing
+ * `ProgressDto` was built to make unrepresentable.
+ */
+page_count: number | null, matched_book_id: number | null, matched_by: FileMatchDto | null, candidates: Array<MatchCandidateDto>, };
 
 export type FileImportReportDto = { outcome: FileOutcomeDto, book_id: number | null, matched_by: FileMatchDto | null, created_book: boolean, sha256: string, stored_path: string | null, candidates: Array<MatchCandidateDto>, };
 
@@ -570,7 +579,19 @@ source: string, current_page: number | null,
  * The device's own status, typed — [`KoStatusDto`] already existed and was
  * not being used here.
  */
-ko_status: KoStatusDto | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, };
+ko_status: KoStatusDto | null, ko_percent: number | null, ko_rating: number | null, created_at: number, last_modified: number, 
+/**
+ * **This** reading's progress, not the book's (item 22).
+ *
+ * `BookDto::progress` is the *current* read's, which on a reread would
+ * print today's numbers under an older read's heading —
+ * `readingbuddy::Progress::of_book` says so in as many words. The pairing
+ * with the book's length is done in the engine
+ * (`Engine::readings_with_progress`), because `readings` has no page count
+ * and deciding which length goes with which read is a derivation, not a
+ * projection.
+ */
+progress: ProgressDto, };
 
 /**
  * One day of one book, as one source saw it.
@@ -674,7 +695,7 @@ export type SeverityDto = "warning" | "error";
  * flattening this to a string would make that branch a string comparison
  * against a vocabulary nothing on the wire pins.
  */
-export type SourceDto = "open_library" | "google_books" | "calibre" | "epub" | "koreader" | "goodreads" | "user";
+export type SourceDto = "open_library" | "google_books" | "calibre" | "epub" | "pdf" | "koreader" | "goodreads" | "user";
 
 /**
  * What an import of the device's `statistics.sqlite3` did (item 31).

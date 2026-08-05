@@ -670,3 +670,252 @@ async fn a_book_with_no_epub_has_no_chapter_list() {
             .is_none()
     );
 }
+
+// ---- item 22: a pdf, read here ----------------------------------------------
+//
+// The "reading here" ownership row, from the file end. The unit tests in
+// `pdf.rs` cover the parser; these cover the wiring — that what the file said
+// reaches the book, that it is attributed, and that it never overwrites a claim
+// somebody else already made.
+
+/// The point of the whole item: a locally-attached PDF gives the book a
+/// denominator it did not have, so `Progress` can report a fraction instead of
+/// a bare page.
+#[tokio::test]
+async fn an_attached_pdf_gives_the_book_its_length() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Long Walk to Freedom.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(312, None));
+
+    let report = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.outcome, FileOutcome::Stored);
+    let id = report.book_id.unwrap();
+
+    let book = engine.storage().get_book(id).await.unwrap().unwrap();
+    assert_eq!(book.page_count, Some(312));
+    // No metadata reader means no author and no ISBN; the filename is the name.
+    assert_eq!(book.title.as_deref(), Some("Long Walk to Freedom"));
+    assert_eq!(engine.book_files(id).await.unwrap()[0].format, "pdf");
+
+    // And the claim is attributed, not anonymous. `pdf` beside `epub` rather
+    // than one `file`, because the two answer different questions.
+    let prov = engine.field_provenance(id).await.unwrap();
+    let page_count = prov.iter().find(|f| f.field == "page_count").unwrap();
+    assert_eq!(page_count.source, "pdf");
+}
+
+/// A PDF that will not say how long it is leaves the column NULL. **Never a
+/// zero** — item 17 spent an item establishing that absence is not zero, and a
+/// zero denominator is the one value `Progress` must never be handed.
+#[tokio::test]
+async fn a_pdf_that_will_not_say_leaves_the_length_absent() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Unreadable.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(0, None));
+
+    let report = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap();
+    let book = engine
+        .storage()
+        .get_book(report.book_id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(book.page_count, None, "a length we could not read is NULL");
+}
+
+/// Attaching a PDF to a book that already has a page count does not rewrite it.
+///
+/// `fill_book`'s **stored row wins** merge, chosen for `calibre.rs`'s reason:
+/// the pattern follows whether the record is complete. A page count on the book
+/// is a provider's claim about a specific edition; a PDF is one more partial
+/// record beside it, not an authority over it. The device's straight-assignment
+/// pattern here would let any attached scan silently redefine the book's length.
+#[tokio::test]
+async fn attaching_a_pdf_fills_a_gap_and_never_overwrites_an_answer() {
+    let (tmp, engine) = engine().await;
+    let book = engine
+        .save_book(&Book {
+            title: Some("Pachinko".into()),
+            page_count: Some(490),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = book.id.unwrap();
+
+    let src = tmp.path().join("scan.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(512, None));
+    engine.add_file_to_book(id, &src).await.unwrap();
+
+    let after = engine.storage().get_book(id).await.unwrap().unwrap();
+    assert_eq!(after.page_count, Some(490), "the stored answer wins");
+}
+
+/// A producer's echo of its source filename is not a title, so the filename
+/// stem is used instead. `Some("")` — which two of three real PDFs on the
+/// author's machine returned — is absence for the same reason.
+#[tokio::test]
+async fn a_pdf_titled_after_its_word_document_falls_back_to_the_filename() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Critique of Pure Reason.pdf");
+    write(
+        &src,
+        &readingbuddy::pdf::synthetic_pdf(9, Some(b"Microsoft Word - kant_final_v2.doc")),
+    );
+
+    let id = engine.identify_file(&src).await.unwrap();
+    assert_eq!(id.title.as_deref(), Some("Critique of Pure Reason"));
+    assert_eq!(id.page_count, Some(9));
+}
+
+/// `identify` answers the length too, and still writes nothing. A frontend
+/// showing "312 pages" before the user commits to the import is the shape
+/// `docs/decisions.md` asks for — a decision, not a dead end.
+#[tokio::test]
+async fn identify_reports_a_pdfs_length_without_writing_anything() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Anna Karenina.pdf");
+    write(
+        &src,
+        &readingbuddy::pdf::synthetic_pdf(864, Some(b"Anna Karenina")),
+    );
+
+    let id = engine.identify_file(&src).await.unwrap();
+    assert_eq!(id.page_count, Some(864));
+    assert_eq!(id.title.as_deref(), Some("Anna Karenina"));
+    assert_eq!(library_size(&engine).await, 0);
+    assert!(stored_files(&files_dir(&tmp)).is_empty());
+}
+
+/// An epub reports no length at all, and that is not a regression: `epub
+/// =2.1.4` exposes no pagination, and an epub has none to expose. The field is
+/// PDF-shaped and honest about it.
+#[tokio::test]
+async fn an_epub_reports_no_length_because_it_has_none() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("No ISBN Here.epub");
+    write_isbnless_epub(&src, "No ISBN Here");
+    assert_eq!(engine.identify_file(&src).await.unwrap().page_count, None);
+}
+
+/// `format_of` sanitizes rather than trusts, and a `.PDF` from a Windows share
+/// or a half-finished `.pdf.part` from a download is exactly what it is for. A
+/// `.pdf.part` is deliberately **not** a pdf: it is `part`, so no PDF reader
+/// runs on a file that is still being written.
+#[tokio::test]
+async fn the_extension_decides_the_format_and_case_does_not() {
+    let (tmp, engine) = engine().await;
+    let bytes = readingbuddy::pdf::synthetic_pdf(4, None);
+
+    let shouty = tmp.path().join("Shouty.PDF");
+    write(&shouty, &bytes);
+    let id = engine.identify_file(&shouty).await.unwrap();
+    assert_eq!(id.format, "pdf");
+    assert_eq!(id.page_count, Some(4), "case must not hide the reader");
+
+    let partial = tmp.path().join("Half Downloaded.pdf.part");
+    write(&partial, &bytes);
+    let id = engine.identify_file(&partial).await.unwrap();
+    assert_eq!(id.format, "part");
+    assert_eq!(
+        id.page_count, None,
+        "a partial download is not a pdf, whatever its bytes look like"
+    );
+}
+
+// ---- item 22: a named reading's own progress --------------------------------
+
+/// The gap item 22 opened and closed: a screen showing one *specific* reading
+/// must not print the book's projection.
+///
+/// `Progress::of_book` reads `books.current_page`, which is a projection of the
+/// **current** read — so on a reread it prints today's numbers under the first
+/// read's heading. `Progress::of_reading` was already the right answer and had
+/// no way onto the API, which left a frontend computing `current_page /
+/// page_count` itself. `Engine::readings_with_progress` is the pairing, done
+/// where the page count lives.
+#[tokio::test]
+async fn each_reading_carries_its_own_progress_and_not_the_books() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Pachinko.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(500, None));
+    let id = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap()
+        .book_id
+        .unwrap();
+
+    // Read it once to page 500 and finish; then start again and get to 100.
+    engine
+        .update_progress(id, Some(500), Some(true))
+        .await
+        .unwrap();
+    engine.reread(id).await.unwrap();
+    engine.update_progress(id, Some(100), None).await.unwrap();
+
+    let reads = engine.readings_with_progress(id).await.unwrap();
+    assert_eq!(reads.len(), 2, "a reread is a row, not a flag");
+
+    // The first read is finished; the second is a fifth of the way in — and the
+    // fraction exists at all only because the PDF supplied a denominator.
+    assert_eq!(reads[0].1, readingbuddy::Progress::Finished);
+    assert_eq!(reads[1].1.percent(), Some(20));
+    assert_eq!(reads[1].1.page(), Some(100));
+
+    // The book's own projection is the *current* read's, which is the number
+    // that would have been printed under the first read's heading.
+    let book = engine.storage().get_book(id).await.unwrap().unwrap();
+    assert_eq!(readingbuddy::Progress::of_book(&book).percent(), Some(20));
+}
+
+/// A book read once: the two forms agree, which is what makes the pair form
+/// safe to use everywhere rather than only on rereads.
+#[tokio::test]
+async fn one_read_makes_the_two_progress_forms_agree() {
+    let (tmp, engine) = engine().await;
+    let src = tmp.path().join("Anna.pdf");
+    write(&src, &readingbuddy::pdf::synthetic_pdf(200, None));
+    let id = engine
+        .import_file(&src, FileImportOptions::default())
+        .await
+        .unwrap()
+        .book_id
+        .unwrap();
+    engine.update_progress(id, Some(50), None).await.unwrap();
+
+    let book = engine.storage().get_book(id).await.unwrap().unwrap();
+    let reads = engine.readings_with_progress(id).await.unwrap();
+    assert_eq!(reads[0].1, readingbuddy::Progress::of_book(&book));
+
+    let active = engine.active_reading_with_progress(id).await.unwrap();
+    assert_eq!(active.unwrap().1, reads[0].1);
+    let one = engine.reading_with_progress(reads[0].0.id).await.unwrap();
+    assert_eq!(one.unwrap().1, reads[0].1);
+}
+
+/// A book with no length still reports a page, and no fraction. The case
+/// `pdf.rs` exists to keep reachable: `Started { page: Some(n), of: None }`.
+#[tokio::test]
+async fn a_reading_with_no_denominator_reports_a_page_and_no_fraction() {
+    let (_tmp, engine) = engine().await;
+    let book = engine
+        .save_book(&Book {
+            title: Some("Unmeasured".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let id = book.id.unwrap();
+    engine.update_progress(id, Some(42), None).await.unwrap();
+
+    let p = engine.readings_with_progress(id).await.unwrap()[0].1;
+    assert_eq!(p.page(), Some(42));
+    assert_eq!(p.percent(), None, "no denominator is no percentage, not 0%");
+}
