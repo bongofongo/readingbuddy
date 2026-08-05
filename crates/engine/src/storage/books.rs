@@ -68,6 +68,7 @@ pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, 
      books.subjects, books.series, books.series_index, \
      cur.current_page AS current_page, \
      CASE WHEN cur.status = 'finished' THEN 1 ELSE 0 END AS finished, \
+     cur.status AS reading_status, \
      cur.started_at AS date_started, cur.finished_at AS date_finished, \
      books.created_at, books.last_modified";
 
@@ -113,6 +114,7 @@ pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
         series_index: row.try_get("series_index")?,
         current_page: row.try_get("current_page")?,
         finished: row.try_get::<i64, _>("finished")? != 0,
+        reading_status: row.try_get("reading_status")?,
         date_started: row.try_get("date_started")?,
         date_finished: row.try_get("date_finished")?,
         created_at: OffsetDateTime::from_unix_timestamp(created).ok(),

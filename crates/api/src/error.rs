@@ -23,6 +23,11 @@ use readingbuddy::{EngineError, ErrorClass};
 /// know a code must treat it as [`ErrorCode::Internal`] — which is what
 /// `#[serde(other)]` on that variant makes happen for free rather than by
 /// asking every client to remember.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -72,6 +77,11 @@ pub enum ErrorCode {
 }
 
 /// A failure, as it crosses the seam.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
     pub code: ErrorCode,

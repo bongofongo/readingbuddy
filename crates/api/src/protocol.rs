@@ -52,6 +52,11 @@ pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 ///
 /// One call. Every variant maps to exactly one [`crate::Api`] method.
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Request {
@@ -420,6 +425,11 @@ pub enum Request {
 
 /// What came back, by shape. See [`Request`] on the size of these variants.
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape", content = "value", rename_all = "snake_case")]
 pub enum Response {
@@ -509,6 +519,11 @@ pub enum Response {
 ///
 /// The id is the client's, echoed back untouched: a transport may pipeline, and
 /// without it a client with two calls in flight cannot tell the replies apart.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Call {
     #[serde(default)]
@@ -521,6 +536,11 @@ pub struct Call {
 /// `outcome` is an ordinary tagged enum rather than `Result`, because
 /// `Result`'s serde shape is `{"Ok":…}` — capitalised, and a detail of the
 /// standard library rather than a decision anyone made about this protocol.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
     pub id: u64,
@@ -531,6 +551,11 @@ pub struct Reply {
 }
 
 #[allow(clippy::large_enum_variant)]
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {

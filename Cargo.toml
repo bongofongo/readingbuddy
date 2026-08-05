@@ -1,6 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/engine", "crates/api", "crates/daemon", "crates/cli", "crates/tui", "crates/corpus"]
+members = [
+    "crates/engine",
+    "crates/api",
+    "crates/daemon",
+    "crates/cli",
+    "crates/tui",
+    "crates/corpus",
+    # The Tauri backend (spec item 25). A workspace member so that
+    # `cargo check --workspace` — the build where the engine's `internals`
+    # feature is OFF — covers it too. That is the job it does here: it is what
+    # makes reaching past `readingbuddy-api` into the engine a compile error in
+    # CI rather than a decision somebody makes at 11pm.
+    "gui/src-tauri",
+]
 # cargo-fuzz needs nightly and a sanitizer flag; leaving it in would break
 # `cargo build --workspace` on stable. (fuzz/Cargo.toml also carries its own
 # empty [workspace] — belt and braces.)

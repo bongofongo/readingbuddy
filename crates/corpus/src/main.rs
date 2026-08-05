@@ -13,6 +13,7 @@
 //! parsing or normalization to build its fixtures would bake any bug in those
 //! straight into the goldens; the generator stays an independent oracle.
 
+mod devdb;
 mod goodreads;
 mod gutenberg;
 mod kostats;
@@ -74,6 +75,23 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Write the seeded dev library: `seed.sql`, covers, a vault, a manifest.
+    ///
+    /// Emits **data, never a schema**. `make dev-db` has the real binary create
+    /// and migrate an empty database first, because the schema belongs to the
+    /// engine and its `_sqlx_migrations` ledger belongs to sqlx — a second copy
+    /// of either here would be free to drift. See `devdb.rs`.
+    GenDevdb {
+        /// PRNG seed. ChaCha8, so the same seed is the same library for ever.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        /// How many ordinary books behind the deliberate edge cases.
+        #[arg(long, default_value_t = 200)]
+        books: usize,
+        /// Output dir; defaults to `corpus/generated/devdb` (gitignored).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Derive tier-2 sidecars from the fetched Project Gutenberg epubs.
     GenCorpus {
         /// PRNG seed. Output is a pure function of (seed, generator version,
@@ -120,6 +138,17 @@ fn main() -> std::io::Result<()> {
                 kostats::GENERATOR_VERSION,
                 out.display()
             );
+            Ok(())
+        }
+        Cmd::GenDevdb { seed, books, out } => {
+            let out = out.unwrap_or_else(devdb::default_out);
+            let n = devdb::generate(&out, seed, books)?;
+            println!(
+                "wrote {n} books (v{}, seed {seed}) to {}/seed.sql",
+                devdb::GENERATOR_VERSION,
+                out.display()
+            );
+            println!("now run `make dev-db` to build a database from it");
             Ok(())
         }
         Cmd::GenCorpus {

@@ -64,6 +64,11 @@ fn opt_path(p: &Option<PathBuf>) -> Option<String> {
 
 // ---- books ----------------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BookDto {
     #[serde(default)]
@@ -121,12 +126,19 @@ pub struct BookDto {
     #[serde(default)]
     pub series_index: Option<f64>,
     /// Read-only projections of the **current** reading. Sending them back in a
-    /// `save_book` changes nothing: `upsert_book` has ignored these four since
+    /// `save_book` changes nothing: `upsert_book` has ignored them since
     /// migration `0005`, and `update_progress` is the writer.
     #[serde(default)]
     pub current_page: Option<i64>,
     #[serde(default)]
     pub finished: bool,
+    /// `reading` | `finished` | `abandoned`, or absent when the book has no
+    /// reading at all — which is the commonest state in a real library and the
+    /// one `finished: false` cannot be told apart from *abandoned*. See
+    /// [`readingbuddy::Book::reading_status`] for why this is a `String` and not
+    /// an enum, and why it sits beside `finished` rather than replacing it.
+    #[serde(default)]
+    pub reading_status: Option<String>,
     #[serde(default)]
     pub date_started: Option<i64>,
     #[serde(default)]
@@ -164,6 +176,7 @@ impl From<Book> for BookDto {
             series_index: b.series_index,
             current_page: b.current_page,
             finished: b.finished,
+            reading_status: b.reading_status,
             date_started: b.date_started,
             date_finished: b.date_finished,
             created_at: b.created_at.map(|t| t.unix_timestamp()),
@@ -202,6 +215,7 @@ impl From<BookDto> for Book {
             first_sentence: d.first_sentence,
             current_page: d.current_page,
             finished: d.finished,
+            reading_status: d.reading_status,
             date_started: d.date_started,
             date_finished: d.date_finished,
             subjects: d.subjects,
@@ -213,6 +227,11 @@ impl From<BookDto> for Book {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BookSortDto {
@@ -232,6 +251,11 @@ impl From<BookSortDto> for BookSort {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookTagDto {
     pub tag: String,
@@ -254,6 +278,11 @@ impl From<BookTag> for BookTagDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeReportDto {
     pub src_existed: bool,
@@ -288,6 +317,11 @@ impl From<MergeReport> for MergeReportDto {
 
 // ---- readings and highlights ----------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadingDto {
     pub id: i64,
@@ -330,6 +364,11 @@ impl From<Reading> for ReadingDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightDto {
     pub id: i64,
@@ -380,6 +419,11 @@ impl From<Highlight> for HighlightDto {
 
 // ---- notes ----------------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteKindDto {
@@ -401,6 +445,11 @@ impl From<NoteKindDto> for NoteKind {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteDto {
     pub id: i64,
@@ -442,6 +491,11 @@ impl From<NoteRecord> for NoteDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewNoteDto {
     #[serde(default)]
@@ -477,6 +531,11 @@ impl From<NewNoteDto> for NewNoteInput {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreatedNoteDto {
     pub id: i64,
@@ -497,6 +556,11 @@ impl From<CreatedNote> for CreatedNoteDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteSearchHitDto {
     pub note: NoteDto,
@@ -512,6 +576,11 @@ impl From<NoteSearchHit> for NoteSearchHitDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutgoingLinkDto {
     /// The `[[wikilink]]` as written.
@@ -540,6 +609,11 @@ impl From<OutgoingLink> for OutgoingLinkDto {
 /// closed one, while this row is specifically the open one and carries its own
 /// status, source and device mirror. A sidecar-seeded book has `ko_percent` and
 /// no `current_page` at all, so the book alone would render blank.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpenReadingDto {
     pub book: BookDto,
@@ -557,6 +631,11 @@ impl From<(Book, Reading)> for OpenReadingDto {
 
 // ---- ratings ---------------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatingScaleDto {
     pub id: i64,
@@ -578,6 +657,11 @@ impl From<RatingScale> for RatingScaleDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatingDto {
     /// The scale travels **with** the value, never without it: the Goodreads
@@ -602,6 +686,11 @@ impl From<Rating> for RatingDto {
 /// a lookup and not a formula is that the ends must be readable at a glance.
 /// A scale point with no entry simply is not in this list, which is what a
 /// review on that value will report instead of a number.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RatingMapEntryDto {
     pub value: f64,
@@ -610,6 +699,11 @@ pub struct RatingMapEntryDto {
 
 // ---- files and flashcards --------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookFileDto {
     pub sha256: String,
@@ -634,6 +728,11 @@ impl From<BookFile> for BookFileDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileMatchDto {
@@ -654,6 +753,11 @@ impl From<FileMatch> for FileMatchDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileOutcomeDto {
@@ -672,6 +776,11 @@ impl From<FileOutcome> for FileOutcomeDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileIdentityDto {
     pub path: String,
@@ -708,6 +817,11 @@ impl From<FileIdentity> for FileIdentityDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileImportReportDto {
     pub outcome: FileOutcomeDto,
@@ -737,6 +851,11 @@ impl From<FileImportReport> for FileImportReportDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashcardDto {
     pub id: i64,
@@ -761,6 +880,11 @@ impl From<FlashcardRow> for FlashcardDto {
 
 // ---- search ----------------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchRequestDto {
     #[serde(default)]
@@ -799,6 +923,11 @@ impl From<SearchRequestDto> for SearchRequest {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderIdDto {
@@ -815,6 +944,11 @@ impl From<ProviderId> for ProviderIdDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RankedResultDto {
     pub book: BookDto,
@@ -832,6 +966,11 @@ impl From<RankedResult> for RankedResultDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchOutcomeDto {
     pub results: Vec<RankedResultDto>,
@@ -851,6 +990,11 @@ impl From<SearchOutcome> for SearchOutcomeDto {
 
 // ---- diagnostics -----------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeverityDto {
@@ -867,6 +1011,11 @@ impl From<Severity> for SeverityDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClassDto {
@@ -901,6 +1050,11 @@ impl From<ErrorClass> for ErrorClassDto {
 /// `String` in the first place: a caller has to be able to tell a timeout from
 /// a 500, and *which file* was unparsable, without scraping prose. Every
 /// variant here has a different next move on the far side.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiagnosticKindDto {
@@ -1079,6 +1233,11 @@ impl From<DiagnosticKind> for DiagnosticKindDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiagnosticDto {
     #[serde(flatten)]
@@ -1105,6 +1264,11 @@ impl From<Diagnostic> for DiagnosticDto {
 
 // ---- koreader and the device ----------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchCandidateDto {
     pub book_id: i64,
@@ -1122,6 +1286,11 @@ impl From<MatchCandidate> for MatchCandidateDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchMethodDto {
@@ -1145,6 +1314,11 @@ impl From<MatchMethod> for MatchMethodDto {
 /// The device's own status. `Other` keeps the raw string rather than collapsing
 /// to a known one — a status KOReader grew and we do not model is exactly the
 /// thing worth reporting, and guessing at it would be silent.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum KoStatusDto {
@@ -1165,6 +1339,11 @@ impl From<KoStatus> for KoStatusDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookImportStatsDto {
     pub book_id: i64,
@@ -1202,6 +1381,11 @@ impl From<BookImportStats> for BookImportStatsDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnmatchedSidecarDto {
     pub path: String,
@@ -1224,6 +1408,11 @@ impl From<UnmatchedSidecar> for UnmatchedSidecarDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ImportReportDto {
     pub imported: Vec<BookImportStatsDto>,
@@ -1241,6 +1430,11 @@ impl From<ImportReport> for ImportReportDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PullReportDto {
     pub stats: BookImportStatsDto,
@@ -1257,6 +1451,11 @@ impl From<PullReport> for PullReportDto {
 }
 
 /// The four states `docs/decisions.md` names, and no fifth.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum DeviceStateDto {
@@ -1294,6 +1493,11 @@ impl From<DeviceState> for DeviceStateDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceBookDto {
     pub path: String,
@@ -1330,6 +1534,11 @@ impl From<DeviceBook> for DeviceBookDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeviceScanDto {
     pub root: String,
@@ -1357,6 +1566,11 @@ impl From<DeviceScan> for DeviceScanDto {
 
 // ---- goodreads -------------------------------------------------------------
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoodreadsMatchDto {
@@ -1377,6 +1591,11 @@ impl From<GoodreadsMatch> for GoodreadsMatchDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextOutcomeDto {
@@ -1398,6 +1617,11 @@ impl From<TextOutcome> for TextOutcomeDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoodreadsBookReportDto {
     #[serde(default)]
@@ -1427,6 +1651,11 @@ impl From<GoodreadsBookReport> for GoodreadsBookReportDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnmatchedRowDto {
     pub row: usize,
@@ -1450,6 +1679,11 @@ impl From<UnmatchedRow> for UnmatchedRowDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GoodreadsReportDto {
     pub dry_run: bool,
@@ -1476,6 +1710,11 @@ impl From<GoodreadsReport> for GoodreadsReportDto {
 /// What calibre this machine has. **Two options, not one flag** — a half
 /// install degrades to the half that works, and a client shows the feature it
 /// has rather than refusing both.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibreStatusDto {
     /// Absolute path of `ebook-convert`, when it was found.
@@ -1494,6 +1733,11 @@ impl From<&readingbuddy::Calibre> for CalibreStatusDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CalibreBookDto {
     pub calibre_id: i64,
@@ -1549,6 +1793,11 @@ impl From<CalibreBook> for CalibreBookDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CalibreMatchDto {
@@ -1571,6 +1820,11 @@ impl From<CalibreMatch> for CalibreMatchDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CalibreBookReportDto {
     /// The calibre row this line is about — the only thing tying a report line
@@ -1599,6 +1853,11 @@ impl From<CalibreBookReport> for CalibreBookReportDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnmatchedCalibreBookDto {
     pub calibre_id: i64,
@@ -1622,6 +1881,11 @@ impl From<readingbuddy::UnmatchedCalibreBook> for UnmatchedCalibreBookDto {
     }
 }
 
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CalibreReportDto {
     pub dry_run: bool,
@@ -1650,6 +1914,11 @@ impl From<CalibreReport> for CalibreReportDto {
 /// Flat with a `depth`, exactly as the engine has it — a tree here would make
 /// "the entries, in order" the awkward shape on the wire too, and every consumer
 /// walks them in reading order. The nesting is a column, not a loss.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TocEntryDto {
     pub label: String,
@@ -1687,6 +1956,11 @@ impl From<TocEntry> for TocEntryDto {
 /// an empty `entries` for "this epub carries no TOC". Two different answers; a
 /// client that collapses them tells the user the same thing about a missing file
 /// and an ordinary EPUB3 book.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableOfContentsDto {
     pub sha256: String,
@@ -1710,6 +1984,11 @@ impl From<TableOfContents> for TableOfContentsDto {
 /// text the column holds: the engine reads an unrecognised token *back* as
 /// `inferred` on purpose, and a client doing its own string comparison would
 /// get the opposite default — claiming a measurement nobody made.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfidenceDto {
@@ -1734,6 +2013,11 @@ impl From<Confidence> for ConfidenceDto {
 /// renders `null` as `0` has told its reader something false about their own
 /// reading. A measured twenty-second session, by contrast, really does record
 /// `0`.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadingEventDto {
     pub book_id: i64,
@@ -1771,6 +2055,11 @@ impl From<ReadingEvent> for ReadingEventDto {
 }
 
 /// What one filler pass did. `updated` counts rows that **actually changed**.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FillStatsDto {
     pub inserted: u64,
@@ -1792,6 +2081,11 @@ impl From<FillStats> for FillStatsDto {
 /// overall and `0` for the vault are different facts — the second says the
 /// notes filler ran and found nothing, which is what a second identical run is
 /// supposed to say.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefillReportDto {
     pub highlights: FillStatsDto,
@@ -1814,6 +2108,11 @@ impl From<RefillReport> for RefillReportDto {
 /// Echoed rather than assumed: the caller sent two strings and the engine
 /// validated them, so a reply carrying the range it actually used is what lets a
 /// client label a chart without re-deriving what it asked for.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DayRangeDto {
     pub from: String,
@@ -1837,6 +2136,11 @@ impl From<&DayRange> for DayRangeDto {
 /// carried this far.
 ///
 /// There is deliberately nothing here counting what the user has *not* done.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivitySummaryDto {
     pub range: DayRangeDto,
@@ -1867,6 +2171,11 @@ impl From<ActivitySummary> for ActivitySummaryDto {
 /// One day of a period. **Only days carrying an event appear** — the gaps are
 /// the client's to draw, and filling them with zero rows here would be the same
 /// lie `minutes: null` exists to avoid, spread across a calendar.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DayActivityDto {
     pub day: String,
@@ -1900,6 +2209,11 @@ impl From<DayActivity> for DayActivityDto {
 /// a `warnings` entry and every count zero — **not an error**. Absence is
 /// ordinary; `schema_version` absent is how a client tells "no database" from
 /// "a database with nothing in it".
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatsImportReportDto {
     #[serde(default)]
@@ -1930,6 +2244,11 @@ impl From<StatsImportReport> for StatsImportReportDto {
 /// client branches on `user` — the rank that outranks every provider — and
 /// flattening this to a string would make that branch a string comparison
 /// against a vocabulary nothing on the wire pins.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceDto {
@@ -1961,6 +2280,11 @@ impl From<Source> for SourceDto {
 /// **An absent entry means nobody has claimed the field** — every book predating
 /// migration `0012` reports an empty list however well-populated it is. So a
 /// client must render "unattributed", never "unknown provider".
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldSourceDto {
     pub field: String,
@@ -1983,6 +2307,11 @@ impl From<FieldSource> for FieldSourceDto {
 }
 
 /// How a provider record was tied to the book.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrichMatchDto {
@@ -2002,6 +2331,11 @@ impl From<EnrichMatch> for EnrichMatchDto {
 }
 
 /// A record that looked like this book but not enough to write unasked.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnrichCandidateDto {
     pub book: BookDto,
@@ -2026,6 +2360,11 @@ impl From<EnrichCandidate> for EnrichCandidateDto {
 /// `no_answer` is a fact about the network wearing the same shape, `refused`
 /// means results came back and none was certainly this book, and `unaskable`
 /// means there was nothing to ask with.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnrichOutcomeDto {
@@ -2053,6 +2392,11 @@ impl From<EnrichOutcome> for EnrichOutcomeDto {
 }
 
 /// One field that changed, and who is now answerable for it.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldChangeDto {
     pub field: String,
@@ -2082,6 +2426,11 @@ impl From<FieldChange> for FieldChangeDto {
 /// held-back field reported by name alone is indistinguishable from a field the
 /// provider had nothing for, which is the "silently not updated" state the whole
 /// report exists to remove.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeldFieldDto {
     pub field: String,
@@ -2106,6 +2455,11 @@ impl From<HeldField> for HeldFieldDto {
 }
 
 /// What one run of `enrich_book_from_providers` did (item 30).
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnrichReportDto {
     pub book_id: i64,
@@ -2135,6 +2489,11 @@ impl From<EnrichReport> for EnrichReportDto {
 
 /// The paths a settings screen shows. Not handles — a client that is not on
 /// this machine can read them and can do nothing with them, which is correct.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathsDto {
     pub db_url: String,
@@ -2199,6 +2558,7 @@ mod tests {
             first_sentence: Some("f".into()),
             current_page: Some(12),
             finished: true,
+            reading_status: Some("finished".into()),
             date_started: Some(1),
             date_finished: Some(2),
             subjects: vec!["Fiction / Literary".into()],
@@ -2231,6 +2591,7 @@ mod tests {
         assert_eq!(back.first_sentence, book.first_sentence);
         assert_eq!(back.current_page, book.current_page);
         assert_eq!(back.finished, book.finished);
+        assert_eq!(back.reading_status, book.reading_status);
         assert_eq!(back.date_started, book.date_started);
         assert_eq!(back.date_finished, book.date_finished);
         assert_eq!(back.subjects, book.subjects);

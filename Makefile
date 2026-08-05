@@ -21,7 +21,7 @@ endif
 GUI_PKG := $(wildcard gui/package.json)
 GUI_DEPS := $(wildcard gui/node_modules)
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf web-check web-fix shots e2e
+.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf ts ts-check dev-db web-check web-fix shots routes e2e
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -131,6 +131,53 @@ fmt-check: ## Verify formatting without writing
 # GUI is a fact about this tree and not a broken build.
 # ---------------------------------------------------------------------------
 
+# The dev library. `dev-data/` is gitignored and reproducible from a seed, so it
+# is disposable by design — `make dev-db` always rebuilds it from scratch rather
+# than migrating what is there, because a half-seeded database is harder to
+# diagnose than a missing one.
+DEV_DB_DIR ?= $(CURDIR)/dev-data
+DEV_DB_SEED ?= 42
+DEV_DB_SRC := corpus/generated/devdb
+
+dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vault
+	@command -v sqlite3 >/dev/null || { \
+	  echo "dev-db needs the sqlite3 CLI (present on macOS and ubuntu runners)."; exit 1; }
+	cargo run -q -p corpus -- gen-devdb --seed $(DEV_DB_SEED)
+	rm -rf "$(DEV_DB_DIR)"
+	mkdir -p "$(DEV_DB_DIR)/database/images" "$(DEV_DB_DIR)/vault"
+	@# The engine creates and migrates the database, so corpus never owns a second
+	@# copy of the schema or of sqlx's `_sqlx_migrations` ledger. Any read-only
+	@# command does it; `list` is the cheapest and prints the empty-library line.
+	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" list >/dev/null
+	cp $(DEV_DB_SRC)/covers/*.png "$(DEV_DB_DIR)/database/images/"
+	cp $(DEV_DB_SRC)/vault/*.md "$(DEV_DB_DIR)/vault/"
+	sqlite3 "$(DEV_DB_DIR)/database/app.db" < $(DEV_DB_SRC)/seed.sql
+	@# reading_events comes from the engine's own fillers rather than from invented
+	@# rows — the fixture states highlights and readings, and the real derivation
+	@# turns them into a log. A generator writing that table directly would be
+	@# asserting item 21's arithmetic instead of exercising it.
+	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" activity --refill
+	@echo ""
+	@echo "dev library at $(DEV_DB_DIR) — 220 books, 20 of them deliberate edge cases."
+	@echo "What each edge case is for: $(DEV_DB_SRC)/manifest.json"
+
+ts: ## Regenerate gui/src/lib/api/bindings.ts from the API crate's own types
+	scripts/gen-ts.sh "$(CURDIR)/gui/src/lib/api"
+
+# The gate. Generation output is COMMITTED so a thread that cannot run cargo
+# still reads current types; this is what stops that copy going stale silently.
+# A DTO change without a regeneration fails here rather than becoming a blank
+# panel in a webview with a console error nobody is reading.
+ts-check: ## Fail if the committed bindings are not what the DTOs generate
+	@tmp=$$(mktemp -d); \
+	scripts/gen-ts.sh "$$tmp" >/dev/null; \
+	if diff -u gui/src/lib/api/bindings.ts "$$tmp/bindings.ts" > "$$tmp/diff"; then \
+	  rm -rf "$$tmp"; echo "ts-check: bindings match the DTOs"; \
+	else \
+	  cat "$$tmp/diff"; rm -rf "$$tmp"; \
+	  echo ""; echo "ts-check: bindings are stale. Run 'make ts' and commit."; exit 1; \
+	fi
+
 web-check: ## Frontend gate: svelte-check + tsc + eslint + vitest + build
 ifeq ($(GUI_PKG),)
 	@echo "SKIPPED: no gui/package.json — the GUI scaffold is spec item 25."
@@ -156,8 +203,22 @@ shots: ## Render every route to gui/tests/shots/ for the screenshot-reviewer age
 ifeq ($(GUI_DEPS),)
 	@echo "SKIPPED: no gui/node_modules."
 else
-	cd gui && pnpm exec playwright test --project=webkit --update-snapshots
+	@# Three projects, all WebKit — desktop, narrow and phone. WebKit because
+	@# WKWebView is what the app ships inside on macOS, so its bugs are ours;
+	@# Chromium would be a smaller download and the wrong browser. `--update-
+	@# snapshots` because this target's job is to PRODUCE the images for a human
+	@# or the screenshot-reviewer agent to look at. `make routes` is the target
+	@# that fails on a diff.
+	cd gui && pnpm exec playwright test --update-snapshots
+	@echo ""
 	@echo "shots in gui/tests/shots/ — read the PNGs, do not trust a green run."
+endif
+
+routes: ## Assert every route still renders and matches its committed shot
+ifeq ($(GUI_DEPS),)
+	@echo "SKIPPED: no gui/node_modules."
+else
+	cd gui && pnpm exec playwright test
 endif
 
 # NOT part of `check` or `ci`, deliberately. It builds the app binary and drives
@@ -171,24 +232,27 @@ else
 	cd gui && pnpm exec wdio run wdio.conf.ts
 endif
 
-check: fmt-check lint build-check test web-check ## Local gate: fmt + lint + build + test + frontend
+check: fmt-check lint build-check ts-check test web-check routes ## Local gate: everything CI runs
 
-# What .github/workflows/ci.yml runs, in the same order — which now makes `ci`
-# and `check` the same three steps, since the gate widened to the whole
-# workspace on ubuntu. Kept as a separate target anyway: it is the name people
-# reach for, and the two will diverge again the moment the workflow grows a step
-# that has no local equivalent. Keep them in step — a change here belongs in the
-# workflow too.
+# What .github/workflows/ci.yml runs, in the same order. Kept as a separate
+# target from `check` even when the two agree: it is the name people reach for,
+# and they diverge the moment the workflow grows a step with no local equivalent.
+# Keep them in step — a change here belongs in the workflow too.
 #
 # CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
 # explained in the workflow and is not worth reproducing locally.
 #
-# `check` and `ci` have now DIVERGED on purpose: `check` runs `web-check` and
-# `ci` does not, because .github/workflows/ci.yml has no frontend job yet. When
-# the GUI lands (spec item 25) the workflow grows that step and this comment
-# comes out. Until then, adding web-check here would make `make ci` stop
-# reproducing the gate, which is the one thing it is for.
-ci: fmt-check lint build-check test ## Reproduce the CI gate locally
+# The GUI landed (spec item 25), so `ci` now carries the frontend. Four things
+# went in with it and each has a distinct job:
+#   ts-check   — the committed bindings.ts still matches the DTOs. In CI's `check`
+#                job, since it needs cargo and no node.
+#   web-check  — svelte-check + tsc + eslint + vitest + build.
+#   routes     — layer 2: every route renders in WebKit at three sizes and matches
+#                its committed shot. `tauri-driver` cannot run on macOS, so this
+#                browser suite is the visual gate, not a stand-in for one.
+# `e2e` stays out of both: it builds the app binary and drives a real webview,
+# which is minutes, and is a seam check rather than a feature suite.
+ci: fmt-check lint build-check ts-check test web-check routes ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only — CI's macOS leg, and the fast inner loop
 	$(RUN) -p readingbuddy

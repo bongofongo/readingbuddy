@@ -829,6 +829,49 @@ mod tests {
         assert_eq!(open[0].1.status, STATUS_ABANDONED);
     }
 
+    /// The three states `finished: bool` cannot tell apart, told apart.
+    ///
+    /// `abandon_reading` leaves the reading open and stamps no `finished_at`, so
+    /// an abandoned book and an open one are both `finished: false` with a
+    /// `current_page` — and a book nobody has opened is `finished: false` too.
+    /// Three different things behind one boolean is the gap `reading_status`
+    /// closes, and it is what lets a frontend honour "abandoning a book is not
+    /// failure" without deriving the state from three other columns.
+    #[tokio::test]
+    async fn the_projection_tells_abandoned_from_reading_from_never_opened() {
+        let (s, reading) = seeded().await;
+        let abandoned = add(&s, "Kokoro").await;
+        let untouched = add(&s, "Season of Migration to the North").await;
+
+        s.update_progress(reading, Some(60), None).await.unwrap();
+        s.update_progress(abandoned, Some(20), None).await.unwrap();
+        assert!(s.abandon_reading(abandoned).await.unwrap());
+
+        let mut got = Vec::new();
+        for id in [reading, abandoned, untouched] {
+            let b = s
+                .get_book(id)
+                .await
+                .unwrap()
+                .expect("seeded book is stored");
+            // The boolean all three share is still what it was, so nothing that
+            // reads `finished` had to change.
+            assert!(!b.finished);
+            got.push(b.reading_status);
+        }
+        // The third is `None`, not a status string of its own: the book has no
+        // reading at all, and an invented `"unread"` would be this layer
+        // claiming a row exists.
+        assert_eq!(
+            got,
+            vec![
+                Some(STATUS_READING.to_string()),
+                Some(STATUS_ABANDONED.to_string()),
+                None
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn the_limit_is_honoured() {
         let (s, first) = seeded().await;

@@ -68,6 +68,26 @@ impl Api {
         Api { engine }
     }
 
+    /// Open a library at `data_dir` and wrap it — for a client that should never
+    /// name the engine at all.
+    ///
+    /// `Api::new` requires an `Arc<Engine>`, so every caller of it depends on
+    /// `readingbuddy`. For `readingbuddyd` that is harmless: it is a byte pump
+    /// and names no method, so having the engine in scope tempts nothing. For a
+    /// **semantic** client it is the whole problem — `gui/CLAUDE.md`'s first rule
+    /// is that a gap in this surface must be a compile error rather than a
+    /// temptation, and it cannot be either if the engine is one `use` away.
+    ///
+    /// So this exists to let `gui/src-tauri` depend on this crate and nothing
+    /// else. The knobs `EngineConfig` carries beyond the root — a calibre binary
+    /// directory, a Google key — are not parameters here on purpose: a client
+    /// that needs one is asking for a configuration surface, and that is a
+    /// request on this protocol, not a constructor argument.
+    pub async fn open(data_dir: &Path) -> ApiResult<Api> {
+        let engine = Engine::open(readingbuddy::EngineConfig::rooted_at(data_dir)).await?;
+        Ok(Api::new(Arc::new(engine)))
+    }
+
     /// The engine underneath, for a host that also drives it directly — the
     /// mount watcher, for one, which this vocabulary deliberately does not
     /// carry (see [`protocol`]).

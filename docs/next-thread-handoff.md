@@ -16,8 +16,28 @@ Green: `make ci` exit 0 (engine lib 323, TUI 291), `cargo deny check bans
 licenses sources` ok. Working tree clean, no unpushed remote (nothing is pushed;
 this repo commits straight to `main`).
 
-**Updated 2026-08-05**: options B and C below are done — the wave is surfaced
-and the `MERGE_RULES` debt is closed. **A is what is left.**
+**Updated 2026-08-05 (second pass)**: B and C are done, and **A has started**.
+Item 25's scaffold landed as a thin vertical slice — `gui/` is a real Tauri +
+SvelteKit app over the API, with the generated type seam (`make ts` /
+`make ts-check`), a seeded library (`make dev-db`), and the visual gate
+(`make shots` / `make routes`). `make ci` is correspondingly wider.
+
+**The next item is 17**, and its prompt is written:
+[`docs/prompts/17-derived-facts.md`](prompts/17-derived-facts.md). Read that
+rather than the spec's item 17 alone — it carries every derivation a real screen
+was refused, which the spec, written from an audit, could not know. See
+`sessions/2026-08-05-gui-scaffold-and-the-seam.md` for how it was built.
+
+Two things landed on the engine in that pass, so do not rebuild them:
+`Book::reading_status` (a fifth projection of the current reading — without it
+*reading*, *abandoned* and *never opened* are one boolean) and
+`Api::open(data_dir)`, which is what lets a client depend on the API crate and
+not on the engine.
+
+**And one live bug is now recorded, unfixed**: every Google Books cover collides
+on one filename (`images::filename_from_url` takes the URL's last path segment,
+and a GB thumbnail's is `content`), so two books show each other's cover.
+Assigned to **item 20**, which rewrites cover storage anyway.
 
 The last wave — items **29–32 plus 21** — is about what the engine *keeps*
 rather than what it acquires. What landed:

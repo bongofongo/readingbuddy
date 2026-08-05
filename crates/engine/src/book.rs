@@ -57,6 +57,26 @@ pub struct Book {
     /// True when the current reading's status is `finished`. See
     /// [`Book::current_page`].
     pub finished: bool,
+    /// The current reading's own `status` — `reading` | `finished` |
+    /// `abandoned` — or `None` when the book has no reading at all.
+    ///
+    /// Beside [`Book::finished`] rather than replacing it, because `finished` is
+    /// load-bearing for `render.rs` and `progress_tag` and this adds a
+    /// distinction they never needed. The distinction: `finished == false`
+    /// covers *reading*, *abandoned* and *never opened* alike, and
+    /// [`Storage::abandon_reading`](crate::Storage::abandon_reading)
+    /// deliberately leaves the reading **open**, so an abandoned book is
+    /// `finished: false` with a `current_page` — indistinguishable from an
+    /// active read. A frontend cannot honour "abandoning a book is not failure
+    /// and is never styled as one" against a state the engine will not name,
+    /// and the two ways to recover it above this layer are both worse: one
+    /// request per row, or a client-side join of `currently_reading`, which is
+    /// row-state derivation and belongs here by rule.
+    ///
+    /// A `String` rather than an enum on purpose: the importer can write a
+    /// status this build does not know, and a parse that refuses one would turn
+    /// a foreign device's vocabulary into an error on the read path.
+    pub reading_status: Option<String>,
     /// The current reading's `started_at`. See [`Book::current_page`].
     pub date_started: Option<i64>,
     /// The current reading's `finished_at`. See [`Book::current_page`].

@@ -1,0 +1,39 @@
+[package]
+name = "readingbuddy-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The package name is not cosmetic. `.claude/hooks/post-edit-check.sh` runs
+# `cargo check -p readingbuddy-gui` after a Rust edit here; rename it and the
+# hook goes quiet without failing, which is the worst way for a check to stop
+# working. See `gui/CLAUDE.md`.
+
+[lib]
+# A lib beside the bin so the seam is testable without a webview. `main.rs` is
+# four lines; everything worth asserting is in `lib.rs`.
+name = "readingbuddy_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+# `readingbuddy-api`, and DELIBERATELY NOT `readingbuddy`. The engine is right
+# there and a gap in the API surface must be a compile error rather than a
+# temptation — `docs/decisions.md` item 14 closed that seam and CI's plain
+# `cargo check --workspace` exists to keep it closed. A missing request is an
+# engine item; run the `api-surface-auditor` agent before reaching past this.
+readingbuddy-api = { path = "../../crates/api" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"
+# `macros` for `#[tokio::test]`. The runtime itself is a plain dependency because
+# `run` blocks on opening the library before the webview exists.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

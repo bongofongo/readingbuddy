@@ -1,0 +1,94 @@
+/*
+ * Tokens, and one rule about them: the accent is NOT invented here.
+ *
+ * `crates/tui/src/theme.rs` already holds it — brass by default, with seven
+ * presets the settings screen cycles. `gui/CLAUDE.md` says the GUI inherits that
+ * system rather than growing a second palette, so these hex values are that
+ * file's `PRESETS` and must be changed there first.
+ *
+ * The accent is a runtime value in the TUI (an atomic, retunable from settings).
+ * Here it is a CSS custom property for the same reason: when the GUI grows a
+ * settings surface it sets one variable, not a stylesheet.
+ *
+ * Everything else is deliberately restrained. The visual design of the shelf is
+ * item 26 and is a human decision — this is what a list looks like before anyone
+ * has designed it, not a guess at what it should become.
+ */
+:root {
+  --accent: #c48b3f; /* theme.rs DEFAULT_ACCENT */
+  --accent-brass: #c48b3f;
+  --accent-teal: #3fa89e;
+  --accent-rose: #c45f7c;
+  --accent-sky: #4f8fc4;
+  --accent-sage: #7ca85f;
+  --accent-violet: #8b6fc4;
+  --accent-amber: #d19a2e;
+
+  --bg: #14131a;
+  --bg-raised: #1d1c25;
+  --line: #2e2c38;
+  --ink: #e8e4dc;
+  --ink-dim: #9b96a5;
+
+  --radius: 3px;
+  --gap: 0.75rem;
+  --measure: 68ch;
+
+  color-scheme: dark;
+}
+
+/* The TUI's argument, ported: text inherits the surrounding theme and only
+ * accents are fixed. A webview has no terminal to inherit from, so the OS
+ * preference is the nearest equivalent. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #faf8f4;
+    --bg-raised: #ffffff;
+    --line: #e2ddd2;
+    --ink: #21202a;
+    --ink-dim: #6a6577;
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* CJK, Arabic and Hebrew titles are all in the dev library on purpose. Without
+   * a fallback chain the RTL and CJK edge cases render as boxes and the layout
+   * bug they exist to expose is hidden behind a font bug. */
+  font-synthesis: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+/* Focus is visible everywhere. Not a preference — a webview with no visible
+ * focus ring is unusable by keyboard, and this app is meant to live beside a
+ * terminal. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}

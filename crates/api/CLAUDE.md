@@ -3,10 +3,37 @@
 Moved here from the root `CLAUDE.md` unchanged.
 
 **This crate is the boundary, and the GUI is its first semantic client.**
-`readingbuddyd` links it but never names a method — it moves bytes. So until the
-GUI exists, the 86 request variants in `protocol.rs` are exercised only by
-`tests/api.rs`. Expect the GUI to find gaps; a gap is an **engine item**, never
-a workaround in the frontend. See `docs/gui/spec-gui-17-28.md` item 25.
+`readingbuddyd` links it but never names a method — it moves bytes. The GUI
+landed (spec item 25) and found gaps on its first two screens; a gap is an
+**engine item**, never a workaround in the frontend.
+
+Three things that pass added here, and each is load-bearing:
+
+- **`Api::open(data_dir)`.** `Api::new` needs an `Arc<Engine>`, so every caller of
+  it depends on `readingbuddy`. Harmless for the daemon, which names no method and
+  is tempted by nothing; fatal for a semantic client, whose whole discipline is
+  that a missing request must be a *compile error* rather than a `use` away.
+  `gui/src-tauri/Cargo.toml` lists this crate and not the engine, and CI's plain
+  `cargo check --workspace` covers it because the GUI is a workspace member. The
+  extra `EngineConfig` knobs are deliberately not parameters: a client that needs
+  one is asking for a configuration surface, which is a request on this protocol.
+- **`BookDto.reading_status`** — the current reading's own `status`, beside
+  `finished` rather than replacing it. Without it *reading*, *abandoned* and
+  *never opened* are one `finished: false` with a `current_page`, because
+  `abandon_reading` deliberately leaves the reading open. The two ways to recover
+  the distinction above this layer are one request per row, or a client-side join
+  of `currently_reading` — row-state derivation, which `gui/CLAUDE.md` bans by
+  name. A `String`, so an importer can write a status this build does not know.
+- **The `ts` feature and `make ts`.** Off by default: it is a *build-time tool*,
+  not a capability of the surface, and iOS links this crate in-process with no use
+  for a TypeScript emitter. 77 types carry `#[cfg_attr(feature = "ts", …)]` and
+  `scripts/gen-ts.sh` emits one `bindings.ts`. Two things about it are written
+  down there rather than rediscovered: **`bigint` is widened to `number`** (Tauri
+  IPC is JSON, so an `i64` arrives as a `number` and `JSON.stringify(3n)` throws
+  — a `bigint` id is a runtime failure tsc calls correct), and **ts-rs drops
+  `#[serde(other)]` on `ErrorCode::Internal`**, so the generated union is
+  exhaustive over today's codes while the wire is not. The four warnings that
+  names on every run are not silenced on purpose.
 
 Siblings: [`../daemon/CLAUDE.md`](../daemon/CLAUDE.md) (the transport) ·
 [`../engine/CLAUDE.md`](../engine/CLAUDE.md) (what this wraps)
