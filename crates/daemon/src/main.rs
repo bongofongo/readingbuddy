@@ -77,7 +77,31 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| cli.data_dir.join("readingbuddyd.sock"));
 
     let engine = Engine::open(config).await?;
-    let api = Api::new(Arc::new(engine));
+    let engine = Arc::new(engine);
+
+    // **Item 24's ruling, cashed out.** Because the vault watcher does the
+    // re-index itself, keeping a socket client's note searches correct costs
+    // this binary one task and **no wire-protocol change at all**. Had the
+    // write stayed on the frontend's side, this is where the protocol would
+    // have had to grow server-initiated frames — every reply here carries the
+    // id it answers, and a push has no id to carry.
+    //
+    // Once before listening, for the edits made while nothing was running; then
+    // a task that owns the watcher and drives it, since polling it *is* the
+    // work. Both degrade to nothing: a daemon that cannot watch a vault is
+    // still a daemon, and refusing to start over one would be the opposite of
+    // what `docs/decisions.md` makes absence mean.
+    if let Err(e) = engine.reconcile_vault().await {
+        tracing::warn!(error = %e, "could not reconcile the vault");
+    }
+    match engine.watch_vault() {
+        Ok(mut watcher) => {
+            tokio::spawn(async move { while watcher.next().await.is_some() {} });
+        }
+        Err(e) => tracing::warn!(error = %e, "not watching the vault"),
+    }
+
+    let api = Api::new(engine);
 
     let listener = server::bind(&socket).await?;
     // After `bind`, so a refusal to start does not delete the socket of the

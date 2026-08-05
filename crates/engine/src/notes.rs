@@ -402,7 +402,10 @@ pub(crate) async fn reindex_from_body(
 /// `create_note` wrote, and a lookup that spelled it the other way would find
 /// nothing on Windows and never say why.
 pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
-    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+    {
         return None;
     }
     let rest = path.strip_prefix(vault).ok()?;

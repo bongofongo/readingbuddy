@@ -698,7 +698,10 @@ pub fn watch_vault(vault: &Path, storage: Storage) -> Result<VaultWatcher> {
             return;
         };
         for path in event.paths {
-            if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+            {
                 continue;
             }
             // Full means a burst is already queued, and the sweep is what
@@ -1186,7 +1189,10 @@ mod vault_tests {
         // Titled, so the search below is about the body and nothing else —
         // see `Vault::titled`.
         let (id, path) = v
-            .titled(Some("Pachinko, chapter 4"), "Sunja's dignity under pressure.")
+            .titled(
+                Some("Pachinko, chapter 4"),
+                "Sunja's dignity under pressure.",
+            )
             .await;
         assert_eq!(v.finds("dignity").await, vec![id]);
 
@@ -1227,7 +1233,9 @@ mod vault_tests {
             tx.send(VaultStir(path.clone())).await.unwrap();
         }
         assert!(
-            tokio::time::timeout(QUIET * 8, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
             "the watcher re-indexed a file the engine had just written"
         );
     }
@@ -1246,7 +1254,9 @@ mod vault_tests {
         let (tx, mut watcher) = v.watcher();
         tx.send(VaultStir(path)).await.unwrap();
         assert!(
-            tokio::time::timeout(QUIET * 8, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
         );
     }
 
@@ -1262,7 +1272,9 @@ mod vault_tests {
         let (tx, mut watcher) = v.watcher();
         tx.send(VaultStir(path)).await.unwrap();
         assert!(
-            tokio::time::timeout(QUIET * 8, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
         );
     }
 
@@ -1282,7 +1294,9 @@ mod vault_tests {
         }
 
         assert!(
-            tokio::time::timeout(QUIET / 3, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET / 3, watcher.next())
+                .await
+                .is_err(),
             "indexed before the writer had finished"
         );
         assert_eq!(
@@ -1292,7 +1306,9 @@ mod vault_tests {
             Some(VaultEvent::Reindexed { note_id: id }),
         );
         assert!(
-            tokio::time::timeout(QUIET * 8, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
             "one save, one re-index"
         );
     }
@@ -1400,7 +1416,9 @@ mod vault_tests {
         let (tx, mut watcher) = v.watcher();
         tx.send(VaultStir(stray)).await.unwrap();
         assert!(
-            tokio::time::timeout(QUIET * 8, watcher.next()).await.is_err(),
+            tokio::time::timeout(QUIET * 8, watcher.next())
+                .await
+                .is_err(),
         );
         assert!(v.storage.list_notes(None).await.unwrap().is_empty());
     }

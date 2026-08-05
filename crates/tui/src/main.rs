@@ -349,7 +349,19 @@ async fn main() -> Result<()> {
             None
         }
     };
-    let result = app::run(&mut terminal, &mut app, mounts).await;
+    // Same degradation, same reason. A machine that cannot watch the vault
+    // still has a working vault: `app::run` sweeps it once before the first
+    // frame, and every note written here is indexed as it is written. What is
+    // lost is only liveness — an edit made in Obsidian *while the TUI is open*
+    // then waits for the next start instead of arriving in half a second.
+    let vault = match app.engine.watch_vault() {
+        Ok(w) => Some(w),
+        Err(e) => {
+            tracing::warn!(error = %e, "not watching the vault");
+            None
+        }
+    };
+    let result = app::run(&mut terminal, &mut app, mounts, vault).await;
     restore_terminal();
     result
 }
