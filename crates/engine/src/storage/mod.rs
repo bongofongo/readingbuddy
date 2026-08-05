@@ -31,7 +31,7 @@ pub use provenance::BookTag;
 pub use ratings::{Rating, RatingScale};
 pub use reading_events::{
     ActivitySummary, Confidence, DayActivity, DayRange, FillStats, NewReadingEvent, ReadingEvent,
-    RefillReport, SOURCE_KOREADER, SOURCE_VAULT, day_of_ko_datetime, day_of_unix,
+    RefillReport, SOURCE_KOREADER, SOURCE_LOCAL, SOURCE_VAULT, day_of_ko_datetime, day_of_unix,
 };
 pub use readings::{
     ReadNumbering, Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,

@@ -21,6 +21,14 @@
 //! to supply them, and they are the right signal for an app positioned as the
 //! desk rather than the reader.
 //!
+//! **Two more fillers write through [`Storage::record_reading_events`]** rather
+//! than deriving anything, because their evidence is not already in the
+//! database: item 31's `statistics.sqlite3` minutes, and item 22's
+//! [`Storage::record_typed_page`] — a page you typed *here*, `source = "local"`,
+//! `confidence = measured`, filed by [`Storage::update_progress`] itself so that
+//! no frontend has to remember to. Both are what the table was shaped for:
+//! between them they added no query, no view and no line of any frontend.
+//!
 //! **Nothing here invents a day.** A highlight with no `ko_datetime`, or with
 //! one SQLite cannot read as a date, produces no event at all; a reading with no
 //! `started_at` contributes only the endpoint it has.
@@ -46,6 +54,21 @@ use crate::error::{EngineError, Result};
 pub const SOURCE_KOREADER: &str = "koreader";
 /// Events derived from the vault: notes, reflections, reviews.
 pub const SOURCE_VAULT: &str = "vault";
+/// A page the user typed **here** — item 22's fifth filler, and the fourth
+/// ownership row (*readingbuddy owns what you read here*) as a column value.
+///
+/// It is deliberately **not** the reading's own `source`, which
+/// [`Storage::fill_events_from_readings`] uses for its two endpoints. The two
+/// mean different things and both can be true of one day: a `koreader` reading
+/// whose page you corrected by hand this afternoon carries a `koreader` row
+/// saying the device opened this read and a `local` row saying you moved the
+/// bookmark yourself. Folding the second into the first would attribute your
+/// typing to the device; folding it into `manual` — the word `update_progress`
+/// writes when it opens a reading — would attribute the *device's* readings to
+/// your hand the moment you touched one. One word per claimant is what this
+/// column is for, and the primary key `(book_id, day, source)` is what makes
+/// two claimants two rows rather than a fight over one.
+pub const SOURCE_LOCAL: &str = "local";
 
 /// How much the row is willing to claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +436,79 @@ impl Storage {
         }
         tx.commit().await?;
         Ok(stats)
+    }
+
+    /// The fifth filler: a page the user typed here, on the day they typed it.
+    ///
+    /// Item 22. Called by [`Storage::update_progress`] and by nothing else, so
+    /// every typed page lands in the activity log without a frontend having to
+    /// remember to say so — which is what item 21's whole argument was for.
+    ///
+    /// Four calls are made here and each of them is a claim about honesty.
+    ///
+    /// **A delta needs two points.** The first page typed for a reading records
+    /// the day and `pages: None`, because "you are on page 42" is not "you read
+    /// 42 pages today" — you may have read it over a month, and this is the one
+    /// place where the difference is a fabricated number rather than a missing
+    /// one. Only a *subsequent* page yields a count.
+    ///
+    /// **Backwards is not negative.** Correcting 200 down to 190 is a fix, not
+    /// minus ten pages; it contributes nothing and erases nothing.
+    ///
+    /// **The day accumulates rather than replaces.** [`EVENT_MERGE`] is
+    /// `COALESCE`, so writing a second delta over the first would report the
+    /// evening's twenty pages and lose the morning's ten. The running total for
+    /// the day is read back and added to, which also makes a repeat of the same
+    /// page a no-op — re-typing 190 adds zero and `EVENT_DIFFERS` then declines
+    /// to touch the row at all.
+    ///
+    /// **`confidence` is `Measured`**, because a person typed it. That ratchet
+    /// is one-way, so a `local` row can never fall back to `inferred`.
+    pub async fn record_typed_page(
+        &self,
+        book_id: i64,
+        reading_id: i64,
+        previous_page: Option<i64>,
+        page: i64,
+        at: i64,
+    ) -> Result<FillStats> {
+        let day = day_of_unix(at)?;
+
+        // Only a move forward from a page we already had is a number of pages.
+        let delta = previous_page.map(|p| page - p).filter(|d| *d > 0);
+        let pages = match delta {
+            Some(d) => {
+                let so_far: Option<i64> = sqlx::query_scalar(
+                    "SELECT pages FROM reading_events
+                      WHERE book_id = ? AND day = ? AND source = ?",
+                )
+                .bind(book_id)
+                .bind(&day)
+                .bind(SOURCE_LOCAL)
+                .fetch_optional(self.pool())
+                .await?
+                .flatten();
+                Some(so_far.unwrap_or(0) + d)
+            }
+            None => None,
+        };
+
+        self.record_reading_events(&[NewReadingEvent {
+            book_id,
+            // The reading we just wrote to, named outright. `reading_for_day`
+            // exists for a source that has to *infer* which read a day belongs
+            // to; this one was told.
+            reading_id: Some(reading_id),
+            day,
+            // Nothing here measures time. A typed page says when and how far,
+            // never for how long, and `Some(0)` would be a claim that somebody
+            // read for no time at all.
+            minutes: None,
+            pages,
+            source: SOURCE_LOCAL.to_string(),
+            confidence: Confidence::Measured,
+        }])
+        .await
     }
 
     /// Which read a **day** belongs to, or `None` when the evidence does not
@@ -1155,6 +1251,193 @@ mod tests {
             "the period aggregate must not scan the log: {plan}"
         );
     }
+
+    // ---- item 22: the typed page, the fifth filler -------------------------
+
+    /// The `local` row of a book's log, as `(day, minutes, pages, confidence)`.
+    async fn local_rows(s: &Storage, book: i64) -> Vec<(String, Option<i64>, Option<i64>, bool)> {
+        s.reading_events(book)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.source == SOURCE_LOCAL)
+            .map(|e| {
+                (
+                    e.day,
+                    e.minutes,
+                    e.pages,
+                    e.confidence == Confidence::Measured,
+                )
+            })
+            .collect()
+    }
+
+    async fn open_read(s: &Storage, book: i64) -> i64 {
+        s.open_reading(book, Some(JAN5), "manual").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_typed_page_files_the_day_and_claims_no_pages() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, None, 42, JAN5).await.unwrap();
+
+        assert_eq!(
+            local_rows(&s, b).await,
+            vec![("2026-01-05".to_string(), None, None, true)],
+            "\"you are on page 42\" is not \"you read 42 pages today\""
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_page_claims_the_difference_and_nothing_more() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, None, 42, JAN5).await.unwrap();
+        s.record_typed_page(b, r, Some(42), 90, JAN5).await.unwrap();
+
+        assert_eq!(local_rows(&s, b).await[0].2, Some(48));
+    }
+
+    /// The trap [`EVENT_MERGE`] sets for this filler: it is a `COALESCE`, so a
+    /// second write of the day's delta would *replace* the first and the
+    /// morning's pages would vanish.
+    #[tokio::test]
+    async fn two_updates_in_one_day_accumulate_rather_than_replace() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, Some(0), 10, JAN5).await.unwrap();
+        s.record_typed_page(b, r, Some(10), 30, JAN5).await.unwrap();
+
+        assert_eq!(local_rows(&s, b).await[0].2, Some(30), "10 + 20, not 20");
+    }
+
+    #[tokio::test]
+    async fn correcting_a_page_downwards_is_not_negative_pages() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, Some(0), 200, JAN5).await.unwrap();
+        s.record_typed_page(b, r, Some(200), 190, JAN5)
+            .await
+            .unwrap();
+
+        // The correction contributes nothing and erases nothing.
+        assert_eq!(local_rows(&s, b).await[0].2, Some(200));
+    }
+
+    #[tokio::test]
+    async fn retyping_the_same_page_touches_no_row() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, Some(0), 55, JAN5).await.unwrap();
+
+        let again = s.record_typed_page(b, r, Some(55), 55, JAN5).await.unwrap();
+        assert_eq!(
+            again,
+            FillStats::default(),
+            "an unchanged day must report neither an insert nor an update"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_days_of_typing_are_two_rows() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, Some(0), 20, JAN5).await.unwrap();
+        s.record_typed_page(b, r, Some(20), 55, JAN5 + DAY)
+            .await
+            .unwrap();
+
+        let rows = local_rows(&s, b).await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].2, Some(20));
+        assert_eq!(rows[1].2, Some(35));
+    }
+
+    /// Every `local` row is `measured` and carries no minutes. Nothing here
+    /// times anything, and `Some(0)` minutes would claim somebody read for no
+    /// time at all.
+    #[tokio::test]
+    async fn a_typed_page_measures_pages_and_never_minutes() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, Some(1), 2, JAN5).await.unwrap();
+
+        let (_, minutes, _, measured) = local_rows(&s, b).await[0].clone();
+        assert_eq!(minutes, None);
+        assert!(measured);
+    }
+
+    /// The event names the read it was told about, rather than inferring one.
+    #[tokio::test]
+    async fn the_event_names_the_reading_it_was_written_to() {
+        let (s, b) = seeded().await;
+        let r = open_read(&s, b).await;
+        s.record_typed_page(b, r, None, 7, JAN5).await.unwrap();
+
+        let e = s.reading_events(b).await.unwrap();
+        assert_eq!(e[0].reading_id, Some(r));
+    }
+
+    /// The whole point of putting the write in `update_progress`: no frontend
+    /// has to remember, so both of them cannot disagree about whether today
+    /// counted.
+    #[tokio::test]
+    async fn update_progress_files_the_day_by_itself() {
+        let (s, b) = seeded().await;
+        s.update_progress(b, Some(30), None).await.unwrap();
+
+        let rows = local_rows(&s, b).await;
+        assert_eq!(rows.len(), 1, "a typed page files exactly one local day");
+        assert_eq!(rows[0].1, None);
+        assert!(rows[0].3, "the user typed it, so it is measured");
+    }
+
+    #[tokio::test]
+    async fn toggling_finished_alone_files_nothing_local() {
+        let (s, b) = seeded().await;
+        s.update_progress(b, None, Some(true)).await.unwrap();
+        assert!(
+            local_rows(&s, b).await.is_empty(),
+            "closing a read is `fill_events_from_readings`' business, not this one"
+        );
+    }
+
+    /// The reason `local` is its own word rather than the reading's `source`.
+    /// Two claimants, one day, two rows — which is what the primary key
+    /// `(book_id, day, source)` is arranged to allow.
+    #[tokio::test]
+    async fn a_typed_page_and_the_reads_own_endpoint_share_a_day_without_colliding() {
+        let (s, b) = seeded().await;
+        s.update_progress(b, Some(12), None).await.unwrap();
+        s.refill_reading_events().await.unwrap();
+
+        let mut sources: Vec<String> = s
+            .reading_events(b)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.source)
+            .collect();
+        sources.sort();
+        assert_eq!(sources, vec!["local".to_string(), "manual".to_string()]);
+    }
+
+    /// A refill must not disturb what the typed page recorded. `EVENT_MERGE` is
+    /// no-clobber and the two fillers write different sources, so this is two
+    /// invariants at once — and it is the one that would break silently.
+    #[tokio::test]
+    async fn refilling_does_not_erase_a_typed_days_pages() {
+        let (s, b) = seeded().await;
+        s.update_progress(b, Some(10), None).await.unwrap();
+        s.update_progress(b, Some(40), None).await.unwrap();
+        let before = local_rows(&s, b).await;
+        assert_eq!(before[0].2, Some(30));
+
+        s.refill_reading_events().await.unwrap();
+        s.refill_reading_events().await.unwrap();
+        assert_eq!(local_rows(&s, b).await, before);
+    }
 }
 
 #[cfg(test)]
@@ -1163,6 +1446,9 @@ mod props {
     use crate::book::Book;
     use crate::storage::{NewHighlight, NewNoteMeta};
     use proptest::prelude::*;
+
+    /// 2026-01-05 00:00:00 UTC.
+    const JAN5_UTC: i64 = 1_767_571_200;
 
     /// One piece of evidence to seed the library with. Deliberately a mixture:
     /// the interesting inputs are the ones where two fillers land on one day.
@@ -1332,6 +1618,56 @@ mod props {
     }
 
     proptest! {
+        /// A day's `local` pages are the sum of the forward moves made that
+        /// day, and never anything else.
+        ///
+        /// A property rather than more examples because the rule is arithmetic
+        /// and the interesting inputs are the ones a hand-written case does not
+        /// think of: a correction backwards, a repeat of the same number, a
+        /// first page with nothing before it. Each of those has its own way of
+        /// producing a plausible-looking wrong total — a negative delta, a
+        /// double count, a fabricated `Some(42)` on the first entry — and all
+        /// three are invisible in an example where the reader only ever moves
+        /// forward by a comfortable amount.
+        #[test]
+        fn a_days_pages_are_the_forward_moves_of_that_day(
+            pages in proptest::collection::vec(0i64..500, 1..12),
+        ) {
+            rt().block_on(async {
+                let s = Storage::connect("sqlite::memory:").await.unwrap();
+                let b = s.upsert_book(&Book { title: Some("P".into()), ..Default::default() }, None)
+                    .await.unwrap();
+                let r = s.open_reading(b, Some(JAN5_UTC), "manual").await.unwrap();
+
+                // The delta needs two points, so the first entry establishes
+                // the position and contributes nothing — which is exactly what
+                // the expected total below has to agree with.
+                let mut expected = 0i64;
+                let mut prev: Option<i64> = None;
+                for p in &pages {
+                    s.record_typed_page(b, r, prev, *p, JAN5_UTC).await.unwrap();
+                    if let Some(q) = prev {
+                        expected += (p - q).max(0);
+                    }
+                    prev = Some(*p);
+                }
+
+                let row = s.reading_events(b).await.unwrap();
+                let local: Vec<_> = row.iter().filter(|e| e.source == SOURCE_LOCAL).collect();
+                prop_assert_eq!(local.len(), 1, "one book, one day, one local row");
+                if expected == 0 {
+                    // Nothing moved forward. That is absence, not zero pages —
+                    // the same rule the aggregates hold to.
+                    prop_assert_eq!(local[0].pages, None);
+                } else {
+                    prop_assert_eq!(local[0].pages, Some(expected));
+                }
+                prop_assert_eq!(local[0].minutes, None);
+                prop_assert_eq!(local[0].confidence, Confidence::Measured);
+                Ok(())
+            })?;
+        }
+
         /// Refilling is idempotent, and the fillers commute.
         ///
         /// A property rather than more examples because the rule is general and

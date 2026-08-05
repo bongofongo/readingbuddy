@@ -316,7 +316,16 @@ export type FieldSourceDto = { field: string,
  */
 source: string, fetched_at: number, };
 
-export type FileIdentityDto = { path: string, sha256: string, partial_md5: string, format: string, size: number, title: string | null, matched_book_id: number | null, matched_by: FileMatchDto | null, candidates: Array<MatchCandidateDto>, };
+export type FileIdentityDto = { path: string, sha256: string, partial_md5: string, format: string, size: number, title: string | null, 
+/**
+ * How long the file says it is — pdf only, and absent far more often than
+ * present (item 22).
+ *
+ * **Absent is not zero**, and a client must not render it as one: a `0`
+ * here would be a false denominator, which is the exact thing
+ * `ProgressDto` was built to make unrepresentable.
+ */
+page_count: number | null, matched_book_id: number | null, matched_by: FileMatchDto | null, candidates: Array<MatchCandidateDto>, };
 
 export type FileImportReportDto = { outcome: FileOutcomeDto, book_id: number | null, matched_by: FileMatchDto | null, created_book: boolean, sha256: string, stored_path: string | null, candidates: Array<MatchCandidateDto>, };
 
@@ -624,7 +633,7 @@ export type SeverityDto = "warning" | "error";
  * flattening this to a string would make that branch a string comparison
  * against a vocabulary nothing on the wire pins.
  */
-export type SourceDto = "open_library" | "google_books" | "calibre" | "epub" | "koreader" | "goodreads" | "user";
+export type SourceDto = "open_library" | "google_books" | "calibre" | "epub" | "pdf" | "koreader" | "goodreads" | "user";
 
 /**
  * What an import of the device's `statistics.sqlite3` did (item 31).

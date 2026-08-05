@@ -52,6 +52,17 @@ pub enum Source {
     GoogleBooks,
     Calibre,
     Epub,
+    /// A PDF we own, through [`crate::pdf::pdf_info`] — item 22.
+    ///
+    /// Beside `Epub` rather than folded into a single `File`, though both mean
+    /// "the file said so": they say **different things**. An epub supplies a
+    /// title, authors, a language and an ISBN and never a length; a pdf supplies
+    /// a length and occasionally a title and never the rest. Collapsing them
+    /// would attribute `page_count` to "a file", which is precisely the question
+    /// a reader of this table is asking — a length off a scan of a paperback and
+    /// one off a publisher's epub are different claims, and the difference is
+    /// which file it was.
+    Pdf,
     KOReader,
     Goodreads,
     /// The user typed it. **Outranks everything**, which is the whole reason
@@ -69,6 +80,7 @@ impl Source {
             Source::GoogleBooks => "googlebooks",
             Source::Calibre => "calibre",
             Source::Epub => "epub",
+            Source::Pdf => "pdf",
             Source::KOReader => "koreader",
             Source::Goodreads => "goodreads",
             Source::User => USER,
@@ -77,11 +89,12 @@ impl Source {
 
     /// Every source, for tests that must cover the vocabulary rather than the
     /// three of it somebody remembered.
-    pub const ALL: [Source; 7] = [
+    pub const ALL: [Source; 8] = [
         Source::OpenLibrary,
         Source::GoogleBooks,
         Source::Calibre,
         Source::Epub,
+        Source::Pdf,
         Source::KOReader,
         Source::Goodreads,
         Source::User,

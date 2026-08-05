@@ -134,7 +134,7 @@ fn code_for(e: &EngineError) -> ErrorCode {
         EngineError::Calibre { .. } => ErrorCode::CalibreFailed,
         EngineError::Db(_) | EngineError::Migrate(_) => ErrorCode::Database,
         EngineError::Io(_) => ErrorCode::Io,
-        EngineError::Epub(_) | EngineError::Sidecar(_) => ErrorCode::Parse,
+        EngineError::Epub(_) | EngineError::Pdf(_) | EngineError::Sidecar(_) => ErrorCode::Parse,
         EngineError::Watch(_) => ErrorCode::Watch,
         EngineError::Timeout { .. } => ErrorCode::Timeout,
         EngineError::Provider { .. } | EngineError::Http(_) => match ErrorClass::from(e) {

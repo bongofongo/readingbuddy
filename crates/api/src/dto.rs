@@ -1002,6 +1002,14 @@ pub struct FileIdentityDto {
     pub size: i64,
     #[serde(default)]
     pub title: Option<String>,
+    /// How long the file says it is — pdf only, and absent far more often than
+    /// present (item 22).
+    ///
+    /// **Absent is not zero**, and a client must not render it as one: a `0`
+    /// here would be a false denominator, which is the exact thing
+    /// `ProgressDto` was built to make unrepresentable.
+    #[serde(default)]
+    pub page_count: Option<i64>,
     #[serde(default)]
     pub matched_book_id: Option<i64>,
     #[serde(default)]
@@ -1022,6 +1030,7 @@ impl From<FileIdentity> for FileIdentityDto {
             format: i.format,
             size: i.size,
             title: i.title,
+            page_count: i.page_count,
             matched_book_id: i.matched.map(|(id, _)| id),
             matched_by: i.matched.map(|(_, m)| m.into()),
             candidates: i.candidates.into_iter().map(Into::into).collect(),
@@ -2468,6 +2477,10 @@ pub enum SourceDto {
     GoogleBooks,
     Calibre,
     Epub,
+    /// A PDF we own said so — item 22. Beside `Epub` because the two answer
+    /// different questions: an epub supplies a title and an ISBN and never a
+    /// length, a pdf supplies a length and nothing else.
+    Pdf,
     Koreader,
     Goodreads,
     User,
@@ -2480,6 +2493,7 @@ impl From<Source> for SourceDto {
             Source::GoogleBooks => SourceDto::GoogleBooks,
             Source::Calibre => SourceDto::Calibre,
             Source::Epub => SourceDto::Epub,
+            Source::Pdf => SourceDto::Pdf,
             Source::KOReader => SourceDto::Koreader,
             Source::Goodreads => SourceDto::Goodreads,
             Source::User => SourceDto::User,

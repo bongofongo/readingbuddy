@@ -90,11 +90,7 @@ pub fn pdf_info(path: &Path) -> Result<PdfInfo> {
     let page_count = (meta.page_count > 0).then_some(i64::from(meta.page_count));
     let title = meta.title.as_deref().and_then(title_or_none);
 
-    tracing::debug!(
-        page_count,
-        has_title = title.is_some(),
-        "read pdf metadata"
-    );
+    tracing::debug!(page_count, has_title = title.is_some(), "read pdf metadata");
     Ok(PdfInfo { page_count, title })
 }
 
@@ -129,81 +125,96 @@ fn title_or_none(raw: &str) -> Option<String> {
     Some(t.to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Build a classic (PDF 1.4, uncompressed cross-reference table) document, so
+/// that no test has to commit one.
+///
+/// Generated rather than committed, for `gen-kostats`' reason: a `.pdf` in the
+/// tree would be the one fixture nobody can read a diff of, and its bytes would
+/// depend on whichever writer produced it. Assembling it here from text also
+/// means the fixture owes nothing to `lopdf` — the same argument
+/// `crates/corpus` makes about not building its fixtures with the engine's own
+/// parser.
+///
+/// The byte offsets in the cross-reference table are computed while the objects
+/// are written, because they have to be exact: `startxref` pointing at the
+/// wrong byte is how a "valid" fixture silently tests the error path.
+///
+/// **Test-only**, behind the same `internals` feature that carries
+/// `Engine::storage`. It is reachable from this module's own unit tests and
+/// from `crates/engine/tests/`, and it is not in a shipped build — a plain
+/// `cargo check --workspace` is what enforces that. A fixture builder is what
+/// that feature is for; the alternative was a second copy of this function in
+/// `tests/common/`, and two PDF writers is two definitions of what a valid
+/// fixture is.
+#[cfg(any(test, feature = "internals"))]
+pub fn synthetic_pdf(pages: usize, title: Option<&[u8]>) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
 
-    /// Build a classic (PDF 1.4, uncompressed cross-reference table) document.
-    ///
-    /// Generated rather than committed, for `gen-kostats`' reason: a `.pdf` in
-    /// the tree would be the one fixture nobody can read a diff of, and its
-    /// bytes would depend on whichever writer produced it. Assembling it here
-    /// from text also means the fixture owes nothing to `lopdf` — the same
-    /// argument `crates/corpus` makes about not building its fixtures with the
-    /// engine's own parser.
-    ///
-    /// The byte offsets in the cross-reference table are computed while the
-    /// objects are written, because they have to be exact: `startxref` pointing
-    /// at the wrong byte is how a "valid" fixture silently tests the error path.
-    fn synthetic_pdf(pages: usize, title: Option<&[u8]>) -> Vec<u8> {
-        let mut out: Vec<u8> = Vec::new();
-        let mut offsets: Vec<usize> = Vec::new();
-        out.extend_from_slice(b"%PDF-1.4\n");
+    let push = |out: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &[u8]| {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    };
 
-        let push = |out: &mut Vec<u8>, offsets: &mut Vec<usize>, n: usize, body: &[u8]| {
-            offsets.push(out.len());
-            out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
-            out.extend_from_slice(body);
-            out.extend_from_slice(b"\nendobj\n");
-        };
+    push(
+        &mut out,
+        &mut offsets,
+        1,
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+    );
 
-        push(&mut out, &mut offsets, 1, b"<< /Type /Catalog /Pages 2 0 R >>");
-
-        let kids: String = (0..pages)
-            .map(|i| format!("{} 0 R ", i + 3))
-            .collect::<String>();
+    let kids: String = (0..pages)
+        .map(|i| format!("{} 0 R ", i + 3))
+        .collect::<String>();
+    push(
+        &mut out,
+        &mut offsets,
+        2,
+        format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>").as_bytes(),
+    );
+    for i in 0..pages {
         push(
             &mut out,
             &mut offsets,
-            2,
-            format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>").as_bytes(),
+            i + 3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
         );
-        for i in 0..pages {
-            push(
-                &mut out,
-                &mut offsets,
-                i + 3,
-                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
-            );
-        }
-
-        let info_num = pages + 3;
-        if let Some(t) = title {
-            let mut body = b"<< /Title (".to_vec();
-            body.extend_from_slice(t);
-            body.extend_from_slice(b") >>");
-            push(&mut out, &mut offsets, info_num, &body);
-        }
-
-        let count = offsets.len() + 1; // +1 for the free object 0
-        let xref_at = out.len();
-        out.extend_from_slice(format!("xref\n0 {count}\n").as_bytes());
-        out.extend_from_slice(b"0000000000 65535 f \n");
-        for off in &offsets {
-            // Exactly twenty bytes per entry, which the format requires.
-            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-        }
-        let info = if title.is_some() {
-            format!(" /Info {info_num} 0 R")
-        } else {
-            String::new()
-        };
-        out.extend_from_slice(
-            format!("trailer\n<< /Size {count} /Root 1 0 R{info} >>\nstartxref\n{xref_at}\n%%EOF\n")
-                .as_bytes(),
-        );
-        out
     }
+
+    let info_num = pages + 3;
+    if let Some(t) = title {
+        let mut body = b"<< /Title (".to_vec();
+        body.extend_from_slice(t);
+        body.extend_from_slice(b") >>");
+        push(&mut out, &mut offsets, info_num, &body);
+    }
+
+    let count = offsets.len() + 1; // +1 for the free object 0
+    let xref_at = out.len();
+    out.extend_from_slice(format!("xref\n0 {count}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for off in &offsets {
+        // Exactly twenty bytes per entry, which the format requires.
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    let info = if title.is_some() {
+        format!(" /Info {info_num} 0 R")
+    } else {
+        String::new()
+    };
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {count} /Root 1 0 R{info} >>\nstartxref\n{xref_at}\n%%EOF\n")
+            .as_bytes(),
+    );
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     fn write(bytes: &[u8], name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -331,10 +342,7 @@ mod tests {
             .flatten()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
-            })
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")))
             .collect();
 
         if files.is_empty() {

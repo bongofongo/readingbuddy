@@ -95,8 +95,20 @@ pub struct FileIdentity {
     pub partial_md5: String,
     pub format: String,
     pub size: i64,
-    /// The best title we have for it: the epub's own, else the filename stem.
+    /// The best title we have for it: the file's own, else the filename stem.
     pub title: Option<String>,
+    /// How long the file itself says the book is, where the format can answer.
+    ///
+    /// PDF only today ([`crate::pdf::pdf_info`]) — `epub =2.1.4` exposes no
+    /// spine-to-page mapping, and an epub has no fixed pagination to expose,
+    /// which is why a KOReader sidecar carries `doc_pages` and the file does
+    /// not.
+    ///
+    /// **`None` is not zero and must never become one.** It is the whole reason
+    /// item 22 needed a new module: a zero here is a false denominator, and
+    /// `Progress` deliberately has no way to represent one. See
+    /// `crates/engine/src/pdf.rs`.
+    pub page_count: Option<i64>,
     /// The book this file belongs to, and the rung that decided.
     pub matched: Option<(i64, FileMatch)>,
     /// Books in the ambiguous band, when nothing matched outright. Empty is the
@@ -320,15 +332,25 @@ pub async fn identify(storage: &Storage, path: &Path) -> Result<FileIdentity> {
     let size = std::fs::metadata(path)?.len() as i64;
     let partial_md5 = crate::partial_md5::partial_md5(path)?;
 
-    // An epub's own metadata, when it is an epub. `epub_info` is the only
-    // metadata reader the engine has; on any other format it fails, and that is
-    // a fact about this file rather than an error to propagate.
+    // The file's own metadata, where the engine has a reader for the format.
+    // Both readers are consulted opportunistically: a failure here is a fact
+    // about this file — a corrupt epub, an encrypted pdf — and not an error to
+    // propagate, because the bytes are still the user's book and still worth
+    // owning.
     let info = (format == "epub")
         .then(|| crate::epub::epub_info(path).ok())
         .flatten();
+    // Item 22's half. A pdf answers a *length* and sometimes a title, and never
+    // an ISBN or an author list, so it fills two of the four things `info`
+    // does rather than being a second `EpubInfo`.
+    let pdf = (format == "pdf")
+        .then(|| crate::pdf::pdf_info(path).ok())
+        .flatten()
+        .unwrap_or_default();
     let title = info
         .as_ref()
         .and_then(|i| i.title.clone())
+        .or_else(|| pdf.title.clone())
         .or_else(|| stem_title(path));
 
     // ---- level 1: the same bytes ------------------------------------------
@@ -340,6 +362,7 @@ pub async fn identify(storage: &Storage, path: &Path) -> Result<FileIdentity> {
             format,
             size,
             title,
+            page_count: pdf.page_count,
             matched: Some((existing.book_id, FileMatch::Sha256)),
             candidates: Vec::new(),
         });
@@ -386,6 +409,7 @@ pub async fn identify(storage: &Storage, path: &Path) -> Result<FileIdentity> {
         format,
         size,
         title,
+        page_count: pdf.page_count,
         matched,
         candidates,
     })
@@ -462,6 +486,32 @@ async fn attach_identified(
     storage
         .link_device_book(&id.partial_md5, book_id, LinkedBy::Auto)
         .await?;
+
+    // Item 22, the fourth ownership row made concrete: we hold these bytes, so
+    // what they say about their own length is ours to record and to attribute.
+    //
+    // Through `fill_book` — the **stored row wins** merge — rather than
+    // `enrich_book`. The choice is `calibre.rs`'s rule, that the pattern follows
+    // whether the record is *complete*: a page count already on the book is a
+    // provider's or calibre's claim about a specific edition, and a pdf is one
+    // more partial record beside it, not an authority over it. So this fills a
+    // gap and never overwrites an answer — and it cannot overwrite the user's,
+    // because `fill_book`'s guard holds a `user` field against every source.
+    //
+    // `id.page_count` is `None` far more often than not, and `None` writes
+    // nothing at all. That is the point: absence is not zero.
+    if let Some(pages) = id.page_count {
+        storage
+            .fill_book(
+                book_id,
+                &Book {
+                    page_count: Some(pages),
+                    ..Default::default()
+                },
+                Some(crate::storage::Source::Pdf),
+            )
+            .await?;
+    }
 
     Ok(FileImportReport {
         outcome: FileOutcome::Stored,
