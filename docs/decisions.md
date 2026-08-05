@@ -729,3 +729,95 @@ because item 31 needed somewhere to put reading time.
       device percentage where it previously showed nothing, because the fallback
       is no longer home-screen-only. And `rb book list` prints `[p.12]` where it
       printed `[12/0]`.
+
+22. **Reading here: the local source.** No migration. A PDF metadata reader, a
+    fifth `reading_events` filler, and one word that was argued for and not
+    added. Most of the item already existed — `book_files` takes any format,
+    `import_file` copies bytes in content-addressed and already refuses to
+    create over a candidate, `notes.page` already named the case.
+    - **`source = 'local'` was NOT added to `readings`, and that is the item's
+      main correction.** The vision doc's fourth ownership row (*readingbuddy
+      owns what you read here*) and the schema disagreed, and the schema is
+      right. `readings.source` names the **writer of the row**: `koreader` is
+      the sidecar importer, `goodreads` is the CSV importer, `migrated` is
+      migration `0005`, `manual` is a person typing a number here. Attaching a
+      PDF opens no reading, and typing a page opens one through
+      `update_progress`, whose writer is a person typing a number here — which
+      is what `manual` already means. `local` on that column would have been a
+      **synonym**, and a synonym is worse than nothing: `readings_from_source`
+      is the query every importer's idempotency rests on, and it would then
+      have had to know both words.
+    - **The word it did earn is `reading_events.source`**, where the vocabulary
+      is *claimants* rather than writers (`koreader` = the device said so,
+      `vault` = a note said so). "The user typed a page here today" is a
+      genuinely new claimant, and it is a claim `koreader` and `manual` cannot
+      make on that user's behalf. The primary key `(book_id, day, source)` is
+      what makes two claimants two rows rather than a fight over one, so a
+      `koreader` reading whose page you corrected this afternoon carries both.
+    - **Attach does not open a reading.** The spec said "a `source = 'local'`
+      reading opened on attach"; opening one there would mark five newly
+      attached PDFs as five books you are currently reading, which is
+      fabricated reading state of exactly the kind `attribute_highlights` and
+      `ko_statistics` refuse elsewhere. A read is earned by a typed page.
+    - **A failed page-count extraction writes NULL, and lopdf makes that
+      concrete rather than theoretical.** Its `extract_page_count` returns `0`
+      from seven separate "could not tell" branches, and from a
+      password-protected file, as well as from a document with no pages. `0` is
+      normalised to absence once, at the boundary in `pdf.rs`, because a false
+      denominator is the thing item 17 spent an item removing and nothing
+      downstream can tell one from a real one.
+    - **Two of three real PDFs return `Some("")` for `/Info /Title`.** Measured,
+      not assumed. So emptiness folds into `None` at the same boundary — a
+      `Some("")` survives every `Option` idiom and lands as a book with a blank
+      name. A title that still carries an authoring-tool extension (*Microsoft
+      Word - kant_final_v2.doc*) is also refused, and the filename stem, which
+      `files.rs` already uses for every unreadable format, is the fallback. The
+      rule is deliberately narrow: a general "looks like a filename" heuristic
+      throws away books called *Sync* and *Java*.
+    - **The page count merges as a partial record, not as an origin.**
+      `fill_book` (*the stored row wins*) rather than the device's straight
+      assignment, on `calibre.rs`'s rule that the pattern follows whether the
+      record is complete. A page count already on the book is a claim about a
+      specific edition; an attached PDF is one more partial record beside it.
+      So it fills a gap and never overwrites an answer — including the user's,
+      which `field_provenance`'s `user` rank holds against every source.
+    - **`Source::Pdf` is beside `Source::Epub`, not folded into a `File`.** They
+      answer different questions — an epub supplies a title, authors, a language
+      and an ISBN and never a length; a PDF supplies a length and occasionally a
+      title and never the rest — and "which file said 512 pages" is precisely
+      what a reader of that table is asking.
+    - **A day's `pages` accumulates; it does not replace.** `EVENT_MERGE` is
+      `COALESCE`, so writing the evening's delta over the morning's would lose
+      the morning silently. Three related refusals: the *first* typed page
+      claims no pages at all (a delta needs two points, and "you are on page 42"
+      is not "you read 42 pages today"), a correction downwards is not negative
+      pages, and re-typing the same number touches no row — which is what keeps
+      idempotency observable through `EVENT_DIFFERS`.
+    - **The typed page is filed by `update_progress` itself**, not by a
+      frontend. Two frontends each remembering to log is two frontends that
+      eventually disagree about whether today counted, which is item 17's whole
+      argument applied to a write.
+    - **The licence gate ran before the crate was chosen, not after.** `lopdf`
+      `=0.44.0`: MIT, whole transitive tree permissive, no new `deny.toml`
+      exception. That matters more here than elsewhere — the engine already
+      links GPL-3.0 `epub`, and a second copyleft reader would make that worse
+      rather than merely unchanged. `pdf` 0.10 (pdf-rs, also MIT) lost on
+      weight. Pinned exactly for `epub`'s reason: this is a *metadata* surface,
+      and metadata is the surface `epub` broke in a patch release. The cost is
+      visible and accepted — lopdf sits on the `digest` 0.11 line where the
+      engine is on 0.10, so `cargo deny check bans` gains duplicate-version
+      warnings for `sha2`, `md-5`, `digest`, `rand` and `syn`.
+    - **Migration `0005`'s vocabulary comment cannot be corrected.** It has said
+      `manual|koreader|migrated` since before item 15 added `goodreads`, and the
+      `migrations` CI job refuses a modified migration — correctly. So the
+      vocabulary now lives in `Reading::source`'s doc comment, beside the type
+      every reader of the column goes through, and the SQL comment is a
+      historical note about what the list was in `0005`. Any future item told to
+      "extend the comment" should extend that one.
+    - **Not built, deliberately.** No embedded PDF viewer (out of scope by the
+      vision doc). No fabricated highlights — a locally-read PDF has none, and
+      KOReader probably cannot supply them either, since `entry_to_highlight`
+      requires a string `pos0` and PDF sidecars store a table there; that stays
+      *unobserved* in `docs/koreader-format.md` and wants a real PDF sidecar in
+      the corpus before anything is built on it. And no CLI or TUI surface,
+      which `files.rs` has never had.

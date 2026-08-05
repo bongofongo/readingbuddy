@@ -193,6 +193,14 @@ the rules, and the reasons — the reasons are the part that matters.
   *patch* release, so a caret constraint is not safe. It is also GPL-3.0 (see
   `deny.toml`), which makes a distributed binary GPL-3.0 as a whole — replacing
   it with `zip` + `quick-xml` would settle both points.
+- **`lopdf` is pinned `=0.44.0` for the same reason, and is MIT.** Item 22's PDF
+  metadata reader. The licence gate (`cargo deny check bans licenses sources`)
+  was run **before** the crate was chosen, not after — which is what `deny.toml`
+  asks for, and it matters more here than anywhere: the engine already links
+  GPL-3.0 `epub`, so a second copyleft reader would make that situation worse
+  rather than merely unchanged. `pdf` 0.10 (pdf-rs, also MIT) was evaluated and
+  lost on weight. The exact pin is `epub`'s lesson applied: this is a *metadata*
+  surface, and metadata is the surface `epub` broke in a patch release.
 - **Fuzzing needs `-s none`** — ASAN cannot survive mlua's longjmp error
   propagation here; measured, with numbers, in `fuzz/README.md`. Any crash found
   gets minimized into `fuzz/seeds/`, where `tests/fuzz_seeds.rs` replays it on
