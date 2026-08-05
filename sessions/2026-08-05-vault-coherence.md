@@ -177,6 +177,22 @@ So both were built, because each covers what the other cannot:
   index writes is skipped by the sweep. Stated rather than papered over: the
   watcher covers a live edit, and a cold edit is never in the same second.
 
+## Privacy: the path is the subtle half
+
+`tests/tracing_redaction.rs` gained a second case. The body was the obvious
+thing to keep out of a log; the **path** is the one that would have shipped. A
+note's filename is its slugified *title*, and a derived title is the first six
+words of the body — so `20260805-sunja-s-dignity-under-han-pressure.md` **is**
+the note's opening words. The mount watcher logs its volume paths at `info!`
+quite correctly; a vault path is not the same kind of path, and nothing here
+logs one above `trace!`. `VaultEvent` carries the note id and deliberately not
+the path, so a frontend is not handed the temptation.
+
+The test filters to `DEBUG` and above, so it asserts the *rule* rather than
+asserting that nothing is ever logged, and it checks its own fixture still puts
+the body's words in the filename so it cannot start passing for the wrong
+reason.
+
 ## Nothing counts what is out of sync
 
 `VaultReconcile` is past tense, for the engine's own log and its tests. There is
