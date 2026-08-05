@@ -109,21 +109,66 @@ the column, **no `NeverOpened` variant**), `BookSort::Author`/`Year`,
 
 ### A. Items 18, 19, 20, 22, 24 — the rest of the engine half
 
-Still parallelisable; they share no files. `docs/gui/spec-gui-17-28.md` has them.
-Item 19 wants item 20b's stored aspect; item 23 wants item 21, which is done.
+**All five prompts are written**, one per thread, in `docs/prompts/`:
 
-Two of them inherited work from item 17:
+| item | prompt | migration |
+|---|---|---|
+| 18 — list endpoints | [`18-list-endpoints.md`](prompts/18-list-endpoints.md) | none |
+| 19 — the shape of an edition | [`19-shape-of-an-edition.md`](prompts/19-shape-of-an-edition.md) | none |
+| 20 — covers a grid can use | [`20-covers-a-grid-can-use.md`](prompts/20-covers-a-grid-can-use.md) | **`0014`** |
+| 22 — reading here, the local source | [`22-reading-here.md`](prompts/22-reading-here.md) | none |
+| 24 — vault coherence | [`24-vault-coherence.md`](prompts/24-vault-coherence.md) | none |
 
-- **Item 18** now also owns the per-row summary above, and should be designed
-  against `BookSort`'s contract as item 17 restated it: **`limit` selects along
-  the sort key**, in every arm. The TUI's opposite policy (reorder a fixed page)
-  is a frontend decision and stays there. Do not paginate one and not the other.
-- **Item 20 has inherited a live bug — see the traps below. Fix it there.**
+#### Launch order, and the one file collision
+
+The five prompts all point here rather than repeating it.
+
+```
+       ┌─ 20 (covers, migration 0014) ──┬──> 18 (list endpoints)
+start ─┤                                └──> 19's rewire
+       ├─ 19 (edition shape) ── lands on a parameter, rewires after 20
+       ├─ 22 (local source)  ── independent
+       └─ 24 (vault watcher) ── independent
+```
+
+- **Item 20 goes first.** It adds columns to `books`, it owns the only migration
+  in the wave, and it holds the live cover bug.
+- **Item 18 branches after 20 merges.** They are the wave's **one real
+  collision**: item 20 adds columns (and therefore `MERGE_RULES`, `BOOK_COLUMNS`
+  and `row_to_book` rows) while item 18 rewrites `list_books`, both in
+  `crates/engine/src/storage/books.rs`. The last wave learned this the expensive
+  way — **parallel worktrees produce semantic conflicts git cannot see**, and
+  `cargo check --workspace` does not resolve dev-dependencies, so only
+  `cargo test` catches them.
+- **Item 19 need not wait.** It takes the cover aspect as a parameter and is
+  rewired onto item 20's column afterwards; its prompt says so and says what the
+  rewire looks like.
+- **Items 22 and 24 are independent** of all of the above.
+- The `crates/engine/src/lib.rs` export list is the only file most of them touch.
+  Those conflicts are textual and trivial.
+
+#### What item 17 handed forward
+
+- **Item 18** owns the per-row summary above, and must be designed against
+  `BookSort`'s contract as item 17 restated it: **`limit` selects along the sort
+  key**, in every arm. The TUI's opposite policy (reorder a fixed page) is a
+  frontend decision and stays there. Do not paginate one and not the other.
+  Note also that `BookSort::Author` has **no cursor key that exists in the
+  database** — it sorts in Rust — so the wave's hardest design question is item
+  18's and its prompt lays out the three options.
+- **Item 20** inherited the live Google Books cover collision — see the traps
+  below, and its prompt.
+- **Item 19** is the second instance of item 17's rule (`CLAUDE.md`'s new
+  *"derived facts live here, phrasing does not"* bullet), so `progress.rs` is the
+  shape to copy.
+- **Item 22** must write a `NULL` page count and never `0` when PDF extraction
+  fails — `Progress` treats a zero denominator as a bug, not a length.
 
 The one loose end item 17 left is small and named: `BookSort::Author` reads the
 whole table, because SQLite cannot parse a human name. A `sort_author` column
 computed on write is the fix and it needs a migration, so it belongs to whichever
-item next takes one.
+item next takes one — item 20 is the only one in this wave that has one, and its
+prompt asks it to say whether it should carry it.
 
 ### B. Items 26, 27, 28 — the shelf, the book-and-notes view, the chain
 
