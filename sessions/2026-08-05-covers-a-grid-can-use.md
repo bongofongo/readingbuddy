@@ -168,8 +168,18 @@ deleted rather than duplicated.
   resolves and `gui/CLAUDE.md` documents its shape; renaming every file would be
   a destructive change dressed as a measurement, and it buys nothing — the
   collision it would fix is in the *write* path, which is already fixed.
-- **No CLI or API door for the back-fill.** The prompt scoped this to the
-  engine, and `measure_stored_covers` is on the facade waiting for one.
+- **No CLI or API door for the back-fill**, and this is the one gap worth
+  handing on rather than filing. The prompt scoped the item to the engine and
+  three siblings were in the tree, so `crates/cli` was left alone —
+  `Engine::measure_stored_covers` is on the facade, tested, and unreachable from
+  a terminal. It matters sooner than it looks: **`make dev-db` copies its PNGs
+  in with `cp` and seeds `books` from `seed.sql`**, so every book in the dev
+  library has a `cover_path` and a NULL `cover_aspect`, and whoever builds the
+  shelf will conclude the column does not work. The whole fix is a `Covers`
+  variant in `crates/cli/src/main.rs` calling one facade method and printing a
+  past-tense count (`measured 3 covers.` / `nothing to measure — every cover on
+  disk has been`), plus one line in the `dev-db` target after the `cp`. No
+  design is left in it; it was left out for merge cost, not for doubt.
 - **No change to `render3d`.** `docs/decisions.md` freezes it and item 19 owns
   the rewire. The border-median arithmetic is briefly duplicated between
   `images.rs` and `render3d/texture.rs`; item 19 deletes the copy there.
