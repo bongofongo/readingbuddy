@@ -26,7 +26,7 @@ pub use field_provenance::{FieldSource, Source};
 pub use flashcards::FlashcardRow;
 pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
-pub use notes::{NewNoteMeta, NoteRecord, NoteSearchHit, OutgoingLink};
+pub use notes::{NewNoteMeta, NoteFile, NoteRecord, NoteSearchHit, OutgoingLink};
 pub use provenance::BookTag;
 pub use ratings::{Rating, RatingScale};
 pub use reading_events::{

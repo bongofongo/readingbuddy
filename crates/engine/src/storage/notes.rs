@@ -124,6 +124,45 @@ async fn write_links(
     Ok(())
 }
 
+/// Rewrite a note's FTS row and stamp `last_modified`.
+///
+/// Shared by [`Storage::refresh_note_body`] and [`Storage::reindex_note`] so
+/// the two cannot disagree about what re-indexing a body means.
+async fn reindex(
+    tx: &mut sqlx::SqliteConnection,
+    note_id: i64,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO notes_fts (rowid, title, body) VALUES (?, ?, ?)")
+        .bind(note_id)
+        .bind(title)
+        .bind(body)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE notes SET last_modified = ? WHERE id = ?")
+        .bind(now_unix())
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+/// A note reduced to what the vault reconcile needs of it.
+#[derive(Debug, Clone)]
+pub struct NoteFile {
+    pub id: i64,
+    /// Vault-relative, exactly as `notes.file_path` stores it.
+    pub file_path: String,
+    pub title: String,
+    /// Unix seconds: when this note's *index* was last written.
+    pub last_modified: i64,
+}
+
 impl Storage {
     /// Insert note metadata + FTS row + wikilink edges in one transaction.
     /// `links` are raw [[wikilink]] target titles; each is resolved against
@@ -199,23 +238,89 @@ impl Storage {
     /// Refresh a note body in the FTS index (delete + insert).
     pub async fn refresh_note_body(&self, note_id: i64, title: &str, body: &str) -> Result<()> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query("DELETE FROM notes_fts WHERE rowid = ?")
-            .bind(note_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("INSERT INTO notes_fts (rowid, title, body) VALUES (?, ?, ?)")
-            .bind(note_id)
-            .bind(title)
-            .bind(body)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("UPDATE notes SET last_modified = ? WHERE id = ?")
-            .bind(now_unix())
-            .bind(note_id)
-            .execute(&mut *tx)
-            .await?;
+        reindex(&mut tx, note_id, title, body).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Bring a note's **whole** index in line with a body — the FTS row, the
+    /// wikilink edges and `last_modified` — in one transaction.
+    ///
+    /// One transaction rather than `refresh_note_body` followed by
+    /// `set_note_links`, and that is what makes the vault watcher cancel-safe:
+    /// [`crate::VaultWatcher::next`] is dropped mid-await by every `select!`
+    /// that races it, and a drop between two transactions would leave a note
+    /// whose searchable body is the new file and whose graph edges are the old
+    /// one — with nothing on either side looking wrong. Dropped inside *this*
+    /// one, the transaction rolls back and the watcher retries.
+    pub async fn reindex_note(
+        &self,
+        note_id: i64,
+        title: &str,
+        body: &str,
+        links: &[String],
+    ) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        reindex(&mut tx, note_id, title, body).await?;
+        // Replaced, not merged — see `set_note_links`.
+        sqlx::query("DELETE FROM note_links WHERE from_note = ?")
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
+        write_links(&mut tx, note_id, title, links).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The body this note is currently searchable *by*.
+    ///
+    /// `notes_fts` is an ordinary fts5 table used as a body cache, so its
+    /// content is readable by rowid. That is what lets a refresh ask "has the
+    /// file actually changed?" before writing anything — which is the whole of
+    /// the watcher's answer to seeing its own writes.
+    pub async fn indexed_body(&self, note_id: i64) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar("SELECT body FROM notes_fts WHERE rowid = ?")
+                .bind(note_id)
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
+    /// The note stored at this **vault-relative** path, if any.
+    ///
+    /// A markdown file under the vault that no row claims is not an error and
+    /// not a note: readingbuddy does not adopt files it did not write.
+    pub async fn note_by_path(&self, file_path: &str) -> Result<Option<NoteRecord>> {
+        let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE file_path = ?");
+        Ok(sqlx::query(&sql)
+            .bind(file_path)
+            .fetch_optional(self.pool())
+            .await?
+            .as_ref()
+            .map(row_to_note))
+    }
+
+    /// Every note as the reconcile sweep needs it: where its file is, what to
+    /// index it under, and when we last wrote its index.
+    ///
+    /// Deliberately **not** a field on [`NoteRecord`]. `last_modified` is
+    /// bookkeeping about the index rather than a fact about the note, and
+    /// putting it on the record would put it on `NoteDto` and therefore on
+    /// every frontend's screen vocabulary.
+    pub async fn note_files(&self) -> Result<Vec<NoteFile>> {
+        let rows = sqlx::query("SELECT id, file_path, title, last_modified FROM notes")
+            .fetch_all(self.pool())
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| NoteFile {
+                id: r.get("id"),
+                file_path: r.get("file_path"),
+                title: r.get("title"),
+                last_modified: r.get("last_modified"),
+            })
+            .collect())
     }
 
     /// Remove a note: its row (cascading `note_links` from it, nulling links
