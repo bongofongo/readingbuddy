@@ -115,3 +115,95 @@ fn the_engine_installs_no_global_subscriber() {
         "a global subscriber was already installed, so events bypassed the test layer"
     );
 }
+
+/// A **note body and its file path** must never reach a log above `trace!`.
+///
+/// `CLAUDE.md`'s tracing rule names highlight text, note bodies and search
+/// queries as the user's private reading. The vault path is the subtle half and
+/// is why this test exists at all: a note's filename is its slugified *title*,
+/// and a derived title is the first six words of the body — so
+/// `20260805-sunja-s-dignity-under-han-pressure.md` **is** the note's opening
+/// words, and a watcher that logged the path it was working on would be logging
+/// prose. The mount watcher logs its volume paths at `info!` quite correctly; a
+/// vault path is not the same kind of path.
+///
+/// Filtered to `DEBUG` and above deliberately, so this asserts the *rule* —
+/// `trace!` may carry it — rather than asserting that nothing is ever logged.
+#[tokio::test]
+async fn a_note_body_never_reaches_a_log_above_trace() {
+    use readingbuddy::{Engine, EngineConfig, NewNoteInput, VaultStir, VaultWatcher};
+    use tracing_subscriber::filter::LevelFilter;
+
+    const SECRET: &str = "Sunja's dignity under Hansu's calculation";
+
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::rooted_at(tmp.path()))
+        .await
+        .unwrap();
+    let created = engine
+        .create_note(NewNoteInput {
+            body: SECRET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Every word of the body ends up in the filename, since the title is
+    // derived from it — which is the whole point of this test.
+    assert!(
+        created.file.to_string_lossy().contains("dignity"),
+        "the fixture no longer puts the body's words in the path, so this \
+         test would pass for the wrong reason"
+    );
+
+    let captured = Captured::default();
+    let subscriber = Registry::default().with(captured.clone().with_filter(LevelFilter::DEBUG));
+
+    let storage = engine.storage().clone();
+    let vault = engine.vault_dir().to_path_buf();
+    let path = created.file.clone();
+
+    // `with_default` is not held across an await — the subscriber guard is not
+    // `Send` — so the watcher is driven inside a `block_in_place`-free local
+    // runtime instead: one current-thread runtime, entirely inside the scope.
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    // An edit made outside, then the file removed — both of the
+                    // watcher's outcomes, plus the sweep.
+                    let raw = std::fs::read_to_string(&path).unwrap();
+                    std::fs::write(&path, raw.replace(SECRET, "rewritten outside")).unwrap();
+
+                    let (tx, rx) = tokio::sync::mpsc::channel(8);
+                    let mut watcher = VaultWatcher::from_stirs(&vault, storage.clone(), rx)
+                        .quiet_for(std::time::Duration::from_millis(30));
+                    tx.send(VaultStir(path.clone())).await.unwrap();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), watcher.next())
+                        .await;
+
+                    std::fs::remove_file(&path).unwrap();
+                    tx.send(VaultStir(path.clone())).await.unwrap();
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), watcher.next())
+                        .await;
+                });
+            });
+        });
+    });
+
+    for line in captured.contents() {
+        for word in ["Sunja", "dignity", "Hansu", "calculation"] {
+            assert!(
+                !line.contains(word),
+                "a note's prose reached a log above trace!: {line}"
+            );
+        }
+        assert!(
+            !line.contains("vault/"),
+            "a vault path reached a log above trace!: {line}"
+        );
+    }
+}
