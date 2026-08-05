@@ -242,123 +242,24 @@ fn same_work(a: &Book, b: &Book) -> bool {
     title_sim > 0.93 && author_sim > 0.9
 }
 
-/// Merge `b` into `a`. Default: fill missing fields. Provider priority:
-/// OpenLibrary wins ISBN/page_count, Google wins description/language.
+/// Merge `b` into `a`, and record who supplied each field it moved.
 ///
-/// **`claims` records the answer to "who supplied this field", once, here.**
-/// Every write below is a change of origin, and the only place that knows it is
-/// the line making the write — reconstructing it afterwards by comparing the
-/// merged record against each provider's would be this preference table spelled
-/// a second time, which is the failure mode `MERGE_RULES` is arranged against on
-/// the storage side.
+/// **The merge itself is `MERGE_RULES`', not this module's.** It used to be
+/// written out here — a `fill`/`prefer` call per column — which made this the
+/// fourth consumer of that table and the only one not generated from it: a new
+/// book column compiled, passed clippy, and was silently dropped from every
+/// federated search result. `every_claimed_field_is_a_merge_column` is what
+/// caught item 32 doing exactly that, and it caught it by accident, on the
+/// claim rather than on the value. So the preference table moved to
+/// `Rule::federated` and what is left here is the bookkeeping.
+///
+/// **`claims` records the answer to "who supplied this field", once, here.** It
+/// is the only place that knows: reconstructing it afterwards by comparing the
+/// merged record against each provider's would be that preference table spelled
+/// a second time, which is the failure mode all of this is arranged against.
 fn merge_into(a: &mut Book, b: &Book, b_provider: ProviderId, claims: &mut FieldClaims) {
-    fn fill<T: Clone>(
-        field: &'static str,
-        dst: &mut Option<T>,
-        src: &Option<T>,
-        provider: ProviderId,
-        claims: &mut FieldClaims,
-    ) {
-        if dst.is_none() && src.is_some() {
-            *dst = src.clone();
-            claims.claim(field, provider);
-        }
-    }
-    fn prefer<T: Clone>(
-        field: &'static str,
-        dst: &mut Option<T>,
-        src: &Option<T>,
-        src_wins: bool,
-        provider: ProviderId,
-        claims: &mut FieldClaims,
-    ) {
-        if src.is_some() && (dst.is_none() || src_wins) {
-            *dst = src.clone();
-            claims.claim(field, provider);
-        }
-    }
-    let is_ol = b_provider == ProviderId::OpenLibrary;
-    let is_gb = b_provider == ProviderId::GoogleBooks;
-    let p = b_provider;
-
-    fill("title", &mut a.title, &b.title, p, claims);
-    if a.authors.is_empty() && !b.authors.is_empty() {
-        a.authors = b.authors.clone();
-        claims.claim("authors", p);
-    }
-    if a.translators.is_empty() && !b.translators.is_empty() {
-        a.translators = b.translators.clone();
-        claims.claim("translators", p);
-    }
-    prefer("isbn_10", &mut a.isbn_10, &b.isbn_10, is_ol, p, claims);
-    prefer("isbn_13", &mut a.isbn_13, &b.isbn_13, is_ol, p, claims);
-    prefer(
-        "page_count",
-        &mut a.page_count,
-        &b.page_count,
-        is_ol,
-        p,
-        claims,
-    );
-    prefer(
-        "description",
-        &mut a.description,
-        &b.description,
-        is_gb,
-        p,
-        claims,
-    );
-    prefer("language", &mut a.language, &b.language, is_gb, p, claims);
-    fill("publisher", &mut a.publisher, &b.publisher, p, claims);
-    fill(
-        "publish_year",
-        &mut a.publish_year,
-        &b.publish_year,
-        p,
-        claims,
-    );
-    fill(
-        "first_sentence",
-        &mut a.first_sentence,
-        &b.first_sentence,
-        p,
-        claims,
-    );
-    fill("cover_url", &mut a.cover_url, &b.cover_url, p, claims);
-    fill(
-        "openlibrary_key",
-        &mut a.openlibrary_key,
-        &b.openlibrary_key,
-        p,
-        claims,
-    );
-    fill(
-        "googlebooks_id",
-        &mut a.googlebooks_id,
-        &b.googlebooks_id,
-        p,
-        claims,
-    );
-    // A **set**, filled whole or not at all — the same rule `MERGE_RULES` gives
-    // the column. Unioning Google's BISAC paths with OpenLibrary's headings
-    // would produce a list neither provider published and that `claims` could
-    // not honestly attribute to one of them.
-    if a.subjects.is_empty() && !b.subjects.is_empty() {
-        a.subjects = b.subjects.clone();
-        claims.claim("subjects", p);
-    }
-    // **The pair moves together.** Taking `series_index` from a record whose
-    // series name lost — or was never read — is how a row ends up saying
-    // *Dune #2* about *Dune Messiah*'s neighbour. So the index comes from
-    // whoever supplied the name, including when that provider had no index at
-    // all; `series_index` is never filled on its own.
-    if a.series.is_none() && b.series.is_some() {
-        a.series = b.series.clone();
-        claims.claim("series", p);
-        a.series_index = b.series_index;
-        if b.series_index.is_some() {
-            claims.claim("series_index", p);
-        }
+    for field in crate::storage::merge_provider_record(a, b, b_provider.into()) {
+        claims.claim(field, b_provider);
     }
 }
 

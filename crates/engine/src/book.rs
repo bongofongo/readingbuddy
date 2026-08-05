@@ -83,12 +83,51 @@ impl Book {
         self.isbn_13.as_deref().or(self.isbn_10.as_deref())
     }
 
+    /// The series this book sits in, written the way a person writes it:
+    /// `Dune #2`, or bare `Dune` where no index is recorded.
+    ///
+    /// Derived here rather than in each frontend, for the reason
+    /// `crates/cli/CLAUDE.md` gives: the *phrasing* belongs to a frontend, but
+    /// deciding what the pair means together is the engine's, and
+    /// `series_index` is a REAL — half-numbered novellas are real — so a
+    /// frontend formatting it itself is a frontend that will eventually print
+    /// `#2.5` one way and `#2.50` another. `Rule::show` goes through the same
+    /// [`series_index_text`].
+    pub fn series_label(&self) -> Option<String> {
+        let name = self.series.as_deref()?;
+        Some(match self.series_index {
+            Some(n) => format!("{name} #{}", series_index_text(n)),
+            // Ordinary: a provider that names the series and not the place in
+            // it. Nothing is invented to fill the gap.
+            None => name.to_string(),
+        })
+    }
+
     /// Canonical dedup key: ISBN-13, converting a lone ISBN-10 when possible.
     pub fn canonical_isbn13(&self) -> Option<String> {
         if let Some(i13) = &self.isbn_13 {
             return Some(i13.clone());
         }
         self.isbn_10.as_deref().and_then(isbn10_to_13)
+    }
+}
+
+/// A series index as a person writes it: `2`, never `2.0`; `0.5`, never
+/// `0.5000`.
+///
+/// The column is REAL because half-numbered novellas are real, so the whole
+/// numbers — which is nearly all of them — arrive as `2.0` and would print that
+/// way in every report and every future shelf line.
+///
+/// `pub` because a frontend needs it for a number that has no series beside it —
+/// `rb set`'s refusal names the index the user typed and nothing else. Where
+/// there *is* a series, [`Book::series_label`] is the one to reach for; both go
+/// through this, so the two can never spell the same number differently.
+pub fn series_index_text(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
     }
 }
 

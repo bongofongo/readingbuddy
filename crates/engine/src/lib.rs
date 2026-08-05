@@ -33,7 +33,7 @@ use std::sync::{Arc, RwLock};
 
 use reqwest::Client;
 
-pub use book::{Book, isbn10_to_13, normalize_isbn};
+pub use book::{Book, isbn10_to_13, normalize_isbn, series_index_text};
 pub use calibre::{
     Calibre, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport,
     ImportOptions as CalibreImportOptions, UnmatchedCalibreBook,
@@ -69,8 +69,9 @@ pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FieldSource,
-    FlashcardRow, Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit,
-    OutgoingLink, Rating, RatingScale, Reading, ReadingEvent, RefillReport, Source, Storage,
+    FillStats, FlashcardRow, Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord,
+    NoteSearchHit, OutgoingLink, Rating, RatingScale, Reading, ReadingEvent, RefillReport, Source,
+    Storage,
 };
 pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
 

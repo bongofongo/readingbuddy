@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 use super::field_provenance::{self, Source};
 use super::highlights::identity_hash_of;
 use super::{Storage, now_unix};
-use crate::book::Book;
+use crate::book::{Book, series_index_text};
 use crate::error::{EngineError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +136,43 @@ enum Merge {
     Coalesce,
 }
 
+/// Copy one column across, `src` → `dst`, unconditionally. The *whether* is
+/// [`Federated`]'s; this is only the *how*.
+type Take = fn(&mut Book, &Book);
+
+/// How the **federated search** merges this column, before anything is stored.
+///
+/// The fourth consumer of this table, and until now the one that was not
+/// generated from it: `search::merge_into` spelled the column list a second
+/// time, so a column added here compiled cleanly and was **silently dropped
+/// from every search result**. Only `every_claimed_field_is_a_merge_column`
+/// noticed, and it noticed item 32 doing exactly that.
+///
+/// It could not simply reuse [`Merge`], which is a different question asked at
+/// a different layer: `Merge` is about a *partial record meeting a stored row*
+/// and compiles to SQL, while this is about *two providers meeting each other*
+/// in memory, with a per-column preference between them that has no equivalent
+/// on the storage side. Two questions, one table, one row each.
+///
+/// Every variant but [`Federated::Local`] carries its own [`Take`], so a column
+/// that is never merged has no setter to leave dead or to call by mistake.
+#[derive(Clone, Copy)]
+enum Federated {
+    /// Ours, never a provider's — a derived sort key, a path on this machine.
+    /// There is nothing to merge and nothing to attribute.
+    Local,
+    /// The first provider to speak owns it; a later one fills only a gap.
+    Fill(Take),
+    /// This source outranks a value already merged in. OpenLibrary is the
+    /// authority on editions (the ISBNs, the page count), Google Books on prose
+    /// (the description, the language tag).
+    Prefer(Source, Take),
+    /// Moves with [`Rule::pair`] and is **never taken on its own** — the rule
+    /// `series_index` needs, since an index taken from a record whose series
+    /// name lost is how a row ends up saying *Dune #2* about its neighbour.
+    WithPair(Take),
+}
+
 /// One column's entry in [`MERGE_RULES`].
 ///
 /// `says` is the third thing the table has to answer, and it is not a
@@ -186,6 +223,10 @@ struct Rule {
     /// column's pair names it back, since a one-way pairing protects one
     /// direction of exactly the write it exists to stop.
     pair: Option<&'static str>,
+    /// How the federated search merges this column, and — where it merges it at
+    /// all — how to copy it. The sixth thing the table generates, and the one
+    /// that closes the last hand-written column list. See [`Federated`].
+    federated: Federated,
 }
 
 /// **The provider no-clobber merge, defined once.**
@@ -212,6 +253,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.title.as_deref().is_some_and(|t| !t.is_empty()),
         show: |b| b.title.clone().filter(|t| !t.is_empty()),
         pair: None,
+        federated: Federated::Fill(|d, s| d.title = s.title.clone()),
     },
     Rule {
         col: "sort_title",
@@ -219,6 +261,9 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.sort_title.is_some(),
         show: |b| b.sort_title.clone(),
         pair: None,
+        // Ours: derived from the title for shelf ordering. No provider
+        // publishes one, so there is nothing to merge or attribute.
+        federated: Federated::Local,
     },
     Rule {
         col: "authors",
@@ -226,6 +271,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| !b.authors.is_empty(),
         show: |b| (!b.authors.is_empty()).then(|| b.authors.join(", ")),
         pair: None,
+        federated: Federated::Fill(|d, s| d.authors = s.authors.clone()),
     },
     Rule {
         col: "translators",
@@ -233,6 +279,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| !b.translators.is_empty(),
         show: |b| (!b.translators.is_empty()).then(|| b.translators.join(", ")),
         pair: None,
+        federated: Federated::Fill(|d, s| d.translators = s.translators.clone()),
     },
     Rule {
         col: "publisher",
@@ -240,6 +287,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.publisher.is_some(),
         show: |b| b.publisher.clone(),
         pair: None,
+        federated: Federated::Fill(|d, s| d.publisher = s.publisher.clone()),
     },
     Rule {
         col: "publish_year",
@@ -247,6 +295,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.publish_year.is_some(),
         show: |b| b.publish_year.map(|y| y.to_string()),
         pair: None,
+        federated: Federated::Fill(|d, s| d.publish_year = s.publish_year),
     },
     Rule {
         col: "language",
@@ -254,6 +303,9 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.language.is_some(),
         show: |b| b.language.clone(),
         pair: None,
+        // Google publishes a BCP-47 tag; OpenLibrary a MARC name, often
+        // absent. Prose is Google's.
+        federated: Federated::Prefer(Source::GoogleBooks, |d, s| d.language = s.language.clone()),
     },
     Rule {
         col: "isbn_10",
@@ -263,6 +315,9 @@ const MERGE_RULES: [Rule; 19] = [
         // Two ISBNs of two editions is the row item 30 recorded and could not
         // patch. It is the same shape as `series`, so it takes the same guard.
         pair: Some("isbn_13"),
+        // Editions are OpenLibrary's — Google's volume records routinely
+        // carry another printing's ISBN.
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.isbn_10 = s.isbn_10.clone()),
     },
     Rule {
         col: "isbn_13",
@@ -270,6 +325,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.isbn_13.is_some(),
         show: |b| b.isbn_13.clone(),
         pair: Some("isbn_10"),
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.isbn_13 = s.isbn_13.clone()),
     },
     Rule {
         col: "openlibrary_key",
@@ -277,6 +333,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.openlibrary_key.is_some(),
         show: |b| b.openlibrary_key.clone(),
         pair: None,
+        federated: Federated::Fill(|d, s| d.openlibrary_key = s.openlibrary_key.clone()),
     },
     Rule {
         col: "googlebooks_id",
@@ -284,6 +341,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.googlebooks_id.is_some(),
         show: |b| b.googlebooks_id.clone(),
         pair: None,
+        federated: Federated::Fill(|d, s| d.googlebooks_id = s.googlebooks_id.clone()),
     },
     Rule {
         col: "cover_url",
@@ -291,6 +349,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.cover_url.is_some(),
         show: |b| b.cover_url.clone(),
         pair: None,
+        federated: Federated::Fill(|d, s| d.cover_url = s.cover_url.clone()),
     },
     Rule {
         col: "cover_path",
@@ -298,6 +357,9 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.cover_path.is_some(),
         show: |b| b.cover_path.clone(),
         pair: None,
+        // Ours: where the bytes landed on this machine, written by
+        // `download_cover` long after any merge.
+        federated: Federated::Local,
     },
     Rule {
         col: "page_count",
@@ -305,6 +367,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.page_count.is_some(),
         show: |b| b.page_count.map(|n| n.to_string()),
         pair: None,
+        federated: Federated::Prefer(Source::OpenLibrary, |d, s| d.page_count = s.page_count),
     },
     Rule {
         col: "description",
@@ -312,6 +375,9 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.description.is_some(),
         show: |b| b.description.clone(),
         pair: None,
+        federated: Federated::Prefer(Source::GoogleBooks, |d, s| {
+            d.description = s.description.clone()
+        }),
     },
     Rule {
         col: "first_sentence",
@@ -319,6 +385,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.first_sentence.is_some(),
         show: |b| b.first_sentence.clone(),
         pair: None,
+        federated: Federated::Fill(|d, s| d.first_sentence = s.first_sentence.clone()),
     },
     // ---- migration 0013 ----------------------------------------------------
     Rule {
@@ -340,6 +407,9 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| !b.subjects.is_empty(),
         show: |b| (!b.subjects.is_empty()).then(|| b.subjects.join(", ")),
         pair: None,
+        // Filled whole or not at all, never unioned — the argument is on
+        // `merge` above and applies identically here.
+        federated: Federated::Fill(|d, s| d.subjects = s.subjects.clone()),
     },
     Rule {
         col: "series",
@@ -347,6 +417,7 @@ const MERGE_RULES: [Rule; 19] = [
         says: |b| b.series.is_some(),
         show: |b| b.series.clone(),
         pair: Some("series_index"),
+        federated: Federated::Fill(|d, s| d.series = s.series.clone()),
     },
     Rule {
         // Fractional, because novellas are 0.5. `show` prints it the way a
@@ -354,23 +425,14 @@ const MERGE_RULES: [Rule; 19] = [
         col: "series_index",
         merge: Merge::Coalesce,
         says: |b| b.series_index.is_some(),
-        show: |b| b.series_index.map(|n| format!("#{}", trim_index(n))),
+        show: |b| b.series_index.map(|n| format!("#{}", series_index_text(n))),
         pair: Some("series"),
+        // Comes from whoever supplied the name, **including when that
+        // provider had no index at all** — so the assignment is
+        // unconditional and only a value present is claimed.
+        federated: Federated::WithPair(|d, s| d.series_index = s.series_index),
     },
 ];
-
-/// A series index as a person writes it: `2`, not `2`; `0.5`, not `0.5000`.
-///
-/// The column is REAL because half-numbered novellas are real, so the whole
-/// numbers — which is nearly all of them — arrive as `2.0` and would print that
-/// way in every report and every future shelf line.
-fn trim_index(n: f64) -> String {
-    if n.fract() == 0.0 && n.abs() < 1e15 {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
-    }
-}
 
 /// Every column the merge table governs, in its own order.
 ///
@@ -391,6 +453,60 @@ pub(crate) fn field_value(book: &Book, col: &str) -> Option<String> {
         .iter()
         .find(|r| r.col == col)
         .and_then(|r| (r.show)(book))
+}
+
+/// Merge one provider's record into a partially-merged one, and name the
+/// columns it actually supplied.
+///
+/// **This is `search::merge_into`'s body, generated from [`MERGE_RULES`].** It
+/// lives here rather than in `search.rs` because the alternative is what was
+/// there before: a hand-written column list, which is the fourth spelling of
+/// this table and the one place a new column could be added, compile, pass
+/// clippy and then be silently dropped from every search result. Now a new
+/// `Rule` does not compile without saying how it federates.
+///
+/// It writes nothing and stamps nothing — at this point in a search there is no
+/// row yet. The returned columns are the attribution, in table order, for the
+/// caller to carry (`search::FieldClaims`); `save_book` then stamps `None`,
+/// because by the time a merged record reaches it the map has been discarded.
+///
+/// `provider` is a [`Source`] rather than a `ProviderId` so that the preference
+/// table can name calibre or the epub reader the day either one merges here;
+/// `ProviderId` already converts.
+pub(crate) fn merge_provider_record(
+    dst: &mut Book,
+    src: &Book,
+    provider: Source,
+) -> Vec<&'static str> {
+    let mut claimed: Vec<&'static str> = Vec::new();
+    for rule in MERGE_RULES.iter() {
+        // `WithPair` columns are taken below, beside the column they belong to.
+        // `Local` ones are never a provider's to supply.
+        let (take, outranks) = match rule.federated {
+            Federated::Local | Federated::WithPair(_) => continue,
+            Federated::Fill(take) => (take, false),
+            Federated::Prefer(wins, take) => (take, wins == provider),
+        };
+        if !(rule.says)(src) || (!outranks && (rule.says)(dst)) {
+            continue;
+        }
+        take(dst, src);
+        claimed.push(rule.col);
+
+        // The pair moves with it — see [`Federated::WithPair`]. Assigned
+        // unconditionally (a provider that named the series and no index clears
+        // a stale index that belonged to a different series) but claimed only
+        // where there is a value, since a source is not the origin of a NULL.
+        if let Some(pair) = MERGE_RULES.iter().find(|r| Some(r.col) == rule.pair)
+            && let Federated::WithPair(take_pair) = pair.federated
+        {
+            take_pair(dst, src);
+            if (pair.says)(src) {
+                claimed.push(pair.col);
+            }
+        }
+    }
+    claimed
 }
 
 /// The column whose user-ownership also protects `col` — see [`Rule::pair`].
@@ -1978,6 +2094,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The fourth consumer cannot disagree either.**
+    ///
+    /// `search::merge_into` was the one place this table did not reach, and a
+    /// column added without it compiled cleanly and was silently dropped from
+    /// every federated search result — item 32 did exactly that, and only
+    /// `every_claimed_field_is_a_merge_column` noticed, by accident, on the
+    /// claim rather than on the value. `Rule::federated` closes that, and this
+    /// is what stops it being closed in name only: for **every** column, a
+    /// record speaking to it either merges and is claimed, or is
+    /// [`Federated::Local`] — and the `Local` set is pinned by name below, so
+    /// "make it `Local` and move on" is not a quiet option.
+    #[test]
+    fn every_provider_column_survives_a_federated_merge() {
+        probes_cover_the_merge_table();
+        for (col, set) in PROBES {
+            let rule = MERGE_RULES.iter().find(|r| r.col == col).unwrap();
+            let mut src = Book::default();
+            set(&mut src, 2);
+            let mut dst = Book::default();
+            let claimed = merge_provider_record(&mut dst, &src, Source::OpenLibrary);
+
+            match rule.federated {
+                Federated::Local => assert!(
+                    claimed.is_empty() && !(rule.says)(&dst),
+                    "{col} is Local and merged anyway: {claimed:?}"
+                ),
+                // `series_index` alone is never taken — the pair moves with the
+                // name, never before it.
+                Federated::WithPair(_) => assert!(
+                    claimed.is_empty(),
+                    "{col} moves with its pair and was taken on its own: {claimed:?}"
+                ),
+                Federated::Fill(_) | Federated::Prefer(..) => {
+                    assert!(
+                        (rule.says)(&dst),
+                        "{col} was supplied and did not reach the merged record"
+                    );
+                    assert!(
+                        claimed.contains(&col),
+                        "{col} moved without being claimed, which is how a \
+                         federated field loses its origin: {claimed:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two columns no provider supplies, named — so a third one is a
+    /// decision somebody makes here rather than a `Federated::Local` typed to
+    /// make a new rule compile.
+    #[test]
+    fn only_our_own_columns_sit_out_the_federated_merge() {
+        let local: Vec<&str> = MERGE_RULES
+            .iter()
+            .filter(|r| matches!(r.federated, Federated::Local))
+            .map(|r| r.col)
+            .collect();
+        assert_eq!(local, ["sort_title", "cover_path"]);
+    }
+
+    /// The pair moves **whole**: an index without a name is not merged, and a
+    /// name arriving without an index clears whatever index was there — a stale
+    /// `#2` under a different series is the row `Rule::pair` exists to prevent.
+    #[test]
+    fn a_series_index_travels_with_the_name_or_not_at_all() {
+        let mut dst = Book::default();
+        let orphan = Book {
+            series_index: Some(7.0),
+            ..Default::default()
+        };
+        assert!(merge_provider_record(&mut dst, &orphan, Source::GoogleBooks).is_empty());
+        assert_eq!(dst.series_index, None);
+
+        let both = Book {
+            series: Some("Dune".into()),
+            series_index: Some(2.0),
+            ..Default::default()
+        };
+        let claimed = merge_provider_record(&mut dst, &both, Source::GoogleBooks);
+        assert_eq!(claimed, ["series", "series_index"]);
+        assert_eq!(dst.series_index, Some(2.0));
+
+        // A different provider's series loses (the field is filled), so nothing
+        // moves — including the index, which must not be taken alone.
+        let other = Book {
+            series: Some("Other".into()),
+            series_index: Some(9.0),
+            ..Default::default()
+        };
+        assert!(merge_provider_record(&mut dst, &other, Source::OpenLibrary).is_empty());
+        assert_eq!(dst.series.as_deref(), Some("Dune"));
+        assert_eq!(dst.series_index, Some(2.0));
+
+        // …and a namer with no index of its own clears the index rather than
+        // leaving one series' number under another's name.
+        let mut fresh = Book::default();
+        let nameless = Book {
+            series: Some("Dune".into()),
+            ..Default::default()
+        };
+        let claimed = merge_provider_record(&mut fresh, &nameless, Source::OpenLibrary);
+        assert_eq!(claimed, ["series"]);
+        assert_eq!(fresh.series_index, None);
     }
 
     /// **A field the user owns is not overwritten by a provider merge**, for
