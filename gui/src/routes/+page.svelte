@@ -9,6 +9,7 @@
    */
   import BookTile from '$lib/components/BookTile.svelte';
   import { client, type OpenReading, type StoredBook } from '$lib/api/client';
+  import Moment from '$lib/moments/Moment.svelte';
   import ShelfSwitch from '$lib/shelf/ShelfSwitch.svelte';
   import { layoutById, recallLayout, rememberLayout, type ShelfLayoutId } from '$lib/shelf/layouts';
 
@@ -44,6 +45,22 @@
 </script>
 
 <svelte:head><title>readingbuddy</title></svelte:head>
+
+<!--
+  The moment, above the shelf and above the failure below it.
+
+  It is the app noticing something rather than the shelf reporting something, so
+  it is not inside the `{#if}` that decides whether a library loaded: a moment is
+  still true when the database will not open, and the two failures are unrelated.
+  It renders nothing when there is nothing, which is most of the time — item 23's
+  `moment_epoch` means a freshly seeded library legitimately has none.
+
+  Mounted here rather than in the layout on purpose. This is where the app greets
+  you and where the wall of finished books will eventually be, and it also gives
+  "poll again after a write that could mint one" for free: the writes are on the
+  book view, and coming back here remounts this and asks again.
+-->
+<Moment />
 
 <h1>Library</h1>
 

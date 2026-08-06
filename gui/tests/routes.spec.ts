@@ -31,6 +31,19 @@ const ROUTES = [
   // measured" rather than "this jacket is grey" is rendered nowhere.
   { name: 'book-no-cover', path: '/book/5' },
   { name: 'book-missing', path: '/book/9999' }, // no such book: a page, not a dead end
+  // Item 28. The card is per reading, so book 12 is the one that matters: two
+  // cards side by side is the comparison the whole object exists for, and it is
+  // also the only width at which the wall's grid has to do anything.
+  { name: 'cards-reread', path: '/book/12/cards' },
+  // One reading, one card — the ordinary case, and the one where a wall laid out
+  // for two would leave a card looking like it lost its sibling.
+  { name: 'cards-one-read', path: '/book/3/cards' },
+  // A read whose marks are all unattributed: no card passage, drawn as an
+  // absence rather than as an empty box or an error.
+  { name: 'cards-no-passage', path: '/book/11/cards' },
+  // A book nobody has read. Idle is not blank: the empty state names the moves.
+  { name: 'cards-none', path: '/book/4/cards' },
+  { name: 'life', path: '/life' },
 ];
 
 for (const route of ROUTES) {
@@ -42,7 +55,9 @@ for (const route of ROUTES) {
     await page.goto(route.path);
     // The screens fetch in an `$effect`, so "rendered" means the placeholder is
     // gone — not that the document loaded.
-    await expect(page.locator('main')).not.toContainText(/Reading the shelf…|Opening…/);
+    await expect(page.locator('main')).not.toContainText(
+      /Reading the shelf…|Opening…|Reading the log…/,
+    );
 
     // Nothing is a dead end: every screen shows a next move. On the library that
     // is a book or the empty state's commands; everywhere else it is the way back.
@@ -226,4 +241,207 @@ test('the book view counts what you did and never what you have left', async ({ 
   ]) {
     expect(all, `"${banned}" is task-completion framing`).not.toMatch(banned);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Item 28 — the chain, and the reading-life page.
+// ---------------------------------------------------------------------------
+
+/**
+ * The moment ends with a cursor in the reflection, not in a dismissable dialog.
+ *
+ * `gui-vision.md:121` is the whole assertion: *"a moment that ended in a
+ * dismissable dialog would be a task-completion popup wearing a costume. A
+ * moment that ends with a cursor in an empty reflection is the app doing what it
+ * exists for."* A screenshot of the shelf shows the band exists; only driving it
+ * shows where it goes.
+ */
+test('a moment ends by opening the reflection, and offers no way to dismiss it', async ({
+  page,
+}) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/');
+  const moment = page.getByRole('button', { name: 'Write what you thought' });
+  await expect(moment).toBeVisible();
+
+  // No close, no dismiss, no "later", no × — the moment ends by being acted on
+  // or by being read and left alone. A dismiss control is the popup this refuses.
+  const band = page.locator('section').filter({ hasText: 'You finished' });
+  for (const banned of ['Dismiss', 'Close', 'Later', 'Not now', 'Got it', '×']) {
+    await expect(band.getByRole('button', { name: banned })).toHaveCount(0);
+  }
+
+  await moment.click();
+
+  // It lands on the book with the reflection **open in the note pane** — item
+  // 27's editor, reused, rather than a second one built for the ceremony.
+  await expect(page).toHaveURL(/\/book\/12\?note=\d+/);
+  await expect(page.getByRole('textbox', { name: 'Note body' })).toBeVisible();
+  await expect(page.locator('main')).toContainText('Reflection');
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The moment fires once, and nothing anywhere counts how many are waiting.
+ *
+ * `surfaced_at` means *shown*, so it is written when the band renders. There is
+ * no count on the wire — `the_wire_states_no_number_of_moments` asserts that
+ * absence in the engine deliberately — and a `3` beside a ceremony here would
+ * put the badge back one layer up.
+ */
+test('a moment is shown once and is never counted', async ({ page }) => {
+  await page.goto('/');
+  const band = page.locator('section').filter({ hasText: 'You finished' });
+  await expect(band).toBeVisible();
+  const first = await band.innerText();
+  expect(first).not.toMatch(/\d+\s*(more|others|waiting|pending|new)\b/i);
+  expect(first).not.toMatch(/\b(pending|waiting|unseen|inbox)\b/i);
+
+  // Leave and come back **within the app**, which is both halves of the design:
+  // the shelf remounts and polls again, so a write made elsewhere is caught up
+  // with — and the moment already surfaced does not come back, because
+  // acknowledging happens when it is shown.
+  //
+  // A browser reload would rebuild `FakeClient` and prove nothing here; the real
+  // client's acknowledgement is a row in SQLite, and layer 2 has no database.
+  await page.getByRole('link', { name: 'Reading life' }).click();
+  await expect(page.locator('main')).not.toContainText('Reading the log…');
+  await page.getByRole('link', { name: '← Library' }).click();
+  await expect(page.locator('main')).not.toContainText('Reading the shelf…');
+
+  await expect(page.locator('section').filter({ hasText: 'You finished' })).toHaveCount(0);
+  // The next one, not the same one — and still exactly one at a time.
+  await expect(page.locator('main')).toContainText('You marked your first passage in The Doorstop.');
+});
+
+/**
+ * The card shows the passage the **engine** chose, not `highlights[0]`.
+ *
+ * Item 44 put the choice below the seam because which passage a card carries is
+ * a selection predicate, and the day the TUI grows a card the two apps would
+ * otherwise show a different sentence for the same reading with neither looking
+ * wrong. The fixture states the engine's answer and makes it differ from the
+ * first mark of each read, so a component reaching for `[0]` renders visibly
+ * different text — which is what this pins.
+ */
+test('two readings of one book carry two different passages', async ({ page }) => {
+  await page.goto('/book/12/cards');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  const cards = page.locator('article');
+  await expect(cards).toHaveCount(2);
+
+  // The engine's choice for each read — neither of them that read's first mark.
+  await expect(page.locator('main')).toContainText('it is a description of a marriage');
+  await expect(page.locator('main')).toContainText('the house is not a metaphor at all');
+  // The first mark of each read, which `highlights[0]` would have shown.
+  await expect(page.locator('main')).not.toContainText('She said it plainly');
+  await expect(page.locator('main')).not.toContainText('A door is a decision');
+  // And the longest mark on the *book*, which belongs to neither read. A
+  // selection over `book_id` would have put it on both cards.
+  await expect(page.locator('main')).not.toContainText('on some pass or other');
+
+  // The comparison the card exists for: two ratings, one per read.
+  await expect(page.locator('main')).toContainText('3 / 5');
+  await expect(page.locator('main')).toContainText('4.5 / 5');
+});
+
+/** No ordinal on a card, because `ReadNumbering` is the engine's (item 41). */
+test('a card names its read by its dates and never by a number', async ({ page }) => {
+  await page.goto('/book/12/cards');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+  const all = await page.locator('main').innerText();
+  // `readings.indexOf(id) + 1` would re-implement a domain rule *and* silently
+  // re-acquire a dependency on `list_readings`' undocumented ordering — item
+  // 27's finding for the read gutter, and nothing on screen would look wrong.
+  for (const banned of [/read #\d/i, /\b(first|second) read\b/i, /\bread \d\b/i]) {
+    expect(all, 'a read ordinal is item 41, not a frontend derivation').not.toMatch(banned);
+  }
+});
+
+/**
+ * A month with no device data says so. It does not show a zero.
+ *
+ * The most important line on the reading-life page, and the reason item 42
+ * exists at all: bucketing `ActivityByDay` into months above the seam collapses
+ * `null` to `0` on the first `reduce`, so a month the device never measured
+ * renders as *you read for zero minutes*.
+ */
+test('the reading life renders an absence as an absence', async ({ page }) => {
+  await page.goto('/life');
+  await expect(page.locator('main')).not.toContainText('Reading the log…');
+
+  // November 2024 has activity days and no device behind them.
+  const nov = page.locator('li').filter({ hasText: 'November 2024' });
+  await expect(nov).toContainText('no device data');
+  await expect(nov).not.toContainText('0 min');
+
+  // February 2025 measured a very little, which is not the same thing at all.
+  const feb = page.locator('li').filter({ hasText: 'February 2025' });
+  await expect(feb).toContainText('0 min');
+  await expect(feb).not.toContainText('no device data');
+
+  // April 2025 has pages and no minutes: the two are independent `Option`s.
+  const apr = page.locator('li').filter({ hasText: 'April 2025' });
+  await expect(apr).toContainText('minutes not measured');
+  await expect(apr).toContainText('120 pages');
+});
+
+/**
+ * Counts are allowed here, because it is a place you chose to go — and
+ * `activity_days` must never become a streak.
+ *
+ * It is a count of days inside a range you asked for: past tense, bounded, and
+ * not consecutive. A "current streak" rendered from it would be a threshold
+ * announced in advance in a costume, and it is the nearest wrong turn on this
+ * screen.
+ */
+test('the reading life counts what you did and sets no target', async ({ page }) => {
+  await page.goto('/life');
+  await expect(page.locator('main')).not.toContainText('Reading the log…');
+
+  // It is allowed to carry numbers. That is the whole distinction.
+  await expect(page.locator('main')).toContainText('books finished');
+
+  const all = await page.locator('body').innerText();
+  for (const banned of [
+    /\bstreak\b/i,
+    /\bgoal\b/i,
+    /\btarget\b/i,
+    /\bin a row\b/i,
+    /\bunread\b/i,
+    /\bto[- ]read\b/i,
+    /\bremaining\b/i,
+    /\bon track\b/i,
+    /\bkeep it up\b/i,
+    /\bbehind\b/i,
+    /\bpace\b/i,
+  ]) {
+    expect(all, `"${banned}" is a target, not a thing you did`).not.toMatch(banned);
+  }
+});
+
+/**
+ * The home surface still greets you with no numbers, **with a moment on it**.
+ *
+ * The rule was qualified this session, not relaxed: a number on the home surface
+ * may describe one book and never the collection or what is left. A moment is
+ * the newest thing on that surface and the likeliest to break it — which is why
+ * `run_ended` is spoken as its span rather than as `4 days`.
+ */
+test('a moment puts no number on the home surface', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('main')).not.toContainText('Reading the shelf…');
+
+  const band = page.locator('section').filter({ hasText: 'You finished' });
+  await expect(band).toBeVisible();
+  const said = await band.locator('p').innerText();
+  expect(said, 'a moment describing the collection with a number is a badge').not.toMatch(/\d/);
+
+  const chrome = await page.locator('header').innerText();
+  expect(chrome).not.toMatch(/\d/);
 });

@@ -1,12 +1,14 @@
 # gui/ — Tauri + Svelte 5
 
 **The scaffold has landed** (spec item 25) as a thin vertical slice: two screens,
-the generated type seam, and the four checks. **Item 26 has landed** — the shelf,
-as a cover grid behind a layout seam — and **item 27**, the book view. Item 28
-(the chain) is what remains, plus item 40's per-book note search, and both
-inherit the dialect items 26 and 27 established: the tile, the plate, the band
-headings, the switch and the three-depth pane are the vocabulary, and a screen
-that invents a second one is the failure mode to watch for.
+the generated type seam, and the four checks. Then **item 26** — the shelf, as a
+cover grid behind a layout seam — **item 27**, the book view, and **item 28**,
+the chain and the reading-life page. That closes the wave. What remains is item
+40's per-book note search, plus items 41 and 43 (see below), and everything
+inherits the dialect these three established: the tile, the plate, the band
+headings, the switch, the three-depth pane, the moment band and the card are the
+vocabulary, and a screen that invents a second one is the failure mode to watch
+for.
 
 Read first: [`../docs/gui/gui-vision.md`](../docs/gui/gui-vision.md) (what the
 product is), [`../docs/gui/spec-gui-17-28.md`](../docs/gui/spec-gui-17-28.md)
@@ -22,7 +24,10 @@ gui/src/lib/api/fake.ts       the in-memory library layers 1 and 2 render
 gui/src/lib/phrasing.ts       words for values the engine already decided
 gui/src/lib/shelf/            the layout seam (item 26)
 gui/src/lib/book/             the book view's bands + two pure modules (item 27)
-gui/src/routes/               +page (library), book/[id] (detail)
+gui/src/lib/moments/          the ceremony + its sentence (item 28)
+gui/src/lib/card/             one card, per reading (item 28)
+gui/src/lib/life/             the reading-life page's parts + its spans (item 28)
+gui/src/routes/               +page (library), book/[id], book/[id]/cards, life
 gui/tests/routes.spec.ts      layer 2: every route, three viewports, WebKit
 gui/tests/shots/              committed PNGs — a reviewable artifact
 gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
@@ -246,6 +251,45 @@ nothing whenever the top hits are in other books. Item 40 is the engine change.
 **`heroSrc` is `cover_path`; `coverSrc` is `cover_shelf_path`.** Two methods, so
 a call site says which it meant.
 
+## The chain, the card and the reading life
+
+`src/lib/moments/`, `src/lib/card/`, `src/lib/life/`, and five rules item 28
+settled. `docs/decisions.md` entry 28 carries the arguments.
+
+**A moment is a band, polled, one at a time, and has no close button.** It ends
+by opening item 27's note pane at `?note=<id>` — never a second editor, never a
+dialog. It asks for `limit: 1` because a queue of ceremonies is an inbox, and
+nothing anywhere renders how many are pending; there is no such number on the
+wire and there must not be one here. It is acknowledged when **shown**, because
+`surfaced_at` means shown. It lives on the shelf, which is what makes "poll
+again after a write" free — the writes are on the book view, and coming home
+remounts it.
+
+**`run_ended` is spoken as its span, never as `days`.** The field is on the DTO
+and the engine is right to keep it; this surface is the home surface, where a
+number may describe one book and nothing else. A run of days describes a habit,
+and that is a streak one decision later. The reading-life page may say it.
+
+**A card names its read by its dates and never by a number.** `ReadNumbering`
+is the engine's (item 17c) and `readings.indexOf(id) + 1` would re-acquire a
+dependency on an ordering the wire does not state. **Item 41** is the request.
+A card is drawn for *every* reading including the open one — gating on
+`finished_at` would tell you the read you are in has no card yet.
+
+**The card's passage is `cardPassage`, never `highlights[0]`.** Which passage is
+a selection predicate and item 44 put it in SQL. It is one call per card, which
+is right here and wrong for a wall across the library — that wall needs **item
+43** and this route is deliberately kept behind it.
+
+**Absence is the reading-life page's whole job.** `minutes`/`pages` are `Option`
+at every grain; a `0` in their place is the lie item 42 exists to prevent. But a
+measured `0` prints as `0` — item 31's twenty-second session is the device
+saying something. `phrasing.ts` holds both words (`NOT_MEASURED`,
+`NO_DEVICE_DATA`) and `deviceFigures` decides one chip or two. **Never bucket
+`activityByDay` into months in TypeScript**, and never fold months into a year:
+`books` is distinct over a period and cannot be summed out of the periods inside
+it. `activity_days` is *days with something on them*, never *in a row*.
+
 ## The axiom, in markup
 
 `docs/decisions.md` forbids task-completion framing by name. The GUI vision
@@ -257,14 +301,16 @@ Binding, and two of these are now **asserted** in `tests/routes.spec.ts` rather
 than left to review:
 
 - **No aggregate number on a home surface.** Ever. Counts live on a page the
-  user chose to open. A single book's **own** progress under its own tile is
-  permitted and shipped — it is past tense and describes one book, not the
-  library. The qualifier was added after item 27's review found the shelf
-  contradicting the unqualified rule; `docs/gui/gui-vision.md` carries the
-  argument. `the library surface greets you with no numbers` checks the header and
+  user chose to open — **`/life` is that page**, and everything on it is past
+  tense. A single book's **own** progress under its own tile is permitted and
+  shipped — it is past tense and describes one book, not the library. The
+  qualifier was added after item 27's review found the shelf contradicting the
+  unqualified rule; `docs/gui/gui-vision.md` carries the argument.
+  `the library surface greets you with no numbers` checks the header and
   the heading for digits, and the whole body for *unread* / *streak* / *goal* /
   *to-read* / *remaining* — the TUI's `the_home_screen_greets_you_with_no_numbers`,
-  ported.
+  ported. `a moment puts no number on the home surface` is its sibling, since
+  the moment is the newest thing there and the likeliest to break it.
 - **Abandoning a book is not failure** and is never styled as one.
   `an abandoned book is not styled as a failure` pins the word ("Put down") and
   forbids *fail* / *did not finish* / *DNF* / *gave up*.

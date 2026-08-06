@@ -3,10 +3,17 @@ import { describe, expect, it } from 'vitest';
 import type { NoteDto, ReadingDto } from './api/bindings';
 import {
   authorsLabel,
+  countLabel,
   dayLabel,
+  deviceFigures,
   fieldLabel,
   fileSizeLabel,
+  minutesLabel,
+  monthLabel,
+  NO_DEVICE_DATA,
+  NOT_MEASURED,
   noteAnchorLabel,
+  pagesLabel,
   noteKindLabel,
   progressDetail,
   progressLabel,
@@ -293,5 +300,82 @@ describe('files and provenance', () => {
 
   it('says a column name out loud', () => {
     expect(fieldLabel('publish_year')).toBe('Publish year');
+  });
+});
+
+/**
+ * The reading life's words, and the one distinction the page is built on.
+ */
+describe('what was measured, and what was not', () => {
+  it('says an absence rather than a zero', () => {
+    // The single most important line on the reading-life page. `minutes` is
+    // `Option` at every level of item 21's log, and item 42 exists because
+    // folding days into months in a client collapses that `null` to `0` —
+    // telling a reader they read for no time at all in a month they read
+    // off-device.
+    expect(minutesLabel(null)).toBe(NOT_MEASURED);
+    expect(pagesLabel(null)).toBe(NOT_MEASURED);
+  });
+
+  it('prints a measured zero as a zero', () => {
+    // Item 31: a measured twenty-second session records `Some(0)`, not `None`.
+    // The device is saying something, and collapsing it into the absence throws
+    // away the distinction the column is nullable to keep.
+    expect(minutesLabel(0)).toBe('0 min');
+    expect(pagesLabel(0)).toBe('0 pages');
+    expect(minutesLabel(0)).not.toBe(NOT_MEASURED);
+  });
+
+  it('says hours once there are hours', () => {
+    expect(minutesLabel(45)).toBe('45 min');
+    expect(minutesLabel(60)).toBe('1 h');
+    expect(minutesLabel(620)).toBe('10 h 20 min');
+  });
+
+  it('collapses two absences into one sentence and names a single one', () => {
+    // Two chips reading "not measured" side by side say the same thing twice
+    // and neither says which is which. One absence is named, because minutes
+    // and pages are independent `Option`s — the fixture has a month with pages
+    // and no minutes.
+    expect(deviceFigures(null, null)).toEqual([NO_DEVICE_DATA]);
+    expect(deviceFigures(null, 120)).toEqual([`minutes ${NOT_MEASURED}`, '120 pages']);
+    expect(deviceFigures(900, null)).toEqual(['15 h', `pages ${NOT_MEASURED}`]);
+    expect(deviceFigures(60, 40)).toEqual(['1 h', '40 pages']);
+  });
+
+  it('never says nothing at all', () => {
+    // A period that measured nothing still gets a sentence. That is the
+    // difference between rendering an absence and rendering nothing.
+    for (const pair of [
+      [null, null],
+      [0, 0],
+      [null, 0],
+    ] as const) {
+      expect(deviceFigures(pair[0], pair[1]).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('agrees a count with its noun', () => {
+    expect(countLabel(1, 'book')).toBe('1 book');
+    // Zero is a legitimate answer for a count the engine originates — a zero in
+    // `books_finished` is knowable, which is what separates it from the
+    // nullable measurements above.
+    expect(countLabel(0, 'book')).toBe('0 books');
+    expect(countLabel(4, 'day')).toBe('4 days');
+    expect(countLabel(1, 'passage')).toBe('1 passage');
+  });
+
+  it('spells a month from a fixed table rather than from the locale', () => {
+    // A locale-dependent rendering makes the committed screenshots depend on
+    // the machine that took them — `dayLabel`'s own rule, applied again.
+    expect(monthLabel('2025-03')).toBe('March 2025');
+    expect(monthLabel('2024-12')).toBe('December 2024');
+  });
+
+  it('shows a month it cannot parse verbatim', () => {
+    // It came off `substr(day, 1, 7)` over a zero-padded ISO date, so it cannot
+    // be wrong; inventing a correction here would hide a case that could be.
+    expect(monthLabel('nonsense')).toBe('nonsense');
+    expect(monthLabel('2025-13')).toBe('2025-13');
   });
 });

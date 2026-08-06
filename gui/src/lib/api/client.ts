@@ -32,6 +32,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 
 import { FakeClient } from './fake';
 import type {
+  ActivitySummaryDto,
   ApiError,
   BookDto,
   BookFileDto,
@@ -40,6 +41,8 @@ import type {
   CreatedNoteDto,
   FieldSourceDto,
   HighlightDto,
+  MomentDto,
+  MonthActivityDto,
   NewNoteDto,
   NoteDto,
   NoteKindDto,
@@ -93,6 +96,93 @@ export interface LibraryClient {
   listNotes(bookId: number | null): Promise<NoteDto[]>;
   listReadings(bookId: number): Promise<ReadingDto[]>;
 
+  // ---- one card, per reading (item 28) ------------------------------------
+
+  /**
+   * The passages captured during **one read**, not the book's.
+   *
+   * A reread has two, and `HighlightDto.reading_id` is `null` for a mark the
+   * dates could not place — so this is a narrower list than `listHighlights`
+   * and never a rearrangement of it.
+   */
+  highlightsForReading(readingId: number): Promise<HighlightDto[]>;
+  /**
+   * The one passage a card carries — **the engine's choice, not `[0]`** (item 44).
+   *
+   * Which passage is a *selection predicate*, and item 17 puts those below the
+   * seam. The rule is longest-then-lowest-id and it is deliberately not restated
+   * here: a frontend spelling it would be the day the TUI grows a card and the
+   * two apps show a different sentence for the same reading, with neither
+   * looking wrong.
+   *
+   * `null` is ordinary. A reading whose marks are all unattributed has no
+   * passage of its own, exactly as `highlightsForReading` returns an empty list,
+   * and a card draws that absence as an absence.
+   *
+   * One call per card. That is right for a card reached by selecting a book and
+   * **wrong for a wall of cards across the library** — entry 44 says so in as
+   * many words, and that wall wants item 43 before it wants N of these.
+   */
+  cardPassage(readingId: number): Promise<HighlightDto | null>;
+  /**
+   * The notes belonging to **one read**, which arrived with item 40.
+   *
+   * A separate method rather than a second argument to [`listNotes`], because
+   * the two scopes are mutually exclusive **on the wire** — a reading belongs to
+   * one book, so naming both is redundant when they agree and an `InvalidInput`
+   * when they do not. Two methods make the pair unrepresentable at a call site
+   * rather than merely refused after it.
+   */
+  notesForReading(readingId: number): Promise<NoteDto[]>;
+
+  // ---- moments (item 23) --------------------------------------------------
+
+  /**
+   * What is worth noticing and has not been shown yet, newest first.
+   *
+   * **Polled, never subscribed**: this protocol has no push channel, and
+   * `Api::pending_moments` says polling is safe because a moment is derived on
+   * every call and stored nowhere.
+   *
+   * `limit` takes from the newest end and is the only lever there is. There is
+   * no count on this surface and there must never be one — `MomentDto`'s own doc
+   * refuses `pending: 3` on the wire by name, and a `.length` rendered here
+   * would be the same badge one layer up.
+   */
+  pendingMoments(limit?: number): Promise<MomentDto[]>;
+  /**
+   * Record that a moment was surfaced. **Idempotent**, through both doors.
+   *
+   * It deliberately does not re-derive: `run_ended` depends on the clock, so a
+   * moment that was pending when it was shown can stop being pending a moment
+   * later, and refusing the acknowledgement then would replay it for ever.
+   */
+  acknowledgeMoment(id: string): Promise<void>;
+
+  // ---- the reading life (items 21, 31, 42) --------------------------------
+
+  /**
+   * What is known about a period. Both days inclusive, `YYYY-MM-DD`, UTC.
+   *
+   * `minutes` and `pages` are `null` for *nothing measured* and are **not
+   * zero** — a reader whose library came from a Goodreads CSV has no device
+   * data anywhere, and a page that renders that as `0` is telling them they
+   * read for no time at all.
+   */
+  activitySummary(from: string, to: string): Promise<ActivitySummaryDto>;
+  /**
+   * The months of a period that carry an event, oldest first (item 42).
+   *
+   * **Never bucket [`activitySummary`]'s daily sibling into months here.**
+   * `minutes: null` collapses to `0` on the first `reduce` in any language that
+   * has one, which is the lie spread over a calendar; and `books` is distinct
+   * over the whole month, so it cannot be recovered from the days at all — a
+   * reader who opened the same two books on twelve days read two books, not
+   * twenty-four. That is a semantic claim about what a month means and item 17
+   * puts those below the seam, which is the entire reason this request exists.
+   */
+  activityByMonth(from: string, to: string): Promise<MonthActivityDto[]>;
+
   // ---- what is behind one book (item 27) ---------------------------------
 
   /** Minted shelves out of `book_tags` — **not** `BookDto.subjects`. */
@@ -142,10 +232,18 @@ export interface LibraryClient {
   /**
    * Open (or mint) this book's reflection or review.
    *
-   * `reading_id` is deliberately not chosen here. A reread has two readings and
-   * picking one is a decision; the engine's `open_anchored` already makes it
+   * `readingId` is **omitted by every caller that does not have one**, and that
+   * is still item 27's ruling rather than a hole in it: a reread has two reads,
+   * picking one is a decision, the engine's `open_anchored` already makes it
    * from the reading state, and a frontend guessing would be item 17's finding
    * with a new coat on.
+   *
+   * Item 28 is the one caller that has one **without guessing**. `MomentDto`
+   * carries `reading_id` beside `book_id` precisely because a card is minted per
+   * reading and a moment identified by its book cannot select between two —
+   * entry 23 records that item 28's audit asked for the field. Passing the
+   * engine's own answer back is relaying, not choosing, which is why this
+   * argument is optional rather than required.
    *
    * Returns a [`CreatedNoteDto`], which is what a *creating* caller wants — an
    * id, a title and a path. Everything that then edits the note wants a
@@ -155,7 +253,7 @@ export interface LibraryClient {
    * of the seam to be on; the DTO is the cheaper fix and belongs to whoever
    * owns `crates/api`.
    */
-  openReflection(bookId: number): Promise<CreatedNoteDto>;
+  openReflection(bookId: number, readingId?: number | null): Promise<CreatedNoteDto>;
   openReview(bookId: number): Promise<CreatedNoteDto>;
   /** This reading's note of that kind, when it has one. */
   noteForReading(readingId: number, kind: NoteKindDto): Promise<NoteDto | null>;
@@ -333,6 +431,56 @@ export class TauriClient implements LibraryClient {
     ).value;
   }
 
+  // ---- item 28 ------------------------------------------------------------
+
+  async highlightsForReading(readingId: number): Promise<HighlightDto[]> {
+    return expect(
+      await this.#call({ method: 'highlights_for_reading', params: { reading_id: readingId } }),
+      'highlights',
+    ).value;
+  }
+
+  async cardPassage(readingId: number): Promise<HighlightDto | null> {
+    return expect(
+      await this.#call({ method: 'card_passage', params: { reading_id: readingId } }),
+      'highlight',
+    ).value;
+  }
+
+  async notesForReading(readingId: number): Promise<NoteDto[]> {
+    // `book_id: null` beside a `reading_id`, never both — see the interface.
+    return expect(
+      await this.#call({
+        method: 'list_notes',
+        params: { book_id: null, reading_id: readingId, limit: null },
+      }),
+      'notes',
+    ).value;
+  }
+
+  async pendingMoments(limit = 1): Promise<MomentDto[]> {
+    return expect(await this.#call({ method: 'pending_moments', params: { limit } }), 'moments')
+      .value;
+  }
+
+  async acknowledgeMoment(id: string): Promise<void> {
+    expect(await this.#call({ method: 'acknowledge_moment', params: { id } }), 'unit');
+  }
+
+  async activitySummary(from: string, to: string): Promise<ActivitySummaryDto> {
+    return expect(
+      await this.#call({ method: 'activity_summary', params: { from, to } }),
+      'activity_summary',
+    ).value;
+  }
+
+  async activityByMonth(from: string, to: string): Promise<MonthActivityDto[]> {
+    return expect(
+      await this.#call({ method: 'activity_by_month', params: { from, to } }),
+      'activity_by_month',
+    ).value;
+  }
+
   /**
    * `cover_path` is a **whole path** — the engine stores `images_dir.join(name)`
    * — so this must not join it with `images_dir` again, which would double the
@@ -425,9 +573,12 @@ export class TauriClient implements LibraryClient {
     expect(await this.#call({ method: 'delete_note', params: { note_id: noteId } }), 'unit');
   }
 
-  async openReflection(bookId: number): Promise<CreatedNoteDto> {
+  async openReflection(bookId: number, readingId: number | null = null): Promise<CreatedNoteDto> {
     return expect(
-      await this.#call({ method: 'open_reflection', params: { book_id: bookId, reading_id: null } }),
+      await this.#call({
+        method: 'open_reflection',
+        params: { book_id: bookId, reading_id: readingId },
+      }),
       'created_note',
     ).value;
   }
