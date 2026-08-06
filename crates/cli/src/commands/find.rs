@@ -1,4 +1,4 @@
-//! `find` — the door onto item 33's one search surface.
+//! `find` — the door onto item 34's one search surface.
 //!
 //! `Engine::search_marks` answers notes and highlights in one ranked list, and
 //! without a command here that list would have been reachable only from the

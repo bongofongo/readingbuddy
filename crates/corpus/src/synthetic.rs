@@ -183,7 +183,7 @@ return {{
         n += 1;
     }
 
-    // 9b. A PDF sidecar with PDF-shaped **anchors** (item 36).
+    // 9b. A PDF sidecar with PDF-shaped **anchors** (item 37).
     //
     //     On a paging document — PDF, DjVu — KOReader cannot anchor a highlight
     //     to a position in a text stream, because a scanned page has no text

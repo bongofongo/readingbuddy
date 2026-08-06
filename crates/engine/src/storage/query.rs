@@ -13,12 +13,21 @@
 //!
 //! `docs/gui/spec-gui-17-28.md` left the choice open between offset and keyset
 //! and noted that [`BookSort::Progress`] has no stable cursor key. Item 17 then
-//! added [`BookSort::Author`], which has no cursor key *and* no `ORDER BY`. So
-//! the honest tally is that two of five sorts cannot be keyset at all, and the
-//! two that cannot are exactly the two whose pages are already expensive —
-//! keyset would buy nothing where it is needed most, and would cost a second
-//! pagination shape at every call site to buy it. The argument in full is in
+//! added [`BookSort::Author`], which had no cursor key *and* no `ORDER BY` — so
+//! the tally was two of five sorts that could not be keyset at all, and those
+//! two were exactly the ones whose pages were already expensive. Keyset would
+//! have bought nothing where it was needed most and cost a second pagination
+//! shape at every call site to buy it. The argument in full is in
 //! `docs/decisions.md` entry 18.
+//!
+//! **Item 35 halved that tally and the ruling still stands.** `sort_author` is
+//! a real column with a real index now, so the author sort has both an
+//! `ORDER BY` and a cursor key; [`BookSort::Progress`] remains a computed ratio
+//! across a `LEFT JOIN` and remains unindexable. What changed is the *cost* of
+//! an offset page, which is what actually hurt — every sort but `Progress` now
+//! walks an index instead of sorting the whole table — and that is the cheaper
+//! half of what keyset was being considered for. Revisit when a page is
+//! measured to be slow, not before.
 //!
 //! What offset pagination *requires*, and what the spec did not mention, is a
 //! **total order**. `LIMIT 20 OFFSET 20` is only the successor of `LIMIT 20` if
@@ -228,8 +237,12 @@ pub struct BookQuery {
     pub sort: BookSort,
     pub filter: BookFilter,
     /// How many rows. **Negative means no limit**, which is SQLite's own reading
-    /// of `LIMIT -1` and is honoured by the [`BookSort::Author`] arm too, so the
-    /// two arms cannot mean different things by the same number.
+    /// of `LIMIT -1`.
+    ///
+    /// It used to need saying twice — [`BookSort::Author`] sliced in Rust and
+    /// had to be taught the same convention — and since item 35 every sort is
+    /// one `LIMIT ? OFFSET ?`, so the convention is the database's alone and
+    /// two arms can no longer mean different things by the same number.
     pub limit: i64,
     /// How many rows to skip first. Negative is clamped to zero — there is no
     /// page before the first one.
@@ -268,16 +281,6 @@ impl BookQuery {
     pub fn at_offset(mut self, offset: i64) -> BookQuery {
         self.offset = offset;
         self
-    }
-
-    /// The offset as a number of rows to skip, never negative.
-    pub(super) fn skip(&self) -> usize {
-        self.offset.max(0) as usize
-    }
-
-    /// The limit as a count of rows to take, or `None` for all of them.
-    pub(super) fn take(&self) -> Option<usize> {
-        (self.limit >= 0).then_some(self.limit as usize)
     }
 }
 
@@ -444,11 +447,22 @@ mod tests {
         );
     }
 
+    /// The whole-library read has one spelling, and it is the one
+    /// `BookQuery::default()` produces.
+    ///
+    /// The `skip`/`take` accessors this used to assert against were
+    /// [`BookSort::Author`]'s Rust slice teaching itself SQLite's convention,
+    /// and item 35 deleted the slice — a negative limit is now `LIMIT -1` and
+    /// nothing else reads it. What survives is the contract the callers depend
+    /// on: `koreader::scores_for` and `goodreads::export` used to write `10_000`
+    /// and `i64::MAX` for this.
     #[test]
-    fn a_negative_limit_is_no_limit_and_a_negative_offset_is_the_first_page() {
-        let q = BookQuery::new(-1, BookSort::Title).at_offset(-5);
-        assert_eq!(q.take(), None);
-        assert_eq!(q.skip(), 0);
-        assert_eq!(BookQuery::new(20, BookSort::Title).take(), Some(20));
+    fn the_default_query_is_the_whole_library_by_recency() {
+        let q = BookQuery::default();
+        assert!(q.limit < 0, "a negative limit is SQLite's own `no limit`");
+        assert_eq!(q.offset, 0);
+        assert_eq!(q.sort, BookSort::LastModified);
+        assert!(q.filter.is_empty());
+        assert_eq!(BookQuery::new(20, BookSort::Title).limit, 20);
     }
 }

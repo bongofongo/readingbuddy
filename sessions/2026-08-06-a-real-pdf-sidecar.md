@@ -1,12 +1,12 @@
 ---
-title: Item 36 — a real PDF sidecar, and a `Diagnostic` instead of silence
+title: Item 37 — a real PDF sidecar, and a `Diagnostic` instead of silence
 date: 2026-08-06
 branch: feat/engine-pdf-sidecar
 ---
 
 # Session log
 
-Item 36 of the 2026-08-06 non-GUI wave, built alone in a worktree. No migration
+Item 37 of the 2026-08-06 non-GUI wave, built alone in a worktree. No migration
 — `0015`/`0016` belong to two sibling threads running at the same time, and
 nothing here wanted one. Engine, tier-1 corpus, docs, and the one DTO line the
 compiler insisted on.

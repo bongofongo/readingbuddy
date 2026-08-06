@@ -1,4 +1,4 @@
--- Highlights become searchable (item 33).
+-- Highlights become searchable (item 34).
 --
 -- `notes_fts` (0001) has no triggers and is maintained from application code,
 -- and `storage/notes.rs` records that as a settled answer rather than a

@@ -1,6 +1,6 @@
-# Prompt — Item 37: one fixture, two consumers
+# Prompt — Item 38: one fixture, two consumers
 
-**Run from the main checkout**, after items 33, 34, 36 and 35 have merged. Not
+**Run from the main checkout**, after items 34, 35, 37 and 36 have merged. Not
 from a worktree, and this is the whole reason it is last: it touches `gui/`, so
 its gate is `make web-check` — and a fresh worktree has **no `gui/node_modules`**
 (gitignored), where `web-check` and `routes` degrade to a stated `SKIPPED:`. A

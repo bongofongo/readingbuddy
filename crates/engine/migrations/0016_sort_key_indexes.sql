@@ -1,0 +1,90 @@
+-- The sort keys get an index, and one of them gets a writer (item 35).
+--
+-- **There was no index on any sort key.** The seven that existed before this
+-- file are all foreign keys; every `ORDER BY` the library screen issues sorted
+-- the whole table and then threw away all but a page of it, which is what makes
+-- a deep page expensive and what turned item 18's `books.id` tie-break from
+-- insurance into the thing holding pagination together. Four indexes here, one
+-- per orderable sort key. `BookSort::Progress` gets none and cannot: it is a
+-- computed ratio across a LEFT JOIN, which is the same reason item 18 gave for
+-- paginating by offset.
+--
+-- **An indexes-only migration is judged on `EXPLAIN QUERY PLAN`** — the rule
+-- `0008` set, and the only claim a file like this can make.
+-- `the_sort_key_indexes_are_the_plan_the_planner_picks` asserts each one before
+-- *and* after: before, the outer query says `USE TEMP B-TREE FOR ORDER BY`;
+-- after, it says `SCAN books USING INDEX …` and the temp b-tree is gone. The
+-- before half is what makes the after half evidence rather than a coincidence.
+--
+-- ## The collations and the expression are load-bearing
+--
+-- `0008` learned that SQLite silently ignores an index whose collation differs
+-- from the comparison's, so `idx_books_sort_title` is declared `COLLATE NOCASE`
+-- because `BookSort::Title` compares that way. A bare
+-- `ON books(COALESCE(sort_title, title))` would exist, read correctly in the
+-- schema, and never be used.
+--
+-- It is an index on an **expression** for a reason that is not tidiness.
+-- `books.sort_title` is nullable, and NULL there means *this row has not been
+-- through the writer yet* rather than *this book has no filing name*. Ordering
+-- by the bare column would put every such row at the top; ordering by
+-- `COALESCE(sort_title, title)` degrades it to exactly the behaviour it had
+-- before this migration — filed under its own raw title — which is why this file
+-- needs no back-fill of `sort_title` and why the derivation therefore exists in
+-- one dialect (Rust) rather than being spelled a second time in SQL here.
+--
+-- ## `sort_author`, and why it was refused twice before
+--
+-- Items 18 and 20 both declined this column on one ground, and the ground was
+-- real: **SQLite cannot parse a human name.** "Alphabetically by last name" is a
+-- parse (`crates/engine/src/names.rs`), so the column is NULL for every existing
+-- row and `ORDER BY sort_author` is silently *wrong* until a back-fill runs —
+-- and the fallback for that window is the whole-table read the column exists to
+-- remove.
+--
+-- Two things changed. It arrives **inside the item that adds the index**, so the
+-- back-fill and the reader land together instead of the column waiting for one.
+-- And every database in play is disposable — `dev-data/` is seeded, gitignored
+-- and rebuilt from a seed by `make dev-db`, and there is no durable library yet
+-- — so a shape change needs no data migration.
+--
+-- **No back-fill here, and like `0014` this one could not have had one.** It is
+-- the repo's third deliberate non-back-fill and it is `0014`'s case exactly:
+-- `cover_width` is the result of decoding a PNG and SQLite cannot decode one;
+-- `sort_author` is the result of parsing a name and SQLite cannot parse one. So
+-- the back-fill is a **command** — `Engine::rebuild_sort_keys`, behind
+-- `rb sort-keys`, which `make dev-db` runs — writing through the same
+-- `Storage::refresh_sort_keys` every live write goes through, so a back-filled
+-- row and a freshly-written one are the same row.
+--
+-- NULL therefore means **not computed yet**, and it is never *no author*: an
+-- authorless book gets a real key whose rank component files it last, so
+-- `sort_author IS NULL` is exactly the back-fill's work list and nothing else.
+-- The one honest cost, stated rather than papered over: between this migration
+-- and the first run of that command, a row files at the *top* of an author sort.
+-- That is visible, it is one command away, and it is why the column is nullable
+-- rather than `NOT NULL DEFAULT ''` — a default would hide the same rows among
+-- the authorless ones with nothing able to tell them apart.
+--
+-- The column is **not a `MERGE_RULES` row**, on `0014`'s argument applied
+-- unchanged: no provider publishes a filing key, there is no source to
+-- attribute, and a record-shaped writer able to move it *without* moving
+-- `authors` is a row that contradicts itself. It is deliberately not on `Book`
+-- either, so it is not on the wire and no frontend can render a string full of
+-- control characters.
+--
+-- **BINARY collation, deliberately.** `sort_author` packs
+-- `names::sort_key`'s `(rank, last name, whole name)` tuple into one TEXT value
+-- separated by `\u{1}`, with the components escaped so none of them can contain
+-- a byte at or below the separator. The whole claim of the encoding is that
+-- byte-for-byte comparison reproduces the tuple's order exactly, and SQLite's
+-- BINARY collation is `memcmp` — a `COLLATE NOCASE` index here would compare
+-- differently from the function it is a cache of. The components are already
+-- lowercased by `names::sort_key`, so nothing is lost. See
+-- `crates/engine/src/sort.rs`.
+ALTER TABLE books ADD COLUMN sort_author TEXT; -- NULL = not computed yet
+
+CREATE INDEX idx_books_last_modified ON books(last_modified);
+CREATE INDEX idx_books_sort_title    ON books(COALESCE(sort_title, title) COLLATE NOCASE);
+CREATE INDEX idx_books_sort_author   ON books(sort_author);
+CREATE INDEX idx_books_publish_year  ON books(publish_year);

@@ -132,7 +132,7 @@ async fn flashcard_words(storage: &Storage, book_id: i64) -> Vec<String> {
 /// any count it carries. Never `Display`, which prints the fixture's absolute
 /// path and would differ on every machine.
 ///
-/// This replaced a bare `has_warnings: bool`, and the reason is item 36's whole
+/// This replaced a bare `has_warnings: bool`, and the reason is item 37's whole
 /// thesis. That boolean was `true` for a sidecar with an unknown device status
 /// and `true` for one whose highlights we could not anchor — so a golden could
 /// not tell the two apart, and a fixture asserting "some warning happened" is
@@ -667,7 +667,7 @@ async fn highlight_ids_are_stable_across_refresh() {
     );
 }
 
-/// Item 36's assertion, held outside the golden as well as in it.
+/// Item 37's assertion, held outside the golden as well as in it.
 ///
 /// The golden pins the shape; this pins the *claim*, in the two ways the shape
 /// alone cannot. First, it names the fixture — if `Gen-Pdf-Anchors` is ever
@@ -732,7 +732,7 @@ async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
 /// The other half of the same claim, and the one that guards every *other*
 /// fixture: nothing that is not a paging document may acquire this diagnostic.
 ///
-/// Item 36 had to be a pure addition — a reflowable sidecar whose highlight
+/// Item 37 had to be a pure addition — a reflowable sidecar whose highlight
 /// count moved would be a regression dressed as a feature — and the count is
 /// asserted by the goldens. What they cannot say is that no EPUB fixture started
 /// emitting a *spurious* one, because a golden only sees the fixture it belongs

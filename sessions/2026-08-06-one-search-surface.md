@@ -1,6 +1,6 @@
 # 2026-08-06 — one search surface
 
-Item 33 of the non-GUI wave, in a worktree on `feat/engine-search-surface`.
+Item 34 of the non-GUI wave, in a worktree on `feat/engine-search-surface`.
 Migration `0015`, engine + API + one CLI door. Built finding (a) of item 18:
 `notes_fts` was the only virtual table in the repo, so a search box would have
 found the six notes a reader has written and none of the four hundred passages

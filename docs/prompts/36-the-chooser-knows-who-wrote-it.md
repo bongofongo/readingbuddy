@@ -1,7 +1,7 @@
-# Prompt — Item 35: the chooser knows who wrote it
+# Prompt — Item 36: the chooser knows who wrote it
 
 Paste into a fresh session at the repo root, on branch `feat/engine-candidate-author`,
-branched from `main` **after items 33, 34 and 36 have merged**. That base is
+branched from `main` **after items 34, 35 and 37 have merged**. That base is
 deliberate: this item collides with 33 (api + bindings) and 36 (`koreader.rs`),
 and a base that already contains them removes both conflicts. Item 18 had the one
 real file collision last wave and merged with **zero** conflicts for exactly this
@@ -86,7 +86,7 @@ Adding fields to a DTO does **not** bump `API_VERSION`. Do not bump it.
 `crates/api/src/dto.rs` (`MatchCandidateDto`), `gui/src/lib/api/bindings.ts`
 (**generated — `make ts`**), and the TUI's construction sites.
 
-**You run alone**, on a base containing items 33, 34 and 36. Nothing else is in
+**You run alone**, on a base containing items 34, 35 and 37. Nothing else is in
 flight.
 
 ## How you are gated

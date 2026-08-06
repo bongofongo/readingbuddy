@@ -159,6 +159,11 @@ dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vau
 	@# every book here has a cover and a NULL `cover_aspect`, and a shelf reading
 	@# that column concludes the column does not work.
 	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" covers
+	@# Same shape, same reason, one layer over: the seed states `title` and
+	@# `authors` and cannot state the keys they file under, because `sort_title`
+	@# drops a leading article and `sort_author` is a parse of a human name.
+	@# Without this every book here sorts to the top of `list --sort author`.
+	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" sort-keys
 	@# reading_events comes from the engine's own fillers rather than from invented
 	@# rows — the fixture states highlights and readings, and the real derivation
 	@# turns them into a log. A generator writing that table directly would be

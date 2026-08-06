@@ -1311,7 +1311,7 @@ return {
         );
         assert_eq!(sc.highlights[1].text, "pachinko");
         // A reflowable sidecar has no unstorable anchors, and saying so here is
-        // the cheapest possible guard on item 36 being a pure addition.
+        // the cheapest possible guard on item 37 being a pure addition.
         assert_eq!(sc.unsupported_anchors, 0);
     }
 

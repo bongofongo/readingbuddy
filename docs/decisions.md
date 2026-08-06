@@ -1249,7 +1249,7 @@ because item 31 needed somewhere to put reading time.
       `get_book` per candidate. Same class as the per-row summary this item
       built, in a file this item did not own.
 
-36. **A real PDF sidecar, and a `Diagnostic` instead of silence.** No migration;
+37. **A real PDF sidecar, and a `Diagnostic` instead of silence.** No migration;
     one `ErrorClass`-less diagnostic variant, one tier-1 fixture, one three-way
     split in a function that had two arms. Its subject is a comment that was
     true when it was written and false everywhere else: `entry_to_highlight`'s
@@ -1314,7 +1314,7 @@ because item 31 needed somewhere to put reading time.
       is the only version of this item worth having: a golden that merely lacks
       the highlights is the original bug, written down and made permanent.
 
-33. **One search surface.** Migration `0015`; a `highlights` FTS index, one
+34. **One search surface.** Migration `0015`; a `highlights` FTS index, one
     request answering notes and highlights together, and `title` as a predicate
     on `BookFilter`. It builds finding (a) of item 18, and its subject is that
     `notes_fts` was the only virtual table in the repo — so a search box would
@@ -1405,3 +1405,131 @@ because item 31 needed somewhere to put reading time.
       `*`** — no `OR`, no `NEAR`, no column syntax. A reader who wants one is
       asking for a query language, which is a surface somebody has to decide on,
       not an escape hatch to leave open by accident.
+
+35. **The sort keys get an index, and a writer.** Migration `0016` — four
+    indexes and one column. There was **no index on any sort key**: the seven
+    that existed were all foreign keys, so every `ORDER BY` the library screen
+    issued sorted the whole table and threw away all but a page of it, which is
+    what made a deep page expensive and what turned item 18's `books.id`
+    tie-break from insurance into the thing holding pagination together. Every
+    sort but `Progress` now walks an index, asserted against
+    `EXPLAIN QUERY PLAN` rather than behaviourally, because **a behavioural test
+    cannot see an index** — each of these sorts returned the right rows the day
+    before the migration and returns the same rows now. `Progress` is a computed
+    ratio across a `LEFT JOIN` and is the one sort that cannot be indexed; its
+    plan still says `USE TEMP B-TREE FOR ORDER BY`, and that is kept as the live
+    control which proves the other four assertions are ones the suite can fail.
+    - **`sort_title` had never been computed by anything**, and that is the trap
+      this item was really about. It was in `0001_init.sql`, in `MERGE_RULES`, on
+      `Book`, on `BookDto`, in the generated TypeScript, bound by the upsert —
+      and NULL on every row of every database that has ever existed, which is why
+      `BookSort::Title` ordered by `books.title` instead. **A sort-key column
+      added without a writer looks answered and is not**, and that reads
+      identically to answered from every call site. It is written now: the title
+      with a leading English article dropped, so *The Overstory* files under O.
+    - **Deleting it was the considered alternative and lost on one argument.**
+      Nothing had read it in the life of the schema and `books.title` is what a
+      user sees, so the case was real — but the delete reaches `BookDto` and
+      `bindings.ts`, which item 34 owns this wave, and a half-delete (column
+      gone, DTO field always null) is a *fourth* state and worse than the third.
+      The wire shape is unchanged and `BookDto.sort_title` stops being always-null,
+      which is a change of meaning without a change of shape.
+    - **`sort_title` left `MERGE_RULES` in the same breath, and that is migration
+      `0014`'s argument arriving a second time.** That table governs what a
+      *record* can carry, with a source to attribute, and no provider publishes a
+      filing key. Leaving it there would have handed every record-shaped writer a
+      way to move a book's filing name without moving the title it is derived
+      from — `0014`'s "the stored dimensions describe a different image", one
+      column over — and it would have let a provider *claim* a value that the
+      derivation had already replaced, i.e. a `field_provenance` row naming an
+      origin that supplied nothing. Only `a_record_claims_exactly_the_fields_it_supplies`
+      noticed, on the first run, exactly as it noticed item 32. So it takes the
+      cover metrics' shape: one writer, no claim, ignored by every merge.
+      `only_our_own_columns_sit_out_the_federated_merge` is down to one column.
+      The cost, stated: there is no longer a door for a user to file a book under
+      a name of their own. Nothing had ever opened it — `rb set` has no flag —
+      and re-opening it is a `Rule` and a flag, not a migration.
+    - **`sort_author` lands, after being refused twice.** Items 18 and 20 both
+      declined it on one real ground: SQLite cannot parse a human name, so the
+      column is NULL for every existing row and `ORDER BY sort_author` is
+      silently wrong until a back-fill nobody has run runs. It only pays *inside*
+      the item that adds the index, where the back-fill and the reader arrive
+      together — and the wave runs against disposable data, so a shape change
+      needs no data migration. `BookSort::Author` was the one arm with no
+      `ORDER BY` at all: it read the whole library, sorted in Rust and *then*
+      truncated. That arm is gone, not supplemented.
+    - **The encoding is the hard part, and it is proved rather than eyeballed.**
+      `names::sort_key` returns `(rank, last name, whole name)` and a column is
+      one TEXT value, so the tuple is packed as
+      `'0' SEP escape(last) SEP escape(whole)` with `SEP = \u{1}`. For a
+      concatenation to compare like a tuple, **the separator must be strictly
+      less than every byte a component can contain**; `escape` buys that by
+      mapping `\u{0}\u{1}\u{2}` to two-byte sequences that are monotone and
+      prefix-free, so nothing is reordered and nothing collides. SQLite's BINARY
+      collation is `memcmp` and Rust's `Ord for String` is byte-wise, so the two
+      ends compare the same way rather than similarly — and the property
+      `the_stored_order_is_the_tuple_order` asserts it over arbitrary author
+      lists including the control characters. **A column that nearly agrees with
+      the function is worse than no column**, because both exist and only one is
+      read; that is why the escape is there for names nobody will ever type.
+      A `COLLATE NOCASE` index would have compared differently from the function
+      it caches, so this one is deliberately BINARY.
+    - **`sort_author` is deliberately not on `Book`.** It is the engine's filing
+      key, not a fact about the book, and keeping it off the domain type keeps it
+      off the wire — no DTO field to explain, no frontend that can render a
+      string full of control characters, and no `dto.rs` edit in a wave where
+      another item owns that file.
+    - **One writer, reading the row back rather than the record.** Every write
+      that can move a title or an author list calls `refresh_sort_keys` last
+      inside its own transaction — the upsert, `enrich_book_attributed`,
+      `fill_book`, `merge_books`' `dst`-wins fill, and `set_book_fields` through
+      the second of those. It derives from **what was actually stored**, not from
+      the incoming `Book`, and that is the decision worth carrying: a merge
+      clause keeps the row's title when the record is silent, so a key bound from
+      the record would describe a title the row does not have. Deriving from the
+      stored value makes the two coherent through the merge rule, the user guard
+      and the `dst`-wins inversion alike without re-spelling any of them — which
+      is `invalidate_cover_metrics`' rule reached by a different route.
+    - **The back-fill has a door, `rb sort-keys`, and `make dev-db` runs it.** A
+      back-fill with no door is a function nothing ever calls, which is how
+      `measure_stored_covers` sat unexercised for a wave — and this one has the
+      sharper edge, because until it runs a book files at the *top* of an author
+      sort rather than under its author. Its work list is `sort_author IS NULL`,
+      which is *not computed yet* and never *no author*: an authorless book gets
+      a real key whose rank component files it last. Idempotent, and its wording
+      obeys both absence rules — `every book already files under a sort key`
+      rather than `filed 0 books`, and no count of what has not been done.
+    - **`BookSort::Title` orders by `COALESCE(sort_title, title)`, and the index
+      is on that same expression.** Not tidiness: it is what let the migration
+      ship with no SQL back-fill of `sort_title`, so the article-stripping rule
+      exists in one dialect (Rust) instead of two. A row the writer has not
+      reached degrades to its own raw title — the exact order it had before —
+      rather than piling at the top. `a_sort_title_index_that_nearly_matches_is_not_used`
+      pins both near misses: drop the `COLLATE NOCASE` or index the bare column
+      and the planner walks straight past an index that reads correctly in the
+      schema, which is `0008`'s lesson.
+    - **The article rule is deliberately English-only.** `books.language` is NULL
+      for most of a real library, so a table covering `der`/`el`/`la`/`le` would
+      be applied on a guess and would file *Das Kapital* under "Kapital". Narrow
+      for `pdf.rs`'s reason: a general rule that is wrong for some books is worse
+      than a specific rule that is silent about them. Stripping never empties a
+      title — "The" files under "The" — because a book filed under nothing is the
+      failure `names.rs` names as the one that matters.
+    - **The TUI's title sort was a second opinion and now is not.** `library.rs`
+      sorted its fetched page by `b.display_title().to_lowercase()`, which agreed
+      with the database only because `sort_title` was NULL everywhere. It calls
+      `sort::title_key` now, the way its author arm already called
+      `names::sort_key` — item 17's finding arriving a second time, for titles.
+      The one honest mismatch left is stated rather than papered over: SQLite's
+      `COLLATE NOCASE` folds ASCII only and Rust's `to_lowercase` is full
+      Unicode, which predates this item.
+    - **Two hand-maintained numbers beside generated SQL were removed on the
+      way past.** The upsert's column list and its row of `?`s were written out
+      by hand beside a clause generated from `MERGE_RULES`, and the three
+      `UPDATE`s named `?20`/`?21` — all four decided by that table's length.
+      Removing a column is what would have broken them, so they are computed now.
+    - **Finding, not built here.** `crates/corpus`' `gen-devdb` still writes
+      `sort_title` as literal NULL, and that is left deliberately: the door fills
+      it on every `make dev-db`, which is what exercises the door, exactly as the
+      seed's unmeasured covers exercise `rb covers`. A seed that stated the key
+      would be a fixture agreeing with the engine by copying it.

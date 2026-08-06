@@ -20,6 +20,24 @@ In order, and do not skip to the code:
 3. **The crate's own `CLAUDE.md`** — root routes you there. Do not read them all.
 4. **`docs/gui/gui-vision.md`** if the item touches the GUI or rewards.
 
+## 2a. The item number is not allocated by `docs/prompts/`
+
+**`grep '^[0-9]\+\. \*\*' docs/decisions.md` is the register of spent item
+numbers.** The prompts directory is not, and reading it instead is how the
+2026-08-06 non-GUI wave allocated itself **33**–37 and shipped two items
+numbered 33 before anyone noticed.
+
+The one it collided with — item 33, "Surfacing 21/29/30/31/32" — was minted
+*mid-session* rather than from a spec, so it has a `decisions.md` entry and a
+session log and **no prompt file**. Any item that starts as a handoff's open
+work rather than as a spec row has that shape, and there will be more of them.
+
+The wave shifted to 34–38 once it was found, at the cost of one commit touching
+32 files: worker threads write their item number into module headers, migration
+headers, test section comments and `CLAUDE.md` routing rows, so a number is not
+a label on a document — it is a fact scattered through the source. Check the
+register first; it costs one grep.
+
 ## 2. Pre-allocate the migration number — before writing anything
 
 If the item takes a migration, claim the number **now** and tell the user which.
@@ -30,8 +48,8 @@ is not a git conflict — the filenames differ past the number.
 merged, which is the expensive moment to find out.
 
 Currently pre-allocated, in merge order: `0011`–`0014` are **applied** (items
-21, 29, 32, 20). Outstanding: **`0015`** → item 33 (highlight FTS), **`0016`** →
-item 34 (sort-key indexes), **`0017`** → item 23 (moments, and it moved down
+21, 29, 32, 20). Outstanding: **`0015`** → item 34 (highlight FTS), **`0016`** →
+item 35 (sort-key indexes), **`0017`** → item 23 (moments, and it moved down
 from `0015` on 2026-08-06 so the non-GUI wave could land ahead of it). Nothing
 else in any wave takes one.
 

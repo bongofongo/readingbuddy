@@ -41,7 +41,7 @@ use crate::error::ApiError;
 /// the number can stay still through ordinary growth. Items 18, 19, 22 and the
 /// surfacing item all grew this vocabulary without moving it.
 ///
-/// **2 — item 33 removed `SearchNotes` and `Response::NoteHits`.** Their
+/// **2 — item 34 removed `SearchNotes` and `Response::NoteHits`.** Their
 /// replacement, [`Request::SearchMarks`], answers the same question and more of
 /// it, so the two could have stood side by side and the number could have
 /// stayed at 1. Keeping both was rejected: a client able to ask for notes alone

@@ -1,4 +1,4 @@
-# Prompt — Item 33: one search surface
+# Prompt — Item 34: one search surface
 
 Paste into a fresh session at the repo root, on branch `feat/engine-search-surface`,
 branched from `main` at the head of the 2026-08-06 non-GUI wave.
@@ -94,7 +94,7 @@ an empty query does before a caller discovers it.
   a whole wave. `crates/cli/src/commands/covers.rs` (78 lines) is the shape of a
   door that costs nothing.
 
-**Collides with:** item 35 (api + bindings) and nothing else in round 1. Item 35
+**Collides with:** item 36 (api + bindings) and nothing else in round 1. Item 36
 runs **after** you merge, on a base that contains you, so you do not coordinate
 with it.
 

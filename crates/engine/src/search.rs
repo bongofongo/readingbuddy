@@ -300,9 +300,9 @@ fn dedup(raw: Vec<ProviderBook>) -> Vec<Merged> {
                 by_fingerprint.entry(fingerprint(&pb.book)).or_insert(i);
                 // The first record claims every field it speaks to, and *what
                 // it speaks to* is asked of the merge table rather than
-                // re-listed here — `merge_into` above never touches `sort_title`
-                // or `cover_path`, so a list written out at this end would be
-                // the one place those two could go unattributed.
+                // re-listed here — `merge_into` above never touches
+                // `cover_path`, so a list written out at this end would be the
+                // one place it could go unattributed.
                 let mut claims = FieldClaims::default();
                 for field in crate::storage::fields_said(&pb.book) {
                     claims.claim(field, pb.provider);
@@ -471,10 +471,13 @@ mod tests {
         a.first_sentence = Some("History has failed us.".into());
         a.cover_url = Some("https://example.invalid/c.jpg".into());
         a.openlibrary_key = Some("/works/OL1W".into());
-        // `sort_title` and `cover_path` are the two columns `merge_into` never
-        // touches, which is exactly why the first record's claims are asked of
-        // the merge table rather than listed at that end.
-        a.sort_title = Some("Pachinko".into());
+        // `cover_path` is the column `merge_into` never touches, which is
+        // exactly why the first record's claims are asked of the merge table
+        // rather than listed at that end. It was two until item 35, when
+        // `sort_title` stopped being a merge column at all — a derived filing
+        // key is not a value a record carries, so it is not claimable and a
+        // record setting one here would now make the sweep below fail
+        // honestly rather than pass.
         a.cover_path = Some("database/images/c.jpg".into());
         a.translators = vec!["A Translator".into()];
         a.subjects = vec!["Fiction / Literary".into()];

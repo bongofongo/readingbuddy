@@ -484,7 +484,7 @@ already puts sha256 in that role.
 
 - **`abandoned` is unobserved.** Handled from source. If a real one ever turns
   up, check the spelling before trusting this document.
-- **PDF annotations are still unobserved, and item 36 did not change that.**
+- **PDF annotations are still unobserved, and item 37 did not change that.**
   Both PDF sidecars here have empty `annotations`, so no PDF highlight KOReader
   wrote has ever been read on this machine. Read the next three sentences as one
   claim, because the useful part is the seam between them.

@@ -1,4 +1,4 @@
-# Prompt — Item 36: a real PDF sidecar, and a `Diagnostic` instead of silence
+# Prompt — Item 37: a real PDF sidecar, and a `Diagnostic` instead of silence
 
 Paste into a fresh session at the repo root, on branch `feat/engine-pdf-sidecar`,
 branched from `main` at the head of the 2026-08-06 non-GUI wave.
@@ -99,9 +99,9 @@ conclude the second is correct, say so and **do not do it here**; it is an item.
 `parse_legacy`, and whatever collects the report), `crates/engine/src/diagnostic.rs`,
 `docs/koreader-format.md`, the goldens under the import harness.
 
-**Collides with:** item 35 (`koreader.rs`) and item 37 (corpus) — both of which
+**Collides with:** item 36 (`koreader.rs`) and item 38 (corpus) — both of which
 run **after** you merge, on bases that contain you. You do not coordinate with
-either. Item 33 and item 34 touch none of your files.
+either. Item 34 and item 35 touch none of your files.
 
 ## How you are gated
 

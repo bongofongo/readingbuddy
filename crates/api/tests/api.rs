@@ -705,7 +705,7 @@ async fn a_book_carries_the_shape_of_its_edition() {
     assert_eq!(bare.shape.thickness_source, ShapeSourceDto::Assumed);
 }
 
-// ---- item 33: one search surface -------------------------------------------
+// ---- item 34: one search surface -------------------------------------------
 
 /// `source` is a filter and its absence is *both*, in `BookFilterDto`'s idiom.
 ///

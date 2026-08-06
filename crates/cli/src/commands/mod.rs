@@ -12,6 +12,7 @@ pub mod note;
 pub mod rating;
 pub mod reflect;
 pub mod search;
+pub mod sort_keys;
 
 use anyhow::{Result, bail};
 use readingbuddy::{Book, Engine, NoteRecord};

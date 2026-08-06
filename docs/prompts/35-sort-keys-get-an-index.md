@@ -1,4 +1,4 @@
-# Prompt — Item 34: the sort keys get an index, and a writer
+# Prompt — Item 35: the sort keys get an index, and a writer
 
 Paste into a fresh session at the repo root, on branch `feat/engine-sort-keys`,
 branched from `main` at the head of the 2026-08-06 non-GUI wave.
@@ -116,7 +116,7 @@ A back-fill with no door is a function nothing ever calls, which is how
 - Ship a column without the back-fill.
 - Touch the API, the DTOs or `bindings.ts`. `BookDto.sort_title` already exists
   and its meaning changes, which is worth a sentence in `decisions.md` — but the
-  wire shape does not, and item 33 owns that file this wave.
+  wire shape does not, and item 34 owns that file this wave.
 
 ## Files
 
@@ -126,7 +126,7 @@ A back-fill with no door is a function nothing ever calls, which is how
 command under `crates/cli/src/commands/`, `Makefile` (`dev-db`),
 `crates/corpus/src/devdb.rs` if the seed should stop writing `NULL`.
 
-**Collides with nothing else in round 1** — items 33 and 36 do not touch
+**Collides with nothing else in round 1** — items 34 and 37 do not touch
 `books.rs`, `names.rs` or the CLI.
 
 ## How you are gated

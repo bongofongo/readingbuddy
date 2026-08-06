@@ -73,6 +73,15 @@ pre-allocation ritual exists to prevent.
 
 ## The items
 
+> **The numbers below are wrong, and were corrected during the run to 34–38.**
+> This section reads `docs/prompts/` for the last item number, sees `32-`, and
+> proposes 33. But **item 33 was already spent** on 2026-08-05 — "Surfacing
+> 21/29/30/31/32", which was minted mid-session and so has a `decisions.md`
+> entry and a session log but no prompt file. The register of spent numbers is
+> `grep '^[0-9]\+\. \*\*' docs/decisions.md`. Read the mapping as
+> 33→34 (search), 34→35 (sort keys), 35→36 (chooser), 36→37 (PDF sidecar),
+> 37→38 (fixture parity); migration numbers are unaffected.
+
 Numbers below are **proposed**: 33–37, following item 32. The user allocates
 numbers — confirm them in one line before writing the prompt files, and if they
 move, the only edits are the prompt filenames and the headings.
