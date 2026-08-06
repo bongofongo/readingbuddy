@@ -36,7 +36,15 @@ first for that reason.
 the front of the queue and item 21 moved into that wave: `0011` to item 21,
 `0012`/`0013` to items 29/32, then **`0014` to item 20 and `0015` to item 23**.
 Nothing else in this wave takes one. The reshuffle is free because nothing had
-been built against the old numbers, and it is necessary because
+been built against the old numbers, and it is necessary because the contiguity
+test refuses a gap.
+
+**Reshuffled again on 2026-08-06**, for the same reason and with the same
+freedom: the non-GUI wave (items 33–37,
+`docs/handoff-orchestrator-non-gui-wave.md`) builds *before* item 23 and takes
+**`0015` (item 33, highlight FTS) and `0016` (item 34, sort-key indexes)**, so
+**item 23 moves to `0017`**. A wave that landed `0016` while `0015` sat
+unwritten would leave `main` red on the contiguity test —
 `migration_versions_are_contiguous_from_one` fails on a *gap* as well as on a
 duplicate. Per `CLAUDE.md`, an applied migration is never edited, and
 `migration_versions_are_contiguous_from_one` is what catches two threads both
@@ -382,7 +390,7 @@ assumption.
 
 ---
 
-## Item 23 — moments — migration `0015`
+## Item 23 — moments — migration `0017`
 
 A moment fires once. That requires knowing it fired, which is state the app
 keeps about itself rather than a number shown to anyone.
@@ -401,7 +409,8 @@ answer is that a moment fires only for events that occur **after** the book is
 in the library — an import is history arriving, not a thing you just did. The
 cards, though, are minted for all 400, because the shelf is the history.
 
-**Migration:** `0015`. **Depends on:** 21.
+**Migration:** `0017` (was `0015`; items 33 and 34 took `0015`/`0016` on
+2026-08-06). **Depends on:** 21.
 
 ---
 
@@ -519,7 +528,7 @@ rather than showing a zero.
 24 (vault watch)    ─┘
         ↓
 19 (edition shape)     — wants 20b's stored aspect
-23 (moments, 0015)     — wants 21
+23 (moments, 0017)     — wants 21
         ↓
 25 (scaffold)
         ↓
@@ -527,7 +536,7 @@ rather than showing a zero.
 ```
 
 Migrations merge in numeric order: `0011` (21), `0012` (29), `0013` (32),
-`0014` (20), `0015` (23).
+`0014` (20), `0015` (33), `0016` (34), `0017` (23).
 
 **What is deliberately not in this wave**, so it is not quietly added: KOReader
 `statistics.sqlite3` (item 15, with the plugin); goals of any kind (decided

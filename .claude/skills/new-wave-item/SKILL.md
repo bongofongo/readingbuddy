@@ -29,10 +29,11 @@ is not a git conflict — the filenames differ past the number.
 `migration_versions_are_contiguous_from_one` catches it, but only after both are
 merged, which is the expensive moment to find out.
 
-Currently pre-allocated, in merge order: **`0011`** → item 21
-(`reading_events`), **`0012`** → item 29 (`field_provenance`), **`0013`** →
-item 32 (subjects/series), **`0014`** → item 20 (cover dimensions + accent),
-**`0015`** → item 23 (moments). Nothing else in either wave takes one.
+Currently pre-allocated, in merge order: `0011`–`0014` are **applied** (items
+21, 29, 32, 20). Outstanding: **`0015`** → item 33 (highlight FTS), **`0016`** →
+item 34 (sort-key indexes), **`0017`** → item 23 (moments, and it moved down
+from `0015` on 2026-08-06 so the non-GUI wave could land ahead of it). Nothing
+else in any wave takes one.
 
 The contiguity test fails on a **gap** as well as on a duplicate, so a branch
 holding `0012` before `0011` has merged is red until its predecessor lands.
