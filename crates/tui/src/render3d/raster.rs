@@ -510,15 +510,21 @@ mod tests {
     fn wire_rate() {
         use crate::perf;
         use crate::render3d::{kitty, texture};
+        // No book is in hand here — the file is found by walking the images
+        // dir — so the accent is the unmeasured one this stand-in book would
+        // get. It tints the spine and nothing else; what this sweep measures is
+        // how a photographic *cover* compresses.
+        let book = Book::default();
+        let accent = texture::accent_for(book.cover_accent_rgb(), book.display_title());
         // Tests run from the crate dir, so try the workspace root too.
         let real = ["database/images", "../../database/images"]
             .iter()
             .filter_map(|d| std::fs::read_dir(d).ok())
             .flat_map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()))
             .find(|p| p.extension().is_some_and(|x| x == "jpg"))
-            .and_then(|p| texture::load_cover(&p, 1024));
+            .and_then(|p| texture::load_cover(&p, 1024, accent));
         let (model, cover) = match real {
-            Some(c) => (Model::new(&Book::default(), &c), c),
+            Some(c) => (Model::new(&book, &c), c),
             None => {
                 println!("no real cover found; skipping");
                 return;

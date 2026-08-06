@@ -1,6 +1,13 @@
-//! Cover textures: decode from disk, prescale to the framebuffer, extract the
-//! accent color used for the spine and back board, and synthesize a plate when
-//! a book has no cover at all.
+//! Cover textures: decode from disk, prescale to the framebuffer, light the
+//! spine and back board from the accent the engine measured, and synthesize a
+//! plate when a book has no cover at all.
+//!
+//! **The border median is not measured here** (item 39). `readingbuddy::images`
+//! measures it once, when the cover is stored, and `books.cover_accent` is
+//! where it lives; this module reads that column and applies its own luma
+//! clamp. Until item 39 the same 2px-border median was computed twice — here on
+//! the full-resolution decode and there on the same file's bytes — which is one
+//! arithmetic and was never two answers.
 
 use std::path::Path;
 
@@ -61,15 +68,19 @@ pub struct Cover {
     pub aspect: f32,
 }
 
-/// Load `path`, downscale so its width is roughly `target_width` (never
-/// upscaling), and derive the accent color. Lanczos on the way down is what
-/// keeps a 900px cover from aliasing into noise at 60 half-block pixels.
-pub fn load_cover(path: &Path, target_width: u32) -> Option<Cover> {
+/// Load `path` and downscale so its width is roughly `target_width` (never
+/// upscaling). Lanczos on the way down is what keeps a 900px cover from
+/// aliasing into noise at 60 half-block pixels.
+///
+/// `accent` is passed **in** rather than measured off the pixels: it is a fact
+/// about the file that the engine already recorded, and [`accent_for`] is how a
+/// caller holding a `Book` turns the stored column into one. This function
+/// looks at the image only for its texture and its shape.
+pub fn load_cover(path: &Path, target_width: u32, accent: Vec3) -> Option<Cover> {
     let img = ImageReader::open(path).ok()?.decode().ok()?.to_rgb8();
     if img.width() == 0 || img.height() == 0 {
         return None;
     }
-    let accent = accent_from_border(&img);
     let aspect = img.width() as f32 / img.height() as f32;
     let target_width = target_width.max(8);
     let scaled = if img.width() > target_width {
@@ -85,35 +96,48 @@ pub fn load_cover(path: &Path, target_width: u32) -> Option<Cover> {
     })
 }
 
-/// Median of the pixels in a 2px frame around the cover, then pushed into a
-/// legible band: a near-white cover still needs a spine you can see against
-/// the page edges, and a black one still needs to read as a board.
-fn accent_from_border(img: &RgbImage) -> Vec3 {
-    let (w, h) = (img.width() as i64, img.height() as i64);
-    let border = 2i64.min(w / 4).max(1);
-    let mut chans: [Vec<u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    for y in 0..h {
-        for x in 0..w {
-            let edge = x < border || y < border || x >= w - border || y >= h - border;
-            if !edge {
-                continue;
-            }
-            let p = img.get_pixel(x as u32, y as u32);
-            for c in 0..3 {
-                chans[c].push(p[c]);
-            }
-        }
-    }
-    let mut med = [0.5f32; 3];
-    for c in 0..3 {
-        if chans[c].is_empty() {
-            continue;
-        }
-        chans[c].sort_unstable();
-        med[c] = chans[c][chans[c].len() / 2] as f32 / 255.0;
-    }
-    let color = vec3(med[0], med[1], med[2]);
-    clamp_luma(color, 0.14, 0.62)
+/// The luma band a spine and a back board have to land inside. A near-white
+/// cover still needs a spine you can see against the cream page edges, and a
+/// black one still needs to read as a board rather than a hole.
+///
+/// This is the renderer's policy about its own lighting, not a fact about the
+/// file, which is why the *stored* accent is deliberately unclamped and this
+/// pair lives here (`readingbuddy::images::accent_from_border`'s doc says the
+/// same thing from the other side).
+const ACCENT_LUMA: (f32, f32) = (0.14, 0.62);
+
+/// The accent this renderer draws the spine and back board in, for a book whose
+/// stored [`Book::cover_accent_rgb`] is `measured`.
+///
+/// The median itself is the engine's — measured once when the cover was stored,
+/// and read here rather than recomputed. What is added is the luma clamp.
+///
+/// **`None` falls back to the procedural plate's hue.** A cover is unmeasured
+/// when it could not be decoded at all, and for any row written before item 20
+/// added the column that `rb covers` has not back-filled yet. The cost is real
+/// and is stated rather than hidden: on a library that has never had the
+/// back-fill run, a book with a perfectly good jacket gets a spine coloured by
+/// its *title* instead of by its boards. That is a colour somebody's book
+/// chose over a grey nobody chose, and `rb covers` is one command.
+///
+/// [`Book::cover_accent_rgb`]: readingbuddy::Book::cover_accent_rgb
+pub fn accent_for(measured: Option<[u8; 3]>, title: &str) -> Vec3 {
+    let Some(rgb) = measured else {
+        return procedural_accent(title);
+    };
+    let c = vec3(rgb[0] as f32, rgb[1] as f32, rgb[2] as f32) / 255.0;
+    clamp_luma(c, ACCENT_LUMA.0, ACCENT_LUMA.1)
+}
+
+/// The hue [`procedural_cover`] paints its plate in, as an accent.
+///
+/// A function rather than a line inside `procedural_cover` because
+/// [`accent_for`] needs exactly it for an unmeasured cover, and two copies of
+/// "the title's hue, clamped" is how a book grows a spine that does not match
+/// its own plate.
+fn procedural_accent(title: &str) -> Vec3 {
+    let hue = (fnv1a(title) % 360) as f32;
+    clamp_luma(hsv_to_rgb(hue, 0.42, 0.55), ACCENT_LUMA.0, ACCENT_LUMA.1)
 }
 
 /// Rescale a color so its luma lands inside [lo, hi], preserving hue.
@@ -160,7 +184,7 @@ pub fn procedural_cover(title: &str) -> Cover {
             height: H,
             px,
         },
-        accent: clamp_luma(base, 0.14, 0.62),
+        accent: procedural_accent(title),
         aspect: W as f32 / H as f32,
     }
 }
@@ -195,33 +219,95 @@ mod tests {
     use super::*;
     use image::Rgb;
 
-    fn framed(border: Rgb<u8>, middle: Rgb<u8>) -> RgbImage {
-        RgbImage::from_fn(20, 20, |x, y| {
+    fn luma(c: Vec3) -> f32 {
+        c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+    }
+
+    /// A cover whose border is one colour and whose field is another, written
+    /// to disk so [`load_cover`] can be pointed at it.
+    ///
+    /// `tempfile` is not a dependency of this crate — `app.rs`'s `scratch`
+    /// helper makes the same call for the same reason, and the counter is what
+    /// keeps two tests in the same process apart.
+    fn framed_file(border: Rgb<u8>, middle: Rgb<u8>) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "readingbuddy-tui-texture-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("cover.png");
+        let img = RgbImage::from_fn(20, 20, |x, y| {
             if x < 2 || y < 2 || x >= 18 || y >= 18 {
                 border
             } else {
                 middle
             }
-        })
+        });
+        img.save(&path).expect("write the cover");
+        path
     }
 
+    /// The border-not-the-field property, re-pointed by item 39.
+    ///
+    /// The *measurement* moved to `readingbuddy::images::accent_from_border`
+    /// and is asserted there by `a_measured_cover_carries_its_size_and_its_
+    /// border_colour`. What is this renderer's to keep is that the stored
+    /// median is what reaches the spine — hue intact, and **not** re-derived
+    /// from the pixels it is handed. So the image on disk is deliberately the
+    /// inverse of the accent: a red-bordered file given a blue accent must draw
+    /// blue, which no re-measuring implementation can pass.
     #[test]
     fn accent_follows_the_border_not_the_middle() {
-        // A dark red frame around a white field: the accent must be red.
-        let img = framed(Rgb([140, 20, 20]), Rgb([255, 255, 255]));
-        let a = accent_from_border(&img);
-        assert!(a.x > a.y * 2.0 && a.x > a.z * 2.0, "not red: {a:?}");
+        let red = accent_for(Some([140, 20, 20]), "");
+        assert!(
+            red.x > red.y * 2.0 && red.x > red.z * 2.0,
+            "not red: {red:?}"
+        );
+
+        let path = framed_file(Rgb([140, 20, 20]), Rgb([255, 255, 255]));
+        let blue = accent_for(Some([20, 20, 140]), "");
+        let cover = load_cover(&path, 16, blue).expect("a png is decodable");
+        assert_eq!(
+            cover.accent, blue,
+            "the renderer re-measured the file instead of reading the column"
+        );
     }
 
     #[test]
     fn accent_luma_is_clamped_into_the_visible_band() {
-        let white = accent_from_border(&framed(Rgb([255, 255, 255]), Rgb([0, 0, 0])));
-        let luma = white.x * 0.2126 + white.y * 0.7152 + white.z * 0.0722;
-        assert!(luma <= 0.63, "white cover produced luma {luma}");
+        let white = luma(accent_for(Some([255, 255, 255]), ""));
+        assert!(white <= ACCENT_LUMA.1 + 0.01, "white cover: luma {white}");
 
-        let black = accent_from_border(&framed(Rgb([0, 0, 0]), Rgb([255, 255, 255])));
-        let luma = black.x * 0.2126 + black.y * 0.7152 + black.z * 0.0722;
-        assert!(luma >= 0.13, "black cover produced luma {luma}");
+        let black = luma(accent_for(Some([0, 0, 0]), ""));
+        assert!(black >= ACCENT_LUMA.0 - 0.01, "black cover: luma {black}");
+
+        // The clamp is the renderer's and the column is not clamped, so an
+        // accent already inside the band must arrive untouched.
+        let mid = accent_for(Some([160, 32, 32]), "");
+        assert!((mid.x - 160.0 / 255.0).abs() < 1e-6, "{mid:?}");
+    }
+
+    /// An unmeasured cover — undecodable, or a row `rb covers` has not reached
+    /// — draws the plate's own hue rather than a grey nobody chose.
+    #[test]
+    fn an_unmeasured_cover_falls_back_to_the_procedural_hue() {
+        assert_eq!(
+            accent_for(None, "Piranesi"),
+            procedural_cover("Piranesi").accent,
+            "a NULL accent must match the plate the same title would paint"
+        );
+        assert_ne!(accent_for(None, "Piranesi"), accent_for(None, "Trust"));
+
+        // And it is the *title's* hue even when a real jacket is on disk: the
+        // spine of a book whose cover we can draw but never measured still has
+        // to be a colour of that book's own.
+        let path = framed_file(Rgb([140, 20, 20]), Rgb([255, 255, 255]));
+        let cover = load_cover(&path, 16, accent_for(None, "Piranesi")).expect("decodable");
+        assert_eq!(cover.accent, procedural_cover("Piranesi").accent);
     }
 
     #[test]

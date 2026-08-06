@@ -215,12 +215,17 @@ fn write_thumb(img: &RgbImage, cover: &Path) -> Result<Option<PathBuf>> {
 /// flat colour interrupted by whatever bleeds off the artwork, and a mean lets
 /// the interruption move the answer.
 ///
-/// **A second copy of `render3d/texture.rs`'s `accent_from_border`, and
-/// deliberately so for exactly one item.** The engine cannot depend on the TUI,
-/// the TUI is frozen by `docs/decisions.md`, and item 19 is the item that
-/// rewires the renderer onto this column and deletes its own copy. The
-/// arithmetic is identical up to the luma clamp, which stays there — see
-/// [`CoverMetrics::accent`].
+/// **The only copy.** Item 20 wrote this beside an identical loop in
+/// `render3d/texture.rs` and said item 19 would delete that one; item 19
+/// shipped and did not, and the duplicate then survived three handoffs behind a
+/// second justification — that the two measured different images — which was
+/// also false: the renderer measured its full-resolution decode of the same
+/// file, before it scaled it. **Item 39 deleted it.** The renderer reads
+/// `books.cover_accent` now.
+///
+/// What genuinely does not live here is the luma clamp, which is a renderer's
+/// policy about its own lighting rather than a fact about the file — see
+/// [`CoverMetrics::accent`] and `render3d/texture.rs`'s `ACCENT_LUMA`.
 fn accent_from_border(img: &RgbImage) -> i64 {
     let (w, h) = (img.width() as i64, img.height() as i64);
     let border = 2i64.min(w / 4).max(1);
