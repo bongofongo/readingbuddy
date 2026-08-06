@@ -1661,6 +1661,12 @@ pub enum DiagnosticKindDto {
     SidecarNotIdentified {
         path: String,
     },
+    /// The count is the field, not a list: the engine reports this once per
+    /// file, so a frontend renders one line however many highlights it names.
+    SidecarAnchorsUnsupported {
+        path: String,
+        entries: usize,
+    },
     GoodreadsRowSkipped {
         row: usize,
     },
@@ -1754,6 +1760,12 @@ impl From<DiagnosticKind> for DiagnosticKindDto {
             K::SidecarNotIdentified { path } => DiagnosticKindDto::SidecarNotIdentified {
                 path: path_str(&path),
             },
+            K::SidecarAnchorsUnsupported { path, entries } => {
+                DiagnosticKindDto::SidecarAnchorsUnsupported {
+                    path: path_str(&path),
+                    entries,
+                }
+            }
             K::GoodreadsRowSkipped { row } => DiagnosticKindDto::GoodreadsRowSkipped { row },
             K::GoodreadsReviewDiverged { title } => {
                 DiagnosticKindDto::GoodreadsReviewDiverged { title }

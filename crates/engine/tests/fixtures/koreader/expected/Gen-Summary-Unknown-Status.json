@@ -1,5 +1,4 @@
 {
-  "has_warnings": true,
   "imported": [
     {
       "book_title": "A Future Book",
@@ -23,5 +22,8 @@
       "updated": 0
     }
   ],
-  "unmatched": []
+  "unmatched": [],
+  "warnings": [
+    "UnknownDeviceStatus"
+  ]
 }

@@ -56,6 +56,22 @@ pub struct KoSidecar {
     pub summary: Option<KoSummary>,
     pub stats: Option<KoStats>,
     pub highlights: Vec<NewHighlight>,
+    /// Entries that are highlights on the device but carry an anchor we cannot
+    /// store: KOReader writes `pos0` as a **table** — a page plus coordinates —
+    /// on a paging document (PDF, DjVu), where a reflowable one gets a cre
+    /// xpointer string. See [`Anchor`].
+    ///
+    /// A **count, not a collection**, and that is the decision rather than an
+    /// economy: the degradation is per *file*
+    /// ([`DiagnosticKind::SidecarAnchorsUnsupported`]). A 300-highlight PDF that
+    /// emitted 300 diagnostics would have replaced silence with noise, and noise
+    /// is not the improvement this was after.
+    ///
+    /// Zero on every EPUB sidecar there has ever been, which is why it defaults
+    /// and why nothing downstream had to learn about it.
+    ///
+    /// [`DiagnosticKind::SidecarAnchorsUnsupported`]: crate::diagnostic::DiagnosticKind::SidecarAnchorsUnsupported
+    pub unsupported_anchors: usize,
 }
 
 /// KOReader's per-book reading status.
@@ -202,12 +218,16 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
     }
 
     if let Some(annotations) = get_table(&root, "annotations") {
-        sidecar.highlights = parse_annotations(&annotations)?;
+        let parsed = parse_annotations(&annotations)?;
+        sidecar.highlights = parsed.highlights;
+        sidecar.unsupported_anchors = parsed.unsupported_anchors;
     } else if let Some(highlight) = get_table(&root, "highlight") {
         let notes_by_datetime = get_table(&root, "bookmarks")
             .map(|b| bookmark_notes(&b))
             .unwrap_or_default();
-        sidecar.highlights = parse_legacy(&highlight, &notes_by_datetime)?;
+        let parsed = parse_legacy(&highlight, &notes_by_datetime)?;
+        sidecar.highlights = parsed.highlights;
+        sidecar.unsupported_anchors = parsed.unsupported_anchors;
     }
     Ok(sidecar)
 }
@@ -256,12 +276,76 @@ fn parse_stats(t: &Table) -> KoStats {
     }
 }
 
-fn entry_to_highlight(item: &Table, page: Option<i64>) -> Option<NewHighlight> {
-    let text = get_str(item, "text")?;
+/// A `pos0`, as the file actually carries it.
+///
+/// The distinction that matters is not string-versus-absent, which is what the
+/// parser used to see, but **three** cases: an anchor we can store, no anchor at
+/// all, and an anchor we can read the shape of and cannot represent.
+enum Anchor {
+    /// A cre xpointer, e.g. `/body/DocFragment[18]/body/p[135]/text().158`. The
+    /// only shape `highlights.pos0` can hold, and the only one `identity_hash`
+    /// has ever been fed.
+    Xpointer(String),
+    /// No `pos0`. A plain bookmark entry — 14 of the 361 annotations in the real
+    /// library — which is not a highlight and never was. Ordinary, and silent.
+    Absent,
+    /// Present, and a **table**. This is KOReader's paging-document anchor: a
+    /// page number plus coordinates (and a sibling `pboxes` array of rectangles)
+    /// rather than a position in a text stream, because a scanned page has no
+    /// text stream to point into.
+    ///
+    /// We cannot store it, so the entry does not import — but it is a *highlight
+    /// the user made*, not a bookmark, and the difference is exactly what the
+    /// old code could not see.
+    Unsupported,
+}
+
+/// Read `pos0` without deciding what an entry is.
+///
+/// **Only the table case is new, and deliberately only that.** Every other Lua
+/// value still goes through `get_str`, which coerces a number to its digits and
+/// filters the empty string exactly as it did before this function existed.
+/// Narrowing the change to one value type is what makes "no reflowable sidecar
+/// imports differently" a property of the code rather than a claim about which
+/// fixtures happen to be committed.
+fn anchor(item: &Table) -> Anchor {
+    if matches!(item.get::<Value>("pos0"), Ok(Value::Table(_))) {
+        return Anchor::Unsupported;
+    }
+    match get_str(item, "pos0") {
+        Some(pos0) => Anchor::Xpointer(pos0),
+        None => Anchor::Absent,
+    }
+}
+
+/// What one `annotations` (or legacy `highlight`) entry turned out to be.
+enum Entry {
+    Highlight(Box<NewHighlight>),
+    /// A bookmark, or an entry with nothing to store. Ordinary; goes uncounted.
+    NotAHighlight,
+    /// A highlight whose [`Anchor`] we cannot represent. Counted, and reported
+    /// once per file.
+    UnsupportedAnchor,
+}
+
+fn entry_to_highlight(item: &Table, page: Option<i64>) -> Entry {
+    // `text` is tested **before** the anchor, and the order is the honest one:
+    // an entry with no text would not import however good its anchor was, so
+    // counting it would overstate what the anchor cost us. The diagnostic's
+    // claim is "this many highlights did not arrive *because of the anchor*".
+    let Some(text) = get_str(item, "text") else {
+        return Entry::NotAHighlight;
+    };
     // Modern `annotations` mixes highlights and plain bookmarks; a real
-    // highlight always carries a pos0 xpointer.
-    let pos0 = get_str(item, "pos0")?;
-    Some(NewHighlight {
+    // highlight always carries a pos0. On a reflowable document that is a cre
+    // xpointer string — on a paging one it is a table, which is a highlight we
+    // cannot anchor rather than a bookmark we should ignore.
+    let pos0 = match anchor(item) {
+        Anchor::Xpointer(pos0) => pos0,
+        Anchor::Absent => return Entry::NotAHighlight,
+        Anchor::Unsupported => return Entry::UnsupportedAnchor,
+    };
+    Entry::Highlight(Box::new(NewHighlight {
         text,
         chapter: get_str(item, "chapter"),
         page: get_int(item, "pageno").or(get_int(item, "page")).or(page),
@@ -272,55 +356,80 @@ fn entry_to_highlight(item: &Table, page: Option<i64>) -> Option<NewHighlight> {
         color: get_str(item, "color").or_else(|| get_str(item, "drawer")),
         note: get_str(item, "note"),
         source: "koreader".to_string(),
-    })
+    }))
 }
 
-fn parse_annotations(annotations: &Table) -> Result<Vec<NewHighlight>> {
+/// What one layout's entries came to: the highlights, and the ones left behind.
+///
+/// A struct rather than a bare `Vec` because the second number has to travel out
+/// of here — it used to be discarded inside the `if let Some(h)` that both
+/// parsers wrote, which is precisely where a PDF library's highlights went.
+struct Parsed {
+    highlights: Vec<NewHighlight>,
+    unsupported_anchors: usize,
+}
+
+fn parse_annotations(annotations: &Table) -> Result<Parsed> {
     // `sequence_values` stops dead at the first missing index, so a table like
     // `{[1]=.., [3]=..}` would silently yield one highlight and drop the rest.
     // KOReader produces exactly that shape after a sync conflict, and silent
     // data loss on someone's reading notes is the worst outcome here. Iterate
     // the pairs and sort, the same way `parse_legacy` already does.
     let mut indexed: Vec<(i64, NewHighlight)> = Vec::new();
+    let mut unsupported_anchors = 0;
     for pair in annotations.pairs::<i64, Table>() {
         let (idx, item) =
             pair.map_err(|e| EngineError::Sidecar(format!("annotation entry: {e}")))?;
-        if let Some(h) = entry_to_highlight(&item, None) {
-            indexed.push((idx, h));
+        match entry_to_highlight(&item, None) {
+            Entry::Highlight(h) => indexed.push((idx, *h)),
+            Entry::UnsupportedAnchor => unsupported_anchors += 1,
+            Entry::NotAHighlight => {}
         }
     }
     // Lua map iteration order is arbitrary; the index is the only ordering the
     // file actually carries.
     indexed.sort_by_key(|(idx, _)| *idx);
-    Ok(indexed.into_iter().map(|(_, h)| h).collect())
+    Ok(Parsed {
+        highlights: indexed.into_iter().map(|(_, h)| h).collect(),
+        unsupported_anchors,
+    })
 }
 
 /// Legacy layout: `highlight[pageno][idx] = { datetime, text, pos0, ... }`.
 /// User notes live separately in `bookmarks`, joined here by datetime.
-fn parse_legacy(
-    highlight: &Table,
-    notes_by_datetime: &HashMap<String, String>,
-) -> Result<Vec<NewHighlight>> {
+fn parse_legacy(highlight: &Table, notes_by_datetime: &HashMap<String, String>) -> Result<Parsed> {
     let mut out = Vec::new();
+    let mut unsupported_anchors = 0;
     for pair in highlight.pairs::<i64, Table>() {
         let (page, items) =
             pair.map_err(|e| EngineError::Sidecar(format!("highlight page: {e}")))?;
         for item in items.pairs::<i64, Table>() {
             let (_, item) =
                 item.map_err(|e| EngineError::Sidecar(format!("highlight item: {e}")))?;
-            if let Some(mut h) = entry_to_highlight(&item, Some(page)) {
-                if h.note.is_none()
-                    && let Some(dt) = &h.ko_datetime
-                {
-                    h.note = notes_by_datetime.get(dt).cloned();
+            match entry_to_highlight(&item, Some(page)) {
+                Entry::Highlight(mut h) => {
+                    if h.note.is_none()
+                        && let Some(dt) = &h.ko_datetime
+                    {
+                        h.note = notes_by_datetime.get(dt).cloned();
+                    }
+                    out.push(*h);
                 }
-                out.push(h);
+                // The rule is shared with the modern layout rather than
+                // restated, so a pre-2024 PDF sidecar — doubly unobserved, and
+                // therefore the one nobody would have written a branch for —
+                // degrades the same way by construction.
+                Entry::UnsupportedAnchor => unsupported_anchors += 1,
+                Entry::NotAHighlight => {}
             }
         }
     }
     // Page-keyed map iteration order is arbitrary; make output deterministic.
     out.sort_by_key(|h| (h.page, h.ko_datetime.clone()));
-    Ok(out)
+    Ok(Parsed {
+        highlights: out,
+        unsupported_anchors,
+    })
 }
 
 /// Legacy bookmarks: `text` holds the user's note, `notes` the highlighted
@@ -792,6 +901,28 @@ async fn import_into(
         ));
     }
 
+    // Highlights the device made that we could not store. Emitted **here**, and
+    // not where the file was parsed, on `UnknownDeviceStatus`'s precedent: both
+    // are facts derived from the parse alone, and this is the one place `import`
+    // and `import_book_from_sidecar` both reach, so neither path can grow a
+    // second opinion about how a degradation is reported.
+    //
+    // One diagnostic, carrying the count — see the variant's doc for why not one
+    // per entry.
+    if sc.unsupported_anchors > 0 {
+        // A count and a path. Never the text: a highlight is the user's private
+        // reading and nothing here may rise above `trace!`.
+        tracing::warn!(
+            path = %sidecar_path.display(),
+            entries = sc.unsupported_anchors,
+            "sidecar highlights are anchored to a page and coordinates; cannot store them"
+        );
+        warnings.push(Diagnostic::sidecar_anchors_unsupported(
+            sidecar_path.to_path_buf(),
+            sc.unsupported_anchors,
+        ));
+    }
+
     let mut stats = BookImportStats {
         book_id,
         book_title,
@@ -1179,6 +1310,110 @@ return {
             Some("Opening line - sets the whole register.")
         );
         assert_eq!(sc.highlights[1].text, "pachinko");
+        // A reflowable sidecar has no unstorable anchors, and saying so here is
+        // the cheapest possible guard on item 36 being a pure addition.
+        assert_eq!(sc.unsupported_anchors, 0);
+    }
+
+    /// On a paging document KOReader writes `pos0` as a table — a page plus
+    /// coordinates — because a scanned page has no text stream to point into.
+    /// `get_str` returned `None` on it, `?` returned `None`, and the entry
+    /// vanished with no count, no diagnostic and nothing in the report.
+    ///
+    /// The keys inside the tables here are reconstructed rather than observed
+    /// (docs/koreader-format.md §6). Nothing reads them, and this test is
+    /// written so that it would still pass if a real device used different ones:
+    /// *table-ness* is the whole rule.
+    #[test]
+    fn a_table_shaped_pos0_is_counted_rather_than_dropped_in_silence() {
+        const PDF: &str = r#"
+return {
+    ["annotations"] = {
+        [1] = {
+            ["datetime"] = "2026-05-02 11:15:00",
+            ["pageno"] = 3,
+            ["pos0"] = { ["page"] = 3, ["x"] = 96.5, ["y"] = 220.0 },
+            ["pos1"] = { ["page"] = 3, ["x"] = 402.0, ["y"] = 236.5 },
+            ["text"] = "a passage on a scanned page",
+        },
+        [2] = {
+            ["datetime"] = "2026-05-02 11:22:41",
+            ["note"] = "a note goes with it",
+            ["pageno"] = 4,
+            ["pos0"] = { ["page"] = 4, ["x"] = 72.0, ["y"] = 118.25 },
+            ["text"] = "a second passage",
+        },
+        [3] = {
+            -- a plain bookmark: no pos0 at all, and not a lost highlight
+            ["datetime"] = "2026-05-03 09:40:00",
+            ["pageno"] = 10,
+            ["text"] = "in III",
+        },
+        [4] = {
+            -- no text: it would not have imported whatever its anchor was, so
+            -- counting it would overstate what the anchor cost
+            ["datetime"] = "2026-05-03 09:41:00",
+            ["pos0"] = { ["page"] = 11, ["x"] = 1.0, ["y"] = 2.0 },
+        },
+    },
+    ["doc_props"] = { ["title"] = "A Scanned Monograph" },
+}
+"#;
+        let sc = parse_sidecar(PDF).unwrap();
+        assert!(sc.highlights.is_empty(), "nothing here can be anchored");
+        assert_eq!(
+            sc.unsupported_anchors, 2,
+            "the bookmark and the text-less entry are not lost highlights"
+        );
+    }
+
+    /// The rule lives in `entry_to_highlight`, which both layouts share, so a
+    /// pre-2024 PDF sidecar degrades identically without a branch of its own.
+    /// Doubly unobserved, and therefore exactly the case a hand-written branch
+    /// would have missed.
+    #[test]
+    fn a_legacy_paging_sidecar_counts_the_same_way() {
+        const LEGACY_PDF: &str = r#"
+return {
+    ["highlight"] = {
+        [7] = {
+            [1] = {
+                ["datetime"] = "2021-05-02 22:30:00",
+                ["text"] = "an older passage on a scanned page",
+                ["pos0"] = { ["page"] = 7, ["x"] = 10.0, ["y"] = 20.0 },
+            },
+        },
+    },
+    ["doc_props"] = { ["title"] = "An Old Scan" },
+}
+"#;
+        let sc = parse_sidecar(LEGACY_PDF).unwrap();
+        assert!(sc.highlights.is_empty());
+        assert_eq!(sc.unsupported_anchors, 1);
+    }
+
+    /// The change is scoped to **one Lua value type**, and this is what pins it.
+    ///
+    /// `get_str` coerces a Lua number to its digits, so a numeric `pos0` has
+    /// always imported as the string `"7"`. That shape is unobserved on any
+    /// device and there is no evidence for what it would mean — so it keeps the
+    /// behaviour it had rather than acquiring a new one on a guess, and the
+    /// empty string keeps being filtered exactly as before. Only a table moved.
+    #[test]
+    fn only_a_table_anchor_changed_behaviour() {
+        const ODD: &str = r#"
+return {
+    ["annotations"] = {
+        [1] = { ["text"] = "numeric pos0", ["pos0"] = 7, ["pageno"] = 7 },
+        [2] = { ["text"] = "empty pos0",   ["pos0"] = "", ["pageno"] = 8 },
+    },
+    ["doc_props"] = { ["title"] = "An Odd Book" },
+}
+"#;
+        let sc = parse_sidecar(ODD).unwrap();
+        assert_eq!(sc.unsupported_anchors, 0, "neither of these is a table");
+        assert_eq!(sc.highlights.len(), 1, "the empty pos0 is still no anchor");
+        assert_eq!(sc.highlights[0].pos0.as_deref(), Some("7"));
     }
 
     #[test]

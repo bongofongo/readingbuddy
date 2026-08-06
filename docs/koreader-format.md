@@ -306,7 +306,12 @@ Things that will bite a consumer:
 - **Multi-line strings use Lua's `\<newline>` escape**, a literal backslash then
   a real newline — not `\n`. mlua handles it; a regex parser would not.
 - **`page` is byte-identical to `pos0`** whenever `pos0` exists — verified on all
-  347. On EPUB both are cre xpointers; on PDF `page` is a number.
+  347, **all of which are EPUB**, where both are cre xpointers. On PDF `page` is
+  a number and `pos0` is a *table*, so the two are not even the same Lua type and
+  the identity above says nothing about that case. §6 has what is and is not
+  settled there; the short version is that a consumer must test `pos0`'s **type**
+  before reading it as a string, because `get`ting it as one succeeds on a number
+  by Lua coercion and fails on a table by returning nothing at all.
 - **The array is document order, not time order.** `pageno` is monotonically
   non-decreasing in all 8 files, but `datetime` inverts — `David Copperfield`
   `[33]`/`[34]` read `19:44:53` then `19:44:51`, and `Norwegian Wood` has two
@@ -479,11 +484,36 @@ already puts sha256 in that role.
 
 - **`abandoned` is unobserved.** Handled from source. If a real one ever turns
   up, check the spelling before trusting this document.
-- **PDF annotations are unobserved.** Both PDF sidecars here have empty
-  `annotations`. On PDF, `page` is a number and `pos0`/`pos1` are tables, not
-  xpointers — `entry_to_highlight`'s `get_str(item, "pos0")` would return `None`
-  and skip the entry entirely. **We cannot currently import a PDF highlight.**
-  Not a regression and not in scope for item 1, but it is a real gap and it is
-  written down here rather than discovered later.
+- **PDF annotations are still unobserved, and item 36 did not change that.**
+  Both PDF sidecars here have empty `annotations`, so no PDF highlight KOReader
+  wrote has ever been read on this machine. Read the next three sentences as one
+  claim, because the useful part is the seam between them.
+
+  **Settled:** on a paging document — PDF, DjVu — `pos0`/`pos1` are **tables**
+  and not xpointer strings. A scanned page has no text stream to point into, so
+  the anchor is a page plus coordinates; this is source-derived, from the same
+  split that gives `readerrolling` a cre xpointer and `readerpaging` a page
+  number. `page` is a number on PDF for the same reason.
+
+  **Not settled, and do not treat the fixture as evidence:** *what keys that
+  table carries.* `Gen-Pdf-Anchors.sdr` writes `page`/`x`/`y`/`zoom`/`rotation`
+  with a sibling `pboxes` array, and **those key names are a reconstruction, not
+  an observation** — nobody here has ever seen the file they are modelling. They
+  are safe to have in a committed fixture only because **nothing reads them**:
+  `koreader::anchor` branches on the value being a Lua table and on nothing
+  inside it, so no golden can bless a key name, and if a real device turns out to
+  write `pos` or `rect` instead, neither the fixture nor the engine has to
+  change. A later thread wanting the *inside* of that table — to store a PDF
+  anchor rather than merely count it — needs a real sidecar first, and this
+  document is not it.
+
+  **We still cannot import a PDF highlight. We no longer do it in silence.**
+  Those entries used to hit `get_str(item, "pos0")` → `None` → `?` → dropped,
+  with no count and no diagnostic, so a PDF library imported nothing and gave no
+  reason. They are now counted (`KoSidecar::unsupported_anchors`) and reported as
+  one `DiagnosticKind::SidecarAnchorsUnsupported` per **file**, carrying the
+  number — not one per entry, which on a 300-highlight PDF would have replaced
+  silence with noise. A plain bookmark, and an entry with no `text`, are
+  deliberately *not* in that count: neither is a highlight that went missing.
 - **`stats.md5` on a genuinely old sidecar** — asserted from source, never seen.
   `KoStats` parses it; nothing depends on it.

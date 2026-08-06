@@ -1248,3 +1248,68 @@ because item 31 needed somewhere to put reading time.
       already holds the whole `Book` — so "which Dune is this" costs an N+1
       `get_book` per candidate. Same class as the per-row summary this item
       built, in a file this item did not own.
+
+36. **A real PDF sidecar, and a `Diagnostic` instead of silence.** No migration;
+    one `ErrorClass`-less diagnostic variant, one tier-1 fixture, one three-way
+    split in a function that had two arms. Its subject is a comment that was
+    true when it was written and false everywhere else: `entry_to_highlight`'s
+    "a real highlight always carries a pos0 xpointer" holds on EPUB and not on
+    PDF, where KOReader anchors to a page plus coordinates because a scanned page
+    has no text stream to point into. `get_str` returned `None` on that table,
+    `?` returned `None`, and the entry left no trace — so a user with a PDF
+    library imported zero highlights and was told nothing, which is
+    indistinguishable from a book nobody had highlighted.
+    - **Skipped-with-a-diagnostic, and imported-with-a-different-anchor is a
+      separate item that this one deliberately did not open.** `identity_hash =
+      sha256(book_id | ko_datetime | pos0 | text)` is what makes import
+      idempotent, so serialising a coordinate table into the `pos0` column fixes
+      the identity of every PDF highlight to whichever serialisation is picked on
+      day one — and coordinates are the *drifting* half of a sidecar, the same
+      class as `pageno`, which already moves 29→30 on a re-render with no user
+      action. An anchor built from a number the device rewrites is an anchor that
+      re-inserts the same highlight after every re-render, which is precisely the
+      failure the tier-2 layout split exists to make observable. `DeviceDigest`
+      and `DEVICE_FIELDS_DIFFER` would both have to agree about it as well. It
+      also cannot be designed here: the anchor's *shape* is settled and its
+      *contents* are unobserved, so the item needs a real PDF sidecar before it
+      needs code.
+    - **One diagnostic per file, carrying a count — never one per entry.** A
+      300-highlight PDF emitting 300 identical lines has replaced silence with
+      noise, and noise is not the improvement that was wanted. `KoSidecar` grew a
+      `usize`, not a `Vec`, so the shape of the type is the decision.
+    - **No `ErrorClass` on it, and that is the correction the item forced.**
+      `ErrorClass` is `From<&EngineError>`; it exists to classify something that
+      *failed*. Nothing failed here — the file read, the chunk evaluated, the
+      entry is well formed and we simply cannot represent it — so there is no
+      error to classify and a class would be a field with no source. The engine's
+      rule is "a partial failure returns a typed `Diagnostic`", not "every
+      `Diagnostic` carries an `ErrorClass`", and half the existing variants
+      already carry none.
+    - **The change is scoped to one Lua value type.** `koreader::anchor` treats a
+      **table** as unstorable and sends every other value through the same
+      `get_str` as before — so a numeric `pos0` still coerces to its digits and an
+      empty one is still filtered, exactly as they were. "No reflowable sidecar
+      imports differently" is therefore a property of the code rather than a claim
+      about which fixtures happen to be committed, and the goldens confirm it:
+      every pre-existing fixture's imported-highlight count is byte-identical,
+      and the only golden row added is a new fixture at zero.
+    - **The fixture states one fact and illustrates the rest, and the
+      distinction is written into it.** `Gen-Pdf-Anchors.sdr` asserts that `pos0`
+      is a *table*; the `page`/`x`/`y`/`zoom`/`rotation` keys inside it are a
+      reconstruction of a file nobody here has read. That is safe only because
+      **nothing reads them** — the engine branches on table-ness and never on a
+      key — so no golden can bless a key name, and a real device writing `rect`
+      instead costs no change. `docs/koreader-format.md` §6 now separates
+      "settled" from "do not treat the fixture as evidence" in those words,
+      because the alternative was a synthetic fixture quietly promoting itself to
+      an observation. The pre-existing `Gen-Pdf-Sidecar` was covering the sidecar
+      *filename* and had been reading, by its name, as though it covered the
+      format; it is untouched and now says so.
+    - **The golden's `has_warnings` boolean became a list of named warnings**, and
+      that was not tidying. It was `true` for an unknown device status and `true`
+      for an unanchorable highlight, so no golden could tell one degradation from
+      another — a fixture asserting "something warned" is green when the wrong
+      thing warns. Naming the kind, with its count, is what makes the new goldens
+      show the lost highlights *as a diagnostic* rather than as an absence, which
+      is the only version of this item worth having: a golden that merely lacks
+      the highlights is the original bug, written down and made permanent.

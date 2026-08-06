@@ -1,5 +1,4 @@
 {
-  "has_warnings": false,
   "imported": [
     {
       "book_title": "Doubled Book",
@@ -23,5 +22,6 @@
       "updated": 0
     }
   ],
-  "unmatched": []
+  "unmatched": [],
+  "warnings": []
 }

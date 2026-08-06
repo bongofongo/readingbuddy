@@ -1,13 +1,13 @@
 {
   "imported": [
     {
-      "book_title": "Blank Book",
+      "book_title": "A Scanned Monograph",
       "flashcard_words": [],
       "flashcards": 0,
       "highlights": [],
       "inserted": 0,
       "matched_by": "title",
-      "percent_finished": null,
+      "percent_finished": 0.31,
       "rating": null,
       "skipped": 0,
       "status": null,
@@ -15,5 +15,7 @@
     }
   ],
   "unmatched": [],
-  "warnings": []
+  "warnings": [
+    "SidecarAnchorsUnsupported(3)"
+  ]
 }
