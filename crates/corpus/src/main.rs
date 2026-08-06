@@ -91,6 +91,13 @@ enum Cmd {
         /// Output dir; defaults to `corpus/generated/devdb` (gitignored).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Where the library will be *built* — `make dev-db`'s `DEV_DB_DIR`.
+        ///
+        /// Not the same as `--out`, and it has to be stated: `cover_path` is a
+        /// whole path in this schema, so the seed cannot name a cover file
+        /// without knowing where the database is going to live.
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
     },
     /// Derive tier-2 sidecars from the fetched Project Gutenberg epubs.
     GenCorpus {
@@ -140,9 +147,15 @@ fn main() -> std::io::Result<()> {
             );
             Ok(())
         }
-        Cmd::GenDevdb { seed, books, out } => {
+        Cmd::GenDevdb {
+            seed,
+            books,
+            out,
+            data_dir,
+        } => {
             let out = out.unwrap_or_else(devdb::default_out);
-            let n = devdb::generate(&out, seed, books)?;
+            let data_dir = data_dir.unwrap_or_else(devdb::default_data_dir);
+            let n = devdb::generate(&out, &data_dir, seed, books)?;
             println!(
                 "wrote {n} books (v{}, seed {seed}) to {}/seed.sql",
                 devdb::GENERATOR_VERSION,

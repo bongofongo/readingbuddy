@@ -219,9 +219,9 @@ the downscaled tier where there is one and the original where there is not, and
 the engine decides which — a frontend reading `cover_thumb_path` itself shows
 nothing for every cover small enough not to have a tier. It is a whole path with
 exactly the same shape and the same asset-protocol scope. `cover_aspect` is the
-box a tile reserves before the image loads (`null` until
-`Engine::measure_stored_covers` has run over a pre-`0014` library, never
-"no cover"), and `cover_accent` is the jacket's border colour as channels — what
+box a tile reserves before the image loads (`null` until the back-fill has run
+over a pre-`0014` library, never "no cover" — the back-fill is `rb covers`, and
+`make dev-db` runs it, so a dev library arrives measured), and `cover_accent` is the jacket's border colour as channels — what
 a placeholder gets instead of grey.
 
 `tauri-driver` does **not** run on macOS (no WKWebView driver exists). That is

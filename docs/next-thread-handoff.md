@@ -96,18 +96,27 @@ re-deriving the arithmetic in TypeScript. **Do not push a scene constant back
 down into that derivation** — `HALF_HEIGHT` is the renderer's and the whole
 point is that two frontends scale the same ratios differently.
 
-**But run `make covers` — or rather, build its door first.** See finding 1
-below: every book in `make dev-db` has a `cover_path` and a **NULL**
-`cover_aspect`, so a shelf built today will conclude the column does not work.
+**The cover door is built and `make dev-db` walks through it** — see finding 1
+below, which is done. A rebuilt dev library now arrives with all 202 covers
+measured and with **whole** `cover_path`s, which is what a webview can resolve.
+If your `dev-data/` predates that, `make dev-db` again.
 
 ### Open work, none of it allocated a number
 
 The user allocates numbers; these are stated well enough to allocate.
 
-1. **The cover back-fill has no door.** `Engine::measure_stored_covers` exists
-   and nothing calls it. The whole fix is a `Covers` variant in
-   `crates/cli/src/main.rs` plus one line in the `dev-db` target. Item 20 left
-   `crates/cli` alone for merge cost, not doubt. **Do this before item 26.**
+1. ~~**The cover back-fill has no door.**~~ **Done** (2026-08-06). `rb covers`
+   is the door, `make dev-db` runs it, `the_cover_back_fill_is_reachable_from_
+   the_binary` keeps it reachable. It cost more than the predicted two lines,
+   because the first run measured **nothing**: `gen-devdb` wrote a *relative*
+   `cover_path`, which resolves only from a process whose cwd is the data dir —
+   so the back-fill read none of the 202 files, and a webview, which has no cwd,
+   could have resolved none of them either. `cover_path` is a whole path in this
+   schema (`images_dir.join(name)`), so `gen-devdb` now takes `--data-dir`
+   beside `--out` and `GENERATOR_VERSION` is 2. **The lesson is finding 8's, one
+   layer down**: the dev fixture and the engine's own writer had drifted on the
+   shape of a column, and nothing compared them — the drift was only observable
+   by running a command that read the file the path names.
 2. **A `highlights` FTS index.** `notes_fts` is still the only virtual table.
    Needs a migration, plus a trigger trio or an explicit writer beside
    `insert_highlight`, and a `search_highlights` returning the `snippet()` shape
