@@ -545,7 +545,60 @@ export type ImportReportDto = { imported: Array<BookImportStatsDto>, unmatched: 
  */
 export type KoStatusDto = { "status": "reading" } | { "status": "abandoned" } | { "status": "complete" } | { "status": "other", raw: string, };
 
-export type MatchCandidateDto = { book_id: number, title: string, score: number, };
+/**
+ * A library book that might be the thing being imported, offered as a choice.
+ *
+ * **A row to show, not a record to write**, and that is what decides its
+ * fields. The only thing a client does with one is send `book_id` back to
+ * `link_sidecar`/`link_calibre_book`/`link_goodreads_row`, so nothing here
+ * round-trips; what it has to do is answer *which of these is it* in the one
+ * screen a refusal leads to.
+ *
+ * Item 36 added `authors_display` and `publish_year`. Before them a chooser
+ * could not answer the question it was asking — two Dunes with one title and
+ * two authors read identically — and the only way to recover the author was a
+ * `get_book` per row, which is an N+1 against a list that is per *row* of a
+ * calibre or Goodreads import. Additive, so `API_VERSION` did not move.
+ *
+ * **`cover_path` is deliberately absent.** No chooser draws a jacket: the TUI's
+ * picker is a text list, the CLI prints lines, and the GUI has no chooser yet.
+ * And when one does, the field it needs is not this one — item 20 made
+ * `cover_shelf_path` the thing a grid loads, beside `cover_aspect` and
+ * `cover_accent`, because a frontend reading `cover_path` directly shows
+ * nothing for every cover small enough to have no thumb. So the honest addition
+ * is a *cluster*, decided by the screen that draws it, and it stays additive
+ * and cheap; a path shipped now is a string per row on a list that can be one
+ * per book in the library.
+ *
+ * **The whole `BookDto` was considered and refused.** `band` is holding the
+ * entire `Book`, and picking fields off it is what created this bug — but a
+ * candidate list is a question about *identity*, and a `BookDto` answers a
+ * different one: it carries `description` (kilobytes), `subjects`,
+ * `first_sentence`, and `progress`/`reading_status`, which would invite a
+ * chooser to draw a progress bar on a book it is asking you to identify.
+ * Measured rather than asserted: a `BookDto` for a book with a real
+ * description serializes to roughly twenty times a candidate, and a calibre
+ * import reports candidates *per row*. Getting the picking wrong again costs
+ * one more additive field; `BookDto` costs every import report, for ever.
+ */
+export type MatchCandidateDto = { book_id: number, title: string, 
+/**
+ * The authors, each in reading order — `Frank Herbert`, never
+ * `Herbert, Frank`.
+ *
+ * **Derived and read-only**, the same fact `BookDto::authors_display`
+ * carries and under the same name. There is no raw `authors` beside it:
+ * the order within a name is a parse and is the engine's
+ * (`readingbuddy::names`), and a client of this crate does not link the
+ * engine — a raw list would be that parse re-implemented above the seam.
+ */
+authors_display: Array<string>, 
+/**
+ * The year, where the record has one. What is left to choose by when the
+ * band's ordinary case — a variant title of a book already on the shelf —
+ * puts the same author on both rows.
+ */
+publish_year: number | null, score: number, };
 
 export type MatchMethodDto = "md5" | "isbn" | "title" | "new";
 

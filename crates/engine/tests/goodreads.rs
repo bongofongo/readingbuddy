@@ -299,6 +299,10 @@ async fn a_near_miss_is_reported_with_candidates_rather_than_duplicated() {
     let near = engine
         .save_book(&Book {
             title: Some("Pachinko: A Novel of Korea and Japan".into()),
+            // Stored the way the origin spelled it; the row the user reads must
+            // not be.
+            authors: vec!["Lee, Min Jin".into()],
+            publish_year: Some(2017),
             ..Default::default()
         })
         .await
@@ -313,6 +317,10 @@ async fn a_near_miss_is_reported_with_candidates_rather_than_duplicated() {
         .expect("Pachinko is in the band, not over it");
     assert_eq!(unmatched.candidates.len(), 1);
     assert_eq!(unmatched.candidates[0].book_id, near.id.unwrap());
+    // Item 36: the row says who wrote the book it might be, out of the scan the
+    // import already paid for.
+    assert_eq!(unmatched.candidates[0].authors_display, ["Min Jin Lee"]);
+    assert_eq!(unmatched.candidates[0].publish_year, Some(2017));
     assert!(
         (0.60..0.85).contains(&unmatched.candidates[0].score),
         "the fixture has drifted out of the candidate band: {}",

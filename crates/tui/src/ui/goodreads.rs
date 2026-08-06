@@ -318,6 +318,8 @@ mod tests {
         let candidate = MatchCandidate {
             book_id: 3,
             title: "Kokoro: A Novel".into(),
+            authors_display: vec!["Natsume Sōseki".into()],
+            publish_year: Some(1914),
             score: 0.71,
         };
         let with_id = row(&unmatched(Some("34051011"), vec![candidate.clone()]), false);
@@ -348,6 +350,8 @@ mod tests {
         let long = MatchCandidate {
             book_id: 3,
             title: "Kokoro and Other Stories of the Late Meiji Period, Annotated".into(),
+            authors_display: vec!["Natsume Sōseki".into()],
+            publish_year: Some(1914),
             score: 0.71,
         };
         for id in [Some("34051011"), None] {

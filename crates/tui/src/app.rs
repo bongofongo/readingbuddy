@@ -4774,6 +4774,8 @@ mod tests {
                 candidates: vec![MatchCandidate {
                     book_id: 1,
                     title: "Piranesi's House".into(),
+                    authors_display: vec!["Susanna Clarke".into()],
+                    publish_year: Some(2020),
                     score: 0.71,
                 }],
                 state: ListState::default(),
@@ -4868,6 +4870,8 @@ mod tests {
                 candidates: vec![MatchCandidate {
                     book_id: 1,
                     title: "The Dispossessed: An Ambiguous Utopia".into(),
+                    authors_display: vec!["Ursula K. Le Guin".into()],
+                    publish_year: Some(1974),
                     score: 0.78,
                 }],
                 state: ListState::default(),
@@ -4937,6 +4941,8 @@ mod tests {
                 CalibreRowState::Candidates(vec![MatchCandidate {
                     book_id: 1,
                     title: "The Dispossessed: An Ambiguous Utopia".into(),
+                    authors_display: vec!["Ursula K. Le Guin".into()],
+                    publish_year: Some(1974),
                     score: 0.78,
                 }]),
             ),
@@ -4987,6 +4993,8 @@ mod tests {
                     candidates: vec![MatchCandidate {
                         book_id: 2,
                         title: "Kokoro: A Novel".into(),
+                        authors_display: vec!["Natsume Sōseki".into()],
+                        publish_year: Some(1914),
                         score: 0.71,
                     }],
                 },
@@ -6545,6 +6553,8 @@ mod tests {
             candidates: vec![MatchCandidate {
                 book_id,
                 title: "Station Eleven".into(),
+                authors_display: vec!["Emily St. John Mandel".into()],
+                publish_year: Some(2014),
                 score: 0.72,
             }],
         };
@@ -6576,6 +6586,10 @@ mod tests {
             candidates: vec![MatchCandidate {
                 book_id: 1,
                 title: "Something".into(),
+                // A book the library holds no author for: the ordinary shape of
+                // a sidecar-seeded row, and the one a chooser must still draw.
+                authors_display: Vec::new(),
+                publish_year: None,
                 score: 0.7,
             }],
             state: ListState::default(),
@@ -7092,11 +7106,15 @@ mod tests {
                         MatchCandidate {
                             book_id: 1,
                             title: "Piranesi's House".into(),
+                            authors_display: vec!["Susanna Clarke".into()],
+                            publish_year: Some(2020),
                             score: 0.78,
                         },
                         MatchCandidate {
                             book_id: 2,
                             title: "Piranesi (illustrated)".into(),
+                            authors_display: vec!["Susanna Clarke".into()],
+                            publish_year: Some(2021),
                             score: 0.64,
                         },
                     ],
@@ -7552,6 +7570,8 @@ mod tests {
         app.calibre[2].state = CalibreRowState::Candidates(vec![MatchCandidate {
             book_id,
             title: app.library[0].title.clone().unwrap_or_default(),
+            authors_display: app.library[0].authors_in_display_order(),
+            publish_year: app.library[0].publish_year,
             score: 0.78,
         }]);
 

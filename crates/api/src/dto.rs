@@ -1927,10 +1927,59 @@ impl From<Diagnostic> for DiagnosticDto {
     derive(ts_rs::TS),
     ts(export, export_to = "bindings.ts")
 )]
+/// A library book that might be the thing being imported, offered as a choice.
+///
+/// **A row to show, not a record to write**, and that is what decides its
+/// fields. The only thing a client does with one is send `book_id` back to
+/// `link_sidecar`/`link_calibre_book`/`link_goodreads_row`, so nothing here
+/// round-trips; what it has to do is answer *which of these is it* in the one
+/// screen a refusal leads to.
+///
+/// Item 36 added `authors_display` and `publish_year`. Before them a chooser
+/// could not answer the question it was asking — two Dunes with one title and
+/// two authors read identically — and the only way to recover the author was a
+/// `get_book` per row, which is an N+1 against a list that is per *row* of a
+/// calibre or Goodreads import. Additive, so `API_VERSION` did not move.
+///
+/// **`cover_path` is deliberately absent.** No chooser draws a jacket: the TUI's
+/// picker is a text list, the CLI prints lines, and the GUI has no chooser yet.
+/// And when one does, the field it needs is not this one — item 20 made
+/// `cover_shelf_path` the thing a grid loads, beside `cover_aspect` and
+/// `cover_accent`, because a frontend reading `cover_path` directly shows
+/// nothing for every cover small enough to have no thumb. So the honest addition
+/// is a *cluster*, decided by the screen that draws it, and it stays additive
+/// and cheap; a path shipped now is a string per row on a list that can be one
+/// per book in the library.
+///
+/// **The whole `BookDto` was considered and refused.** `band` is holding the
+/// entire `Book`, and picking fields off it is what created this bug — but a
+/// candidate list is a question about *identity*, and a `BookDto` answers a
+/// different one: it carries `description` (kilobytes), `subjects`,
+/// `first_sentence`, and `progress`/`reading_status`, which would invite a
+/// chooser to draw a progress bar on a book it is asking you to identify.
+/// Measured rather than asserted: a `BookDto` for a book with a real
+/// description serializes to roughly twenty times a candidate, and a calibre
+/// import reports candidates *per row*. Getting the picking wrong again costs
+/// one more additive field; `BookDto` costs every import report, for ever.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchCandidateDto {
     pub book_id: i64,
     pub title: String,
+    /// The authors, each in reading order — `Frank Herbert`, never
+    /// `Herbert, Frank`.
+    ///
+    /// **Derived and read-only**, the same fact `BookDto::authors_display`
+    /// carries and under the same name. There is no raw `authors` beside it:
+    /// the order within a name is a parse and is the engine's
+    /// (`readingbuddy::names`), and a client of this crate does not link the
+    /// engine — a raw list would be that parse re-implemented above the seam.
+    #[serde(default)]
+    pub authors_display: Vec<String>,
+    /// The year, where the record has one. What is left to choose by when the
+    /// band's ordinary case — a variant title of a book already on the shelf —
+    /// puts the same author on both rows.
+    #[serde(default)]
+    pub publish_year: Option<i64>,
     pub score: f64,
 }
 
@@ -1939,6 +1988,8 @@ impl From<MatchCandidate> for MatchCandidateDto {
         MatchCandidateDto {
             book_id: c.book_id,
             title: c.title,
+            authors_display: c.authors_display,
+            publish_year: c.publish_year,
             score: c.score,
         }
     }
@@ -3333,6 +3384,38 @@ mod tests {
         assert_eq!(back.series, Some("Dune".to_string()));
         assert_eq!(back.series_index, Some(2.0));
         assert_eq!(back.authors, vec!["Borges, Jorge Luis".to_string()]);
+    }
+
+    /// A candidate crosses the seam knowing who wrote it (item 36).
+    ///
+    /// The wire is where this matters most: the GUI links this crate and **not**
+    /// the engine, so before the field existed the only way to put an author in
+    /// a chooser row was a `get_book` per candidate — one request per row, on a
+    /// list a calibre import produces per row of its own. The names arrive
+    /// already parsed for the same reason: `readingbuddy::names` is not
+    /// reachable from TypeScript.
+    #[test]
+    fn a_candidate_crosses_the_seam_knowing_who_wrote_it() {
+        let dto = MatchCandidateDto::from(MatchCandidate {
+            book_id: 7,
+            title: "Dune".into(),
+            authors_display: vec!["Frank Herbert".into()],
+            publish_year: Some(1965),
+            score: 0.71,
+        });
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: MatchCandidateDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, dto);
+        assert_eq!(back.authors_display, ["Frank Herbert"]);
+        assert_eq!(back.publish_year, Some(1965));
+
+        // Both fields are `#[serde(default)]`, so a payload written before they
+        // existed still parses — which is what let them land without moving
+        // `API_VERSION`.
+        let old: MatchCandidateDto =
+            serde_json::from_str(r#"{"book_id":7,"title":"Dune","score":0.71}"#).unwrap();
+        assert!(old.authors_display.is_empty());
+        assert_eq!(old.publish_year, None);
     }
 
     /// The false denominator, at the seam. A real book in `make dev-db` has

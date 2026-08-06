@@ -1533,3 +1533,76 @@ because item 31 needed somewhere to put reading time.
       it on every `make dev-db`, which is what exercises the door, exactly as the
       seed's unmeasured covers exercise `rb covers`. A seed that stated the key
       would be a fixture agreeing with the engine by copying it.
+36. **The chooser knows who wrote it.** No migration; two fields on one struct
+    and its DTO. `koreader::band` has been holding the whole `Book` since item 3
+    and keeping `book_id`, `title` and `score` off it, so the screen a refusal
+    leads to — where *which Dune is this* is the entire question — could not
+    answer it: two editions with one title and two authors read as the same row,
+    and the only way to tell them apart was a `get_book` per candidate. Reported
+    independently by items 22 and 18, which is what made it an item.
+    - **`MatchCandidate` is a row to show, not a record to write**, and that one
+      sentence decided every field on it. The only thing any caller does with one
+      is hand `book_id` back to `link_sidecar`/`link_calibre_book`/
+      `link_goodreads_row`, so nothing on it round-trips; what it owes is an
+      answer to *which of these is the book in my hand*.
+    - **`authors_display`, and deliberately no raw `authors` beside it.**
+      `BookDto` carries both because it is a record that goes back in; a
+      candidate is not, so a second spelling of the same names would be a second
+      thing to keep in sync for a row nobody writes. The parsed form is the one
+      that crosses because the **order within a name is a parse and is the
+      engine's** (item 17, `names.rs`) and the GUI links `readingbuddy-api` and
+      not the engine — a raw list here would be `names.rs` re-implemented in
+      TypeScript, which is the re-derivation item 17 exists to prevent. Named for
+      `BookDto::authors_display` on purpose: one idea spelled two ways is how two
+      frontends end up disagreeing. The **join** between names stays a
+      frontend's, so it is a list and not a sentence.
+    - **`publish_year` earned its place; `cover_path` did not.** The year is what
+      is left to choose by in the band's *ordinary* case — a variant title of a
+      book already on the shelf is usually the same author, so title and author
+      both tie and a 1965 Dune against a 2005 reissue is the whole distinction.
+      It is an `Option<i64>`: eight bytes, no allocation. A cover is a different
+      bargain. **No chooser draws a jacket** — the TUI's picker is a text list,
+      the CLI prints lines, the GUI has no chooser at all — and the prompt's own
+      test was *only if a chooser would actually show one*. When one does, the
+      field it needs is not this one: item 20 made `cover_shelf_path` what a grid
+      loads, beside `cover_aspect` and `cover_accent`, because a frontend reading
+      `cover_path` directly shows nothing for every cover small enough to have no
+      thumb. So the honest addition is a **cluster**, and it belongs to the screen
+      that draws it. Both directions stay cheap: additive fields do not move
+      `API_VERSION`.
+    - **The whole `BookDto` was the real alternative, and it was measured rather
+      than argued.** The case for it is strong — `band` is holding the entire
+      `Book`, and *picking* is what created this bug. Two things beat it. A
+      `BookDto` for a book with a real (681-character) description serializes to
+      **1846 bytes against a candidate's 98**, ~19×, and still ~10× with
+      `description`, `first_sentence` and `subjects` all stripped; candidates are
+      produced **per row** of a calibre or Goodreads import, so a four-hundred-book
+      library with a few near-misses a row is megabytes of prose nobody reads.
+      And it answers the wrong question: `BookDto` carries `progress` and
+      `reading_status`, which would invite a chooser to draw a progress bar on a
+      book it is asking you to *identify*. The asymmetry settles it — picking
+      wrong again costs one more additive field, paid by whoever draws the
+      screen, while `BookDto` costs every import report for ever.
+    - **`band` is the only constructor, and structurally rather than by
+      convention.** All five candidate-producing paths were audited —
+      `match_candidates`/`Engine::sidecar_candidates`, `files::identify` and
+      `import_file`, `import_calibre_library`, `import_goodreads` — and none
+      builds one by hand: `band`'s input `Scored` is `pub(crate)` and minted in
+      exactly one place (`scores_for`), so the type system already forbids the
+      second construction site. That is why no `Default` impl was added, which
+      would have let a real call site forget the field silently. What guards it
+      going forward is not the constructor but the tests: each of the four
+      surfaces' existing candidate assertions now checks the author arrived,
+      because a *new* path also has to pass them.
+    - **Nothing above the seam was changed, on purpose.** No CLI output, no TUI
+      picker row, no GUI. The item is about what a candidate *carries*; what a
+      screen does with it is that screen's decision, and drawing an author in the
+      TUI picker without the layout work its `DETAIL_MAX` regression asks for is
+      how the "n if not" clip came back last time. The engine half is what could
+      not be worked around.
+    - **No caller does a `get_book` per candidate today, and that is the point.**
+      The audit found none to delete: the cost was structural rather than
+      committed — every frontend that has drawn a candidate row so far has drawn
+      only a title, because a title is all it had. The N+1 was what the *next*
+      screen would have had to pay, and the two items that reported it are the
+      two that went looking.
