@@ -15,7 +15,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use readingbuddy::goodreads::{ImportOptions, Shelf, parse_csv};
-use readingbuddy::{Book, DiagnosticKind, Engine, GoodreadsMatch, TextOutcome};
+use readingbuddy::{Book, DiagnosticKind, Engine, GoodreadsMatch, NoteScope, TextOutcome};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/goodreads");
 
@@ -221,7 +221,10 @@ async fn the_recorded_export_lands_where_it_should() {
     // reflection, because folding them into either would put words in the
     // user's reflection that they did not write there.
     let catcher = book(&engine, "Catcher in the Rye").await;
-    let notes = engine.list_notes(catcher.id, None).await.unwrap();
+    let notes = engine
+        .list_notes(NoteScope::of_book(catcher.id), None)
+        .await
+        .unwrap();
     assert!(
         notes
             .iter()
@@ -373,7 +376,13 @@ async fn a_dry_run_writes_nothing() {
             .unwrap()
             .is_empty()
     );
-    assert!(engine.list_notes(None, None).await.unwrap().is_empty());
+    assert!(
+        engine
+            .list_notes(NoteScope::All, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     // And then the real thing agrees with it.
     let real = engine.import_goodreads(&path, plain()).await.unwrap();
@@ -396,7 +405,7 @@ async fn a_review_edited_here_survives_a_re_import() {
 
     let pachinko = book(&engine, "Pachinko").await;
     let review = engine
-        .list_notes(pachinko.id, None)
+        .list_notes(NoteScope::of_book(pachinko.id), None)
         .await
         .unwrap()
         .into_iter()
@@ -432,7 +441,7 @@ async fn a_rating_on_our_own_scale_is_not_overwritten() {
 
     let pachinko = book(&engine, "Pachinko").await;
     let review = engine
-        .list_notes(pachinko.id, None)
+        .list_notes(NoteScope::of_book(pachinko.id), None)
         .await
         .unwrap()
         .into_iter()
@@ -636,7 +645,7 @@ async fn snapshot(engine: &Engine) -> Vec<String> {
         let readings = engine.storage().list_readings(id).await.unwrap();
         let tags = engine.storage().book_tags(id).await.unwrap();
         let mut notes: Vec<String> = engine
-            .list_notes(Some(id), None)
+            .list_notes(NoteScope::Book(id), None)
             .await
             .unwrap()
             .into_iter()

@@ -597,9 +597,12 @@ fn a_list_books_payload_without_the_new_fields_still_parses() {
         r,
         Request::ListNotes {
             book_id: None,
+            reading_id: None,
             limit: None,
         },
-        "no limit is every note, which is what this method always did"
+        "no limit is every note, which is what this method always did — and a
+         payload written before item 40 still parses, which is why `reading_id`
+         is `#[serde(default)]` and `API_VERSION` did not move"
     );
 }
 
@@ -722,6 +725,7 @@ fn a_search_payload_without_a_source_asks_both_indexes() {
         Request::SearchMarks {
             query: "grief".into(),
             source: None,
+            book_id: None,
             limit: 25,
         }
     );
@@ -734,9 +738,169 @@ fn a_search_payload_without_a_source_asks_both_indexes() {
         Request::SearchMarks {
             query: "grief".into(),
             source: Some(SearchSourceDto::Highlight),
+            book_id: None,
             limit: 5,
         }
     );
+}
+
+/// Item 40 is **additive**, and this is what that claim means on the wire.
+///
+/// Both new parameters are `#[serde(default)]`, so every payload a client wrote
+/// before the item still parses to the same request it always did — which is
+/// why `API_VERSION` stays at 2. `the_replaced_method_is_gone_from_the_wire`
+/// below pins the number itself; this pins the reason it did not have to move.
+#[test]
+fn a_payload_written_before_the_scope_existed_still_parses() {
+    let old_search: Request =
+        serde_json::from_str(r#"{"method":"search_marks","params":{"query":"grief","limit":25}}"#)
+            .unwrap();
+    assert_eq!(
+        old_search,
+        Request::SearchMarks {
+            query: "grief".into(),
+            source: None,
+            book_id: None,
+            limit: 25,
+        },
+        "absent is the whole library, exactly as before"
+    );
+    let old_notes: Request =
+        serde_json::from_str(r#"{"method":"list_notes","params":{"book_id":3}}"#).unwrap();
+    assert_eq!(
+        old_notes,
+        Request::ListNotes {
+            book_id: Some(3),
+            reading_id: None,
+            limit: None,
+        }
+    );
+
+    // And the new shapes are reachable by name, with no positional guessing.
+    let scoped: Request = serde_json::from_str(
+        r#"{"method":"search_marks","params":{"query":"grief","book_id":7,"limit":25}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        scoped,
+        Request::SearchMarks {
+            query: "grief".into(),
+            source: None,
+            book_id: Some(7),
+            limit: 25,
+        }
+    );
+    let per_read: Request =
+        serde_json::from_str(r#"{"method":"list_notes","params":{"reading_id":2,"limit":12}}"#)
+            .unwrap();
+    assert_eq!(
+        per_read,
+        Request::ListNotes {
+            book_id: None,
+            reading_id: Some(2),
+            limit: Some(12),
+        }
+    );
+}
+
+/// **The bug, at the seam.** A client that searched the library and filtered its
+/// own answer would have got nothing; the request that carries the scope gets
+/// the passage.
+///
+/// The precondition is asserted, so this cannot pass vacuously if the ranking
+/// ever changes underneath it.
+#[tokio::test]
+async fn a_scoped_search_crosses_the_seam_without_being_truncated() {
+    const LIMIT: i64 = 5;
+    let (api, _tmp) = api().await;
+    for i in 0..12 {
+        let decoy = api
+            .save_book(BookDto {
+                title: Some(format!("Decoy {i}")),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .id
+            .unwrap();
+        api.create_note(NewNoteDto {
+            book_id: Some(decoy),
+            title: Some(format!("d{i}")),
+            body: "grief".into(),
+            kind: NoteKindDto::Note,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+    let wanted = seed(&api).await;
+    api.create_note(NewNoteDto {
+        book_id: Some(wanted),
+        title: Some("On collapse".into()),
+        body: "a long paragraph about what the collapse does to grief".into(),
+        kind: NoteKindDto::Note,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let unbounded = api.search_marks("grief", None, None, 100).await.unwrap();
+    let buried = unbounded
+        .iter()
+        .position(|h| matches!(h, SearchHitDto::Note { note, .. } if note.book_id == Some(wanted)))
+        .expect("the wanted book matches at all");
+    assert!(buried >= LIMIT as usize, "fixture ranks it at {buried}");
+
+    let truncated = api.search_marks("grief", None, None, LIMIT).await.unwrap();
+    assert_eq!(truncated.len(), LIMIT as usize);
+    assert!(
+        !truncated
+            .iter()
+            .any(|h| matches!(h, SearchHitDto::Note { note, .. } if note.book_id == Some(wanted))),
+        "nothing for a client-side filter to keep"
+    );
+
+    let scoped = api
+        .search_marks("grief", None, Some(wanted), LIMIT)
+        .await
+        .unwrap();
+    assert_eq!(scoped.len(), 1);
+
+    match ok(api
+        .dispatch(Request::SearchMarks {
+            query: "grief".into(),
+            source: None,
+            book_id: Some(wanted),
+            limit: LIMIT,
+        })
+        .await)
+    {
+        Response::SearchHits(dispatched) => assert_eq!(dispatched, scoped),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The two ids are alternatives, and the seam says so rather than picking one.
+///
+/// A reading names its book, so the pair is redundant at best and a
+/// contradiction at worst — and a contradiction's honest answer is an empty
+/// list no client can tell from an empty vault. `NoteScope` cannot represent
+/// the pair at all; this is the one place it has to be refused.
+#[tokio::test]
+async fn asking_a_book_and_a_reading_at_once_is_refused_rather_than_guessed() {
+    let (api, _tmp) = api().await;
+    let book = seed(&api).await;
+    let reading = api.reread(book).await.unwrap();
+
+    assert!(api.list_notes(Some(book), None, None).await.is_ok());
+    assert!(api.list_notes(None, Some(reading), None).await.is_ok());
+
+    let err = api
+        .list_notes(Some(book), Some(reading), None)
+        .await
+        .expect_err("the pair is not a conjunction");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+    assert!(err.message.contains("reading_id"), "{}", err.message);
 }
 
 /// The removal, pinned — this is what `API_VERSION = 2` is *for*.
@@ -794,7 +958,10 @@ async fn dispatch_and_the_typed_method_agree_on_a_search() {
     .await
     .unwrap();
 
-    let typed = api.search_marks("antechamber", None, 10).await.unwrap();
+    let typed = api
+        .search_marks("antechamber", None, None, 10)
+        .await
+        .unwrap();
     assert_eq!(typed.len(), 1);
     assert!(matches!(typed[0], SearchHitDto::Note { .. }));
 
@@ -802,6 +969,7 @@ async fn dispatch_and_the_typed_method_agree_on_a_search() {
         .dispatch(Request::SearchMarks {
             query: "antechamber".into(),
             source: None,
+            book_id: None,
             limit: 10,
         })
         .await)
@@ -819,7 +987,10 @@ async fn an_empty_answer_is_not_an_error_across_the_seam() {
     seed(&api).await;
     for query in ["thermodynamics", "", "   ", "don't"] {
         assert!(
-            api.search_marks(query, None, 10).await.unwrap().is_empty(),
+            api.search_marks(query, None, None, 10)
+                .await
+                .unwrap()
+                .is_empty(),
             "{query:?} should answer nothing rather than fail"
         );
     }

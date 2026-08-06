@@ -65,6 +65,35 @@
 //! fts5 syntax errors, so `rb notes --search "don't"` failed with a raw sqlx
 //! error rather than a search. [`fts_query`] is the fix: every token becomes a
 //! quoted phrase, which is the one fts5 form that cannot contain an operator.
+//!
+//! ## Scoping to one book, and why it cannot live above this line (item 40)
+//!
+//! `book_id` narrows *what is in* the two lists, in [`SearchSource`]'s own
+//! idiom: absent is the whole library, and it never changes how the answer is
+//! ordered. It is a predicate on **both index queries**, applied before the
+//! `LIMIT` and therefore before the merge.
+//!
+//! That placement is the whole item. `SearchHit::book_id` has existed since 34,
+//! so a frontend could always have written `hits.retain(|h| …)` — and it would
+//! be **wrong**, not merely inelegant. `limit` cuts the *global* ranked list, so
+//! a search of a four-hundred-book library keeps the best `limit` marks in the
+//! library and then discards the ones that are not this book's; whenever the top
+//! `limit` hits live elsewhere the answer is **empty**, and an empty answer is
+//! indistinguishable from "you never wrote about that". Pushing the predicate
+//! into the two statements means the limit cuts a list that is already about the
+//! right book.
+//!
+//! One consequence is worth stating rather than discovering, because it looks
+//! like a bug from above. **A scoped list is not the unscoped list filtered.**
+//! Membership is (nothing appears that would not have appeared with an unbounded
+//! limit) and within-source order is (a `WHERE` cannot reorder `ORDER BY rank`),
+//! but the *interleaving* differs: the merge keys on within-source position, and
+//! filtering compacts those positions. Notes `[n1(A), n2(A), n3(B)]` beside
+//! highlights `[h1(B)]` put `n3` at position 2 and `h1` at position 0, so the
+//! unscoped list reads `[h1, …, n3]`; scoped to B both sit at position 0 and the
+//! recency tie-break decides, which may be `[n3, h1]`. That is the *correct*
+//! merge of the scoped lists — the book's best note beside the book's best
+//! passage — and it is a second reason the predicate belongs down here.
 
 use sqlx::Row;
 
@@ -245,9 +274,15 @@ fn interleave(notes: Vec<SearchHit>, highlights: Vec<SearchHit>, limit: usize) -
 impl Storage {
     /// Notes and highlights matching one query, as **one ranked list**.
     ///
-    /// `source` narrows which indexes are asked; `None` asks both. `limit` is
-    /// the length of the answer, and each index is asked for at most that many
-    /// so the merge has something to choose from at every position.
+    /// `source` narrows which indexes are asked; `None` asks both. `book_id`
+    /// narrows which book they are about; `None` is the whole library. `limit`
+    /// is the length of the answer, and each index is asked for at most that
+    /// many so the merge has something to choose from at every position.
+    ///
+    /// Both narrowings are applied **inside** the two statements, which for
+    /// `book_id` is the substance of item 40 rather than a detail — see the
+    /// module header for the empty answer a caller gets when it filters above
+    /// this line instead.
     ///
     /// An empty or whitespace-only query is no hits and no error — see the
     /// module header, and note that it is not merely a shortcut: `MATCH ''`
@@ -256,6 +291,7 @@ impl Storage {
         &self,
         query: &str,
         source: Option<SearchSource>,
+        book_id: Option<i64>,
         limit: i64,
     ) -> Result<Vec<SearchHit>> {
         let Some(prepared) = fts_query(query) else {
@@ -268,11 +304,14 @@ impl Storage {
 
         let notes = match source {
             Some(SearchSource::Highlight) => Vec::new(),
-            _ => self.search_note_index(&prepared, want).await?,
+            _ => self.search_note_index(&prepared, book_id, want).await?,
         };
         let highlights = match source {
             Some(SearchSource::Note) => Vec::new(),
-            _ => self.search_highlight_index(&prepared, want).await?,
+            _ => {
+                self.search_highlight_index(&prepared, book_id, want)
+                    .await?
+            }
         };
         let hits = interleave(notes, highlights, want as usize);
         tracing::debug!(hits = hits.len(), "search answered");
@@ -280,19 +319,29 @@ impl Storage {
     }
 
     /// `notes_fts`, in its own bm25 order.
-    async fn search_note_index(&self, prepared: &str, limit: i64) -> Result<Vec<SearchHit>> {
+    ///
+    /// A note's `book_id` is nullable — an unanchored thought is an ordinary
+    /// note — so scoping to a book drops those, which is what asking about one
+    /// book means.
+    async fn search_note_index(
+        &self,
+        prepared: &str,
+        book_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
         let columns = qualified(NOTE_COLUMNS, "n");
+        let scope = book_scope("n", book_id);
         let sql = format!(
             "SELECT {columns},
                     snippet(notes_fts, -1, '>>', '<<', '…', {SNIPPET_TOKENS}) AS snip
              FROM notes_fts JOIN notes n ON n.id = notes_fts.rowid
-             WHERE notes_fts MATCH ? ORDER BY rank LIMIT ?"
+             WHERE notes_fts MATCH ?{scope} ORDER BY rank LIMIT ?"
         );
-        let rows = sqlx::query(&sql)
-            .bind(prepared)
-            .bind(limit)
-            .fetch_all(self.pool())
-            .await?;
+        let mut q = sqlx::query(&sql).bind(prepared);
+        if let Some(id) = book_id {
+            q = q.bind(id);
+        }
+        let rows = q.bind(limit).fetch_all(self.pool()).await?;
         Ok(rows
             .iter()
             .map(|r| SearchHit::Note {
@@ -303,19 +352,30 @@ impl Storage {
     }
 
     /// `highlights_fts`, in its own bm25 order.
-    async fn search_highlight_index(&self, prepared: &str, limit: i64) -> Result<Vec<SearchHit>> {
+    ///
+    /// `highlights_fts` is external content over `highlights`, so the join this
+    /// already does to build the row is also the join the scope reads —
+    /// `highlights.book_id` is `NOT NULL`, and a passage always belongs to a
+    /// book.
+    async fn search_highlight_index(
+        &self,
+        prepared: &str,
+        book_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
         let columns = qualified(HIGHLIGHT_COLUMNS, "h");
+        let scope = book_scope("h", book_id);
         let sql = format!(
             "SELECT {columns},
                     snippet(highlights_fts, -1, '>>', '<<', '…', {SNIPPET_TOKENS}) AS snip
              FROM highlights_fts JOIN highlights h ON h.id = highlights_fts.rowid
-             WHERE highlights_fts MATCH ? ORDER BY rank LIMIT ?"
+             WHERE highlights_fts MATCH ?{scope} ORDER BY rank LIMIT ?"
         );
-        let rows = sqlx::query(&sql)
-            .bind(prepared)
-            .bind(limit)
-            .fetch_all(self.pool())
-            .await?;
+        let mut q = sqlx::query(&sql).bind(prepared);
+        if let Some(id) = book_id {
+            q = q.bind(id);
+        }
+        let rows = q.bind(limit).fetch_all(self.pool()).await?;
         Ok(rows
             .iter()
             .map(|r| SearchHit::Highlight {
@@ -323,6 +383,21 @@ impl Storage {
                 snippet: r.get("snip"),
             })
             .collect())
+    }
+}
+
+/// The book predicate, written once for both statements — empty when nobody
+/// asked, which is what keeps the scoped and unscoped calls one code path.
+///
+/// It is a fragment rather than a whole clause because each query already has a
+/// `MATCH` in its `WHERE`, and it is shared for `BookFilter::predicate`'s
+/// reason: two hand-written predicates that agree today disagree the first time
+/// one of them is edited, and here the disagreement would be one index silently
+/// answering about the whole library while the other answered about one book.
+fn book_scope(alias: &str, book_id: Option<i64>) -> String {
+    match book_id {
+        Some(_) => format!(" AND {alias}.book_id = ?"),
+        None => String::new(),
     }
 }
 
@@ -524,7 +599,7 @@ mod tests {
             .await
             .unwrap();
 
-        let hits = s.search_marks("failed", None, 10).await.unwrap();
+        let hits = s.search_marks("failed", None, None, 10).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(
             hits[0].as_highlight().unwrap().text,
@@ -563,7 +638,7 @@ mod tests {
         .await
         .unwrap();
 
-        let hits = s.search_marks("grief", None, 10).await.unwrap();
+        let hits = s.search_marks("grief", None, None, 10).await.unwrap();
         assert_eq!(hits.len(), 2);
         assert!(hits.iter().any(|h| h.as_note().is_some()));
         assert!(hits.iter().any(|h| h.as_highlight().is_some()));
@@ -597,14 +672,14 @@ mod tests {
         .unwrap();
 
         let notes = s
-            .search_marks("grief", Some(SearchSource::Note), 10)
+            .search_marks("grief", Some(SearchSource::Note), None, 10)
             .await
             .unwrap();
         assert_eq!(notes.len(), 1);
         assert!(notes[0].as_note().is_some());
 
         let highlights = s
-            .search_marks("grief", Some(SearchSource::Highlight), 10)
+            .search_marks("grief", Some(SearchSource::Highlight), None, 10)
             .await
             .unwrap();
         assert_eq!(highlights.len(), 1);
@@ -621,7 +696,7 @@ mod tests {
             .await
             .unwrap();
         for q in ["", "   ", "\t"] {
-            assert!(s.search_marks(q, None, 10).await.unwrap().is_empty());
+            assert!(s.search_marks(q, None, None, 10).await.unwrap().is_empty());
         }
     }
 
@@ -633,9 +708,14 @@ mod tests {
         s.insert_highlight(book, &hl("she couldn't say it aloud"))
             .await
             .unwrap();
-        let hits = s.search_marks("couldn't", None, 10).await.unwrap();
+        let hits = s.search_marks("couldn't", None, None, 10).await.unwrap();
         assert_eq!(hits.len(), 1);
-        assert!(s.search_marks("C++", None, 10).await.unwrap().is_empty());
+        assert!(
+            s.search_marks("C++", None, None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A search with no hits is an answer. Nothing above this layer may read it
@@ -647,7 +727,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            s.search_marks("thermodynamics", None, 10)
+            s.search_marks("thermodynamics", None, None, 10)
                 .await
                 .unwrap()
                 .is_empty()
@@ -663,7 +743,7 @@ mod tests {
     async fn every_write_path_moves_the_index() {
         let (s, book) = seeded().await;
         let found = |s: Storage, q: &'static str| async move {
-            s.search_marks(q, Some(SearchSource::Highlight), 10)
+            s.search_marks(q, Some(SearchSource::Highlight), None, 10)
                 .await
                 .unwrap()
                 .len()
@@ -734,20 +814,296 @@ mod tests {
         s.merge_books(src, dst).await.unwrap();
 
         let moved = s
-            .search_marks("duplicate alone", Some(SearchSource::Highlight), 10)
+            .search_marks("duplicate alone", Some(SearchSource::Highlight), None, 10)
             .await
             .unwrap();
         assert_eq!(moved.len(), 1, "a moved highlight stays findable");
         assert_eq!(moved[0].as_highlight().unwrap().book_id, dst);
 
         let deduped = s
-            .search_marks("failed", Some(SearchSource::Highlight), 10)
+            .search_marks("failed", Some(SearchSource::Highlight), None, 10)
             .await
             .unwrap();
         assert_eq!(
             deduped.len(),
             1,
             "the dropped copy left the index with the row"
+        );
+    }
+
+    // ---- item 40: the book scope ------------------------------------------
+
+    fn book(title: &str) -> Book {
+        Book {
+            title: Some(title.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Identity for a hit, for comparing two answers as sets: the kind plus the
+    /// row id. Two rows of different kinds may share an id.
+    fn ident(h: &SearchHit) -> (u8, i64) {
+        (
+            match h.source() {
+                SearchSource::Note => 0,
+                SearchSource::Highlight => 1,
+            },
+            h.id(),
+        )
+    }
+
+    /// **The bug this item exists to fix**, and the reason the predicate cannot
+    /// live above this line.
+    ///
+    /// `limit` cuts the *global* ranked list. A frontend that searched the
+    /// library and then kept one book's hits is not doing the same thing more
+    /// slowly — it gets **nothing**, because the best `limit` marks in a real
+    /// library belong to other books, and an empty answer is indistinguishable
+    /// from "you never wrote about that".
+    ///
+    /// The decoys are one-word passages on purpose. bm25 divides by document
+    /// length, so a short strong match outranks a long one, which makes the
+    /// truncation a fact about the corpus rather than about SQLite's row order —
+    /// and the ranking assumption is **asserted** below, so a future fts5 that
+    /// scored differently fails this loudly instead of passing vacuously.
+    #[tokio::test]
+    async fn a_scoped_search_finds_what_a_filter_above_the_seam_would_have_truncated() {
+        const LIMIT: i64 = 5;
+        const DECOYS: usize = 30;
+        let (s, _) = seeded().await;
+
+        for i in 0..DECOYS {
+            let other = s
+                .upsert_book(&book(&format!("Decoy {i}")), None)
+                .await
+                .unwrap();
+            s.insert_highlight(other, &hl("grief")).await.unwrap();
+        }
+        let wanted = s
+            .upsert_book(&book("The Remains of the Day"), None)
+            .await
+            .unwrap();
+        s.insert_highlight(
+            wanted,
+            &hl("the antechamber of a feeling she would only much later learn to call grief"),
+        )
+        .await
+        .unwrap();
+
+        // The corpus really does bury it — stated, not assumed.
+        let unbounded = s.search_marks("grief", None, None, 1000).await.unwrap();
+        assert_eq!(unbounded.len(), DECOYS + 1);
+        let buried = unbounded
+            .iter()
+            .position(|h| h.book_id() == Some(wanted))
+            .expect("the wanted book matches the query at all");
+        assert!(
+            buried >= LIMIT as usize,
+            "the fixture must rank the wanted book below the limit; it is at {buried}"
+        );
+
+        // What a frontend filter would have had to work with.
+        let truncated = s.search_marks("grief", None, None, LIMIT).await.unwrap();
+        assert_eq!(truncated.len(), LIMIT as usize);
+        assert!(
+            !truncated.iter().any(|h| h.book_id() == Some(wanted)),
+            "nothing to filter — this is the empty book view the item is about"
+        );
+
+        // And what the predicate answers instead.
+        let scoped = s
+            .search_marks("grief", None, Some(wanted), LIMIT)
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].book_id(), Some(wanted));
+        assert!(scoped[0].snippet().contains(">>grief<<"));
+    }
+
+    /// The two invariants scoping has — and the third one it deliberately does
+    /// **not**.
+    ///
+    /// *Membership*: with a limit that cuts nothing, a scoped answer is exactly
+    /// the unscoped answer restricted to that book. *Within-source order*: a
+    /// `WHERE` cannot reorder an `ORDER BY rank`, so each index's hits keep
+    /// their relative order.
+    ///
+    /// "…and the same relative order overall" is **false**, so it is not
+    /// asserted — asserting something false and weakening it later is worse
+    /// than asserting less. The merge keys on within-source *position* and
+    /// filtering compacts those positions, so a note three rows below a
+    /// highlight unscoped can sit beside it scoped. The module header carries
+    /// the counterexample.
+    #[tokio::test]
+    async fn scoping_restricts_membership_and_never_a_source_s_own_order() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let mut books = Vec::new();
+        for i in 0..4usize {
+            let b = s
+                .upsert_book(&book(&format!("Book {i}")), None)
+                .await
+                .unwrap();
+            // Varying counts and lengths, so the two ranked lists genuinely
+            // interleave rather than running parallel.
+            for j in 0..=i {
+                s.insert_highlight(
+                    b,
+                    &NewHighlight {
+                        text: format!("{}grief and the shape of it", "a passage on ".repeat(j + 1)),
+                        ko_datetime: Some(format!("2026-01-0{} 10:00:00", j + 1)),
+                        ..hl("seed")
+                    },
+                )
+                .await
+                .unwrap();
+                let path = format!("b{i}/n{j}.md");
+                let title = format!("note {i}-{j}");
+                let body = format!("{}on grief", "thinking ".repeat(j + 1));
+                s.insert_note(
+                    NewNoteMeta {
+                        book_id: Some(b),
+                        reading_id: None,
+                        highlight_id: None,
+                        page: None,
+                        location: None,
+                        file_path: &path,
+                        title: &title,
+                        kind: "note",
+                    },
+                    &body,
+                    &[],
+                )
+                .await
+                .unwrap();
+            }
+            books.push(b);
+        }
+        // An unanchored thought: it is in the library-wide answer and in no
+        // book's, which is what asking about one book means.
+        s.insert_note(
+            NewNoteMeta {
+                book_id: None,
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "unsorted/free.md",
+                title: "a free thought",
+                kind: "note",
+            },
+            "grief, unattached to any book",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let all = s.search_marks("grief", None, None, 1000).await.unwrap();
+        assert!(
+            all.iter().any(|h| h.book_id().is_none()),
+            "the unanchored note is in the library-wide answer"
+        );
+
+        for &b in &books {
+            let scoped = s.search_marks("grief", None, Some(b), 1000).await.unwrap();
+            assert!(!scoped.is_empty());
+
+            let want: std::collections::BTreeSet<_> = all
+                .iter()
+                .filter(|h| h.book_id() == Some(b))
+                .map(ident)
+                .collect();
+            let got: std::collections::BTreeSet<_> = scoped.iter().map(ident).collect();
+            assert_eq!(got, want, "membership, for book {b}");
+
+            for src in [SearchSource::Note, SearchSource::Highlight] {
+                let unscoped_order: Vec<i64> = all
+                    .iter()
+                    .filter(|h| h.source() == src && h.book_id() == Some(b))
+                    .map(|h| h.id())
+                    .collect();
+                let scoped_order: Vec<i64> = scoped
+                    .iter()
+                    .filter(|h| h.source() == src)
+                    .map(|h| h.id())
+                    .collect();
+                assert_eq!(
+                    scoped_order, unscoped_order,
+                    "a WHERE may not reorder {src:?}'s own rank, for book {b}"
+                );
+            }
+        }
+    }
+
+    /// The two narrowings are independent and compose, which is what makes
+    /// `book_id` a filter in `source`'s idiom rather than a second dialect.
+    #[tokio::test]
+    async fn the_two_narrowings_compose() {
+        let (s, pachinko) = seeded().await;
+        let other = s.upsert_book(&book("Beloved"), None).await.unwrap();
+        for b in [pachinko, other] {
+            s.insert_highlight(b, &hl("the antechamber of grief"))
+                .await
+                .unwrap();
+            let path = format!("b{b}/a.md");
+            s.insert_note(
+                NewNoteMeta {
+                    book_id: Some(b),
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: &path,
+                    title: "On grief",
+                    kind: "note",
+                },
+                "What grief does to a family.",
+                &[],
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            s.search_marks("grief", None, None, 10).await.unwrap().len(),
+            4
+        );
+        assert_eq!(
+            s.search_marks("grief", None, Some(pachinko), 10)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        let one = s
+            .search_marks("grief", Some(SearchSource::Highlight), Some(pachinko), 10)
+            .await
+            .unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].as_highlight().unwrap().book_id, pachinko);
+    }
+
+    /// A book nothing was written about is an empty answer, never an error —
+    /// and never the whole library, which is the failure a forgotten bind
+    /// would produce.
+    #[tokio::test]
+    async fn scoping_to_a_book_with_no_marks_is_an_answer() {
+        let (s, pachinko) = seeded().await;
+        s.insert_highlight(pachinko, &hl("the antechamber of grief"))
+            .await
+            .unwrap();
+        let empty = s.upsert_book(&book("Beloved"), None).await.unwrap();
+        assert!(
+            s.search_marks("grief", None, Some(empty), 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            s.search_marks("grief", None, Some(empty + 1000), 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a book id nothing holds is empty, not everything"
         );
     }
 }

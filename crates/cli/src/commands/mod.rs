@@ -15,7 +15,7 @@ pub mod search;
 pub mod sort_keys;
 
 use anyhow::{Result, bail};
-use readingbuddy::{Book, Engine, NoteRecord};
+use readingbuddy::{Book, Engine, NoteRecord, NoteScope};
 
 use crate::render;
 
@@ -71,7 +71,7 @@ pub async fn resolve_note(engine: &Engine, selector: &str) -> Result<NoteRecord>
     }
     let needle = selector.to_lowercase();
     let mut candidates: Vec<NoteRecord> = engine
-        .list_notes(None, None)
+        .list_notes(NoteScope::All, None)
         .await?
         .into_iter()
         .filter(|n| n.title.to_lowercase().contains(&needle))

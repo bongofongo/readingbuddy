@@ -31,7 +31,11 @@ pub async fn find(
     // caught up with, and searching for it would report it missing.
     super::catch_up(engine).await;
 
-    let hits = engine.search_marks(query, source, limit).await?;
+    // Item 40's `book_id` is deliberately not a flag here. `rb find` is the
+    // library-wide door and `rb show` already prints one book's marks; a
+    // per-book search is a screen's question, and the parameter exists for the
+    // screen that has to ask it without truncating its own answer.
+    let hits = engine.search_marks(query, source, None, limit).await?;
     if hits.is_empty() {
         println!("{}", nothing(query, source));
         return Ok(());

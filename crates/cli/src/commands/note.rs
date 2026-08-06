@@ -1,5 +1,5 @@
 use anyhow::Result;
-use readingbuddy::{Engine, NewNoteInput, NoteKind};
+use readingbuddy::{Engine, NewNoteInput, NoteKind, NoteScope};
 
 use super::{resolve_note, resolve_one};
 use crate::prompt;
@@ -99,7 +99,7 @@ pub async fn list_or_search(
         None => None,
     };
     let notes = engine
-        .list_notes(book.as_ref().and_then(|b| b.id), None)
+        .list_notes(NoteScope::of_book(book.as_ref().and_then(|b| b.id)), None)
         .await?;
     if notes.is_empty() {
         println!("no notes yet — `readingbuddy note \"first thought\"`");

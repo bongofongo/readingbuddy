@@ -347,15 +347,33 @@ pub enum Request {
     CreateNote {
         note: NewNoteDto,
     },
-    /// Notes, newest first, for one book or the whole vault.
+    /// Notes, newest first, for one book, for one reading, or for the whole
+    /// vault.
     ///
     /// `limit` selects along `created_at`. **Absent is every note**, which is
     /// what this method has always done and is deliberately still reachable: a
     /// client walking the whole graph needs it, and a default cap would turn a
     /// correctness pass into a silently truncated one. A screen passes a number.
+    ///
+    /// **`reading_id` is item 40's addition** and is `#[serde(default)]`, so a
+    /// client that never heard of it sends the same bytes it always did and
+    /// [`API_VERSION`] does not move. It exists for `search_marks`' reason in a
+    /// second place: `NoteDto` carries `reading_id`, so a client is one
+    /// `filter` away from doing this above the seam — and above the seam the
+    /// limit has already cut the *book's* twelve most recent notes, so a card
+    /// for an older read shows however few of them happened to be its, or
+    /// nothing at all.
+    ///
+    /// The two ids are **alternatives, not a conjunction**. Sending both is an
+    /// [`crate::error::ErrorCode::InvalidInput`] rather than a preference for
+    /// one of them: a reading belongs to exactly one book, so the pair is
+    /// either redundant or a contradiction, and a contradiction's honest answer
+    /// is an empty list that no client can tell from an empty vault.
     ListNotes {
         #[serde(default)]
         book_id: Option<i64>,
+        #[serde(default)]
+        reading_id: Option<i64>,
         #[serde(default)]
         limit: Option<i64>,
     },
@@ -373,10 +391,24 @@ pub enum Request {
     /// `source` narrows which indexes are asked; **absent is both**, and it
     /// never changes the order. `limit` is the length of the answer. An empty
     /// query is no hits and no error.
+    ///
+    /// **`book_id` is item 40's addition** — absent is the whole library, and
+    /// it is `#[serde(default)]`, so this is additive and [`API_VERSION`] does
+    /// not move. It narrows *what is in* the two lists, in `source`'s own
+    /// idiom, and like `source` it never changes how they are ordered.
+    ///
+    /// It is here because it **cannot** be done above the seam. `limit` cuts
+    /// the global ranked list, so a client searching the library and then
+    /// keeping one book's hits gets an empty answer whenever the top `limit`
+    /// marks live in other books — which, at four hundred books, is most
+    /// queries. `SearchHitDto` has always carried enough to write that filter,
+    /// which is exactly why the request had to grow the parameter.
     SearchMarks {
         query: String,
         #[serde(default)]
         source: Option<SearchSourceDto>,
+        #[serde(default)]
+        book_id: Option<i64>,
         limit: i64,
     },
     GetNote {

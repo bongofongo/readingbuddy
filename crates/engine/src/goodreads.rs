@@ -38,6 +38,7 @@ use crate::error::{EngineError, Result};
 use crate::koreader::{self, MatchCandidate};
 use crate::matching::Query;
 use crate::notes::{NewNoteInput, NoteKind};
+use crate::storage::NoteScope;
 use crate::storage::{STATUS_FINISHED, STATUS_READING, Source, Storage};
 use crate::{Engine, storage};
 
@@ -871,7 +872,7 @@ async fn write_side_note(
         .storage
         // Every note on the book: the one being looked for may be any of them,
         // and a viewport's limit here would silently write a second copy.
-        .list_notes(Some(book_id), None)
+        .list_notes(NoteScope::Book(book_id), None)
         .await?
         .into_iter()
         .find(|n| n.title == title)

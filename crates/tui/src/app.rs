@@ -14,8 +14,8 @@ use ratatui::widgets::ListState;
 use readingbuddy::{
     Book, BookQuery, BookSort, CalibreRowState, DeviceBook, DeviceState, Diagnostic, Engine,
     EngineError, FlashcardRow, Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput,
-    NoteKind, NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest, VaultEvent,
-    VaultWatcher,
+    NoteKind, NoteRecord, NoteScope, RankedResult, ReadNumbering, Reading, SearchRequest,
+    VaultEvent, VaultWatcher,
 };
 
 use crossterm::event::KeyModifiers;
@@ -1019,7 +1019,7 @@ impl App {
     async fn load_view(&self, book: Book) -> Result<BookView> {
         let (notes, highlights, cards, readings) = match book.id {
             Some(id) => (
-                self.engine.list_notes(Some(id), None).await?,
+                self.engine.list_notes(NoteScope::Book(id), None).await?,
                 self.engine.list_highlights(id).await?,
                 self.engine.list_flashcards_for_book(id).await?,
                 self.engine.list_readings(id).await?,
@@ -6290,7 +6290,11 @@ mod tests {
         assert_eq!(first, second, "a second press started a second reflection");
 
         let id = app.library[0].id.expect("id");
-        let notes = app.engine.list_notes(Some(id), None).await.expect("notes");
+        let notes = app
+            .engine
+            .list_notes(NoteScope::Book(id), None)
+            .await
+            .expect("notes");
         assert_eq!(notes.iter().filter(|n| n.kind == "reflection").count(), 1);
     }
 
@@ -6335,7 +6339,7 @@ mod tests {
         // other half of the same rule: kept, and said.
         let note_id = app
             .engine
-            .list_notes(Some(app.library[0].id.unwrap()), None)
+            .list_notes(NoteScope::Book(app.library[0].id.unwrap()), None)
             .await
             .expect("notes")
             .into_iter()

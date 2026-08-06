@@ -2,7 +2,7 @@
 //!
 //! Offline, `sqlite::memory:` plus a `TempDir` vault, and nothing left behind.
 
-use readingbuddy::{Book, Engine, EngineError, NewNoteInput, NoteKind};
+use readingbuddy::{Book, Engine, EngineError, NewNoteInput, NoteKind, NoteScope};
 
 mod common;
 use common::{engine, highlight, seed_book};
@@ -36,7 +36,14 @@ async fn opening_a_reflection_twice_returns_the_same_note_and_file() {
         "Sunja's dignity, chapter by chapter.",
         "reopening must not blank what was written"
     );
-    assert_eq!(engine.list_notes(Some(book), None).await.unwrap().len(), 1);
+    assert_eq!(
+        engine
+            .list_notes(NoteScope::Book(book), None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// A reflection is opened *while reading*, so a book that was never marked as
@@ -124,7 +131,10 @@ async fn a_reread_gets_its_own_pair_and_the_first_survives() {
 
     let readings = engine.storage().list_readings(book).await.unwrap();
     assert_eq!(readings.len(), 2);
-    let notes = engine.list_notes(Some(book), None).await.unwrap();
+    let notes = engine
+        .list_notes(NoteScope::Book(book), None)
+        .await
+        .unwrap();
     assert_eq!(notes.len(), 4);
     assert_eq!(
         engine.note_body(&record).unwrap(),
@@ -329,7 +339,7 @@ async fn a_reflection_is_searchable() {
         .unwrap();
 
     let hits = engine
-        .search_marks("boarding", Some(readingbuddy::SearchSource::Note), 10)
+        .search_marks("boarding", Some(readingbuddy::SearchSource::Note), None, 10)
         .await
         .unwrap();
     assert_eq!(hits.len(), 1);

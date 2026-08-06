@@ -275,7 +275,7 @@ fn a_search_query_never_reaches_a_log_above_trace() {
                         .await
                         .unwrap();
 
-                    let hits = engine.search_marks(TYPED, None, 10).await.unwrap();
+                    let hits = engine.search_marks(TYPED, None, None, 10).await.unwrap();
                     assert_eq!(
                         hits.len(),
                         2,
@@ -285,7 +285,7 @@ fn a_search_query_never_reaches_a_log_above_trace() {
                     // A query that matches nothing goes down the same path.
                     assert!(
                         engine
-                            .search_marks("thermodynamics", None, 10)
+                            .search_marks("thermodynamics", None, None, 10)
                             .await
                             .unwrap()
                             .is_empty()
