@@ -603,8 +603,12 @@ pub(crate) async fn scores_for(storage: &Storage, query: &Query<'_>) -> Result<V
     let Some(prepared) = Prepared::new(query) else {
         return Ok(Vec::new());
     };
+    // Every book, and it has to be: this decides whether a sidecar is a book we
+    // already have, so a book outside the window is a book that gets a duplicate
+    // rather than a match. `10_000` was a cap wearing a limit's clothes, and the
+    // library that crossed it would have been told nothing.
     let mut scored: Vec<Scored> = storage
-        .list_books(10_000, crate::storage::BookSort::LastModified)
+        .list_books(&crate::BookQuery::default())
         .await?
         .into_iter()
         .filter_map(|book| {

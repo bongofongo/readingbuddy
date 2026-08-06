@@ -705,7 +705,7 @@ mod tests {
         assert!(content.contains("page: 128"));
         assert!(content.contains("location: \"Chapter 3\""));
 
-        let rec = s.list_notes(Some(book_id)).await.unwrap();
+        let rec = s.list_notes(Some(book_id), None).await.unwrap();
         assert_eq!(rec.len(), 1);
         assert_eq!(rec[0].page, Some(128));
         assert_eq!(rec[0].location.as_deref(), Some("Chapter 3"));

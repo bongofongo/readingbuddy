@@ -337,6 +337,8 @@ mod tests {
             .call(Request::ListBooks {
                 limit: 10,
                 sort: Default::default(),
+                offset: 0,
+                filter: None,
             })
             .await;
         assert_eq!(reply.id, 2);

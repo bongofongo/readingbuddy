@@ -66,7 +66,7 @@ enum Cmd {
     List {
         #[arg(long, default_value_t = 20)]
         limit: i64,
-        /// last-modified | title | progress
+        /// last-modified | title | progress | author | year
         #[arg(long, default_value = "last-modified")]
         sort: String,
     },

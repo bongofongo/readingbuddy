@@ -1420,7 +1420,7 @@ mod vault_tests {
                 .await
                 .is_err(),
         );
-        assert!(v.storage.list_notes(None).await.unwrap().is_empty());
+        assert!(v.storage.list_notes(None, None).await.unwrap().is_empty());
     }
 
     /// An outside edit is exactly where a new `[[wikilink]]` appears, so the

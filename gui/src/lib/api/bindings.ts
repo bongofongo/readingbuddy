@@ -157,12 +157,51 @@ series_label: string | null,
  */
 authors_display: Array<string>, 
 /**
+ * What shape this edition is, in multiples of its own height — item 19,
+ * carried across the seam by item 18.
+ *
+ * **Derived, read-only.** A shelf needs it *per row* and the GUI links this
+ * crate and not the engine, so without it the only way to draw three
+ * hundred spines is to re-derive the arithmetic in TypeScript — where it
+ * would eventually disagree with the TUI's Unicode book about how fat
+ * *Infinite Jest* is, with nothing on either screen looking wrong. That is
+ * the failure item 19 exists to prevent, and it is prevented here or not at
+ * all.
+ *
+ * Never `None`: a book always has *a* shape, and
+ * [`EditionShapeDto::width_source`]/`thickness_source` say which of its two
+ * numbers were assumed.
+ */
+shape: EditionShapeDto, 
+/**
  * Unix seconds. `OffsetDateTime`'s own serde format is a dependency's
  * choice; an integer is ours.
  */
 created_at: number | null, last_modified: number | null, };
 
 export type BookFileDto = { sha256: string, book_id: number, format: string, original_name: string | null, size: number, added_at: number, };
+
+/**
+ * Which books a list is about, before it is ordered or paged (item 18).
+ *
+ * Every field absent is *every book*, so a client with no opinion sends
+ * nothing — and `Request::ListBooks` carries this as an `Option`, which is why
+ * the default and the absence are the same answer twice over rather than a
+ * distinction nobody wanted.
+ *
+ * The mirror of [`readingbuddy::BookFilter`]; the predicates and their
+ * case-sensitivity are documented there, because they are properties of the
+ * SQL and not of the wire.
+ */
+export type BookFilterDto = { status: StatusFilterDto | null, 
+/**
+ * A substring of the stored author list, case-insensitive.
+ */
+author: string | null, year: number | null, language: string | null, 
+/**
+ * A minted shelf name out of `book_tags` — **not** `subjects`.
+ */
+tag: string | null, has_cover: boolean | null, };
 
 export type BookImportStatsDto = { book_id: number, book_title: string, inserted: number, 
 /**
@@ -175,7 +214,44 @@ updated: number,
  */
 skipped: number, flashcards: number, matched_by: MatchMethodDto, percent_finished: number | null, status: KoStatusDto | null, rating: number | null, };
 
+/**
+ * One page of the library: which books, in what order, and which slice.
+ *
+ * The typed argument to [`crate::Api::list_books`]. `Request::ListBooks`
+ * carries the same four values **flat**, so a payload of `{"limit":20,
+ * "sort":"title"}` still means what it always did and no client had to change
+ * for this item — the offset and the filter are additive, and an omitted one is
+ * the old behaviour exactly.
+ */
+export type BookQueryDto = { sort: BookSortDto, filter: BookFilterDto | null, 
+/**
+ * **Negative means no limit.** The whole-library read, and the same reading
+ * SQLite gives `LIMIT -1`.
+ */
+limit: number, 
+/**
+ * Rows to skip. **Pagination here is an offset and not a cursor** — see
+ * `docs/decisions.md` entry 18 for the argument, which turns on two of the
+ * five sorts having no cursor key that exists in the database.
+ */
+offset: number, };
+
 export type BookSortDto = "last_modified" | "title" | "progress" | "author" | "year";
+
+/**
+ * What is behind one book — item 18's answer to the four-calls-per-row problem.
+ *
+ * **Counts, not marks.** A tile saying *3 highlights* and a tile showing a dot
+ * are different products, and this is the more informative one at the same
+ * cost; a frontend that wants the dot reads `> 0`, which
+ * [`readingbuddy::BookSummary::has`] spells once so twelve components do not
+ * each spell it.
+ *
+ * Every number here is **past tense** — highlights taken, notes written, files
+ * owned. Nothing in this struct counts what has not been done, and nothing
+ * derived from it may.
+ */
+export type BookSummaryDto = { book_id: number, highlights: number, notes: number, files: number, };
 
 export type BookTagDto = { tag: string, source: string, 
 /**
@@ -297,6 +373,17 @@ export type DiagnosticKindDto = { "kind": "provider_failed", provider: ProviderI
  * Seconds. A `Duration`'s serde shape is a dependency's choice.
  */
 after_secs: number, } | { "kind": "sidecar_unreadable", path: string, class: ErrorClassDto, } | { "kind": "sidecar_unparsable", path: string, } | { "kind": "no_sidecars_found", path: string, } | { "kind": "unknown_device_status", path: string, status: string, } | { "kind": "sidecar_not_identified", path: string, } | { "kind": "goodreads_row_skipped", row: number, } | { "kind": "goodreads_review_diverged", title: string, } | { "kind": "goodreads_rating_diverged", title: string, } | { "kind": "goodreads_unanchored_review", title: string, } | { "kind": "goodreads_undatable_rereads", title: string, dropped: number, } | { "kind": "goodreads_rating_unmapped", title: string, } | { "kind": "goodreads_rereads_dropped", title: string, dropped: number, } | { "kind": "calibre_row_skipped", calibre_id: number, } | { "kind": "calibre_row_not_identified", calibre_id: number, } | { "kind": "calibre_cover_unreadable", path: string, } | { "kind": "statistics_db_absent", path: string, } | { "kind": "statistics_db_unreadable", path: string, class: ErrorClassDto, } | { "kind": "statistics_schema_unknown", path: string, version: number, } | { "kind": "statistics_book_unmatched", md5: string, } | { "kind": "statistics_book_not_identified", title: string, } | { "kind": "cover_unavailable", class: ErrorClassDto, };
+
+/**
+ * The physical shape of one edition, in multiples of its own height (item 19).
+ *
+ * **Derived, read-only**, and here because item 19 landed `EditionShape` in the
+ * engine while the GUI links this crate and not the engine — so a WebGL shelf
+ * either gets this field or re-derives the arithmetic in TypeScript, which is
+ * the exact failure item 19 was written to prevent. Height is `1.0` and is not
+ * a field; see [`readingbuddy::EditionShape`] for why millimetres were refused.
+ */
+export type EditionShapeDto = { width_over_height: number, width_source: ShapeSourceDto, thickness_over_height: number, thickness_source: ShapeSourceDto, };
 
 /**
  * A record that looked like this book but not enough to write unasked.
@@ -660,12 +747,26 @@ api_version: number, outcome: Outcome, };
  *
  * One call. Every variant maps to exactly one [`crate::Api`] method.
  */
-export type Request = { "method": "api_version" } | { "method": "paths" } | { "method": "google_api_key" } | { "method": "set_google_api_key", "params": { key: string | null, } } | { "method": "verify_google_key", "params": { key: string, } } | { "method": "search", "params": { request: SearchRequestDto, } } | { "method": "lookup_isbn", "params": { isbn: string, } } | { "method": "save_book", "params": { book: BookDto, } } | { "method": "list_books", "params": { limit: number, sort: BookSortDto, } } | { "method": "get_book", "params": { id: number, } } | { "method": "resolve_books", "params": { selector: string, } } | { "method": "book_tags", "params": { book_id: number, } } | { "method": "enrich_book", "params": { book_id: number, } } | { "method": "set_book_fields", "params": { book_id: number, fields: BookDto, } } | { "method": "field_provenance", "params": { book_id: number, } } | { "method": "currently_reading", "params": { limit: number, } } | { "method": "delete_book", "params": { id: number, } } | { "method": "fetch_cover", "params": { book_id: number, } } | { "method": "merge_books", "params": { src: number, dst: number, } } | { "method": "list_readings", "params": { book_id: number, } } | { "method": "get_reading", "params": { id: number, } } | { "method": "active_reading", "params": { book_id: number, } } | { "method": "update_progress", "params": { book_id: number, page: number | null, finished: boolean | null, } } | { "method": "reread", "params": { book_id: number, } } | { "method": "list_highlights", "params": { book_id: number, } } | { "method": "highlights_for_reading", "params": { reading_id: number, } } | { "method": "set_annotation", "params": { highlight_id: number, annotation: string | null, } } | { "method": "import_epub", "params": { path: string, } } | { "method": "import_file", "params": { path: string, 
+export type Request = { "method": "api_version" } | { "method": "paths" } | { "method": "google_api_key" } | { "method": "set_google_api_key", "params": { key: string | null, } } | { "method": "verify_google_key", "params": { key: string, } } | { "method": "search", "params": { request: SearchRequestDto, } } | { "method": "lookup_isbn", "params": { isbn: string, } } | { "method": "save_book", "params": { book: BookDto, } } | { "method": "list_books", "params": { 
+/**
+ * Negative is no limit.
+ */
+limit: number, sort: BookSortDto, 
+/**
+ * Rows to skip. Pagination is an **offset**, not a cursor — two of the
+ * five sorts have no cursor key that exists in the database, and
+ * `docs/decisions.md` entry 18 has the argument.
+ */
+offset: number, 
+/**
+ * Absent is every book.
+ */
+filter: BookFilterDto | null, } } | { "method": "count_books", "params": { filter: BookFilterDto | null, } } | { "method": "book_summaries", "params": { book_ids: Array<number>, } } | { "method": "get_book", "params": { id: number, } } | { "method": "resolve_books", "params": { selector: string, } } | { "method": "book_tags", "params": { book_id: number, } } | { "method": "enrich_book", "params": { book_id: number, } } | { "method": "set_book_fields", "params": { book_id: number, fields: BookDto, } } | { "method": "field_provenance", "params": { book_id: number, } } | { "method": "currently_reading", "params": { limit: number, } } | { "method": "delete_book", "params": { id: number, } } | { "method": "fetch_cover", "params": { book_id: number, } } | { "method": "merge_books", "params": { src: number, dst: number, } } | { "method": "list_readings", "params": { book_id: number, } } | { "method": "get_reading", "params": { id: number, } } | { "method": "active_reading", "params": { book_id: number, } } | { "method": "update_progress", "params": { book_id: number, page: number | null, finished: boolean | null, } } | { "method": "reread", "params": { book_id: number, } } | { "method": "list_highlights", "params": { book_id: number, } } | { "method": "highlights_for_reading", "params": { reading_id: number, } } | { "method": "set_annotation", "params": { highlight_id: number, annotation: string | null, } } | { "method": "import_epub", "params": { path: string, } } | { "method": "import_file", "params": { path: string, 
 /**
  * Create a book even over a near-miss candidate. Without it an
  * ambiguous file comes back as `Unmatched` with **nothing written**.
  */
-new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, } } | { "method": "search_notes", "params": { query: string, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
+new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, limit: number | null, } } | { "method": "search_notes", "params": { query: string, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
 /**
  * Import only these calibre rows. Empty — and so an absent field — is
  * the whole library, which is what keeps an older client's request
@@ -676,7 +777,7 @@ only: Array<number>, } } | { "method": "link_calibre_book", "params": { uuid: st
 /**
  * What came back, by shape. See [`Request`] on the size of these variants.
  */
-export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "note_hits", "value": Array<NoteSearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
+export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "note_hits", "value": Array<NoteSearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
 
 export type SearchOutcomeDto = { results: Array<RankedResultDto>, 
 /**
@@ -688,6 +789,15 @@ warnings: Array<DiagnosticDto>, };
 export type SearchRequestDto = { query: string | null, title: string | null, author: string | null, publisher: string | null, translator: string | null, language: string | null, year: number | null, isbn: string | null, limit: number, };
 
 export type SeverityDto = "warning" | "error";
+
+/**
+ * Whether one of [`EditionShapeDto`]'s numbers came from anything recorded.
+ *
+ * Mirrored as an enum rather than flattened to `width_assumed: bool`, for
+ * `DiagnosticKind`'s reason: the vocabulary is the information, and a boolean
+ * named after one of two states is a coin flip about which way it reads.
+ */
+export type ShapeSourceDto = "recorded" | "assumed";
 
 /**
  * Who supplied a field. Mirrored in full, for `DiagnosticKind`'s reason: a
@@ -711,6 +821,21 @@ export type SourceDto = "open_library" | "google_books" | "calibre" | "epub" | "
  * "a database with nothing in it".
  */
 export type StatsImportReportDto = { schema_version: number | null, books_in_db: number, books_matched: number, days: number, events: FillStatsDto, warnings: Array<DiagnosticDto>, };
+
+/**
+ * What the current reading's state has to be for a book to be in the answer.
+ *
+ * Four reachable cases: the three states this build writes, an importer's own
+ * word through [`ReadingStateDto::Other`], and **absence**.
+ *
+ * [`StatusFilterDto::NoReading`] is here rather than as a fifth
+ * `ReadingStateDto` variant, and that placement is the ruling: absence is a
+ * question somebody asked once, not a permanent claim about every book. A
+ * variant is a thing a UI filters on, counts, and eventually puts a badge
+ * beside — which is the completion framing `docs/decisions.md` bans, and which
+ * `no_reading_is_absence_rather_than_a_variant` exists to keep out.
+ */
+export type StatusFilterDto = { "match": "state", is: ReadingStateDto, } | { "match": "no_reading" };
 
 /**
  * A book's chapter list, and the file it was read from.

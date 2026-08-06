@@ -17,6 +17,7 @@
 //!
 //! Offline throughout: `sqlite::memory:`, a `TempDir` vault, no network.
 
+use readingbuddy::BookQuery;
 use readingbuddy::device::DeviceState;
 use readingbuddy::storage::BookSort;
 use readingbuddy::{Book, NewNoteInput, NoteKind};
@@ -122,7 +123,7 @@ async fn a_device_note_edit_reaches_us_through_the_cache_and_spares_everything_o
         .unwrap();
     let book = engine
         .storage()
-        .list_books(10, BookSort::LastModified)
+        .list_books(&BookQuery::new(10, BookSort::LastModified))
         .await
         .unwrap()[0]
         .id
@@ -343,7 +344,7 @@ async fn merging_a_duplicate_keeps_both_reflections_and_every_citation() {
 
     // Both reflections survive, on the survivor, with their bodies intact. The
     // partial unique index permits it because they anchor to different readings.
-    let notes = engine.list_notes(Some(dst)).await.unwrap();
+    let notes = engine.list_notes(Some(dst), None).await.unwrap();
     let reflections: Vec<_> = notes.iter().filter(|n| n.kind == "reflection").collect();
     assert_eq!(
         reflections.len(),
@@ -592,7 +593,7 @@ async fn a_file_imported_later_lands_on_the_book_the_device_already_created() {
     assert_eq!(
         engine
             .storage()
-            .list_books(100, BookSort::Title)
+            .list_books(&BookQuery::new(100, BookSort::Title))
             .await
             .unwrap()
             .len(),

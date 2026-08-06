@@ -1119,3 +1119,132 @@ because item 31 needed somewhere to put reading time.
       20 adds them. The TUI passes a decoded image's aspect, which is fine for
       the one book on screen and absurd for three hundred spines. When 20 lands,
       that call site becomes a division of two columns and no signature changes.
+
+18. **List endpoints that survive a real library.** No migration; one new
+    storage module, four new methods, three new requests and a filter type. Its
+    subject is that `ListBooks{limit, sort}` was the whole list surface — no
+    offset, no filter, nothing returning a count — and `list_notes` had no limit
+    at all, which is a full table scan into a `Vec` for a screen showing twelve
+    rows.
+    - **Pagination is an offset, everywhere, and the spec's own alternative was
+      the wrong shape.** The spec offered keyset for the sorts that can and
+      offset for `Progress`, which cannot; item 17 then added `Author`, which has
+      no `ORDER BY` at all. So **two of five sorts have no cursor key that exists
+      in the database, and they are exactly the two whose pages are already
+      expensive** — `Author` reads the whole library on page 1 and on page 40
+      alike, so keyset saves it nothing. Paying a second pagination shape at
+      every call site to speed up the three cheap sorts is paying in the wrong
+      currency. Three further reasons: a **count composes with an offset and not
+      with a cursor**, and a shelf that knows its total wants page numbers, which
+      *are* offsets; the deep-page cost is a sort over a personal library, not a
+      feed; and there is **no index on any sort key today**, so `ORDER BY title`
+      sorts the whole table whatever the pagination shape is — keyset would not
+      avoid that, which makes the index the real optimisation and the cursor a
+      distraction. Named as a finding below rather than smuggled in.
+    - **Offset pagination needs a total order, and the spec did not say so.**
+      `LIMIT 20 OFFSET 20` is only the successor of `LIMIT 20` if both statements
+      break ties the same way, and `publish_year DESC` over a library where four
+      hundred books share a year does not say. Every arm now ends in `books.id`.
+      **The behavioural test does not catch its absence** — measured, not
+      assumed: removing the tie-breaks leaves
+      `a_page_and_its_successor_partition_the_list` green, because SQLite's
+      sorter is deterministic for one plan over one set of rows. That is a
+      property of the current query plan and not of the schema, so the guard is
+      `order_by_is_a_total_order`, which reads the SQL. A behavioural test that
+      cannot fail is not the one holding the line, and saying so is worth more
+      than a test that looks like it does.
+    - **Where the TUI's policy would break if it ever adopted this.** The TUI
+      fetches 200 books by recency and reorders *that page* in Rust, so `s`
+      reorders the list rather than swapping its contents — correct, deliberate,
+      and untouched here. It breaks the moment there are **two** pages: a
+      Rust-side re-sort is only sound over a single page, because page 2 fetched
+      by recency and then title-sorted in Rust does not concatenate with page 1
+      into a title-sorted list. Fixing that means moving the sort into SQL, and
+      moving it into SQL is precisely the membership change the 200-row fetch
+      exists to avoid. So the two are compatible only while the TUI shows one
+      page, which it does. A TUI that wants a second page has to choose, and this
+      is the paragraph that says so.
+    - **Filters and counts are one clause, written once.** `BookFilter` produces
+      the `WHERE` and both `list_books` and `count_books` call the same function,
+      because two hand-written clauses that agree today disagree the first time a
+      filter is added to one of them; `the_count_agrees_with_the_page_for_every_filter`
+      asserts it across ten filters and all five sorts. The **count is its own
+      request and not a field beside the rows**: it is a property of the filter,
+      a shelf asks it once and pages many times, and bundling would make every
+      scroll pay for a scan of the whole matching set. Sharing the clause is what
+      the spec's "build them together" actually buys; sharing the round trip is
+      not.
+    - **The status filter has four cases and `ReadingState` still has three.**
+      "No reading" is `cur.id IS NULL` — the *join's* absence, deliberately not
+      `cur.status IS NULL`, since a reading may exist with a null status and that
+      book has been opened. It lives on `StatusFilter`, in the question, and not
+      as a `ReadingState::NeverOpened`: a variant is a thing a UI filters on,
+      counts, and eventually puts a badge beside, which is the framing this
+      document bans. A filter case is a question somebody asked once.
+    - **The per-row summary is counts, and the cheap-query argument for a boolean
+      does not survive the implementation.** `book_summaries(&[id])` is three
+      grouped aggregates over three existing `book_id` indexes for a whole page —
+      the same three queries whether they end in `COUNT(*)` or `EXISTS`, because
+      the alternative that would have been cheaper (a correlated subquery per
+      row) is not how it is built. So the count costs nothing extra and carries
+      strictly more; the mark is `> 0`, spelled once as `BookSummary::has` rather
+      than in twelve components. Every number is **past tense** — highlights
+      taken, notes written, files owned. Rows come back in the order asked, zeros
+      included, so a caller zips it against the page it just fetched and
+      "nothing behind this book" is an answer rather than a missing row.
+    - **`list_notes` gets a limit and keeps its unlimited form, on purpose.** The
+      obvious fix — a default cap — is wrong for the callers that are not
+      screens: `resolve_note` walks every title in the vault so that `rb links
+      "Reflection: Pachinko"` works, and a cap there would silently stop
+      resolving the notes past it. A truncated correctness pass is worse than a
+      slow one. The cap belongs to the caller with a viewport; `None` belongs to
+      the caller with a graph to walk. `limit` selects along `created_at`, the
+      same contract `BookSort` states.
+    - **`EditionShapeDto` landed here rather than as its own item.** Item 19 left
+      `EditionShape` engine-side and named the gap; the GUI links `crates/api`
+      and not the engine, so item 26's shelf either gets the field or re-derives
+      the arithmetic in TypeScript — the exact failure 19 exists to prevent. It
+      is a derived read-only field beside `progress`, `series_label` and item
+      20's cover readings, dropped on the way back in like all of them, and item
+      20's stored dimensions make it a division of two columns rather than an
+      image decode. A one-field item would have cost more to schedule than to
+      write.
+    - **The wire grew and `API_VERSION` did not move.** `ListBooks` carries
+      `offset` and `filter` **flat** beside `limit` and `sort`, both
+      `#[serde(default)]`, so `{"limit":20,"sort":"title"}` still means what it
+      always did; `BookQueryDto` is the typed method's single argument, because
+      `limit` and `offset` are both `i64` and adjacent and that is a swap no type
+      checker catches. `Response::Count` is its own shape rather than reusing
+      `Id` — an id identifies and a count measures.
+    - **Three latent caps found by the signature change, all now honest.**
+      `koreader::scores_for` read `list_books(10_000, …)` to decide whether a
+      sidecar matches a book we already have, so a library past ten thousand
+      would have started creating duplicates with nothing reporting it;
+      `goodreads::export` read `i64::MAX`, a limit standing in for its own
+      absence. Both are `BookQuery::default()` now, where a negative limit means
+      no limit in both the SQL arm and the Rust one. And `rb book list` accepted
+      three of the engine's five sorts: `author` and `year` landed with item 17
+      and never reached a user, because the CLI's `match` was the only door and
+      nobody widened it.
+    - **Findings for a number, not built here.** (a) **A `highlights` FTS index**
+      — `notes_fts` is still the only virtual table in the repo, so a GUI with
+      one search box that finds notes and not highlights will be reported as a
+      bug, correctly. It needs a migration, an `AFTER INSERT/UPDATE/DELETE`
+      trigger trio or an explicit writer beside `insert_highlight`, and a
+      `search_highlights` returning the `snippet()` shape `NoteSearchHit` already
+      has; the search *surface* then wants one request answering both, since two
+      lists a frontend interleaves is a relevance ordering invented above the
+      seam. `find_books_by_title` is still a plain `LIKE` and belongs in the same
+      item — as a `title` predicate on `BookFilter`, so search arrives as a
+      filter rather than a seventh endpoint. (b) **Indexes on the sort keys**
+      (`books.last_modified`, `books.title COLLATE NOCASE`, `books.publish_year`)
+      — a migration, and the thing that would actually make a deep page cheap.
+      (c) **`sort_author`**, still open and still argued against by item 20: a
+      column SQLite cannot compute is NULL for every existing row until a
+      back-fill nobody has run runs, and the fallback for that window is the
+      whole-table read it exists to remove. It only pays as part of (b), where
+      the back-fill and the index arrive together. (d) **`MatchCandidateDto`
+      carries a title and a score but no author**, though `koreader::band`
+      already holds the whole `Book` — so "which Dune is this" costs an N+1
+      `get_book` per candidate. Same class as the per-row summary this item
+      built, in a file this item did not own.

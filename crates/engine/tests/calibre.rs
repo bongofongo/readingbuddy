@@ -364,7 +364,10 @@ async fn importing_the_same_library_twice_changes_nothing() {
     assert_eq!(
         engine
             .storage()
-            .list_books(100, readingbuddy::BookSort::Title)
+            .list_books(&readingbuddy::BookQuery::new(
+                100,
+                readingbuddy::BookSort::Title
+            ))
             .await
             .unwrap()
             .len(),
@@ -510,7 +513,10 @@ async fn a_dry_run_reports_the_same_thing_and_writes_nothing() {
     assert_eq!(
         engine
             .storage()
-            .list_books(100, readingbuddy::BookSort::Title)
+            .list_books(&readingbuddy::BookQuery::new(
+                100,
+                readingbuddy::BookSort::Title
+            ))
             .await
             .unwrap()
             .len(),
@@ -660,7 +666,10 @@ async fn only_imports_the_row_it_was_asked_for_and_counts_only_that_row() {
     assert_eq!(report.books[0].calibre_id, 2);
     assert_eq!(report.books[0].title, "Station Eleven");
     let shelf = engine
-        .list_books(100, readingbuddy::BookSort::Title)
+        .list_books(&readingbuddy::BookQuery::new(
+            100,
+            readingbuddy::BookSort::Title,
+        ))
         .await
         .unwrap();
     assert_eq!(shelf.len(), 1, "the other two rows were left alone");
@@ -755,7 +764,10 @@ async fn linking_a_calibre_book_by_hand_is_matched_by_uuid_from_then_on() {
     assert_eq!(report.books[0].book_id, mine.id);
     assert_eq!(
         engine
-            .list_books(100, readingbuddy::BookSort::Title)
+            .list_books(&readingbuddy::BookQuery::new(
+                100,
+                readingbuddy::BookSort::Title
+            ))
             .await
             .unwrap()
             .len(),

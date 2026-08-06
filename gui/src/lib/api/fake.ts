@@ -71,6 +71,16 @@ function book(id: number, over: Partial<BookDto>): StoredBook {
     progress: { progress: 'untouched' },
     series_label: null,
     authors_display: ['Ada Ordinary'],
+    // Item 19's arithmetic over the fields above: 300 recorded pages, no
+    // measured cover. Stated rather than computed, for this file's own reason —
+    // a fixture that ran the rule would agree with the engine no matter how
+    // wrong either of them was.
+    shape: {
+      width_over_height: 0.6666666865348816,
+      width_source: 'assumed',
+      thickness_over_height: 0.10444444417953491,
+      thickness_source: 'recorded',
+    },
     created_at: 1735689600,
     last_modified: 1735689600 + id,
     ...over,

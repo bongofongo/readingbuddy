@@ -84,10 +84,50 @@ pub enum Request {
     SaveBook {
         book: BookDto,
     },
+    /// One page of the library (item 18).
+    ///
+    /// `limit` and `sort` are what this method has always taken and mean exactly
+    /// what they did; `offset` and `filter` are additive and an omitted one is
+    /// the old behaviour, which is why this grew rather than being replaced and
+    /// why [`API_VERSION`] does not move.
+    ///
+    /// **`limit` selects along the sort key** — the first `limit` books *by that
+    /// key*, not `limit` arbitrary books shown in that order. See
+    /// [`readingbuddy::BookSort`].
     ListBooks {
+        /// Negative is no limit.
         limit: i64,
         #[serde(default)]
         sort: BookSortDto,
+        /// Rows to skip. Pagination is an **offset**, not a cursor — two of the
+        /// five sorts have no cursor key that exists in the database, and
+        /// `docs/decisions.md` entry 18 has the argument.
+        #[serde(default)]
+        offset: i64,
+        /// Absent is every book.
+        #[serde(default)]
+        filter: Option<BookFilterDto>,
+    },
+    /// How many books match — the number a shelf needs *before* it needs the
+    /// rows.
+    ///
+    /// Its own method rather than a field beside the page, because a count is a
+    /// property of the **filter** and a page is not: a shelf asks this once and
+    /// pages many times, and bundling would make every scroll pay for a scan of
+    /// the whole matching set. The clause is shared in the engine, which is
+    /// where sharing it actually guarantees the two agree.
+    CountBooks {
+        #[serde(default)]
+        filter: Option<BookFilterDto>,
+    },
+    /// What is behind each of these books — highlights, notes, owned files — in
+    /// one call for a whole page (item 18).
+    ///
+    /// The detail screen makes four calls for one book; a list of eight hundred
+    /// cannot, which is why no list could show this before. One reply row per id
+    /// **in the order asked**, zeros included.
+    BookSummaries {
+        book_ids: Vec<i64>,
     },
     GetBook {
         id: i64,
@@ -268,9 +308,17 @@ pub enum Request {
     CreateNote {
         note: NewNoteDto,
     },
+    /// Notes, newest first, for one book or the whole vault.
+    ///
+    /// `limit` selects along `created_at`. **Absent is every note**, which is
+    /// what this method has always done and is deliberately still reachable: a
+    /// client walking the whole graph needs it, and a default cap would turn a
+    /// correctness pass into a silently truncated one. A screen passes a number.
     ListNotes {
         #[serde(default)]
         book_id: Option<i64>,
+        #[serde(default)]
+        limit: Option<i64>,
     },
     SearchNotes {
         query: String,
@@ -448,8 +496,14 @@ pub enum Response {
     },
     Where(PathsDto),
 
+    /// A number of rows. **Not [`Response::Id`]** — an id identifies and a count
+    /// measures, and a shape that meant both would be a shape a client has to
+    /// know the question to read.
+    Count(i64),
+
     Book(Option<BookDto>),
     Books(Vec<BookDto>),
+    BookSummaries(Vec<BookSummaryDto>),
     BookTags(Vec<BookTagDto>),
     OpenReadings(Vec<OpenReadingDto>),
     MergeReport(MergeReportDto),

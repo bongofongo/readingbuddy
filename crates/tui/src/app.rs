@@ -12,9 +12,10 @@ use ratatui::backend::Backend;
 use ratatui::layout::Position;
 use ratatui::widgets::ListState;
 use readingbuddy::{
-    Book, BookSort, CalibreRowState, DeviceBook, DeviceState, Diagnostic, Engine, EngineError,
-    FlashcardRow, Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput, NoteKind,
-    NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest, VaultEvent, VaultWatcher,
+    Book, BookQuery, BookSort, CalibreRowState, DeviceBook, DeviceState, Diagnostic, Engine,
+    EngineError, FlashcardRow, Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput,
+    NoteKind, NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest, VaultEvent,
+    VaultWatcher,
 };
 
 use crossterm::event::KeyModifiers;
@@ -942,7 +943,18 @@ impl App {
         // ordering is applied below. A SQL `ORDER BY … LIMIT 200` would make the
         // sort key decide *which* 200 books are on screen, so pressing `s` would
         // swap the contents of the list rather than reorder it.
-        self.library = self.engine.list_books(200, BookSort::LastModified).await?;
+        //
+        // Item 18 gave `BookQuery` an offset, and this is the note for whoever
+        // reaches for it: **the reorder-in-Rust policy is only sound over one
+        // page.** Page 2 fetched by recency and then title-sorted here does not
+        // concatenate with page 1 into a title-sorted list, so a second page
+        // means moving the sort into SQL — which is exactly the membership
+        // change this fetch exists to avoid. One page or the other decision,
+        // never both.
+        self.library = self
+            .engine
+            .list_books(&BookQuery::new(200, BookSort::LastModified))
+            .await?;
         if let Some(q) = self.library_filter.clone() {
             self.library.retain(|b| matches_book(b, &q));
         }
@@ -1007,7 +1019,7 @@ impl App {
     async fn load_view(&self, book: Book) -> Result<BookView> {
         let (notes, highlights, cards, readings) = match book.id {
             Some(id) => (
-                self.engine.list_notes(Some(id)).await?,
+                self.engine.list_notes(Some(id), None).await?,
                 self.engine.list_highlights(id).await?,
                 self.engine.list_flashcards_for_book(id).await?,
                 self.engine.list_readings(id).await?,
@@ -6270,7 +6282,7 @@ mod tests {
         assert_eq!(first, second, "a second press started a second reflection");
 
         let id = app.library[0].id.expect("id");
-        let notes = app.engine.list_notes(Some(id)).await.expect("notes");
+        let notes = app.engine.list_notes(Some(id), None).await.expect("notes");
         assert_eq!(notes.iter().filter(|n| n.kind == "reflection").count(), 1);
     }
 
@@ -6315,7 +6327,7 @@ mod tests {
         // other half of the same rule: kept, and said.
         let note_id = app
             .engine
-            .list_notes(Some(app.library[0].id.unwrap()))
+            .list_notes(Some(app.library[0].id.unwrap()), None)
             .await
             .expect("notes")
             .into_iter()
