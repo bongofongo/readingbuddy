@@ -87,9 +87,9 @@ pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
-    MomentKind, NewHighlight, NewReadingEvent, NoteRecord, OutgoingLink, RUN_MIN_DAYS, Rating,
-    RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport, SearchHit, SearchSource,
-    Source, StatusFilter, Storage,
+    MomentKind, NewHighlight, NewReadingEvent, NoteRecord, NoteScope, OutgoingLink, RUN_MIN_DAYS,
+    Rating, RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport, SearchHit,
+    SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -1156,12 +1156,16 @@ impl Engine {
     /// Notes, newest first. `limit` selects along `created_at`; `None` is every
     /// note and is for callers walking the whole graph rather than filling a
     /// viewport — see [`Storage::list_notes`].
+    ///
+    /// [`NoteScope`] is the narrowing, and [`NoteScope::Reading`] is item 40's
+    /// addition: it is applied in the statement, so the limit cuts a list that
+    /// is already about the reading asked for.
     pub async fn list_notes(
         &self,
-        book_id: Option<i64>,
+        scope: NoteScope,
         limit: Option<i64>,
     ) -> Result<Vec<NoteRecord>> {
-        self.storage.list_notes(book_id, limit).await
+        self.storage.list_notes(scope, limit).await
     }
 
     /// Everything the reader wrote or kept, matching one query, as **one**
@@ -1173,16 +1177,25 @@ impl Engine {
     /// source order — so the ranking happens once, here.
     ///
     /// `source` narrows *which* indexes are asked and never how the answer is
-    /// ordered; `None` asks both. An empty query is no hits and no error. The
-    /// ordering rule, and why it is deliberately not bm25 across the two
-    /// indexes, is in [`crate::storage`]'s `fts` module header.
+    /// ordered; `None` asks both. `book_id` narrows which book the marks are
+    /// about; `None` is the whole library. An empty query is no hits and no
+    /// error. The ordering rule, and why it is deliberately not bm25 across the
+    /// two indexes, is in [`crate::storage`]'s `fts` module header.
+    ///
+    /// **`book_id` is not a convenience** (item 40). `limit` cuts the global
+    /// ranked list, so a frontend that searches the library and then keeps one
+    /// book's hits gets nothing at all whenever the top `limit` marks live in
+    /// other books — which, in a real library, is most queries.
     pub async fn search_marks(
         &self,
         query: &str,
         source: Option<SearchSource>,
+        book_id: Option<i64>,
         limit: i64,
     ) -> Result<Vec<SearchHit>> {
-        self.storage.search_marks(query, source, limit).await
+        self.storage
+            .search_marks(query, source, book_id, limit)
+            .await
     }
 
     /// One note by id.

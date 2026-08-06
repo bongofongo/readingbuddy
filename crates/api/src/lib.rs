@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use readingbuddy::{
     Book, BookFilter, BookQuery, CalibreImportOptions, DayRange, Engine, EngineError,
-    FileImportOptions, GoodreadsImportOptions, NoteKind, NoteRecord, RatingScale,
+    FileImportOptions, GoodreadsImportOptions, NoteKind, NoteRecord, NoteScope, RatingScale,
 };
 
 pub use dto::*;
@@ -479,28 +479,49 @@ impl Api {
         Ok(self.engine.create_note(note.into()).await?.into())
     }
 
-    /// Notes, newest first. `None` is every note — see [`Request::ListNotes`].
+    /// Notes, newest first. Both narrowings absent is every note — see
+    /// [`Request::ListNotes`].
+    ///
+    /// The two ids are **alternatives, not a conjunction**, and the wire says so
+    /// by refusing the pair rather than by quietly preferring one: a reading
+    /// belongs to exactly one book, so `{book_id, reading_id}` is either
+    /// redundant or a contradiction whose honest answer is an empty list that a
+    /// client cannot tell from an empty vault. `NoteScope` is the shape below
+    /// this line and cannot represent it at all.
     pub async fn list_notes(
         &self,
         book_id: Option<i64>,
+        reading_id: Option<i64>,
         limit: Option<i64>,
     ) -> ApiResult<Vec<NoteDto>> {
-        Ok(map(self.engine.list_notes(book_id, limit).await?))
+        let scope = match (book_id, reading_id) {
+            (Some(_), Some(_)) => {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidInput,
+                    "list_notes takes book_id or reading_id, not both — a reading names its book",
+                ));
+            }
+            (_, Some(r)) => NoteScope::Reading(r),
+            (b, None) => NoteScope::of_book(b),
+        };
+        Ok(map(self.engine.list_notes(scope, limit).await?))
     }
 
     /// Notes and highlights matching one query, as one ranked list.
     ///
     /// See [`Request::SearchMarks`] for why there is one method here and not
-    /// two, and `readingbuddy`'s `storage::fts` for the ordering rule.
+    /// two, and `readingbuddy`'s `storage::fts` for the ordering rule and for
+    /// why `book_id` has to be answered below this line.
     pub async fn search_marks(
         &self,
         query: &str,
         source: Option<SearchSourceDto>,
+        book_id: Option<i64>,
         limit: i64,
     ) -> ApiResult<Vec<SearchHitDto>> {
         Ok(map(self
             .engine
-            .search_marks(query, source.map(Into::into), limit)
+            .search_marks(query, source.map(Into::into), book_id, limit)
             .await?))
     }
 
@@ -946,14 +967,17 @@ impl Api {
             }
 
             R::CreateNote { note } => Response::CreatedNote(self.create_note(note).await?),
-            R::ListNotes { book_id, limit } => {
-                Response::Notes(self.list_notes(book_id, limit).await?)
-            }
+            R::ListNotes {
+                book_id,
+                reading_id,
+                limit,
+            } => Response::Notes(self.list_notes(book_id, reading_id, limit).await?),
             R::SearchMarks {
                 query,
                 source,
+                book_id,
                 limit,
-            } => Response::SearchHits(self.search_marks(&query, source, limit).await?),
+            } => Response::SearchHits(self.search_marks(&query, source, book_id, limit).await?),
             R::GetNote { id } => Response::Note(self.get_note(id).await?),
             R::NoteForReading { reading_id, kind } => {
                 Response::Note(self.note_for_reading(reading_id, kind).await?)

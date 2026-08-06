@@ -38,6 +38,63 @@ pub struct NoteRecord {
 pub(super) const NOTE_COLUMNS: &str = "id, book_id, reading_id, highlight_id, page, location, \
      file_path, title, kind, created_at";
 
+/// Which notes a list is about (item 40).
+///
+/// An enum rather than the two `Option<i64>`s the API carries, for the reason
+/// `SearchHit` states one module over: *a shape that can represent neither or
+/// both is a shape somebody eventually reaches for `unwrap` on.* Here the extra
+/// state is worse than useless — a reading belongs to exactly one book, so
+/// "book 3 **and** reading 9" is either redundant or a contradiction that
+/// returns nothing and looks like an empty vault. The three cases are the three
+/// questions, and the fourth is not a question.
+///
+/// It also closes a plain hazard. `list_notes` would otherwise take three
+/// adjacent `Option<i64>` — book, reading, limit — where a transposition
+/// compiles, and book ids and reading ids overlap from `1` in every library, so
+/// the wrong list would look like a right one.
+///
+/// [`StatusFilter`](super::StatusFilter) is the precedent: absence is a case of
+/// the question, not a variant of the thing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NoteScope {
+    /// Every note in the vault — including the unanchored ones.
+    #[default]
+    All,
+    /// Every note of one book, across all of its readings, plus the ones
+    /// anchored to the book and to no read of it.
+    Book(i64),
+    /// The notes of one reading. Item 28's card is per reading.
+    Reading(i64),
+}
+
+impl NoteScope {
+    /// The scope a caller holding an optional book id means — `rb note list`
+    /// and `rb book` both have one.
+    pub fn of_book(book_id: Option<i64>) -> Self {
+        match book_id {
+            Some(id) => Self::Book(id),
+            None => Self::All,
+        }
+    }
+
+    /// The `WHERE` this scope is, or the empty string. Never interpolates the
+    /// id — it travels as a bind, beside the clause.
+    fn predicate(self) -> &'static str {
+        match self {
+            Self::All => "",
+            Self::Book(_) => "WHERE book_id = ?",
+            Self::Reading(_) => "WHERE reading_id = ?",
+        }
+    }
+
+    fn bind(self) -> Option<i64> {
+        match self {
+            Self::All => None,
+            Self::Book(id) | Self::Reading(id) => Some(id),
+        }
+    }
+}
+
 /// One outgoing edge, read from the linking note's side.
 ///
 /// `to` is `None` for a **dangling** target: a `[[wikilink]]` naming a note that
@@ -334,11 +391,13 @@ impl Storage {
         Ok(())
     }
 
-    /// Notes, newest first — for one book or for the whole vault.
+    /// Notes, newest first — for one book, for one reading, or for the whole
+    /// vault.
     ///
     /// **`limit` selects along `created_at`**, the same contract
-    /// [`BookSort`](super::BookSort) states for books: `list_notes(None,
-    /// Some(12))` is the twelve most recent notes, not twelve arbitrary ones.
+    /// [`BookSort`](super::BookSort) states for books:
+    /// `list_notes(NoteScope::All, Some(12))` is the twelve most recent notes,
+    /// not twelve arbitrary ones.
     ///
     /// `None` is every note, and it stays reachable **deliberately**. Item 18
     /// found this method with no limit at all — a full table scan into a `Vec`
@@ -349,9 +408,16 @@ impl Storage {
     /// correctness pass is worse than a slow one. So the cap belongs to the
     /// caller that has a viewport, and `None` belongs to the caller that has a
     /// whole graph to walk.
+    ///
+    /// **The scope is applied here and not above** — item 40's argument, and it
+    /// is `search_marks`' argument in a second place: `limit` cuts a list that
+    /// has already been narrowed, so a caller asking a reading for twelve notes
+    /// gets twelve of *that reading's*, where filtering a book's twelve most
+    /// recent above the seam yields however many of them happened to belong to
+    /// the reading asked about, and nothing at all for an older read.
     pub async fn list_notes(
         &self,
-        book_id: Option<i64>,
+        scope: NoteScope,
         limit: Option<i64>,
     ) -> Result<Vec<NoteRecord>> {
         // `created_at` is a second-resolution timestamp and two notes written in
@@ -361,21 +427,15 @@ impl Storage {
         // SQLite reads a negative limit as no limit, which is what makes the two
         // arms one statement rather than four.
         let limit = limit.unwrap_or(-1);
-        let rows = match book_id {
-            Some(id) => {
-                let sql =
-                    format!("SELECT {NOTE_COLUMNS} FROM notes WHERE book_id = ? {order} LIMIT ?");
-                sqlx::query(&sql)
-                    .bind(id)
-                    .bind(limit)
-                    .fetch_all(self.pool())
-                    .await?
-            }
-            None => {
-                let sql = format!("SELECT {NOTE_COLUMNS} FROM notes {order} LIMIT ?");
-                sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?
-            }
-        };
+        let sql = format!(
+            "SELECT {NOTE_COLUMNS} FROM notes {} {order} LIMIT ?",
+            scope.predicate()
+        );
+        let mut q = sqlx::query(&sql);
+        if let Some(id) = scope.bind() {
+            q = q.bind(id);
+        }
+        let rows = q.bind(limit).fetch_all(self.pool()).await?;
         Ok(rows.iter().map(row_to_note).collect())
     }
 
@@ -584,7 +644,7 @@ mod tests {
 
         // FTS hits body content.
         let search = |s: Storage, q: &'static str| async move {
-            s.search_marks(q, Some(super::super::SearchSource::Note), 10)
+            s.search_marks(q, Some(super::super::SearchSource::Note), None, 10)
                 .await
                 .unwrap()
         };
@@ -628,9 +688,9 @@ mod tests {
             .unwrap();
         }
 
-        let all = s.list_notes(None, None).await.unwrap();
+        let all = s.list_notes(NoteScope::All, None).await.unwrap();
         assert_eq!(all.len(), 4, "no limit is every note");
-        let page = s.list_notes(None, Some(2)).await.unwrap();
+        let page = s.list_notes(NoteScope::All, Some(2)).await.unwrap();
         assert_eq!(page.len(), 2);
         assert_eq!(
             page.iter().map(|n| n.id).collect::<Vec<_>>(),
@@ -638,6 +698,197 @@ mod tests {
             "a limited list is the head of the unlimited one — the newest, not \
              two arbitrary notes"
         );
-        assert!(s.list_notes(None, Some(0)).await.unwrap().is_empty());
+        assert!(
+            s.list_notes(NoteScope::All, Some(0))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // ---- item 40: the scope, and the truncation it exists to prevent -------
+
+    /// Seed one book, two readings of it, and `per` notes per reading. The
+    /// second reading's notes are written **last**, so they are the newest and
+    /// the ones a limited book-wide list keeps.
+    async fn a_book_read_twice(per: usize) -> (Storage, i64, i64, i64) {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let book = s
+            .upsert_book(
+                &crate::book::Book {
+                    title: Some("Pachinko".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        // `idx_readings_one_open` permits one open reading per book, so the
+        // first has to close before the second exists.
+        let first = s
+            .open_reading(book, Some(1_700_000_000), "manual")
+            .await
+            .unwrap();
+        s.close_reading_at(first, 1_700_100_000, "complete")
+            .await
+            .unwrap();
+        let second = s
+            .open_reading(book, Some(1_700_200_000), "manual")
+            .await
+            .unwrap();
+
+        for (reading, tag) in [(first, "first"), (second, "second")] {
+            for i in 0..per {
+                let path = format!("pachinko/{tag}-{i}.md");
+                let title = format!("{tag} read, note {i}");
+                s.insert_note(
+                    NewNoteMeta {
+                        book_id: Some(book),
+                        reading_id: Some(reading),
+                        highlight_id: None,
+                        page: None,
+                        location: None,
+                        file_path: &path,
+                        title: &title,
+                        kind: "note",
+                    },
+                    "body",
+                    &[],
+                )
+                .await
+                .unwrap();
+            }
+        }
+        (s, book, first, second)
+    }
+
+    /// **The bug, in the note list's own shape.** A card for one reading that
+    /// asks the *book* for twelve notes and filters gets whatever few of the
+    /// twelve newest happen to be that reading's — and for an older read, none
+    /// at all, which reads as "you wrote nothing about this" rather than as a
+    /// list that was cut in the wrong place.
+    ///
+    /// The precondition is asserted rather than assumed: if the fixture ever
+    /// stops putting the second read's notes at the head of the book's list,
+    /// this fails loudly instead of passing vacuously.
+    #[tokio::test]
+    async fn a_reading_scope_finds_notes_a_filter_above_the_seam_would_have_lost() {
+        const LIMIT: i64 = 5;
+        let (s, book, first, second) = a_book_read_twice(8).await;
+
+        let page = s
+            .list_notes(NoteScope::Book(book), Some(LIMIT))
+            .await
+            .unwrap();
+        assert_eq!(page.len(), LIMIT as usize);
+        assert!(
+            page.iter().all(|n| n.reading_id == Some(second)),
+            "the fixture must fill the book's page with the second read, or \
+             this proves nothing"
+        );
+        assert!(
+            !page.iter().any(|n| n.reading_id == Some(first)),
+            "filtering this page to the first read is the empty list the item \
+             is about"
+        );
+
+        let scoped = s
+            .list_notes(NoteScope::Reading(first), Some(LIMIT))
+            .await
+            .unwrap();
+        assert_eq!(
+            scoped.len(),
+            LIMIT as usize,
+            "a full page of the read asked for"
+        );
+        assert!(scoped.iter().all(|n| n.reading_id == Some(first)));
+    }
+
+    /// The three scopes are three questions, and a book's is the union of its
+    /// reads plus what is anchored to no read of it.
+    #[tokio::test]
+    async fn a_book_holds_its_reads_and_the_notes_that_name_no_read() {
+        let (s, book, first, second) = a_book_read_twice(2).await;
+        s.insert_note(
+            NewNoteMeta {
+                book_id: Some(book),
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "pachinko/loose.md",
+                title: "before either read",
+                kind: "note",
+            },
+            "body",
+            &[],
+        )
+        .await
+        .unwrap();
+        s.insert_note(
+            NewNoteMeta {
+                book_id: None,
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "unsorted/free.md",
+                title: "about no book at all",
+                kind: "note",
+            },
+            "body",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(s.list_notes(NoteScope::All, None).await.unwrap().len(), 6);
+        assert_eq!(
+            s.list_notes(NoteScope::Book(book), None)
+                .await
+                .unwrap()
+                .len(),
+            5,
+            "both reads plus the book-anchored one, and never the free-floating \
+             note"
+        );
+        for r in [first, second] {
+            let read = s.list_notes(NoteScope::Reading(r), None).await.unwrap();
+            assert_eq!(read.len(), 2);
+            assert!(read.iter().all(|n| n.reading_id == Some(r)));
+        }
+    }
+
+    /// A scoped list is the unscoped list restricted, and in the same order —
+    /// which, unlike `search_marks`, is true here without qualification: this
+    /// list has one order (`created_at DESC, id DESC`) and a `WHERE` cannot
+    /// disturb it.
+    #[tokio::test]
+    async fn a_scope_restricts_the_list_and_never_reorders_it() {
+        let (s, book, first, second) = a_book_read_twice(4).await;
+        let all = s.list_notes(NoteScope::All, None).await.unwrap();
+        for (scope, keep) in [
+            (NoteScope::Book(book), None),
+            (NoteScope::Reading(first), Some(first)),
+            (NoteScope::Reading(second), Some(second)),
+        ] {
+            let scoped: Vec<i64> = s
+                .list_notes(scope, None)
+                .await
+                .unwrap()
+                .iter()
+                .map(|n| n.id)
+                .collect();
+            let expected: Vec<i64> = all
+                .iter()
+                .filter(|n| match keep {
+                    Some(r) => n.reading_id == Some(r),
+                    None => n.book_id == Some(book),
+                })
+                .map(|n| n.id)
+                .collect();
+            assert!(!scoped.is_empty());
+            assert_eq!(scoped, expected, "{scope:?}");
+        }
     }
 }

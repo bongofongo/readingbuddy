@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use readingbuddy::{BookQuery, BookSort, Engine};
+use readingbuddy::{BookQuery, BookSort, Engine, NoteScope};
 
 use super::resolve_one;
 use crate::{prompt, render};
@@ -60,7 +60,7 @@ pub async fn list(engine: &Engine, limit: i64, sort: &str) -> Result<()> {
 pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     print!("{}", render::book_details(&book));
-    let notes = engine.list_notes(book.id, None).await?;
+    let notes = engine.list_notes(NoteScope::of_book(book.id), None).await?;
     if !notes.is_empty() {
         println!("  {:<14} {}", "notes", notes.len());
     }

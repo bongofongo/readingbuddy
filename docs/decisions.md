@@ -1943,3 +1943,72 @@ because item 31 needed somewhere to put reading time.
       complaint in advance: five engine items once landed with no way to see any
       of them. Stated rather than hidden — `rb moments` is the obvious next
       thing and belongs with whoever builds the ceremony.
+
+40. **A search that can be scoped, and a note list that can be.** No migration;
+    one predicate on two statements, one enum where three `Option<i64>` would
+    have gone, and two `#[serde(default)]` parameters. Its subject is that item
+    34 built one search surface over the whole library and gave a book view no
+    way to ask about one book: `SearchHit::book_id` existed from the first day
+    and was never a predicate.
+    - **Filtering above the seam is wrong, not merely slow, and that is the
+      whole item.** `limit` cuts the *global* ranked list, so a client that
+      searches four hundred books and then keeps one book's hits gets **nothing**
+      whenever the best `limit` marks live elsewhere — which is most queries —
+      and an empty answer is indistinguishable from "you never wrote about
+      that". The predicate goes on **both** index queries, before the `LIMIT`
+      and therefore before the position merge, so the limit cuts a list that is
+      already about the right book. `book_scope` writes it once for the two, on
+      `BookFilter::predicate`'s reason: the disagreement two hand-written copies
+      would eventually produce is one index answering about the library while
+      the other answers about a book.
+    - **The ordering rule is untouched, and the obvious property about it is
+      false.** Scoping narrows *what is in* the two lists, in `SearchSource`'s
+      own idiom. What was proposed — "a scoped list is the unscoped list
+      filtered, in the same relative order" — holds for **membership** and for
+      **within-source order** (a `WHERE` cannot reorder an `ORDER BY rank`) and
+      **fails across the two sources**, so only the two true halves are
+      asserted. The counterexample is small: notes `[n1(A), n2(A), n3(B)]` beside
+      highlights `[h1(B)]` put `n3` at within-source position 2 and `h1` at 0, so
+      the unscoped list reads `[h1, …, n3]`; scoped, both sit at position 0 and
+      the recency tie-break decides, which can be `[n3, h1]`. That is the
+      *correct* merge of the scoped lists — the book's best note beside the
+      book's best passage — and it is a second reason the predicate cannot live
+      above the seam: a frontend filtering the global list would get an
+      interleaving that answers a question nobody asked. Asserting the third
+      half and weakening it later would have been worse than asserting less.
+    - **The truncation test is built to be able to fail.** Thirty decoy books
+      each holding a one-word passage, a wanted book holding a long sentence, and
+      a limit of five: bm25 divides by document length, so the decoys outrank it
+      by construction rather than by row order. The test asserts the
+      *precondition* — that the wanted book really does sit below the limit —
+      before asserting the bug, so a future fts5 that scored differently fails
+      loudly instead of passing vacuously. Verified by neutering the predicate
+      while keeping its bind: all four new search tests go red, which is the
+      check `docs/prompts/38` asks for and this repo has twice been caught
+      without.
+    - **`NoteScope` is an enum where the prompt asked for a second
+      `Option<i64>`, and this is the item's one refusal.** Three adjacent
+      `Option<i64>` — book, reading, limit — is a transposition that compiles,
+      and book ids and reading ids both start at `1` in every library, so the
+      wrong list looks like a right one. More than that, the pair is not a
+      question: a reading belongs to exactly one book, so "book 3 **and** reading
+      9" is redundant when consistent and an empty list when not, which is
+      `SearchHit`'s own argument one module over — *a shape that can represent
+      neither or both is a shape somebody eventually reaches for `unwrap` on*.
+      `StatusFilter` is the precedent for putting absence in the question rather
+      than in the thing. The **wire keeps two named optional fields**, because
+      that is what additive means, and `Api::list_notes` refuses the pair with
+      `InvalidInput` rather than quietly preferring one — a silently ignored
+      parameter is the failure the enum exists to make unrepresentable, and
+      re-introducing it at the seam would undo the argument.
+    - **`API_VERSION` stays at 2.** Both parameters are `#[serde(default)]`, so
+      every payload written before this item parses to the request it always
+      meant; `a_payload_written_before_the_scope_existed_still_parses` asserts
+      exactly that, in both methods, rather than leaving it to the reader of the
+      attribute. This is the growth the number is arranged to allow, and it is
+      the fourth item to grow this vocabulary without moving it.
+    - **No CLI flag, deliberately.** `rb find` is the library-wide door and
+      `rb show` already prints one book's marks; a per-book search is a screen's
+      question, and the parameter exists for the screen that would otherwise
+      truncate its own answer. Said in `find.rs` rather than left as an absence
+      somebody reads as an oversight.

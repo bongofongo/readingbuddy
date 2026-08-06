@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use readingbuddy::{Book, Engine, NewNoteInput, NoteKind};
+use readingbuddy::{Book, Engine, NewNoteInput, NoteKind, NoteScope};
 
 mod common;
 use common::{book, engine, highlight, seed_book, write_isbnless_epub};
@@ -18,7 +18,13 @@ async fn open_creates_its_directories_and_migrates() {
     assert!(tmp.path().join("database/files").is_dir());
     assert!(tmp.path().join("vault").is_dir());
     // Migrations ran, so the schema is queryable.
-    assert!(engine.list_notes(None, None).await.unwrap().is_empty());
+    assert!(
+        engine
+            .list_notes(NoteScope::All, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -254,7 +260,10 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
         "note file was not written to the vault"
     );
 
-    let notes = engine.list_notes(saved.id, None).await.unwrap();
+    let notes = engine
+        .list_notes(NoteScope::of_book(saved.id), None)
+        .await
+        .unwrap();
     assert_eq!(notes.len(), 1);
     let note = &notes[0];
 
@@ -285,7 +294,12 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
     // FTS picked up the new body, not the old one.
     assert!(
         !engine
-            .search_marks("Rewritten", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks(
+                "Rewritten",
+                Some(readingbuddy::SearchSource::Note),
+                None,
+                10
+            )
             .await
             .unwrap()
             .is_empty()
@@ -293,7 +307,13 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
 
     engine.delete_note(note).await.unwrap();
     assert!(!created.file.exists(), "vault file outlived its row");
-    assert!(engine.list_notes(saved.id, None).await.unwrap().is_empty());
+    assert!(
+        engine
+            .list_notes(NoteScope::of_book(saved.id), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let _ = tmp;
 }
 
@@ -312,12 +332,21 @@ async fn deleting_a_note_whose_file_is_already_gone_still_clears_the_row() {
         .unwrap();
 
     std::fs::remove_file(&created.file).unwrap();
-    let note = &engine.list_notes(saved.id, None).await.unwrap()[0];
+    let note = &engine
+        .list_notes(NoteScope::of_book(saved.id), None)
+        .await
+        .unwrap()[0];
     engine
         .delete_note(note)
         .await
         .expect("a missing vault file must not block the row delete");
-    assert!(engine.list_notes(saved.id, None).await.unwrap().is_empty());
+    assert!(
+        engine
+            .list_notes(NoteScope::of_book(saved.id), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Obsidian edits the file behind our back; the FTS index has to catch up.
@@ -334,7 +363,11 @@ async fn refresh_note_from_disk_reindexes_an_external_edit() {
         .await
         .unwrap();
 
-    let note = engine.list_notes(saved.id, None).await.unwrap().remove(0);
+    let note = engine
+        .list_notes(NoteScope::of_book(saved.id), None)
+        .await
+        .unwrap()
+        .remove(0);
     let raw = std::fs::read_to_string(&created.file).unwrap();
     std::fs::write(
         &created.file,
@@ -345,7 +378,12 @@ async fn refresh_note_from_disk_reindexes_an_external_edit() {
     engine.refresh_note_from_disk(&note).await.unwrap();
     assert!(
         !engine
-            .search_marks("externally", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks(
+                "externally",
+                Some(readingbuddy::SearchSource::Note),
+                None,
+                10
+            )
             .await
             .unwrap()
             .is_empty(),
@@ -378,7 +416,7 @@ async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
         .unwrap();
     assert_eq!(
         engine
-            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), None, 10)
             .await
             .unwrap()
             .len(),
@@ -400,7 +438,12 @@ async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
 
     assert_eq!(
         engine
-            .search_marks("calculation", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks(
+                "calculation",
+                Some(readingbuddy::SearchSource::Note),
+                None,
+                10
+            )
             .await
             .unwrap()
             .len(),
@@ -409,7 +452,7 @@ async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
     );
     assert!(
         engine
-            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), None, 10)
             .await
             .unwrap()
             .is_empty()
@@ -474,7 +517,7 @@ async fn the_sweep_never_deletes_a_note_whose_file_is_missing() {
 
     assert_eq!(
         engine
-            .search_marks("keeping", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks("keeping", Some(readingbuddy::SearchSource::Note), None, 10)
             .await
             .unwrap()
             .len(),

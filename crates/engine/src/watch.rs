@@ -1098,6 +1098,7 @@ mod tests {
 #[cfg(test)]
 mod vault_tests {
     use super::*;
+    use crate::NoteScope;
     use crate::notes::{NewNoteInput, create_note};
 
     /// Real time rather than `start_paused`, deliberately. Every settle here
@@ -1168,7 +1169,7 @@ mod vault_tests {
 
         async fn finds(&self, query: &str) -> Vec<i64> {
             self.storage
-                .search_marks(query, Some(crate::SearchSource::Note), 10)
+                .search_marks(query, Some(crate::SearchSource::Note), None, 10)
                 .await
                 .unwrap()
                 .iter()
@@ -1421,7 +1422,13 @@ mod vault_tests {
                 .await
                 .is_err(),
         );
-        assert!(v.storage.list_notes(None, None).await.unwrap().is_empty());
+        assert!(
+            v.storage
+                .list_notes(NoteScope::All, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// An outside edit is exactly where a new `[[wikilink]]` appears, so the

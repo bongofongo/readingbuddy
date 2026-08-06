@@ -31,7 +31,7 @@ pub use fts::{SearchHit, SearchSource};
 pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
 pub use moments::{Moment, MomentKind, RUN_MIN_DAYS, runs_of_days};
-pub use notes::{NewNoteMeta, NoteFile, NoteRecord, OutgoingLink};
+pub use notes::{NewNoteMeta, NoteFile, NoteRecord, NoteScope, OutgoingLink};
 pub use provenance::BookTag;
 pub use query::{BookFilter, BookQuery, BookSummary, StatusFilter};
 pub use ratings::{Rating, RatingScale};

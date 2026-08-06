@@ -20,7 +20,7 @@
 use readingbuddy::BookQuery;
 use readingbuddy::device::DeviceState;
 use readingbuddy::storage::BookSort;
-use readingbuddy::{Book, NewNoteInput, NoteKind};
+use readingbuddy::{Book, NewNoteInput, NoteKind, NoteScope};
 
 mod common;
 use common::{engine, place, rewrite_sidecar, seed_book};
@@ -344,7 +344,7 @@ async fn merging_a_duplicate_keeps_both_reflections_and_every_citation() {
 
     // Both reflections survive, on the survivor, with their bodies intact. The
     // partial unique index permits it because they anchor to different readings.
-    let notes = engine.list_notes(Some(dst), None).await.unwrap();
+    let notes = engine.list_notes(NoteScope::Book(dst), None).await.unwrap();
     let reflections: Vec<_> = notes.iter().filter(|n| n.kind == "reflection").collect();
     assert_eq!(
         reflections.len(),
@@ -428,7 +428,12 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
 
     // FTS follows the same write.
     let hits = engine
-        .search_marks("preoccupations", Some(readingbuddy::SearchSource::Note), 10)
+        .search_marks(
+            "preoccupations",
+            Some(readingbuddy::SearchSource::Note),
+            None,
+            10,
+        )
         .await
         .unwrap();
     assert!(
@@ -448,7 +453,12 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
     );
     assert!(
         engine
-            .search_marks("preoccupations", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks(
+                "preoccupations",
+                Some(readingbuddy::SearchSource::Note),
+                None,
+                10
+            )
             .await
             .unwrap()
             .is_empty(),
@@ -492,7 +502,12 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
     // asserting it is what makes the next block mean something.
     assert!(
         engine
-            .search_marks("antechamber", Some(readingbuddy::SearchSource::Note), 10)
+            .search_marks(
+                "antechamber",
+                Some(readingbuddy::SearchSource::Note),
+                None,
+                10
+            )
             .await
             .unwrap()
             .is_empty(),
@@ -502,7 +517,12 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
     engine.refresh_note_from_disk(&a_rec).await.unwrap();
 
     let hits = engine
-        .search_marks("antechamber", Some(readingbuddy::SearchSource::Note), 10)
+        .search_marks(
+            "antechamber",
+            Some(readingbuddy::SearchSource::Note),
+            None,
+            10,
+        )
         .await
         .unwrap();
     assert!(
