@@ -12,6 +12,16 @@ into **`readingbuddy::edition`**, where it is stated as proportions (height is
 is that a WebGL shelf and this ray tracer scale the same ratios differently. See
 `docs/decisions.md` entry 19.
 
+**Frozen is not sealed, and item 39 is the one sanctioned cut into it so far.**
+`texture.rs` had its own copy of the engine's border-median accent — the same
+2px frame, the same `border = 2.min(w/4).max(1)`, the same loop, on the same
+file's bytes. Two justifications for keeping it were on record and both were
+false (item 20's comment named item 19 as the item that would delete it, and
+item 19 did not; the handoff then said the two measured different images, and
+they did not). It reads `books.cover_accent` now. The rule the cut respects is
+that **what it draws did not change** — a measured cover renders exactly the
+colour it always did, because the arithmetic on both sides was identical.
+
 Siblings: [`../ui/CLAUDE.md`](../ui/CLAUDE.md) ·
 [`../../CLAUDE.md`](../../CLAUDE.md) (bench/perf commands live there)
 
@@ -33,6 +43,7 @@ Siblings: [`../ui/CLAUDE.md`](../ui/CLAUDE.md) ·
 - **`caps::rtt_probe` is the honest instrument**: time the terminal's reply to a wrapped `_Ga=q` (the outer terminal's queue) and a bare `CSI c` (tmux's, answered locally) *while under load*. A drowning terminal answers slowly. **Bench-mode only** — it consumes stdin, which a live session hands to `EventStream`.
 - **`--bench-render <glyph|rich|rich-always|all>`** drives the real presenter through a real `Terminal::draw` (so the throttle, placeholder cells and ratatui diff all count) over a fixed script, and reports bytes/s by class, sends, and RTT percentiles. `make bench`. The column that matters is **moving-KB**; for the hybrid it is 0. `--bench-rich` still exists but bypasses `present.rs`, so it measures the raster alone.
 - Glyph framebuffer is `cols * 2` x `rows * glyphs.cell_h()` (cell_h 2 for quadrant, 4 for octant); the *physical* aspect `primary_ray` takes is `cols / (rows * 2)` — the cell grid's shape, not the sample grid's. The pixel path passes the true `width/height` instead. Default supersampling is `ss = 3`.
+- **The accent is a column read, not a measurement** (item 39). `texture::accent_for(book.cover_accent_rgb(), title)` is the one place it is decided, and `Scene::cover` — the only call site holding a `&Book` — passes the result into `load_cover`, which is why that function grew a third parameter rather than a way of its own to find a book. `ACCENT_LUMA` (0.14–0.62) stays here: the stored median is deliberately unclamped, since a legible band is a renderer's policy about its own lighting. `cover_accent IS NULL` — an undecodable cover, or a row `rb covers` has not back-filled — falls back to `procedural_cover`'s **title-hashed** hue, so an un-back-filled library draws spines a shade nobody measured. Stated as a cost in `docs/decisions.md` entry 39, not hidden. `cover_accent_rgb()` is therefore in **both** cache keys (`CoverKey` and `present::cover_hash`): a back-fill repaints the spine without moving the path, the id or the title.
 - `Scene` caches the decoded cover (per book + texel target — `Scene::cover(book, texels)` is shared, the pixel path asks for more) and the last glyph frame (`FrameKey`: cover, quantized pose, cols, rows, **ss and glyph set**; the last two matter because `glyphs` fixes the framebuffer height). The rich path keeps its own cache in `RichState`. The 20fps tick only re-traces when something moved. Judge performance on a release build (debug ~30x slower). Cover paths are relative to the data root, resolved against `EngineConfig::images_dir`.
 - **A resize invalidates the transmitted frame** (`RichState::resized`, called from `app::redraw` — the one funnel that sees both every draw and the terminal size). The transmit cache is keyed on the *object rect*, and in a stacked layout both of that rect's axes are capped (`STACK_MAX_COLS`, `BOOK_MAX_ROWS`), so resizing the window routinely leaves it identical: the key still matched, nothing was re-sent, and the terminal — which drops or misplaces images across a resize, tmux especially — was left showing half a book or none. The side-by-side layouts hid it, since their object takes the full pane height and any vertical resize changes the key. `RichKey` also carries the rect's `x`/`y`, so a frame that merely *moved* re-sends too, and a **span change deletes before transmitting** rather than writing over a placement whose geometry is stale. Guarded by `a_resize_retransmits_the_parked_image`.
 - Images **must** be deleted or they ghost: `kitty::teardown()` is the *first* step of `restore_terminal` (before leaving the alt screen, where the placement lives), inherited by the panic hook, and also fired when `v` leaves rich mode.

@@ -1784,3 +1784,75 @@ because item 31 needed somewhere to put reading time.
       the single-word case: the fixture's real shape is
       `paused-by-some-other-app`. The rule that a frontend words a value covers
       *our* vocabulary, and this is the one label deliberately outside it.
+39. **The border-median accent, read rather than re-measured.** No migration; one
+    deleted function, one new parameter, one column read. Its subject is not the
+    duplication — that was twenty-six lines and nobody's bottleneck. It is **how
+    a duplicate stays alive**: this one survived item 19, item 20 and three
+    handoffs behind two written justifications, *both false*, and neither was
+    ever checked against the code it described.
+    - **What was true.** `crates/engine/src/images.rs` and
+      `crates/tui/src/render3d/texture.rs` each computed the median of a 2px
+      border — the same frame, the same `border = 2.min(w/4).max(1)`, the same
+      loop, differing only in that the engine packs `0xRRGGBB` unclamped and the
+      renderer returned a `Vec3` already pushed into a luma band.
+    - **The first false justification was a promise.** `images.rs`'s own comment
+      said the copy was deliberate "for exactly one item" and that **item 19**
+      would rewire the renderer onto the column and delete it. Item 19 shipped —
+      it moved `EditionShape` into the engine — and did not touch the accent.
+      A comment naming a future item is a TODO with a due date nothing enforces,
+      and when that item ships for its *own* reasons the note reads as satisfied.
+    - **The second was a plausible technical difference nobody re-read the code
+      to confirm.** The handoff said the two "can legitimately differ" because
+      `images.rs` measures the original file and `texture.rs` the *scaled
+      texture*. It does not: `load_cover` called `accent_from_border(&img)` on
+      the full-resolution decode and resized on the **next line**, and
+      `Scene::cover` loads `book.cover_path` — the same file `store_cover`
+      measured. Same bytes, same arithmetic, identical medians by construction.
+      This is the more dangerous of the two, because it converts a task into a
+      *decision*, and a decision with no owner is carried forward for ever.
+    - **The ruling: the TUI reads the column and deletes its own loop.**
+      `Book::cover_accent_rgb()` is the accessor and `images::accent_channels`
+      stays the one place the packing comes apart. Nothing about what the
+      renderer draws changed — the arithmetic on both sides was identical, which
+      is exactly what made the cut safe to make against a frozen renderer.
+    - **The luma clamp stays in the renderer**, and this is the line item 20 drew
+      and item 17 drew before it. A legible band (0.14–0.62, now `ACCENT_LUMA`)
+      is a policy about *this* renderer's lighting against *this* renderer's
+      cream page edges; the stored median is a fact about the file. A WebGL shelf
+      will want a different band and must not inherit ours.
+    - **`load_cover` grew a parameter rather than a way to find a book.** The
+      accent is passed in as a `Vec3`. `Scene::cover(book, texels)` is the only
+      call site holding a `&Book`, so it is the only place that needs to know how
+      an accent is obtained, and `texture.rs` stays free of the engine's domain
+      types. The alternative — threading `&Book` down into the texture loader —
+      would have put "how do I get an accent" in the module that no longer has
+      any business answering it.
+    - **`cover_accent` is now in both cache keys**, `Scene`'s `CoverKey` and
+      `present::cover_hash`. This is the only part of the change that is not
+      pure deletion, and it is not tidiness: `rb covers` fills the column without
+      moving the path, the id or the title, so a key blind to it would serve a
+      back-filled book its old spine indefinitely — and a *transmitted* frame
+      that is never re-sent is a stale image with nothing on screen looking
+      wrong, which is the failure `a_resize_retransmits_the_parked_image` exists
+      to catch one door down.
+    - **`cover_accent IS NULL` draws the title's hue, and that cost is stated
+      rather than hidden.** NULL happens for an undecodable cover and for any row
+      predating item 20 that `rb covers` has not reached. Those fall back to
+      `procedural_cover`'s title-hashed accent — so on an un-back-filled library
+      a book with a perfectly good jacket gets a spine coloured by its *name*
+      instead of by its boards. The back-fill exists and is one command; the
+      alternative was a grey nobody chose, or keeping the loop alive to
+      re-measure a file the engine has already opened once. The two hues cannot
+      drift apart, because `procedural_accent` is one function that both the
+      plate and the fallback call.
+    - **The three tests were re-pointed, not deleted.** The behaviour they pinned
+      still exists; only its source moved. `accent_luma_is_clamped_into_the_
+      visible_band` now clamps a *stored* accent and additionally asserts that
+      one already inside the band arrives untouched — the half that proves the
+      column is unclamped. `accent_follows_the_border_not_the_middle` keeps its
+      name and inverts its evidence: the *measurement* is asserted in
+      `images.rs`, so what is left here is that the stored median reaches the
+      spine, tested by writing a **red-bordered** file to disk and handing
+      `load_cover` a **blue** accent. Any implementation that re-measures fails
+      it. A fourth test covers `None → procedural`, in both its forms — with no
+      cover file, and with a readable one.

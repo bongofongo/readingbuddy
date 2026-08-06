@@ -150,7 +150,7 @@ impl Model {
 /// Identifies which cover is loaded, so the cache knows when to rebuild. The
 /// last field is the texture's target width in texels — the pixel path wants a
 /// much larger texture than the glyph path for the same cell rect.
-type CoverKey = (Option<i64>, Option<String>, String, u32);
+type CoverKey = (Option<i64>, Option<String>, String, Option<[u8; 3]>, u32);
 
 /// `cover_path` as written by the engine, falling back to the images dir when
 /// the stored (relative) path doesn't resolve from the current cwd.
@@ -221,6 +221,11 @@ impl Scene {
             book.id,
             book.cover_path.clone(),
             book.display_title().to_string(),
+            // The accent is a stored column now (item 39), and `rb covers` can
+            // fill it without the path, the id or the title moving. Left out of
+            // the key, a back-filled book would keep drawing its title's hue
+            // until something else invalidated the slot.
+            book.cover_accent_rgb(),
             texels,
         )
     }
@@ -236,11 +241,16 @@ impl Scene {
         let key = Self::cover_key(book, texels);
         let stale = self.cover.as_ref().map(|(k, _)| k != &key).unwrap_or(true);
         if stale {
+            // The accent is read from the book, never measured off the file
+            // (item 39): `Scene::cover` is the one call site holding a `&Book`,
+            // which is why the accent is threaded through here rather than
+            // `load_cover` growing a second way to find it.
+            let accent = texture::accent_for(book.cover_accent_rgb(), book.display_title());
             let loaded = book
                 .cover_path
                 .as_deref()
                 .and_then(|p| self.resolve_cover(p))
-                .and_then(|p| texture::load_cover(&p, texels))
+                .and_then(|p| texture::load_cover(&p, texels, accent))
                 .unwrap_or_else(|| texture::procedural_cover(book.display_title()));
             self.cover = Some((key, loaded));
         }

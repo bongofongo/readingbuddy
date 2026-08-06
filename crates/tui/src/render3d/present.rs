@@ -98,6 +98,10 @@ fn cover_hash(book: &Book) -> u64 {
     book.id.hash(&mut h);
     book.cover_path.hash(&mut h);
     book.display_title().hash(&mut h);
+    // Same reason `Scene::cover_key` carries it: a back-fill repaints the spine
+    // without moving the path, and a transmitted frame that is not re-sent is
+    // one nothing on screen looks wrong about.
+    book.cover_accent_rgb().hash(&mut h);
     book.page_count.hash(&mut h);
     h.finish()
 }

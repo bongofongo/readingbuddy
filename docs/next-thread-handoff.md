@@ -126,13 +126,19 @@ Numbered from **39**. Nothing here is started.
    **`api-surface-auditor`** agent before building any of them anyway: a missing
    request is an engine item, never a frontend workaround.
 
-2. **The duplicated border-median accent arithmetic** (`crates/engine/src/images.rs`
-   vs `crates/tui/src/render3d/texture.rs`) — **a decision for the user, not a
-   task for a worker.** `images.rs` measures the original file and `texture.rs`
-   measures the *scaled texture*, so they can legitimately differ, and the
-   renderer is frozen. Deleting the renderer's copy is a decision about what it
-   draws. This has now been carried unresolved across three handoffs; it wants an
-   answer more than it wants an owner.
+2. ~~**The duplicated border-median accent arithmetic**~~ — **settled by item
+   39.** The renderer reads `books.cover_accent` and its own loop is gone.
+
+   Kept here because the *reason* it survived three handoffs is worth not
+   repeating. This entry used to say the two "can legitimately differ" because
+   `images.rs` measures the original file and `texture.rs` the *scaled texture*.
+   That was not true and had never been: `texture.rs` called
+   `accent_from_border(&img)` on the full-resolution decode and resized on the
+   next line, against the same file `images.rs` measured — same bytes, same
+   arithmetic, identical medians by construction. A plausible-sounding
+   difference nobody re-read the code to check outlived the item that was
+   actually supposed to do the work (item 20's comment named **item 19**; item
+   19 shipped and did not).
 
 3. **`Book::display_title` renders a stored blank as a blank.** It is
    `self.title.as_deref().unwrap_or("(untitled)")`, and `books.title` is
