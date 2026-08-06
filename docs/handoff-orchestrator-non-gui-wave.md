@@ -26,6 +26,34 @@ You do not build the items yourself, with one stated exception (item 37).
   be started inside it. Three agents there produce three dialects of one app,
   and whether a shelf reads as a place is the user's call, not an agent's.
 
+## Every database in play is disposable (stated by the user, 2026-08-06)
+
+There is no durable library yet: `dev-data/` is seeded, gitignored and rebuilt
+by `make dev-db`, and the user has said all data currently in use is play data
+that may be deleted. Three consequences, and they expire the day a real library
+exists — **re-check this section before relying on it**.
+
+- **Renumbering a migration is legal.** The "rebase, never renumber" rule exists
+  because sqlx checksums each applied migration (sha384) into
+  `_sqlx_migrations`, so a renumber is a `VersionMismatch` at startup for
+  anybody holding a database. Nobody is. A worker that collides on a number
+  therefore **renumbers at merge time** instead of waiting for its predecessor,
+  which removes the "a branch holding `0016` is red until `0015` lands" pain
+  from parallel worktrees. The reservation shuffle below is still worth doing —
+  it costs one commit — but it is now a convenience rather than a constraint.
+- **A back-fill is no longer a prerequisite for the column it fills.** Item 34's
+  `sort_author` was refused twice on the ground that the column is NULL for
+  every existing row until a back-fill nobody has run runs; here the answer is
+  `make dev-db`. Still write the door — `rb covers` demonstrated that the door
+  is the only thing that ever *exercises* the code, and a shipped library will
+  need it — but it does not gate the index.
+- **A shape change needs no data migration.** Wipe and rebuild. This is exactly
+  how the relative→absolute `cover_path` fix landed on 2026-08-06.
+
+**What is not play data**, and stays untouched no matter what: `personal_data/`
+(the opportunistic `partial_md5.rs` checks), the `real/` fixtures, and anything
+on a mounted KOReader device.
+
 ## Read this before allocating anything: `0015` is not free the way you think
 
 `docs/gui/spec-gui-17-28.md` reserves **`0015` for item 23** (moments), which is
