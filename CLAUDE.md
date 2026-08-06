@@ -83,6 +83,25 @@ names. Launch them; do not reimplement what they do.
 | `screenshot-reviewer` | renders routes and **looks at them** — the only check here that can see. Catches "it renders and it is wrong". |
 | `api-surface-auditor` | **before** building a GUI feature: can the API serve it? A gap is an engine item, never a frontend workaround. |
 
+### Running a wave as worktree threads — two rules that cost a session each
+
+- **Make every worker check its base before it writes a line.** `git log
+  --oneline -1` and `ls crates/engine/migrations/ | tail -2`, then
+  `git reset --hard main` if wrong. Four of six worktrees in the GUI wave were
+  created ~80 commits behind `main` with migrations stopping at `0010`; every
+  thread caught it *only because it was told to look*, and one would otherwise
+  have written a migration into a five-version gap.
+- **A worker cannot gate on `make ci`, so an engine change that breaks the
+  frontend passes.** A fresh worktree has no `gui/node_modules`, so `web-check`
+  and `routes` print `SKIPPED:` and the worker "passes" them. Gate workers on
+  `make fmt lint build-check test ts-check`; the **orchestrator** runs the full
+  `make ci` from the main checkout after each merge. The specific trap:
+  **`ts-rs` emits a new field as required in TypeScript however
+  `#[serde(default)]` the Rust is**, so adding a field to an existing `Request`
+  variant breaks `gui/src/lib/api/client.ts` — invisible to the worker, and
+  caught only on main. **Prefer adding a new request over changing one**, and
+  when you must change one, say so in the report.
+
 Three skills:
 
 | skill | for |

@@ -1,15 +1,12 @@
 ---
-title: Handoff — the non-GUI wave is finished; the GUI half is what is left
+title: Handoff — the GUI wave is finished; what is left is engine work
 date: 2026-08-06
-source: sessions/2026-08-06-one-search-surface.md (34),
-        sessions/2026-08-06-the-sort-keys-get-an-index.md (35),
-        sessions/2026-08-06-a-real-pdf-sidecar.md (37),
-        sessions/2026-08-06-the-chooser-knows-who-wrote-it.md (36),
-        sessions/2026-08-06-one-fixture-two-consumers.md (38);
-        docs/decisions.md entries 34–38 for the rulings
-supersedes: docs/handoff-orchestrator-non-gui-wave.md, all five of whose items
-            have landed — and with it the engine handoff before that, seven of
-            whose eight open items are now closed
+source: docs/decisions.md entries 26, 39, 23, 40, 27, 42, 44, 28 — the eight
+        items of the GUI wave, in the order they were merged
+supersedes: the non-GUI-wave handoff this file used to be. Both of its open
+            items are closed (the accent duplication by 39; the GUI half by
+            26/27/28), and its numbering advice is superseded by the register
+            note below — an allocated number no longer means open work
 ---
 
 # Handoff
@@ -19,39 +16,44 @@ previous conversation.
 
 ## Where things stand
 
-**`make ci` exit 0 on `main` at `b21a0ed`.** Working tree clean, committed
-straight to `main` (nothing is pushed; this repo has no remote it uses). The gate
-is the full one: fmt, lint, build-check, ts-check, whole-workspace test,
-web-check, and 30 Playwright routes on WebKit.
+**`make ci` exit 0 on `main`.** Working tree clean, committed straight to `main`
+(nothing is pushed; this repo has no remote it uses). The gate is the full one:
+fmt, lint, build-check, ts-check, whole-workspace test, web-check, and **81**
+Playwright routes on WebKit — 29 Rust suites and 172 vitest tests beside them.
 
-**Items 34, 35, 36, 37 and 38 are merged** — the whole non-GUI wave. Migrations
-`0015` (highlight FTS) and `0016` (sort-key indexes) are applied. **`0017` now
-belongs to item 23**, which moved down from `0015` so this wave could land ahead
-of it.
+**The GUI wave is merged**: items 25, 26, 27, 28, plus the engine work they
+needed — 23 (migration `0017`), 39, 40, 42, 44. Migrations run to **`0017`**.
 
-**`API_VERSION` is 2.** Item 34 removed `SearchNotes` and `Response::NoteHits`.
+**`API_VERSION` is still 2.** Everything this wave added to the wire was
+additive; items 40, 42 and 44 all say so explicitly in their entries.
 
 `docs/decisions.md` is in **build order, not numeric order** — this wave appended
-37, 34, 35, 36, 38 in that sequence. Read those five before touching any of it.
+26, 39, 23, 40, 27, 42, 44, 28 in that sequence.
 
 ## Read this first: item numbers are registered in `docs/decisions.md`
 
-This wave allocated itself 33–37 by reading `docs/prompts/` for the highest
-number, and shipped **two items numbered 33** before anyone noticed. The one it
-collided with — "Surfacing 21/29/30/31/32" — was minted mid-session rather than
-from a spec, so it has a `decisions.md` entry and a session log and **no prompt
-file**. The prompts directory under-reports permanently, and any item that starts
-life as a handoff's open work has that shape.
+The previous wave allocated itself 33–37 by reading `docs/prompts/` for the
+highest number and shipped **two items numbered 33** before anyone noticed. The
+one it collided with was minted mid-session rather than from a spec, so it has a
+`decisions.md` entry and a session log and **no prompt file**. The prompts
+directory under-reports permanently, and any item that starts life as a
+handoff's open work has that shape.
 
 **`grep '^[0-9]\+\. \*\*' docs/decisions.md` is the register.** The next free
-number is **39**.
+number is **47**.
+
+This wave added a second failure mode to the same lesson, in the opposite
+direction: an API audit **allocated 40–46 and built only four of them**, so the
+register now contains numbers with no entry behind them. A gap in the register
+is not evidence that work is open, and a number in this file is not evidence
+that it was built. Only a `decisions.md` entry is.
 
 Renumbering cost one commit touching 32 files, because a worker writes its item
 number into module headers, migration headers, test section comments and
 `CLAUDE.md` routing rows. A number is a fact scattered through the source, not a
 label on a document. `new-wave-item`'s step 2a now says so.
 
-## What this wave overturned, in one line each
+## What the *previous* (non-GUI) wave overturned, in one line each
 
 - **bm25 cannot rank a note against a highlight** (item 34). fts5 computes rank
   from *that index's own* corpus statistics, so a note's −8.2 and a highlight's
@@ -86,7 +88,7 @@ label on a document. `new-wave-item`'s step 2a now says so.
   from `gen-devdb` would make the Rust half check its own output, and
   `crates/corpus`' whole value is being an independent oracle.
 
-## Traps this wave found, all still live
+## Traps the previous wave found, all still live
 
 - **A cast defeats a fixture's own stated purpose.** `fake.ts` promised that a
   drifted DTO field is a `tsc` error there, and `as StoredBook` made that true
@@ -111,115 +113,79 @@ label on a document. `new-wave-item`'s step 2a now says so.
 ## What is next
 
 **Next free number is 47.** The register is
-`grep '^[0-9]\+\. \*\*' docs/decisions.md`, and it is the register because
-`docs/prompts/` under-reports permanently — an item minted mid-session gets a
-`decisions.md` entry and no prompt file. Items **40–46** below are *allocated
-from an audit but mostly unbuilt*, which is a state this file has not had
-before: check `decisions.md` for an entry before assuming one is open.
+`grep '^[0-9]\+\. \*\*' docs/decisions.md` — `docs/prompts/` under-reports
+permanently, because an item minted mid-session gets a `decisions.md` entry and
+no prompt file. **An allocated number is no longer evidence that work is open**:
+this session allocated 40–46 from an audit and built only four of them. Check
+`decisions.md` for an entry before assuming.
 
-### Landed this session
+## The GUI wave is finished
 
-Items **26** (the shelf), **39** (the accent) and **23** (moments, migration
-`0017`) are merged, and `make ci` is exit 0 on `main`. Items **40** (scoped
-search) and **27** (the book and the notes) are **in flight** in worktrees as
-this is written — check `git branch` before starting either.
+Items **25, 26, 27 and 28** are all merged. `make ci` is exit 0 on `main`:
+29 Rust suites, 172 vitest tests, 81 Playwright routes on WebKit.
 
-The WebGL spine shelf was **deferred as cosmetic** by the user and item 26 was
-rebuilt around that: the shelf's arrangement is now a seam
-(`gui/src/lib/shelf/layouts.ts`) with two implementations, and the spine shelf is
-a third entry in it. `docs/decisions.md` entry 26 has the argument.
+Built this session, in merge order: **26** (the shelf), **39** (the accent
+duplication), **23** (moments, migration `0017`), **40** (scoped search),
+**27** (the book and the notes), **42** and **44** (the month as a period, the
+card's passage), **28** (the chain and the reading-life page).
 
-### The remaining GUI work
+There is no half-built screen and no thread still running. The next wave starts
+from a clean tree.
 
-1. **Item 28 — the chain, and the reading-life page.** The last GUI item.
-   Item 23 gave it `PendingMoments`/`AcknowledgeMoment` with `reading_id` on the
-   moment, so the first link of the chain exists.
+### Two rulings the user made, which a later thread must not quietly reverse
 
-   **The card is per-book, reached by selecting a book** — decided by the user
-   this session. `ListReadings { book_id }` already serves that. **The wall of
-   cards across the whole library, with a year filter** (`gui-vision.md:151`) is
-   deliberately *later*, and it needs item 43 first: nothing in the engine can
-   list finished readings across books at any layer, and `BookFilterDto.year` is
-   the *publish* year, not the year finished.
+- **The WebGL spine shelf is deferred as cosmetic, not abandoned.** Item 26 was
+  rebuilt around that rather than half-built toward it: the arrangement is a
+  seam (`gui/src/lib/shelf/layouts.ts`) and the spine shelf is a third entry in
+  it, needing no change to that file. Entry 26 has the argument.
+- **A number on the home surface may describe one book, never the collection.**
+  `gui-vision.md` said three times, unqualified, that no number appears there —
+  and the shelf has shipped `Reading · 35%` under every tile since item 25.
+  Item 27's screenshot review found the contradiction; the user resolved it in
+  favour of the shipped behaviour and the rule is now stated precisely in both
+  places that carried the absolute form.
 
-   Two traps an audit named in advance. `ActivitySummaryDto.activity_days` **must
-   not become a streak** — it is a count of days in a range you asked for, past
-   tense, and a "current streak" rendered from it is a threshold in a costume.
-   And bucketing `ActivityByDay` to months in TypeScript **collapses `null` to
-   `0`** on the first `reduce`, which is exactly the lie the page exists to
-   avoid; that is what item 42 is for.
+### What is left, and none of it is a screen
 
-### Items minted by the audit, and not yet built
-
-Numbers are allocated. None has a prompt file; all are additive with
-`#[serde(default)]`, so **`API_VERSION` stays at 2** and none needs a migration.
-
-- **40 — a search that can be scoped.** *In flight.* `book_id` on `SearchMarks`,
-  `reading_id` on `ListNotes`. Blocks item 27's search box.
 - **41 — the read number crosses.** `ReadNumbering` is the engine's (item 17c)
-  and crosses no DTO, so a frontend showing which read a passage came from would
-  compute `readings.indexOf(id) + 1` and silently depend on list ordering.
-  Prefer `ReadingDto.ordinal` over a field on every highlight.
-- **42 — the month is a period too.** `activity_by_month`, `GROUP BY
-  substr(day,1,7)`, only months carrying an event. See the trap above.
+  and crosses no DTO. Item 28 declined to fake it with `readings.indexOf(id)+1`
+  and used dates instead; a card that wants "your second read" needs this.
 - **43 — readings across the library.** The rows behind
-  `ActivitySummary::books_finished`. **This is the wall's blocker.**
-- **44 — the card's passage, chosen once.** "One passage pulled from the
-  highlights" is a selection predicate and those are the engine's; `highlights[0]`
-  in TypeScript is a frontend inventing one, and the TUI would then disagree.
-  Which rule — longest, first, most-annotated, cited — is a product decision.
+  `ActivitySummary::books_finished`. **This is the blocker for the wall of
+  cards** and the year filter over it (`gui-vision.md:151`). The user chose
+  *per-book cards now, the wall later*, and item 28 shipped the per-book form —
+  so this is the item that reopens it. Item 44 notes that its one-call-per-card
+  passage is right for a per-book card and **wrong for a wall of 400**.
 - **45 — a flashcard can be made.** `Storage::insert_flashcard` has had no
-  `Engine` wrapper and no request since it was written. `FlashcardDto` also
-  carries no `book_id`/`highlight_id`, so a card cannot be shown beside its
-  passage.
-- **46 — which passages are already cited.** Today that is one `CitationsFor`
-  per note — an N+1 on a list, which is the pathology item 18 exists to remove.
+  `Engine` wrapper and no request since it was written; `FlashcardDto` carries
+  no `book_id`/`highlight_id`, so a card cannot be shown beside its passage.
+- **46 — which passages are already cited.** Today one `CitationsFor` per note,
+  an N+1 on a list — the pathology item 18 exists to remove.
+- **Image export of a card.** Item 28 left it out and said why: a card is live
+  DOM with async loads, so it needs canvas rasterisation or a Rust-side
+  renderer. Not a wiring job.
+- **The passage rule wants confirming.** Item 44 chose *longest passage, ties by
+  lowest highlight id*, and stated the cost rather than hiding it: it selects
+  for the longest **drag**, not the best passage, so a mis-drag outranks the
+  sentence you loved. It refused a length cap because that is a magic number
+  claiming how long a passage may be.
 
-2. ~~**The duplicated border-median accent arithmetic**~~ — **settled by item
-   39.** The renderer reads `books.cover_accent` and its own loop is gone.
+## Two process facts this session paid for
 
-   Kept here because the *reason* it survived three handoffs is worth not
-   repeating. This entry used to say the two "can legitimately differ" because
-   `images.rs` measures the original file and `texture.rs` the *scaled texture*.
-   That was not true and had never been: `texture.rs` called
-   `accent_from_border(&img)` on the full-resolution decode and resized on the
-   next line, against the same file `images.rs` measured — same bytes, same
-   arithmetic, identical medians by construction. A plausible-sounding
-   difference nobody re-read the code to check outlived the item that was
-   actually supposed to do the work (item 20's comment named **item 19**; item
-   19 shipped and did not).
+- **Four of six agent worktrees were created ~80 commits behind `main`**, with
+  migrations stopping at `0010`. Every thread caught it because its prompt said
+  to check, and one of them would otherwise have written a migration into a
+  five-version gap. **Put the base check in the prompt, every time**:
+  `git log --oneline -1` and `ls crates/engine/migrations/ | tail -2` before
+  writing anything.
+- **An engine item that changes a request shape can only fail on the frontend,
+  and a worker cannot see it.** `ts-rs` emits a new field as **required** in
+  TypeScript however `#[serde(default)]` the Rust is. Item 40 broke
+  `gui/src/lib/api/client.ts` that way; its own gate passed, because a fresh
+  worktree has no `gui/node_modules` and `web-check` prints `SKIPPED:`. Only
+  `make ci` from the main checkout caught it. Prefer **adding** a request over
+  changing one, and when you must change one, say so loudly.
 
-3. **`Book::display_title` renders a stored blank as a blank.** It is
-   `self.title.as_deref().unwrap_or("(untitled)")`, and `books.title` is
-   `TEXT NOT NULL DEFAULT ''` — so the branch it guards is unreachable for any
-   book that came out of the database, and the reachable case falls straight
-   through. 76 call sites, and three sibling copies in `goodreads.rs`,
-   `calibre.rs` and `ko_statistics.rs` where `None` genuinely *is* reachable (a
-   CSV row, a calibre row, a statistics row). Found by item 38 and deliberately
-   not patched inside a fixture item. The GUI is unaffected — `titleLabel`
-   handles both — so this is the TUI, the CLI, and `MatchCandidate.title`.
-
-4. **A table-shaped `pos0` is storable, and this is what it would take** (item
-   37's deferral). Storing a PDF anchor rather than counting it means deciding
-   what a coordinate table serialises to in the `pos0` column, and `pos0` is
-   `identity_hash` material — coordinates drift on re-render exactly as `pageno`
-   does, so a coordinate-bearing `pos0` re-inserts the same highlight after every
-   re-render. `DeviceDigest` and `DEVICE_FIELDS_DIFFER` would have to agree too.
-   **It needs a real PDF sidecar before it needs code**: `docs/koreader-format.md`
-   §6 states that table-ness is settled from KOReader's source while the *key
-   names* in the fixture are a reconstruction nobody has observed. Do not blur
-   that line.
-
-5. **`scan_device` still says nothing about unstorable anchors** (item 37,
-   recorded not built). `DeviceState`'s four-name vocabulary — New / Unchanged /
-   Updated / Unreadable — has no "readable, and partly unstorable", so the
-   silence item 37 removed from import survives one layer over in scan.
-
-6. **A generator that emits `fake.ts` from the declaration** (item 38's
-   deferral). Item 38 made the drift loud rather than removing the second
-   fixture, and the second fixture is not going away — layer 2 must run in a bare
-   browser with no IPC. What *could* be generated is `fake.ts` itself. Worth doing
-   when `edge-cases.json` has earned more fields than it has now.
 
 ## Running a wave as multiple workers
 
