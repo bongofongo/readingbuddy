@@ -61,9 +61,6 @@
   // the *other* lines — item 27 recorded this and it cost a session then too.
   const stateWord = $derived(readingStateLabel(reading.status));
   const far = $derived(progressDetail(reading.progress));
-  const reflection = $derived(notes.find((n) => n.kind === 'reflection') ?? null);
-  /** Everything except the reflection, which gets its own line above them. */
-  const rest = $derived(notes.filter((n) => n.kind !== 'reflection'));
 
   $effect(() => {
     const id = reading.id;
@@ -111,8 +108,13 @@
       {#if rating}
         <!-- The scale travels with the value, so `4.5 / 5` is readable without
              a second call. A read with no review has no rating and no gap where
-             one would be — an unrated read is not an unfinished one. -->
-        <p class="rating">{ratingLabel(rating)}</p>
+             one would be — an unrated read is not an unfinished one.
+
+             **Labelled**, because unlabelled it was not readable at all: a bare
+             `3 / 5` sat directly under the state line, in the same accent the
+             progress readout uses, one row above `p. 150 of 300 · 50%`. It read
+             as progress before it read as a rating. -->
+        <p class="rating">Rated {ratingLabel(rating)}</p>
       {/if}
     </div>
   </header>
@@ -139,18 +141,26 @@
 
   {#if loaded}
     <section class="left">
-      <h3 class="band-title">What you left</h3>
-      {#if reflection}
-        <p class="reflection">
-          <a href={`/book/${book.id}?note=${reflection.id}`}>{reflection.title}</a>
-        </p>
-      {/if}
-      {#if rest.length > 0}
+      <!--
+        **"What you left behind", not "What you left."**
+
+        The axiom is *"the app tells you what you did; it never tells you what
+        you have left"* — and the short heading was the second half of that
+        sentence, word for word, over a band that then printed a count. It means
+        what was left *behind* and English does not disambiguate it at a glance,
+        so the phrase is finished rather than trimmed.
+      -->
+      <h3 class="band-title">What you left behind</h3>
+      {#if notes.length > 0}
+        <!-- One list, with the kind as a **left prefix** — the book view's own
+             arrangement (`NotePane`), rather than a trailing chip that fired for
+             reviews and not for reflections and looked arbitrary. Two screens
+             listing the same notes had grown two systems. -->
         <ul>
-          {#each rest as n (n.id)}
+          {#each notes as n (n.id)}
             <li>
+              <span class="kind">{noteKindLabel(n.kind) ?? ''}</span>
               <a href={`/book/${book.id}?note=${n.id}`}>{n.title}</a>
-              {#if noteKindLabel(n.kind)}<span class="kind">{noteKindLabel(n.kind)}</span>{/if}
             </li>
           {/each}
         </ul>
@@ -160,10 +170,12 @@
              and about one read — the three things that make a number allowed. -->
         <p class="marks">{countLabel(marks.length, 'passage')} marked</p>
       {/if}
-      {#if !reflection && rest.length === 0 && marks.length === 0}
-        <!-- Idle is not blank, and it does not apologise. This names the move
-             and does not frame the read as missing anything. -->
-        <p class="hint">Nothing written against this read yet — the book is where it goes.</p>
+      {#if notes.length === 0 && marks.length === 0}
+        <!-- Idle is not blank, and it does not apologise. **No "yet"**: that one
+             word turns an absence into something outstanding, which is the same
+             grammar as *pending* wearing a softer coat. The fact is identical
+             without it. -->
+        <p class="hint">Nothing written against this read — the book is where it goes.</p>
       {/if}
     </section>
   {/if}
@@ -263,9 +275,11 @@
   .left a:hover {
     color: var(--accent-text);
   }
-  .reflection {
-    margin: 0.35rem 0 0;
-    font-size: 0.9rem;
+  /* A gutter, so the titles align whether or not their row has a kind — the
+     book view's arrangement, where the prefix is a column and not a tag. */
+  .kind {
+    flex: 0 0 4rem;
+    text-align: right;
   }
   .kind,
   .marks {

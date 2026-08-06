@@ -41,13 +41,16 @@
    */
   import { goto } from '$app/navigation';
   import type { MomentDto } from '$lib/api/bindings';
-  import { client } from '$lib/api/client';
+  import { client, type StoredBook } from '$lib/api/client';
+  import Jacket from '$lib/components/Jacket.svelte';
   import { titleLabel } from '$lib/phrasing';
   import { momentSentence, type MomentMove } from './sentence';
 
   let moment = $state<MomentDto | null>(null);
   /** Titles for the books a sentence names. Missing reads as *a book*, never blank. */
   let titles = $state<Record<number, string>>({});
+  /** The book the moment is *of* — the one whose jacket it shows. Absent for a run. */
+  let subject = $state<StoredBook | null>(null);
   let going = $state(false);
 
   const sentence = $derived(
@@ -82,6 +85,7 @@
     const next: Record<number, string> = {};
     for (const b of found) if (b !== null) next[b.id] = titleLabel(b.title);
     titles = next;
+    subject = found.find((b) => b !== null && b.id === m.book_id) ?? null;
   }
 
   /**
@@ -130,6 +134,16 @@
        interrupting a page to announce a ceremony is the popup behaviour in
        another medium. It is a region you arrive at by reading the page. -->
   <section class="moment" aria-labelledby="moment-said">
+    {#if subject}
+      <!-- The jacket, which the band did not have and needed most.
+           Every other reference to a book on this surface is a tile with its
+           own jacket and accent; a ceremony *about a book* that showed no book
+           was the single thing making this read as a banner rather than as a
+           moment. Small, and the same three states `Jacket` gives everywhere. -->
+      <a class="art" href={`/book/${subject.id}`} aria-hidden="true" tabindex="-1">
+        <Jacket src={client().coverSrc(subject)} accent={subject.cover_accent} />
+      </a>
+    {/if}
     <p class="said" id="moment-said">{sentence.said}</p>
     <button type="button" onclick={() => go(sentence.move)} disabled={going}>
       {sentence.move.invitation}
@@ -168,6 +182,14 @@
        says so. */
     border-left: 3px solid var(--accent);
   }
+  .art {
+    flex: none;
+    width: 38px;
+    aspect-ratio: 2 / 3;
+    border-radius: 2px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+  }
   .said {
     margin: 0;
     max-width: var(--measure);
@@ -175,18 +197,37 @@
        of the band. Not a heading: it is prose, and headings name places. */
     font-size: 1.02rem;
     line-height: 1.4;
+    /* A 220-character title is in the fixture on purpose and this sentence
+       interpolates one inline, unbounded. It wraps rather than pushing the
+       invitation off the band. */
+    overflow-wrap: anywhere;
+    flex: 1 1 16rem;
   }
+  /*
+   * A ghost control, not a filled pill.
+   *
+   * Filled, this was the **only** solid colour block above the fold on the home
+   * surface — louder than any book on a screen whose subject is books, and the
+   * exact shape of a cookie or newsletter bar. The moment's payload is the
+   * invitation, so it stays a real control and stays accent-coloured; what it
+   * gives up is being the loudest thing on the shelf. `--accent-text` rather
+   * than `--accent` because it is now text on the page's own ground, which is
+   * the rule `app.css` states for exactly this case.
+   */
   button {
     flex: none;
     font: inherit;
     font-size: 0.85rem;
-    padding: 0.35rem 0.8rem;
-    border: 0;
+    padding: 0.3rem 0.75rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
     border-radius: var(--radius);
-    background: var(--accent);
-    /* A label on an accent fill. The fill is mid-luma, so the ink is dark. */
-    color: var(--accent-on);
+    background: transparent;
+    color: var(--accent-text);
     cursor: pointer;
+  }
+  button:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
   }
   button:disabled {
     cursor: default;

@@ -73,15 +73,25 @@
        times on a reread. -->
   <h1>Cards</h1>
   {#if readings.length === 0}
-    <!-- Idle is not blank and never an apology. A book nobody has opened has no
-         card, which is a fact about the reading rather than about the book, and
-         the move that mints one is reading it. Deliberately not "no readings
-         yet" with a tone of something owed. -->
-    <p class="note">No card yet — a card is minted by a read.</p>
-    <p class="hint">
-      <code>rb ko pull</code> brings a reader's own progress across, and
-      <code>rb read start {id}</code> opens one here.
+    <!--
+      Idle is not blank and never an apology — and this state was three things
+      wrong before it was looked at rather than reasoned about.
+
+      **No "yet"**: that one word turns an absence into something outstanding,
+      which is the grammar of *pending* in a softer coat. **No CLI**: the
+      library's failure state may name `make dev-db` because its audience is
+      whoever mis-set the data dir, but this is an ordinary book with no card and
+      its audience is a reader — there is no terminal in this window, so a
+      command names no move that can be taken here, and `rb read start 4` leaked
+      a raw row id into user-facing copy besides. **And it names the book**:
+      without the title this was two sentences on an empty field with nothing
+      saying whose cards were missing.
+    -->
+    <p class="note">
+      <a href={`/book/${book.id}`}>{titleLabel(book.title)}</a> has no card. A card is minted by a
+      read.
     </p>
+    <p class="hint">Reading it is what mints one, and the book is where a read begins.</p>
   {:else}
     <!-- A card per reading, oldest first — the order `list_readings` returns and
          the order a reading life happened in. No ordinal on any of them: see
@@ -142,5 +152,8 @@
   .note {
     max-width: var(--measure);
     margin: 0 0 0.5rem;
+  }
+  .note a {
+    color: var(--accent-text);
   }
 </style>

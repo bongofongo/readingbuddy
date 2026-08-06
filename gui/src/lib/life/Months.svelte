@@ -17,13 +17,14 @@
    * its own. The month name is the row's heading and the chips wrap under it.
    */
   import type { MonthActivityDto } from '$lib/api/bindings';
-  import { countLabel, deviceFigures, monthLabel } from '$lib/phrasing';
+  import { countLabel, deviceFigures, monthLabel, NO_DEVICE_DATA, NOT_MEASURED } from '$lib/phrasing';
 
   let { months }: { months: MonthActivityDto[] } = $props();
 </script>
 
 <ul>
   {#each months as m (m.month)}
+    {@const device = deviceFigures(m.minutes, m.pages)}
     <li>
       <span class="month">{monthLabel(m.month)}</span>
       <span class="figures">
@@ -32,10 +33,15 @@
              days are two books, not twenty-four. -->
         <span>{countLabel(m.books, 'book')}</span>
         <span>{countLabel(m.activity_days, 'day')}</span>
-        {#each deviceFigures(m.minutes, m.pages) as figure (figure)}
-          <!-- An absence keeps its own voice. `deviceFigures` decides whether
-               that is one chip or two; this only styles what it decided. -->
-          <span class:absent={figure.includes('not measured') || figure === 'no device data'}>
+        {#each device as figure (figure)}
+          <!-- An absence keeps its own voice, and now two of them: dimmed **and**
+               italic. Italics alone was the only thing separating a measured
+               `0 min` from `minutes not measured`, which is one weak signal
+               carrying the distinction this whole page exists for. -->
+          <span
+            class:absent={figure === NO_DEVICE_DATA || figure.includes(NOT_MEASURED)}
+            class:wide={device.length === 1}
+          >
             {figure}
           </span>
         {/each}
@@ -69,32 +75,56 @@
        rather than push the chips off the row. */
     flex: 0 1 9rem;
   }
+  /*
+   * A fixed template, so the figures line up down the page.
+   *
+   * A floor per chip was the first attempt and it did not work: *minutes not
+   * measured* is far wider than any number, so it blew out its own slot and
+   * shoved everything to its left, leaving April's columns 65px off January's.
+   * A page of monthly figures whose whole purpose is reading **down** a column
+   * has to have columns.
+   *
+   * Still not a `<table>`: at 320px a four-column table either scrolls sideways
+   * or crushes, and the template below reflows to two columns instead. What is
+   * borrowed from a table is the shared geometry, not the element.
+   */
   .figures {
-    display: flex;
-    gap: 0.35rem 1rem;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.3rem 1rem;
+    justify-items: end;
     font-size: 0.82rem;
-    color: var(--ink-dim);
+    /* `--ink`, not `--ink-dim`. The month name was three times the contrast of
+       the figures beside it, which inverts the hierarchy of a page whose
+       subject *is* the figures — the stat block above already gets this right
+       with a dark number and a muted label. */
+    color: var(--ink);
+    flex: 1 1 14rem;
+  }
+  @media (min-width: 34rem) {
+    .figures {
+      /* The third column is sized for the widest thing that can land in it,
+         which is the named absence rather than any number. */
+      grid-template-columns: 4.5rem 4.5rem 9rem 6rem;
+      flex: 0 0 auto;
+    }
+  }
+  /* One chip standing for both device figures takes both slots rather than
+     leaving a hole where the second would have been. */
+  .wide {
+    grid-column: span 2;
   }
   /*
-   * The chips line up down the page rather than each row starting where its own
-   * text happens to.
+   * Italic **and** dimmed — two signals, and the second one is not decoration.
    *
-   * Every row carries the same figures in the same order, so a floor plus a
-   * right edge gives them columns without making this a `<table>` — which at
-   * 320px would either scroll sideways or crush. A month whose two device
-   * figures collapsed into one chip is wider than the floor and simply takes the
-   * room, which is the absence being allowed to look like what it is.
+   * With the figures now at `--ink`, italics alone was the only thing between a
+   * measured `0 min` and `minutes not measured`, and the distinction those two
+   * carry is the reason this page exists. `--ink-dim` is also what fixes the
+   * contrast: `opacity: 0.85` over `--ink-dim` measured **3.88:1** on the light
+   * theme — under AA, on the one string that must be legible *as* an absence.
    */
-  .figures > span {
-    min-width: 4.2rem;
-    text-align: right;
-  }
-  /* Italic, the same voice every other absence in this app has. It must not read
-     as a value — that is the whole of what this page gets right. */
   .absent {
     font-style: italic;
-    opacity: 0.85;
+    color: var(--ink-dim);
   }
 </style>

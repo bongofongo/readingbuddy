@@ -2392,3 +2392,43 @@ because item 31 needed somewhere to put reading time.
       for a wall across the library — so the cards live under `/book/[id]/cards`
       and the reading-life page deliberately does not grow *"and here are the
       books"*, which has no request behind it at all.
+    - **The screenshot review found the axiom broken in a band heading, and it
+      was the sentence itself.** The card's band read **"What you left"** — the
+      second half of *"the app tells you what you did; it never tells you what
+      you have left"*, word for word, over a band that then printed a count. It
+      meant *what you left behind* and English does not disambiguate that at a
+      glance. The phrase is finished rather than trimmed. Nothing but reading the
+      rendered words could have caught it: it passed every assertion, because the
+      assertions ban *unread*, *remaining*, *pending* — the words somebody else
+      would use.
+    - **"Yet" was doing the same work in two empty states**, and it is the one
+      word that turns an absence into something outstanding — the grammar of
+      *pending* in a softer coat. Both facts are identical without it.
+    - **A GUI empty state must not prescribe a CLI command.** The library's
+      failure state may name `make dev-db`, because its audience is whoever
+      mis-set the data dir. An ordinary book with no card has a *reader* for an
+      audience, there is no terminal in that window, and `rb read start 4` also
+      leaked a raw row id into user-facing copy. It names the book and links to
+      it instead — which fixed a second defect, since the page had not said
+      *whose* cards were missing.
+    - **The moment band read as a promotional banner, and the diagnosis was
+      exact**: a filled accent pill was the only solid colour block above the
+      fold on a surface whose subject is books, and the ceremony was *about a
+      book* while showing no book — every other reference to one on that surface
+      is a tile with its jacket. It now carries the jacket and the control is a
+      ghost rather than a fill. The wording had passed every check; the
+      **grammar** had not, which is the class of defect the reviewer exists for.
+    - **The month table had no columns, and a floor per chip was not enough.**
+      *minutes not measured* is wider than any number, so it blew out its slot
+      and shoved its whole row 65px left of its neighbours — on a page of monthly
+      figures whose purpose is reading *down* a column. A fixed four-column
+      template, with the absence spanning the two device slots. Still not a
+      `<table>`: what is borrowed is the geometry, not the element.
+    - **Two contrast findings, both on the absence.** `no device data` measured
+      **3.88:1** — under AA, on the one string that must be legible *as* an
+      absence — because an `opacity: 0.85` sat on top of `--ink-dim`. And the
+      month name was three times the contrast of the figures beside it,
+      inverting the hierarchy of a page whose subject is the figures. Fixing the
+      second made the first worse before it made it better: with the figures at
+      `--ink`, italics alone separated a measured `0 min` from *not measured*, so
+      the absence now carries **two** signals rather than one.
