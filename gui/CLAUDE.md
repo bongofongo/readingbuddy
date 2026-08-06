@@ -138,13 +138,31 @@ by whether `window.__TAURI_INTERNALS__` exists.
   command-name string belongs. It matches on a **string**, so a renamed command
   breaks the app while every test mocking it keeps passing.
 
-**Two fixtures, one purpose.** `corpus gen-devdb` builds the app's fixture (real
-SQLite, real engine, real covers); `fake.ts` is the frontend's (plain data, no
-IPC, no covers). Layer 2 runs in a bare browser and cannot reach the first, and a
-`make shots` needing a built binary would be the minute-scale loop `testing.md`
-argues against. The cost is that they can diverge — the shapes are named after
-`corpus/generated/devdb/manifest.json`'s entries so the drift is visible.
-Unifying them is open work.
+**Two fixtures, one purpose, and one declaration over both** (item 38).
+`corpus gen-devdb` builds the app's fixture (real SQLite, real engine, real
+covers); `fake.ts` is the frontend's (plain data, no IPC, **no cover bytes**).
+Layer 2 runs in a bare browser and cannot reach the first, and a `make shots`
+needing a built binary would be the minute-scale loop `testing.md` argues
+against — so two fixtures is a cost paid on purpose and is not going away.
+
+What has gone away is the silent drift. `crates/corpus/edge-cases.json` declares
+the hostile set once and **both** fixtures are asserted against it — from Rust in
+`devdb.rs`, from vitest in `src/lib/api/fake.test.ts`. Adding a case to one and
+not the other now fails on the side that was not updated. It had already drifted
+four ways before anything checked.
+
+Two things about `fake.ts` that follow from this and are easy to undo by
+accident:
+
+- **No `as` cast in `book()`.** The file's header claims a drifted or renamed DTO
+  field is a `tsc` error here, and a cast makes that true for *renamed* fields
+  and false for **added** ones — which is how `cover_shelf_path`, `cover_aspect`
+  and `cover_accent` were missing from it for a whole wave. Add a field to
+  `BookDto` and this file must state it. That is the design.
+- **The cover *shape* crosses; only the bytes are withheld.** `coverSrc()`
+  returns `null` because layer 2 has no asset protocol and a URL would render as
+  a broken image. The fields are stated anyway, so a component asking what box a
+  tile reserves gets a real answer in a bare browser.
 
 ## The shelf
 

@@ -1,13 +1,15 @@
 ---
-title: Handoff — the engine half is finished; the GUI half is what is left
+title: Handoff — the non-GUI wave is finished; the GUI half is what is left
 date: 2026-08-06
-source: sessions/2026-08-05-covers-a-grid-can-use.md (20),
-        sessions/2026-08-05-the-shape-of-an-edition.md (19),
-        sessions/2026-08-05-reading-here-the-local-source.md (22),
-        sessions/2026-08-05-vault-coherence.md (24),
-        sessions/2026-08-06-list-endpoints-that-survive-a-real-library.md (18);
-        docs/decisions.md entries 18–24 for the rulings
-supersedes: the 2026-08-05 handoff — all five of its prompts have landed
+source: sessions/2026-08-06-one-search-surface.md (34),
+        sessions/2026-08-06-the-sort-keys-get-an-index.md (35),
+        sessions/2026-08-06-a-real-pdf-sidecar.md (37),
+        sessions/2026-08-06-the-chooser-knows-who-wrote-it.md (36),
+        sessions/2026-08-06-one-fixture-two-consumers.md (38);
+        docs/decisions.md entries 34–38 for the rulings
+supersedes: docs/handoff-orchestrator-non-gui-wave.md, all five of whose items
+            have landed — and with it the engine handoff before that, seven of
+            whose eight open items are now closed
 ---
 
 # Handoff
@@ -17,183 +19,210 @@ previous conversation.
 
 ## Where things stand
 
-**`make ci` exit 0 on `main` at `da589fc`.** Working tree clean, committed
-straight to `main` (nothing is pushed; this repo has no remote it uses). The
-gate is the full one: fmt, lint, build-check, ts-check, whole-workspace test,
+**`make ci` exit 0 on `main` at `b21a0ed`.** Working tree clean, committed
+straight to `main` (nothing is pushed; this repo has no remote it uses). The gate
+is the full one: fmt, lint, build-check, ts-check, whole-workspace test,
 web-check, and 30 Playwright routes on WebKit.
 
-**Items 18, 19, 20, 22 and 24 are all merged** — the rest of the engine half.
-Migration `0014` is applied (item 20's cover metrics). `0015` still belongs to
-item 23.
+**Items 34, 35, 36, 37 and 38 are merged** — the whole non-GUI wave. Migrations
+`0015` (highlight FTS) and `0016` (sort-key indexes) are applied. **`0017` now
+belongs to item 23**, which moved down from `0015` so this wave could land ahead
+of it.
 
-Each item's own corrections are in `docs/decisions.md`, which is in **build
-order and not numeric order** — the wave appended 20, 22, 24, 19, 18 in that
-sequence. Read those five entries before touching any of it; several are
-load-bearing and three of them overturned what the spec asked for.
+**`API_VERSION` is 2.** Item 34 removed `SearchNotes` and `Response::NoteHits`.
 
-## What the wave overturned, in one line each
+`docs/decisions.md` is in **build order, not numeric order** — this wave appended
+37, 34, 35, 36, 38 in that sequence. Read those five before touching any of it.
 
-The spec lost five arguments and was right to. These are the ones a later thread
-is likeliest to re-open by accident:
+## Read this first: item numbers are registered in `docs/decisions.md`
 
-- **`readings.source = 'local'` was not added** (item 22). That column names the
-  *writer of the row*, and a typed page's writer is `update_progress`, which
-  already writes `manual` — so `local` there is a synonym, and
-  `readings_from_source` (every importer's idempotency) would have had to know
-  both. The ownership row landed on `reading_events.source`, where the
-  vocabulary is *claimants* rather than writers.
-- **Attaching a file opens no reading** (item 22). The spec asked for one; it
-  would mark five newly attached PDFs as five books you are currently reading.
-- **Cover metrics are deliberately *not* `MERGE_RULES` rows** (item 20) — the
-  opposite of what `0013` did, and the first time that has been right.
-  `the_cover_metrics_sit_outside_the_merge_table_and_the_path_does_not` stops a
-  later thread quietly adding a `Rule`, and stops it removing `cover_path`.
-- **Pagination is offset everywhere, not the spec's hybrid** (item 18). The two
-  sorts with no cursor key (`Progress`, `Author`) are exactly the two whose
-  pages are already whole-table reads, so keyset buys nothing where it is needed
-  and costs a second shape at every call site. A count composes with an offset
-  and not with a cursor.
-- **`sort_author` was refused twice**, by items 20 and 18, on the same ground:
-  SQLite cannot compute the value, so the column is NULL for every existing row
-  and `ORDER BY sort_author` is silently *wrong* until a back-fill nobody has
-  run yet runs — which adds an arm beside the slow one instead of replacing it.
+This wave allocated itself 33–37 by reading `docs/prompts/` for the highest
+number, and shipped **two items numbered 33** before anyone noticed. The one it
+collided with — "Surfacing 21/29/30/31/32" — was minted mid-session rather than
+from a spec, so it has a `decisions.md` entry and a session log and **no prompt
+file**. The prompts directory under-reports permanently, and any item that starts
+life as a handoff's open work has that shape.
 
-## Three traps this wave found, all still live
+**`grep '^[0-9]\+\. \*\*' docs/decisions.md` is the register.** The next free
+number is **39**.
 
-- **`sort_title` has never been computed by anything.** It is a `MERGE_RULES`
-  column, `Federated::Local`, present on `Book` and on the DTO — and
-  `BookSort::Title` orders by `books.title COLLATE NOCASE`. **A sort-key column
-  added without a writer looks answered and is not.** Check any column you plan
-  to lean on actually has a writer.
-- **A behavioural test that cannot fail is not a guard.** Item 18's offset
-  paging needs a total order, so every SQL arm ends in `books.id` — and removing
-  those tie-breaks leaves the behavioural partition test **green**, measured.
-  SQLite's sorter is deterministic for one plan over one set of rows; that
-  determinism belongs to the query plan, not the schema. The guard is
-  `order_by_is_a_total_order`, which reads the SQL.
-- **`create_note` indexed the body it was handed, not the one it wrote** (found
-  by item 24; fixed). They differ by a trim and a newline, so no note was ever
-  byte-identical to its own index — the first comparison anybody wrote would
-  have re-indexed the whole vault while looking correct.
+Renumbering cost one commit touching 32 files, because a worker writes its item
+number into module headers, migration headers, test section comments and
+`CLAUDE.md` routing rows. A number is a fact scattered through the source, not a
+label on a document. `new-wave-item`'s step 2a now says so.
+
+## What this wave overturned, in one line each
+
+- **bm25 cannot rank a note against a highlight** (item 34). fts5 computes rank
+  from *that index's own* corpus statistics, so a note's −8.2 and a highlight's
+  −8.2 are not the same claim and no constant converts one into the other. The
+  prompt asked for one bm25-ordered list; what landed is one list merged by
+  within-source position, ties breaking on recency — the one key genuinely
+  comparable across the two.
+- **`BookFilter::title` is `LIKE`, not FTS** (item 34). It must compose with
+  `count_books`, five sorts and offset paging out of one shared `WHERE`; it must
+  behave like its five neighbours or callers guess; and **infix is what a shelf
+  filter means** — `possess` finds *The Dispossessed* under `LIKE` and nothing
+  under fts5.
+- **`sort_title` left `MERGE_RULES`** (item 35). Giving the column a writer made
+  a contradiction visible: the upsert was stamping `field_provenance` for a
+  provider whose value `refresh_sort_keys` had already replaced. It now takes
+  migration `0014`'s cover-metrics shape — one writer, no claim, ignored by every
+  merge. Cost, stated: no user-settable filing name, a door nothing had opened.
+- **The sort index is on `COALESCE(sort_title, title) COLLATE NOCASE`** (item
+  35), not the bare title the prompt asked for. Indexing the bare column would
+  have left `sort_title` written and never read — the same trap one step along.
+- **A PDF skip carries no `ErrorClass`** (item 37). That type classifies an
+  `EngineError`, and nothing failed: the file read, the chunk evaluated, the
+  entry is well formed. One `SidecarAnchorsUnsupported` **per file** carrying a
+  count, not one per entry — 300 diagnostics for a 300-highlight PDF replaces
+  silence with noise.
+- **A `MatchCandidate` carries three fields, not a whole `BookDto`** (item 36),
+  measured rather than argued: 1846 B against 98 for a book with a real blurb,
+  still 10× with the prose stripped, and candidates are produced per *row* of an
+  import. `BookDto` also carries `progress`, which would invite a chooser to draw
+  a progress bar on a book it is asking you to identify.
+- **The declaration over the two fixtures is hand-edited** (item 38). Emitting it
+  from `gen-devdb` would make the Rust half check its own output, and
+  `crates/corpus`' whole value is being an independent oracle.
+
+## Traps this wave found, all still live
+
+- **A cast defeats a fixture's own stated purpose.** `fake.ts` promised that a
+  drifted DTO field is a `tsc` error there, and `as StoredBook` made that true
+  for *renamed* fields and false for **added** ones — so item 20's whole cover
+  cluster was missing from it for a wave. The habit: a fixture claiming to be
+  type-checked must not cast.
+- **A behavioural test that cannot fail is not a guard**, and it now has a second
+  instance. Item 35 had to assert `EXPLAIN QUERY PLAN` because a behavioural test
+  cannot see an index, exactly as item 18 had to read the SQL because removing
+  its `books.id` tie-break left the partition test **green**.
+  `a_sort_title_index_that_nearly_matches_is_not_used` is the sharper version:
+  dropping the `COLLATE NOCASE` loses the index *silently*.
+- **A column with no writer looks answered.** Closed for `sort_title` by item 35;
+  the habit stands. Before leaning on a column, check something writes it.
+- **Absence is not zero, and `''` is not `NULL`.** `books.title` is
+  `TEXT NOT NULL DEFAULT ''`, so a stored title is never NULL — and `fake.ts` had
+  been modelling `null` there, a state no library can produce.
+- **A number in prose is a claim nothing checks.** `make dev-db` printed a
+  hand-written "220 books, 20 of them" that went stale the moment item 38 added a
+  case. The generator prints the counts now and the Makefile states none.
 
 ## What is next
 
-### The GUI half — items 26, 27, 28, and item 23
+Numbered from **39**. Nothing here is started.
 
-**These must run in sequence, never in parallel.** Three agents there produce
-three dialects of one app. `docs/gui/claude-code-plan.md` item 7 argues it, and
-the current library screen is a plain grid *on purpose* rather than a half-built
-item 26 in the wrong dialect.
+1. **The GUI half — items 26, 27, 28, then 23, in sequence.** This is the work.
+   `docs/gui/spec-gui-17-28.md` has the items and
+   [`gui/gui-vision.md`](gui/gui-vision.md) has the argument. **They must not run
+   in parallel**: three agents on 26/27/28 produce three dialects of one app, and
+   whether a shelf reads as *a place* is the user's call rather than an agent's.
+   Item 23 (moments) owns migration **`0017`**.
 
-And the standing instruction, unchanged: **do not let an agent decide the
-shelf's feel.** It can build the shelf, screenshot it and say what is on it.
-Whether it reads as a place is the user's call.
+   The API is ready for them. Item 34 gave 27 its search, item 36 gave every
+   chooser its author, and item 38 gave 26 a fixture that finally exercises the
+   cover-bearing branch — `cover_shelf_path`, `cover_aspect` and `cover_accent`
+   now cross into layers 1 and 2 and are asserted there. Run the
+   **`api-surface-auditor`** agent before building any of them anyway: a missing
+   request is an engine item, never a frontend workaround.
 
-**Item 26 is unblocked.** Item 19 landed `readingbuddy::EditionShape` and item
-18 carried it across the seam as `BookDto.shape` (`EditionShapeDto`,
-`ShapeSourceDto`), so a WebGL shelf reads the engine's proportions instead of
-re-deriving the arithmetic in TypeScript. **Do not push a scene constant back
-down into that derivation** — `HALF_HEIGHT` is the renderer's and the whole
-point is that two frontends scale the same ratios differently.
+2. **The duplicated border-median accent arithmetic** (`crates/engine/src/images.rs`
+   vs `crates/tui/src/render3d/texture.rs`) — **a decision for the user, not a
+   task for a worker.** `images.rs` measures the original file and `texture.rs`
+   measures the *scaled texture*, so they can legitimately differ, and the
+   renderer is frozen. Deleting the renderer's copy is a decision about what it
+   draws. This has now been carried unresolved across three handoffs; it wants an
+   answer more than it wants an owner.
 
-**The cover door is built and `make dev-db` walks through it** — see finding 1
-below, which is done. A rebuilt dev library now arrives with all 202 covers
-measured and with **whole** `cover_path`s, which is what a webview can resolve.
-If your `dev-data/` predates that, `make dev-db` again.
+3. **`Book::display_title` renders a stored blank as a blank.** It is
+   `self.title.as_deref().unwrap_or("(untitled)")`, and `books.title` is
+   `TEXT NOT NULL DEFAULT ''` — so the branch it guards is unreachable for any
+   book that came out of the database, and the reachable case falls straight
+   through. 76 call sites, and three sibling copies in `goodreads.rs`,
+   `calibre.rs` and `ko_statistics.rs` where `None` genuinely *is* reachable (a
+   CSV row, a calibre row, a statistics row). Found by item 38 and deliberately
+   not patched inside a fixture item. The GUI is unaffected — `titleLabel`
+   handles both — so this is the TUI, the CLI, and `MatchCandidate.title`.
 
-### Open work, none of it allocated a number
+4. **A table-shaped `pos0` is storable, and this is what it would take** (item
+   37's deferral). Storing a PDF anchor rather than counting it means deciding
+   what a coordinate table serialises to in the `pos0` column, and `pos0` is
+   `identity_hash` material — coordinates drift on re-render exactly as `pageno`
+   does, so a coordinate-bearing `pos0` re-inserts the same highlight after every
+   re-render. `DeviceDigest` and `DEVICE_FIELDS_DIFFER` would have to agree too.
+   **It needs a real PDF sidecar before it needs code**: `docs/koreader-format.md`
+   §6 states that table-ness is settled from KOReader's source while the *key
+   names* in the fixture are a reconstruction nobody has observed. Do not blur
+   that line.
 
-The user allocates numbers; these are stated well enough to allocate.
+5. **`scan_device` still says nothing about unstorable anchors** (item 37,
+   recorded not built). `DeviceState`'s four-name vocabulary — New / Unchanged /
+   Updated / Unreadable — has no "readable, and partly unstorable", so the
+   silence item 37 removed from import survives one layer over in scan.
 
-1. ~~**The cover back-fill has no door.**~~ **Done** (2026-08-06). `rb covers`
-   is the door, `make dev-db` runs it, `the_cover_back_fill_is_reachable_from_
-   the_binary` keeps it reachable. It cost more than the predicted two lines,
-   because the first run measured **nothing**: `gen-devdb` wrote a *relative*
-   `cover_path`, which resolves only from a process whose cwd is the data dir —
-   so the back-fill read none of the 202 files, and a webview, which has no cwd,
-   could have resolved none of them either. `cover_path` is a whole path in this
-   schema (`images_dir.join(name)`), so `gen-devdb` now takes `--data-dir`
-   beside `--out` and `GENERATOR_VERSION` is 2. **The lesson is finding 8's, one
-   layer down**: the dev fixture and the engine's own writer had drifted on the
-   shape of a column, and nothing compared them — the drift was only observable
-   by running a command that read the file the path names.
-2. **A `highlights` FTS index.** `notes_fts` is still the only virtual table.
-   Needs a migration, plus a trigger trio or an explicit writer beside
-   `insert_highlight`, and a `search_highlights` returning the `snippet()` shape
-   `NoteSearchHit` has. Item 18's framing is the good one: the *surface* wants
-   **one** request answering notes and highlights together, because two lists a
-   frontend interleaves is a relevance ordering invented above the seam — and
-   `find_books_by_title` belongs in the same item, as a `title` predicate on
-   `BookFilter`, so search arrives as a filter rather than a seventh endpoint.
-   Item 27's search box is what needs it.
-3. **Indexes on the sort keys** (`books.last_modified`,
-   `books.title COLLATE NOCASE`, `books.publish_year`). There is no index on any
-   of them today, so `ORDER BY title` sorts the whole table however you
-   paginate. This is what makes a deep page cheap, and it is what turns item
-   18's `books.id` tie-break from insurance into load-bearing.
-4. **`sort_author`**, refused twice above — it only pays *inside* (3), where the
-   back-fill and the index arrive together. Item 20 made the write side cheap:
-   `invalidate_cover_metrics` is the pattern (a companion clause generated from
-   another column's value expression, bound from Rust because SQL cannot derive
-   it).
-5. **`MatchCandidateDto` carries no author**, though `koreader::band` already
-   holds the whole `Book` — so the "which Dune is this" chooser, which is the
-   *first* screen a refusal sends you to, costs an N+1 `get_book` per candidate.
-   Reported independently by items 22 and 18. Narrow, migration-free.
-6. **The border-median accent arithmetic is duplicated** between
-   `crates/engine/src/images.rs` and `crates/tui/src/render3d/texture.rs`. Not a
-   drive-by: `images.rs` measures the original file and `texture.rs` measures the
-   *scaled texture*, so they can legitimately differ, and the renderer is frozen.
-   Deleting the renderer's copy is a decision about what it draws.
-7. **A real PDF sidecar in the corpus.** `entry_to_highlight` requires a string
-   `pos0` and KOReader stores a *table* there on PDF, so those entries are
-   skipped **in silence** — reasoned, not observed, and it deserves a
-   `Diagnostic` rather than silence. `docs/koreader-format.md` files PDF
-   annotations under *unobserved* for this reason.
-8. **`gen-devdb` and `gui/src/lib/api/fake.ts` can diverge** and nothing asserts
-   they agree; the fake serves **no covers**, so cover layout still has no
-   headless regression test. Pre-existing, and item 26 is what makes it bite.
+6. **A generator that emits `fake.ts` from the declaration** (item 38's
+   deferral). Item 38 made the drift loud rather than removing the second
+   fixture, and the second fixture is not going away — layer 2 must run in a bare
+   browser with no IPC. What *could* be generated is `fake.ts` itself. Worth doing
+   when `edge-cases.json` has earned more fields than it has now.
 
-## Running the next wave as multiple workers
+## Running a wave as multiple workers
 
-The mechanics worked again — five items, five worktrees, `make ci` green after
-every merge. What changed since the last handoff:
+Three workers in parallel, then one, then one run by the orchestrator. What it
+cost and what it taught:
 
-- **Reset the last worker's worktree onto the *finished* main rather than
-  rebasing it afterwards.** Item 18 was the one with a real file collision
-  (`storage/books.rs`, against item 20) and it merged with **zero conflicts**,
-  because its base already contained all four siblings. Rebase-after is the
-  thing that produces semantic conflicts git cannot see; not needing one is
-  better than surviving one.
-- **`docs/decisions.md` is the guaranteed conflict.** Three of the four merges
-  conflicted there and nowhere else. Tell every worker to **append** its entry
-  and restructure nothing; then the resolution is deleting three marker lines.
 - **A worker cannot gate on `make ci`.** A fresh worktree has no
-  `gui/node_modules` (gitignored) and `make web-check` / `make routes` degrade
-  to a stated `SKIPPED:` — so a worker "passes" them without running them. Gate
-  workers on `make fmt lint build-check test ts-check` plus `cargo-tester`, and
-  run the full `make ci` **from the main checkout after each merge**. `ts-check`
-  needs cargo and no node, so it is the cheap guard on a DTO change.
-- **Never read a pipeline's exit code.** `make test | tail -25` reports *tail's*
-  status; it was 0 over an unread log. Redirect to a file and read `$?`.
-- **APFS-clone `target/debug` into each worktree** (`cp -Rc`, near-zero bytes)
-  but **strip `incremental/` and set `CARGO_INCREMENTAL=0`** — it was 26G of the
-  51G, and four diverging copies of it is the difference between a full disk and
-  a comfortable one. Budget ~10 minutes for the clone; it is not instant.
-- **A worker can die instantly on a session limit** and its notification carries
-  a one-line transcript that looks like a result. The worktree and branch
-  survive untouched, so a relaunch costs nothing but the wall clock — but check
-  what actually landed before believing a short report.
+  `gui/node_modules`, so `web-check` and `routes` print `SKIPPED:` and the worker
+  "passes" them. Gate workers on **`make fmt lint build-check test ts-check`**.
+  The orchestrator runs the full `make ci` from the main checkout after each
+  merge.
+- **Never read a piped report, not just a piped exit code.** The known rule is
+  that `make test | tail -25` reports *tail's* status. The instance that actually
+  bit this wave was `git merge | tail -3`, which showed the **last** `CONFLICT`
+  line and hid four above it — four files were committed with markers in them,
+  and `make ci` caught it two steps later. Same rule, different costume.
+- **Cut the last worker's worktree from the *finished* main.** Item 36 collided
+  with 34 on the API and with 37 on `koreader.rs`, was given a base containing
+  both, and merged with **zero conflicts**. Reset the worktree onto finished main
+  rather than rebasing afterwards — rebase-after produces semantic conflicts git
+  cannot see.
+- **Merge order is constrained by migration contiguity, not just by files.**
+  `migration_versions_are_contiguous_from_one` fails on a **gap**, so the item
+  holding `0016` cannot merge before the item holding `0015`, whatever the file
+  collisions say. This wave's stated order had to be reversed for exactly that.
+- **`docs/decisions.md` is the guaranteed conflict.** Every merge conflicted
+  there, and three of them conflicted nowhere else. Tell every worker to *append*
+  and restructure nothing; the resolution is then deleting three marker lines.
+- **APFS-clone `target/debug` into each worktree** (`cp -Rc`), stripping
+  `incremental/` — it was 29G of 59G. Measured this wave: **70 seconds** per
+  worktree, total disk 56Gi → 55Gi free, and a cold `cargo check` in a cloned
+  worktree finished in **15.8s**, so fingerprints survive the path change. Budget
+  minutes, not the ten minutes the previous handoff guessed. `.claude/worktrees`
+  is gitignored and is where they belong.
+- **Workers push back, and they are usually right.** Four of five did here, and
+  every overturned decision above came from one. Ask for it by name in the prompt
+  file.
 
-## Everything below here is unchanged from the previous handoff
+## Everything below here is unchanged
 
-The GUI seam (`bindings.ts` is generated; `cover_path` is a whole path; the
-asset protocol scope is set at runtime; `TauriClient` must never fall back to
-the fake), the engine-internals rules (`MERGE_RULES` generates six things; a
-`user` claim protects a field *pair*; absence is not zero, anywhere), the
-fixture rules (`corpus` must never depend on `readingbuddy`; `notes_fts` has no
-triggers; `reading_events` is not seeded), the two cloud-session constraints
-(gutenberg.org is blocked by the sandbox proxy; Playwright needs
+The GUI seam (`bindings.ts` is generated; `cover_path` is a whole path; the asset
+protocol scope is set at runtime; `TauriClient` must never fall back to the
+fake), the engine-internals rules (`MERGE_RULES` generates six things; a `user`
+claim protects a field *pair*; absence is not zero, anywhere), the fixture rules
+(`corpus` must never depend on `readingbuddy`; `notes_fts` has no triggers;
+`reading_events` is not seeded), the two cloud-session constraints (gutenberg.org
+is blocked by the sandbox proxy; Playwright needs
 `pnpm exec playwright install webkit`), and the four agents and three skills.
 `CLAUDE.md` and the per-crate files carry all of it, and this wave updated them
 where it changed something.
+
+## What is not play data
+
+`dev-data/` is disposable and rebuilt by `make dev-db`; the user stated on
+2026-08-06 that all data currently in use is play data that may be deleted.
+**Re-check that before relying on it** — it expires the day a real library
+exists, and with it the "renumbering a migration is legal" and "a shape change
+needs no data migration" shortcuts this wave used.
+
+What stays untouched regardless: `personal_data/`, the `real/` fixtures, and
+anything on a mounted KOReader device.
