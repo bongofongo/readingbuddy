@@ -182,10 +182,24 @@ export class TauriClient implements LibraryClient {
    * `limit: null` is every note, which is what this call has always meant. The
    * book detail screen shows a book's whole note list, so a cap here would be a
    * cap on the page rather than a page of it.
+   *
+   * `reading_id: null` arrived with item 40 and is stated rather than omitted:
+   * the two scopes are **mutually exclusive on the wire** — a reading belongs to
+   * one book, so naming both is redundant when they agree and an error when they
+   * do not, and `Api::list_notes` refuses the pair rather than preferring one.
+   * `#[serde(default)]` makes an old *payload* parse, but `ts-rs` emits the
+   * field as required regardless, so this is a `tsc` error rather than a
+   * silently-omitted key. That is the seam behaving correctly.
+   *
+   * Scoping to a reading is item 28's — a card's notes are per read, and a
+   * reread has two.
    */
   async listNotes(bookId: number | null): Promise<NoteDto[]> {
     return expect(
-      await this.#call({ method: 'list_notes', params: { book_id: bookId, limit: null } }),
+      await this.#call({
+        method: 'list_notes',
+        params: { book_id: bookId, reading_id: null, limit: null },
+      }),
       'notes',
     ).value;
   }
