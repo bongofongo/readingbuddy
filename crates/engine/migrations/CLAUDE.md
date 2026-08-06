@@ -32,7 +32,13 @@ The reasoning behind every migration lives beside the module that uses it:
 and `0011`–`0012` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md);
 `0009` under "goodreads.rs"; `0010` under "files.rs"; `0013`, `0014`, `0015` and `0016`
 in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
-deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md).
+deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md);
+`0017` under "moments.rs" in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md).
+
+`0017` is the one migration here that adds **no fact about a book** — both its
+tables are what the app knows about *itself*. That is also why it carries the
+repo's first `strftime('%s','now')`: "when did this database learn about
+moments" is a thing a migration knows and no back-fill can reconstruct.
 
 `0015` is the **first migration with triggers**, and the argument for them is in
 the file: it is the inverse of the one that keeps `notes_fts` trigger-free. A

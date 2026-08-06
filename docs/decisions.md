@@ -1686,3 +1686,91 @@ because item 31 needed somewhere to put reading time.
       thing that knows, so it prints both counts and the Makefile states none —
       rather than adding `python3` or `jq` to a build that has neither, to parse
       a manifest for a line of prose.
+
+23. **Moments.** Migration `0017` — two tables, both of them state the app keeps
+    about *itself*, and no column anywhere near the facts a moment is made of.
+    Four kinds (a reading closed, the first mark on a book, a reflection that
+    reached another book, a run of days that ended), derived on every ask.
+    - **Nothing about a moment is stored, and that is the design.** The obvious
+      shape is a `moments` row minted when one is detected; it was refused
+      because a stored moment is a thing the app can accumulate, and a count of
+      accumulated things is one product decision away from a badge. What cannot
+      be derived is what has already been *shown*, so the table is a set of
+      opaque ids and a `surfaced_at`, and nothing else. `book_id` was left out
+      deliberately: it would earn an `ON DELETE CASCADE` and cost the rule that
+      nothing derivable is duplicated, and a row that outlives its evidence is
+      inert rather than wrong — its moment can never be re-derived.
+    - **The import ruling needed no new column.** `books.created_at` has existed
+      since `0001` and is exactly "when this book entered the library", so the
+      guard is `evidence_at >= books.created_at` and a 400-book CSV whose dates
+      are all older than this afternoon mints nothing. A `books.added_at` was
+      designed and then found to be the column already there.
+    - **The ruling does not cover an *upgrade*, and that is the correction the
+      build forced.** A library that has been here for months has honest
+      `created_at`s months old and reading that happened afterwards, so the
+      first launch after this migration would replay a whole reading life as a
+      ceremony — the same failure the CSV case names, from the other direction.
+      Hence `moment_epoch`, one row, written by the migration itself with
+      `strftime('%s','now')`: the instant the schema learned what a moment was.
+      "When did this database learn about moments" is a thing a migration knows
+      and nothing else does.
+    - **Both guards err toward silence, and that is the property to keep.**
+      `books.created_at` is an *upper* bound on when a book arrived
+      (`merge_books` folds onto the older row); a reflection's reach is dated
+      `max(reflection.created_at, target.created_at)`, a *lower* bound, because
+      `note_links` carries no timestamp — item 21 recorded that and this item
+      inherits it rather than fixing it. An approximation that can only suppress
+      loses a ceremony; one that can only invent replays a library.
+    - **A highlight is dated by the device's clock, never by ours.**
+      `highlights.created_at` is when the sidecar was read, so using it would
+      make every KOReader import mint a first-annotation moment for every book
+      in it — the CSV failure with a different importer. `ko_datetime` decides,
+      and a stamp SQLite cannot read as a time is no evidence at all, the rule
+      `reading_events`' fillers already follow.
+    - **The run is the one that had to be argued**, being a hair from the streak
+      this document bans. Three things keep it honest and all three are
+      load-bearing: it is recognised **only after it is over** (a run whose last
+      day is yesterday is not a moment, because today might continue it), so
+      nothing can be shown while it runs and nothing can put pressure on it;
+      `RUN_MIN_DAYS` is **2 because that is what "consecutive" means**, not a bar
+      somebody chose — a 3 or a 7 would be this module deciding what counts as
+      enough reading; and `days` is past tense, the way item 17 permits a count
+      of your own highlights. The gap-and-islands is a pure Rust function so the
+      partition could be asserted as a property rather than by example.
+    - **The per-book guard is applied to the evidence, not to the moment.** A
+      day only counts toward a run if it is at or after the day its book
+      arrived, so a 400-book import contributes no days and therefore no runs —
+      without the run code knowing that importers exist.
+    - **`reading_id` is on the moment**, named by item 28's audit before this was
+      built and right: a card is minted per *reading*, a reread mints a second
+      beside the first, and a moment identified by its book cannot select
+      between them. It is absent where the evidence does not settle on one read
+      — the call `attribute_highlights` and `reading_for_day` already make.
+    - **Acknowledging is idempotent and does not re-derive.** `ON CONFLICT DO
+      NOTHING`, so two clients cannot write two rows or move the first
+      `surfaced_at`. It deliberately does *not* check that the moment is still
+      derivable: `RunEnded` depends on the clock, so a moment that was pending
+      when it was shown can legitimately stop being pending a moment later, and
+      refusing the acknowledgement then would replay it for ever. A well-formed
+      id for a moment that never existed costs one inert row; an id naming no
+      kind this build knows is an `InvalidInput`.
+    - **No count reaches the wire**, and `the_wire_states_no_number_of_moments`
+      asserts the absence rather than trusting the author — including that no
+      `count_moments` method parses. `limit` takes from the newest end and is the
+      only lever a frontend gets.
+    - **Engine and API only.** No CLI verb and no TUI surface, which is item 33's
+      complaint in advance: five engine items once landed with no way to see any
+      of them. Stated rather than hidden — `rb moments` is the obvious next
+      thing and belongs with whoever builds the ceremony.
+    - **`make dev-db` shows no moments, and that is the epoch working rather than
+      a bug** — worth knowing before somebody debugs it. The seeder creates the
+      database (so the epoch is *now*) and then writes a library whose reading
+      history is in the past, which is precisely the "history arriving" the
+      guards refuse. A seed that wants a live ceremony has to back-date the
+      epoch through `Storage::set_moment_epoch`, which exists and is on
+      `Storage` rather than `Engine` because nothing in the product asks for it
+      yet.
+    - **Engine and API only.** No CLI verb and no TUI surface, which is item 33's
+      complaint in advance: five engine items once landed with no way to see any
+      of them. Stated rather than hidden — `rb moments` is the obvious next
+      thing and belongs with whoever builds the ceremony.
