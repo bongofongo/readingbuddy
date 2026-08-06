@@ -30,8 +30,8 @@ The reasoning behind every migration lives beside the module that uses it:
 `0001`–`0002` and `0007`–`0008` in [`../CLAUDE.md`](../CLAUDE.md) under
 "notes.rs"; `0003`/`0006` under "device.rs"; `0004` under "koreader.rs"; `0005`
 and `0011`–`0012` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md);
-`0009` under "goodreads.rs"; `0010` under "files.rs"; `0013` and `0014` in
-[`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
+`0009` under "goodreads.rs"; `0010` under "files.rs"; `0013`, `0014` and `0016`
+in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
 deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md).
 
 `0014` is the repo's second **deliberate non-back-fill**, and unlike `0012` it
@@ -42,6 +42,21 @@ the download path uses, so a back-filled row and a fresh one are the same row.
 It is also the migration to read before adding a fifth cover column: it argues
 why the four it adds are **not** `MERGE_RULES` rows and why `Rule::pair` is not
 the fix.
+
+`0016` is the **third** deliberate non-back-fill and it is `0014`'s case one
+layer over: `cover_width` is the result of decoding a PNG and SQLite cannot
+decode one; `sort_author` is the result of parsing a human name and SQLite cannot
+parse one. So the back-fill is again a command (`Engine::rebuild_sort_keys`,
+behind `rb sort-keys`, which `make dev-db` runs) writing through the same
+`Storage::refresh_sort_keys` every live write goes through. It is also the
+migration to read before adding a sixth index: it argues why
+`idx_books_sort_title` is on an **expression** (`COALESCE(sort_title, title)`,
+which is what let it ship with no SQL back-fill of `sort_title` and keep the
+article-stripping rule in one dialect), why that index is `COLLATE NOCASE` and
+`idx_books_sort_author` deliberately is not, and why `sort_author` is nullable
+rather than defaulted. `0008`'s collation lesson is asserted twice here —
+`a_sort_title_index_that_nearly_matches_is_not_used` pins that dropping the
+collation *or* indexing the bare column loses the index silently.
 
 `0012` is the repo's first **deliberate non-back-fill**, and the argument is in
 the file itself: every signal that might attribute an existing row

@@ -17,6 +17,7 @@ const READINGS: i64 = 5;
 const REFLECTION: i64 = 7;
 const NOTE_LINK_INDEX: i64 = 8;
 const GOODREADS: i64 = 9;
+const SORT_KEY_INDEXES: i64 = 16;
 
 /// A connection migrated up to (but not including) `version`.
 async fn migrated_below(version: i64) -> SqliteConnection {
@@ -371,6 +372,86 @@ async fn the_note_link_indexes_are_the_plan_the_planner_picks() {
         assert!(
             detail.contains(index),
             "expected {index} in the plan, got {detail}"
+        );
+    }
+}
+
+/// `0016`'s before-and-after, in `0008`'s shape.
+///
+/// The engine's own
+/// `storage::books::tests::the_sort_key_indexes_are_the_plan_the_planner_picks`
+/// is the stronger half — it runs the exact statement `list_books` builds, so a
+/// clause that stops matching its index fails there. What that one cannot show
+/// is what the schema looked like *before*, and "the index is used" only means
+/// something against a plan that did not use one. This is that half.
+///
+/// The `sort_author` clause is deliberately absent: the column does not exist
+/// below this migration, so a "before" for it would be a syntax error rather
+/// than a scan. Three sorts is what can honestly be compared across the line.
+#[tokio::test]
+async fn the_sort_key_indexes_are_a_change_of_plan() {
+    const BY_RECENCY: &str =
+        "SELECT id FROM books ORDER BY books.last_modified DESC, books.id DESC LIMIT 20";
+    const BY_TITLE: &str = "SELECT id FROM books \
+         ORDER BY COALESCE(books.sort_title, books.title) COLLATE NOCASE ASC, books.id ASC \
+         LIMIT 20";
+    const BY_YEAR: &str =
+        "SELECT id FROM books ORDER BY books.publish_year DESC NULLS LAST, books.id DESC LIMIT 20";
+
+    let mut conn = migrated_below(SORT_KEY_INDEXES).await;
+    for sql in [BY_RECENCY, BY_TITLE, BY_YEAR] {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "before 0016 every sort key sorted the whole table, or this test \
+             proves nothing: {detail}"
+        );
+    }
+
+    apply(&mut conn, SORT_KEY_INDEXES).await;
+
+    for (sql, index) in [
+        (BY_RECENCY, "idx_books_last_modified"),
+        (BY_TITLE, "idx_books_sort_title"),
+        (BY_YEAR, "idx_books_publish_year"),
+    ] {
+        let detail = plan(&mut conn, sql).await;
+        assert!(
+            detail.contains(index),
+            "expected {index} in the plan, got {detail}"
+        );
+        assert!(
+            !detail.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "{index} was scanned and the rows were sorted anyway: {detail}"
+        );
+    }
+}
+
+/// **The collation is part of the index**, and `0008` learned it the hard way.
+///
+/// `idx_books_sort_title` is declared `COLLATE NOCASE` because `BookSort::Title`
+/// compares that way. Written without it — or over the bare column rather than
+/// the `COALESCE` the clause names — the index exists, reads correctly in the
+/// schema, and is silently never used. This asserts that the two *near misses*
+/// really do miss, so the declaration above is doing work rather than
+/// coinciding.
+#[tokio::test]
+async fn a_sort_title_index_that_nearly_matches_is_not_used() {
+    let mut conn = migrated_below(SORT_KEY_INDEXES).await;
+    apply(&mut conn, SORT_KEY_INDEXES).await;
+
+    for near_miss in [
+        // Right expression, wrong collation.
+        "SELECT id FROM books ORDER BY COALESCE(books.sort_title, books.title) ASC, books.id ASC",
+        // Right collation, wrong expression — the bare column the obvious
+        // implementation would have indexed.
+        "SELECT id FROM books ORDER BY books.sort_title COLLATE NOCASE ASC, books.id ASC",
+    ] {
+        let detail = plan(&mut conn, near_miss).await;
+        assert!(
+            !detail.contains("idx_books_sort_title"),
+            "a clause that differs from the index must not reach it, or the \
+             index's declaration is not what makes the real one work: {detail}"
         );
     }
 }

@@ -37,6 +37,8 @@ pub mod pdf;
 pub mod progress;
 pub mod providers;
 pub mod search;
+/// The two derived sort keys the shelf is indexed on — item 34.
+pub mod sort;
 pub mod storage;
 pub mod watch;
 
@@ -517,6 +519,27 @@ impl Engine {
             }
         }
         Ok((measured, unreadable))
+    }
+
+    /// Compute the filing keys of every book that has never had them — item
+    /// 34's back-fill.
+    ///
+    /// **A command and not a migration**, and like
+    /// [`Engine::measure_stored_covers`] it could not have been one: `sort_title`
+    /// drops a leading article and `sort_author` is
+    /// [`crate::names::sort_key`]'s parse of a human name, and SQLite can do
+    /// neither. `Storage::stale_sort_keys` states the work list
+    /// (`sort_author IS NULL`, which is *never computed* and never *no author*)
+    /// and every row goes through the same `refresh_sort_keys` that every live
+    /// write goes through, so a back-filled row and a freshly-written one are
+    /// the same row.
+    ///
+    /// Returns how many books it filed. **Idempotent** — a second run finds an
+    /// empty work list — which is what lets `make dev-db` run it unconditionally
+    /// and what makes the CLI's already-done wording the line a user usually
+    /// sees.
+    pub async fn rebuild_sort_keys(&self) -> Result<usize> {
+        self.storage.rebuild_sort_keys().await
     }
 
     // ---- looking a book up again (item 30) ---------------------------------

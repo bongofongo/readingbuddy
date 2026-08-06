@@ -231,6 +231,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "search",
         "set",
         "show",
+        "sort-keys",
         "toc",
     ];
     assert_eq!(
@@ -631,4 +632,27 @@ fn the_cover_back_fill_is_reachable_from_the_binary() {
     cli.run(&["covers"])
         .has("already measured")
         .lacks("0 covers");
+}
+
+/// The sort-key back-fill has a door too, and the same argument put it there.
+///
+/// Item 34's back-fill has a sharper edge than item 20's: until it runs, a book
+/// files at the *top* of `list --sort author` rather than under its author, so a
+/// function nothing calls is not merely unexercised but visibly wrong. The verb
+/// exists, opens the engine, exits 0 — and, because every book the engine writes
+/// is filed on the way in, the answer here is the already-done branch, which
+/// must not be a zero.
+///
+/// `make dev-db` runs this against a library seeded by raw SQL, which is the
+/// only place the counting branch is reachable.
+#[test]
+fn the_sort_key_back_fill_is_reachable_from_the_binary() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+
+    cli.run(&["sort-keys"])
+        .has("already files")
+        .lacks("0 books");
 }

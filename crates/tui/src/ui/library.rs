@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Padding};
-use readingbuddy::{Book, Progress, names};
+use readingbuddy::{Book, Progress, names, sort};
 
 use crate::app::App;
 use crate::theme;
@@ -89,7 +89,13 @@ impl Sort {
     pub fn apply(self, books: &mut [Book]) {
         match self {
             Sort::Recent => {}
-            Sort::Title => books.sort_by_key(|b| b.display_title().to_lowercase()),
+            // `sort::title_key`, not `display_title` — the engine files a book
+            // under `sort_title` and this pane must not hold a second opinion
+            // about where *The Overstory* goes. Item 34 gave that column a
+            // writer; before it the column was NULL everywhere and the two
+            // agreed by accident. Same reason `Sort::Author` calls
+            // `names::sort_key` rather than parsing a surname here.
+            Sort::Title => books.sort_by_key(|b| sort::title_key(b).to_lowercase()),
             Sort::Author => books.sort_by_key(|b| names::sort_key(&b.authors)),
             // `Reverse` on the year alone: the `None` arm must stay *last*, so
             // it cannot ride along inside the reversal.
