@@ -256,8 +256,12 @@ sharpens it to one testable sentence:
 Binding, and two of these are now **asserted** in `tests/routes.spec.ts` rather
 than left to review:
 
-- **No number on a home surface.** Ever. Counts live on a page the user chose to
-  open. `the library surface greets you with no numbers` checks the header and
+- **No aggregate number on a home surface.** Ever. Counts live on a page the
+  user chose to open. A single book's **own** progress under its own tile is
+  permitted and shipped — it is past tense and describes one book, not the
+  library. The qualifier was added after item 27's review found the shelf
+  contradicting the unqualified rule; `docs/gui/gui-vision.md` carries the
+  argument. `the library surface greets you with no numbers` checks the header and
   the heading for digits, and the whole body for *unread* / *streak* / *goal* /
   *to-read* / *remaining* — the TUI's `the_home_screen_greets_you_with_no_numbers`,
   ported.

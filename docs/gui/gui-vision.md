@@ -54,8 +54,20 @@ accusation with a fact attached.
 
 Consequences, and they bind:
 
-- No number appears on the home surface. Ever. The home surface is the shelf,
-  and a shelf's only number is how much of the wall it covers.
+- No **aggregate** number appears on the home surface. Ever. The home surface is
+  the shelf, and a shelf's only number is how much of the wall it covers.
+
+  The qualifier is load-bearing and was added after the shelf shipped without
+  it. A single book's **own** progress — `Reading · 35%`, `Put down · 20%` — sits
+  under its tile and stays: it is past tense, it is a statement about that book
+  rather than about the library, and it is the same register as the streak this
+  document already permits in the past tense. What is banned is a number *about
+  the collection*: how many books, how many unread, how many notes owed. Those
+  live on a page you chose to open.
+
+  The line to hold: a number on the home surface may describe **one book you
+  chose to open**. It may never describe the shelf, and it may never describe
+  what is left of anything.
 - Counts exist and are queryable, and they live on a page you deliberately
   visit. A place you can go.
 - Nothing is ever framed as remaining, pending, unwritten, incomplete or due.
@@ -359,7 +371,9 @@ Stated so it does not have to be re-argued per feature:
   you what you did, it never tells you what you have left.*
 - **No goals.** No targets, no live streak counters, no pending/remaining/due
   framing anywhere. Past-tense statements of fact are permitted.
-- **No number on the home surface.** Counts live on a page you visit.
+- **No aggregate number on the home surface.** A single book's own progress
+  is permitted under its tile; a number about the *collection* is not. Counts
+  live on a page you visit.
 - **Three reward registers**: finishing, thinking, returning. Note-taking and
   device reading both earn; neither is a proxy for the other.
 - **The chain is moment → card → shelf.** The moment is transient and ends by
