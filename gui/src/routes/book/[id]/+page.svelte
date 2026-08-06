@@ -1,8 +1,52 @@
 <script lang="ts">
+  /**
+   * The book, and the notes — item 27.
+   *
+   * The TUI's `ui/book.rs` is the reference for what belongs here and most of
+   * its choices are right; what a page has that a pane did not is room, so the
+   * four sections that were tabs there are **bands** here, all present at once.
+   * The one thing that is not always present is a note's body, and that
+   * replaces the note list *in place* rather than opening over it.
+   *
+   * ## The hero, and why it is a different file from the shelf's
+   *
+   * `cover_path`, not `cover_shelf_path`. The shelf tier exists because a grid
+   * of sixty tiles must not fetch sixty full-size jackets; this screen shows one
+   * book and wants the file nobody downscaled. Two client methods rather than a
+   * flag, so the call site says which it meant.
+   *
+   * ## Eight calls for one book, recorded rather than worked around
+   *
+   * There is no request that returns a book with its children. Item 17 already
+   * named this — *"the detail screen makes four calls for one book, which for a
+   * list is eight hundred"* — and item 18 answered the list half with
+   * `BookSummaries`. The detail half is still open, and inventing a client-side
+   * aggregate would hide it from the next audit. So the calls are made in
+   * parallel and grouped by what their failure means: the **book** failing is
+   * this page failing, and the ornaments failing are not.
+   */
   import { page } from '$app/state';
+  import type {
+    BookFileDto,
+    BookTagDto,
+    FieldSourceDto,
+    HighlightDto,
+    NoteDto,
+    ReadingDto,
+  } from '$lib/api/bindings';
   import { client, type StoredBook } from '$lib/api/client';
-  import type { HighlightDto, NoteDto, ReadingDto } from '$lib/api/bindings';
-  import { authorsLabel, progressDetail, readingStateLabel, titleLabel } from '$lib/phrasing';
+  import About from '$lib/book/About.svelte';
+  import NotePane from '$lib/book/NotePane.svelte';
+  import Passages from '$lib/book/Passages.svelte';
+  import Jacket from '$lib/components/Jacket.svelte';
+  import {
+    authorsLabel,
+    dayLabel,
+    progressDetail,
+    readingSpan,
+    readingStateLabel,
+    titleLabel,
+  } from '$lib/phrasing';
 
   const id = $derived(Number(page.params.id));
 
@@ -10,8 +54,25 @@
   let readings = $state<ReadingDto[]>([]);
   let highlights = $state<HighlightDto[]>([]);
   let notes = $state<NoteDto[]>([]);
+  let tags = $state<BookTagDto[]>([]);
+  let files = $state<BookFileDto[]>([]);
+  let provenance = $state<FieldSourceDto[]>([]);
   let missing = $state(false);
   let failure = $state<string | null>(null);
+
+  /**
+   * Which note is open, by **id** rather than by value.
+   *
+   * The list is refetched after every write, so holding the `NoteDto` itself
+   * would pin a stale object — a note whose title changed would keep the old
+   * one, and a deleted note would stay open over nothing. An id resolved
+   * against the current list makes both of those correct for free.
+   */
+  let openNoteId = $state<number | null>(null);
+  const openNote = $derived(notes.find((n) => n.id === openNoteId) ?? null);
+
+  /** Which passages the open note cites. **One** call, for the one open note. */
+  let cited = $state<number[]>([]);
 
   $effect(() => {
     const which = id;
@@ -23,18 +84,56 @@
         return;
       }
       book = b;
-      // Four calls rather than one: the API has no request that returns a book
-      // with its children, and inventing a client-side aggregate would hide that
-      // from the audit. It is an item 18 line, recorded rather than worked around.
+      // The reader's own material, which the page is not worth much without.
       [readings, highlights, notes] = await Promise.all([
         api.listReadings(which),
         api.listHighlights(which),
         api.listNotes(which),
       ]);
+      // The reference material. A library that loaded must not be replaced by
+      // an error thrown by the ornament beneath it — item 26 made that call for
+      // the reading strip and it is the same call.
+      api.bookTags(which).then((t) => (tags = t), () => {});
+      api.bookFiles(which).then((f) => (files = f), () => {});
+      api.fieldProvenance(which).then((p) => (provenance = p), () => {});
     })().catch((e) => (failure = e instanceof Error ? e.message : String(e)));
   });
 
-  const cover = $derived(book ? client().coverSrc(book) : null);
+  $effect(() => {
+    const note = openNote;
+    if (note === null) {
+      cited = [];
+      return;
+    }
+    client()
+      .citationsFor(note.id)
+      .then((hs) => (cited = hs.map((h) => h.id)))
+      .catch(() => (cited = []));
+  });
+
+  const hero = $derived(book ? client().heroSrc(book) : null);
+  // Not `state`: a top-level `const state` in a rune file shadows the `$state`
+  // rune for svelte-check, which reports it as two dozen errors on the *other*
+  // lines. `BookTile` gets away with the name because it declares no `$state`.
+  const stateWord = $derived(book ? readingStateLabel(book.reading_state) : null);
+  const progressWord = $derived(book ? progressDetail(book.progress) : null);
+
+  async function reloadNotes() {
+    notes = await client().listNotes(id);
+  }
+
+  async function toggleCite(highlightId: number, on: boolean) {
+    if (openNote === null) return;
+    const api = client();
+    if (on) await api.cite(openNote.id, highlightId);
+    else await api.uncite(openNote.id, highlightId);
+    cited = (await api.citationsFor(openNote.id)).map((h) => h.id);
+  }
+
+  async function annotate(highlightId: number, text: string | null) {
+    await client().setAnnotation(highlightId, text);
+    highlights = await client().listHighlights(id);
+  }
 </script>
 
 <svelte:head><title>{book ? titleLabel(book.title) : 'Book'} — readingbuddy</title></svelte:head>
@@ -44,117 +143,97 @@
 <a class="back" href="/">← Library</a>
 
 {#if failure}
-  <p class="note">Could not read this book: {failure}</p>
+  <p class="note">This book did not open: {failure}</p>
+  <p class="hint">
+    The library itself may still be fine — <code>rb book list</code> reads the same database, and
+    <code>rb show {id}</code> reads this row.
+  </p>
 {:else if missing}
   <p class="note">There is no book with that id.</p>
-  <p class="note dim">It may have been folded into another by a merge.</p>
+  <p class="hint">
+    It may have been folded into another by a merge — <code>rb book list</code> shows what is
+    there now.
+  </p>
 {:else if book}
   <article>
     <div class="art">
-      {#if cover}
-        <img src={cover} alt="" />
-      {:else}
-        <span class="bare" aria-hidden="true"></span>
-      {/if}
+      <!-- The hero shot, and the same three states the shelf tile has: bytes, a
+           plate in this jacket's own colour, or the hatch. One composition, in
+           `Jacket`, so a coverless book cannot look like two different books. -->
+      <Jacket src={hero} accent={book.cover_accent} />
     </div>
 
-    <div class="body">
-      <h1>{titleLabel(book.title)}</h1>
+    <div class="identity">
+      <!-- Dimmed and italic for exactly `BookTile`'s reason: *Untitled* is our
+           word for an absence, not a book that is called that, and styling it
+           like a real title on one screen while the shelf marks it on another
+           is one absence with two voices. The absence is `book.title`; the word
+           is `titleLabel`'s and is deliberately indistinguishable once made. -->
+      <h1 class:untitled={!book.title || book.title.trim() === ''}>{titleLabel(book.title)}</h1>
       {#if authorsLabel(book.authors_display)}
         <!-- `authors_display`: the engine read the comma, this joins. -->
         <p class="by">{authorsLabel(book.authors_display)}</p>
       {/if}
-
-      <dl>
-        {#if readingStateLabel(book.reading_state)}
-          <dt>State</dt>
-          <dd>{readingStateLabel(book.reading_state)}</dd>
-        {/if}
-        {#if progressDetail(book.progress)}
-          <!-- The long phrasing, because this screen has room for the page a
-               reader recognises. The engine decided which numbers are in it: a
-               percentage needs a denominator, and `page_count` is 0 for one book
-               in the dev library and NULL for another; `Progress` normalises
-               both to absence, so this says the page alone without knowing why.
-               -->
-          <dt>Progress</dt>
-          <dd>{progressDetail(book.progress)}</dd>
-        {:else if book.page_count !== null}
-          <!-- Only where the progress line did not already carry it. -->
-          <dt>Pages</dt>
-          <dd>{book.page_count}</dd>
-        {/if}
-        {#if book.series_label}
-          <!-- The engine's label, not the pair reassembled here: `series_index`
-               is a REAL and two frontends formatting it will eventually print
-               `#2.5` two ways. -->
-          <dt>Series</dt>
-          <dd>{book.series_label}</dd>
-        {/if}
-        {#if book.publisher}
-          <dt>Publisher</dt>
-          <dd>{book.publisher}{book.publish_year ? `, ${book.publish_year}` : ''}</dd>
-        {/if}
-        {#if book.isbn_13 ?? book.isbn_10}
-          <dt>ISBN</dt>
-          <dd>{book.isbn_13 ?? book.isbn_10}</dd>
-        {/if}
-        {#if book.subjects.length > 0}
-          <dt>Subjects</dt>
-          <dd>{book.subjects.join(' · ')}</dd>
-        {/if}
-      </dl>
-
-      {#if book.description}
-        <p class="blurb">{book.description}</p>
-      {/if}
-
-      {#if readings.length > 1}
-        <!-- A reread is not an anomaly to flag. Shown only when there is more
-             than one, because a single row reading "1" on every book is noise —
-             the same condition the TUI's highlight read-gutter uses. -->
-        <h2>Read {readings.length} times</h2>
-      {/if}
-
-      <h2>Highlights</h2>
-      {#if highlights.length === 0}
-        <p class="note dim">
-          None here yet. <code>rb ko pull</code> brings across what is on a reader.
-        </p>
-      {:else}
-        <ul class="highlights">
-          {#each highlights as h (h.id)}
-            <li>
-              <p>{h.text}</p>
-              <!-- KOReader does produce a highlight with neither, and an empty
-                   span still takes a line. Absence gets no element. -->
-              {#if h.chapter || h.page !== null}
-                <span class="where">
-                  {[h.chapter, h.page !== null ? `p. ${h.page}` : null].filter(Boolean).join(' · ')}
-                </span>
-              {/if}
-              {#if h.ko_note}
-                <p class="ko-note">{h.ko_note}</p>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
-
-      <h2>Notes</h2>
-      {#if notes.length === 0}
-        <p class="note dim">Nothing written against this book yet.</p>
-      {:else}
-        <ul class="notes">
-          {#each notes as n (n.id)}
-            <li><span class="kind">{n.kind}</span> {n.title}</li>
-          {/each}
-        </ul>
+      {#if stateWord || progressWord}
+        <p class="state">{[stateWord, progressWord].filter(Boolean).join(' · ')}</p>
       {/if}
     </div>
   </article>
+
+  <!--
+    Two columns, and the split is by *whose* they are rather than by size: what
+    you wrote is the page, and what is known about the book is the margin. At
+    one column the same order still reads top to bottom, which is why the
+    reference half is last in the markup.
+  -->
+  <div class="columns">
+    <div class="yours">
+      <NotePane
+        bookId={id}
+        {notes}
+        open={openNote}
+        onopen={(n) => (openNoteId = n)}
+        onreload={reloadNotes}
+      />
+
+      <Passages {highlights} open={openNote} {cited} oncite={toggleCite} onannotate={annotate} />
+    </div>
+
+    <aside class="reference">
+      {#if readings.length > 0}
+        <section class="band">
+          <!-- Past tense, always: when you read it, and how far you got. A
+               reread gets a row per reading rather than a badge saying it is a
+               reread, and the progress on each row is **that** reading's —
+               putting the current page under a read that closed in January is
+               what `Progress::of_book` warns about. -->
+          <h2 class="band-title">{readings.length > 1 ? 'Reads' : 'Read'}</h2>
+          <ul class="readings">
+            {#each readings as r (r.id)}
+              <li>
+                <span class="when">{readingSpan(r) ?? dayLabel(r.created_at)}</span>
+                <span class="row2">
+                  {#if readingStateLabel(r.status)}
+                    <span class="how">{readingStateLabel(r.status)}</span>
+                  {/if}
+                  {#if progressDetail(r.progress)}
+                    <span class="far">{progressDetail(r.progress)}</span>
+                  {/if}
+                  <!-- The writer's name, shown rather than branched on — it
+                       grows by one per importer and nothing decides on it. -->
+                  <span class="src">{r.source}</span>
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      <About {book} {tags} {files} {provenance} />
+    </aside>
+  </div>
 {:else}
-  <p class="note dim">Opening…</p>
+  <p class="hint">Opening…</p>
 {/if}
 
 <style>
@@ -162,127 +241,132 @@
     color: var(--ink-dim);
     font-size: 0.85rem;
     display: inline-block;
-    margin-bottom: 1rem;
+    margin-bottom: 1.1rem;
   }
   article {
     display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 1.75rem;
-    align-items: start;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 1.6rem;
+    align-items: end;
+    padding-bottom: 1.4rem;
+    border-bottom: 1px solid var(--line);
   }
   @media (max-width: 620px) {
     article {
       grid-template-columns: minmax(0, 1fr);
+      align-items: start;
     }
     .art {
-      max-width: 180px;
+      max-width: 130px;
     }
   }
   .art {
     aspect-ratio: 2 / 3;
     background: var(--bg-raised);
-    border: 1px solid var(--line);
     border-radius: var(--radius);
     overflow: hidden;
+    /* The tile's own lift, so a jacket sits on the page rather than being
+       printed on it. Same shadow as `BookTile`'s `.art`, without the hover:
+       nothing here is a link. */
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent),
+      0 1px 2px rgb(0 0 0 / 0.2),
+      0 6px 14px -8px rgb(0 0 0 / 0.45);
   }
-  .art img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-  .bare {
-    display: block;
-    height: 100%;
-    background: repeating-linear-gradient(
-      -45deg,
-      transparent,
-      transparent 7px,
-      var(--line) 7px,
-      var(--line) 8px
-    );
-  }
-  .body {
+  .identity {
     min-width: 0;
   }
   h1 {
-    font-size: 1.35rem;
-    /* Long titles wrap rather than clip here: this is the one place the whole
-       title has room, which is what makes clipping it on a tile acceptable. */
+    font-size: 1.5rem;
+    line-height: 1.25;
+    /* The whole title wraps here rather than clipping. This is the one place it
+       has room, which is what makes clipping it on a tile acceptable. */
     overflow-wrap: anywhere;
+  }
+  h1.untitled {
+    color: var(--ink-dim);
+    font-style: italic;
   }
   .by {
     color: var(--ink-dim);
-    margin: 0.25rem 0 1.25rem;
+    margin: 0.35rem 0 0;
   }
-  h2 {
-    font-size: 0.8rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: var(--ink-dim);
-    margin: 1.75rem 0 0.6rem;
+  .state {
+    color: var(--accent-text);
+    font-size: 0.85rem;
+    margin: 0.5rem 0 0;
   }
-  dl {
+
+  /*
+   * What you wrote, and what is known about the book.
+   *
+   * One column until there is genuinely room for two. `--measure` caps prose at
+   * 68ch, so below ~1024px a sidebar would be taking width the passages need
+   * rather than width nobody was using — which is the version of this that
+   * reads as a squeezed page instead of a laid-out one.
+   */
+  .columns {
     display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    gap: 0.2rem 1rem;
-    margin: 0;
-    font-size: 0.88rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 3rem;
   }
-  dt {
-    color: var(--ink-dim);
+  @media (min-width: 1024px) {
+    .columns {
+      grid-template-columns: minmax(0, var(--measure)) minmax(0, 20rem);
+      align-items: start;
+    }
+    /* The hero's rule stops where the columns stop. A divider that overshoots
+       the content it divides reads as a layout bug rather than as a decision. */
+    article,
+    .columns {
+      max-width: calc(var(--measure) + 23rem);
+    }
+    /* The reference column starts level with the first band beside it rather
+       than a band's margin lower. */
+    .reference {
+      margin-top: 0;
+    }
   }
-  dd {
-    margin: 0;
-    overflow-wrap: anywhere;
+  .yours,
+  .reference {
+    min-width: 0;
   }
-  .blurb {
-    max-width: var(--measure);
-    color: var(--ink-dim);
-    margin-top: 1.25rem;
+
+  /* Each band owns its own top margin, here and in the three components — and
+     deliberately **not** as a `:global(.band)` rule from this file, which would
+     be one screen's spacing leaking onto the shelf. */
+  section.band {
+    margin-top: 2.2rem;
   }
-  ul {
+
+  ul.readings {
     list-style: none;
     padding: 0;
     margin: 0;
-    max-width: var(--measure);
-  }
-  .highlights li {
-    border-left: 2px solid var(--accent);
-    padding: 0 0 0 0.85rem;
-    margin-bottom: 1.1rem;
-  }
-  .highlights p {
-    margin: 0;
-  }
-  .where {
-    font-size: 0.75rem;
-    color: var(--ink-dim);
-  }
-  .ko-note {
     font-size: 0.85rem;
-    color: var(--ink-dim);
-    margin-top: 0.3rem !important;
   }
-  .notes li {
-    padding: 0.2rem 0;
-    font-size: 0.9rem;
+  ul.readings li {
+    padding: 0.35rem 0;
+    border-bottom: 1px solid var(--line);
   }
-  .kind {
+  ul.readings li:last-child {
+    border-bottom: 0;
+  }
+  .row2 {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
     color: var(--ink-dim);
-    font-size: 0.75rem;
-    margin-right: 0.4rem;
+  }
+  .how {
+    color: var(--accent-text);
+  }
+  .far,
+  .src {
+    color: var(--ink-dim);
   }
   .note {
     max-width: var(--measure);
     margin: 0 0 0.5rem;
-  }
-  .dim {
-    color: var(--ink-dim);
-  }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85em;
-    color: var(--accent);
   }
 </style>

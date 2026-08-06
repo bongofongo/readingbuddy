@@ -23,11 +23,21 @@
  */
 import type {
   BookDto,
+  BookFileDto,
   BookSortDto,
+  BookTagDto,
+  CreatedNoteDto,
+  FieldSourceDto,
   HighlightDto,
+  NewNoteDto,
   NoteDto,
+  NoteKindDto,
+  OutgoingLinkDto,
   PathsDto,
+  RatingDto,
+  RatingScaleDto,
   ReadingDto,
+  TableOfContentsDto,
 } from './bindings';
 import type { LibraryClient, OpenReading, StoredBook } from './client';
 
@@ -311,21 +321,16 @@ const BOOKS: StoredBook[] = [
   book(21, { title: 'A Book Some Other App Touched', reading_state: { state: 'other', raw: 'paused' } }),
 ];
 
-const HIGHLIGHTS: Record<number, HighlightDto[]> = {
-  3: [
-    highlight(1, 3, 'The thing about a place is that it is still there when you are not.', {
-      chapter: 'Chapter 4',
-      page: 212,
-      ko_note: 'What did they mean by this?',
-    }),
-    highlight(2, 3, 'What survives is not what was meant to.', { chapter: 'Chapter 9', page: 640 }),
-    // No chapter and no page: KOReader does produce this, and the "where" line
-    // must then render as nothing rather than as a stray separator.
-    highlight(3, 3, 'She counted the bells and then stopped counting.', {}),
-  ],
-  11: [highlight(4, 11, 'It is a mistake to read a map as a promise.', { chapter: 'Chapter 2', page: 31 })],
-};
-
+/**
+ * Every field, and **no `as` cast** — for `book()`'s reason.
+ *
+ * This function carried `as HighlightDto` until item 27, and it was hiding
+ * exactly what the file header promises it catches: three fields that are not
+ * on the DTO at all (`pos0`, `pos1`, `identity_hash`) sat here for a wave,
+ * stated by the fixture and served to nothing. A cast makes an *added* field
+ * silently absent and an *invented* one silently present, which are the two
+ * halves of the same drift.
+ */
 function highlight(
   id: number,
   bookId: number,
@@ -339,45 +344,173 @@ function highlight(
     text,
     chapter: null,
     page: null,
-    pos0: null,
-    pos1: null,
+    // The device's own clock, as the device wrote it. Kept because it is what
+    // crosses; deliberately not rendered beside our UTC dates — see the book
+    // view, which has the argument.
     ko_datetime: '2025-03-04 09:12:00',
     ko_note: null,
     annotation: null,
     source: 'koreader',
-    identity_hash: `fake-${id}`,
     created_at: 1735689600,
     ...over,
-  } as HighlightDto;
+  };
 }
 
-const NOTES: Record<number, NoteDto[]> = {
+const HIGHLIGHTS: Record<number, HighlightDto[]> = {
+  3: [
+    // **Both notes at once**, which is the case the ownership seam exists for
+    // and which nothing had ever rendered: `ko_note` is KOReader's and is
+    // rewritten toward the device on every pull, `annotation` is the reader's
+    // and no import touches it. A screen showing them unlabelled, or showing
+    // only one, has lost the distinction `docs/decisions.md` spends a section on.
+    highlight(1, 3, 'The thing about a place is that it is still there when you are not.', {
+      chapter: 'Chapter 4',
+      page: 212,
+      ko_note: 'What did they mean by this?',
+      annotation: 'The whole book is arguing with this sentence.',
+    }),
+    highlight(2, 3, 'What survives is not what was meant to.', { chapter: 'Chapter 9', page: 640 }),
+    // No chapter and no page: KOReader does produce this, and the "where" line
+    // must then render as nothing rather than as a stray separator.
+    highlight(3, 3, 'She counted the bells and then stopped counting.', {}),
+  ],
+  11: [highlight(4, 11, 'It is a mistake to read a map as a promise.', { chapter: 'Chapter 2', page: 31 })],
+};
+
+/** No cast here either. `NoteDto` has no `last_modified`; this file claimed one. */
+function note(id: number, bookId: number | null, title: string, over: Partial<NoteDto>): NoteDto {
+  return {
+    id,
+    book_id: bookId,
+    reading_id: null,
+    highlight_id: null,
+    page: null,
+    location: null,
+    file_path: `the-doorstop/${String(id).padStart(4, '0')}.md`,
+    title,
+    kind: 'note',
+    created_at: 1735776000 + id,
+    ...over,
+  };
+}
+
+const NOTES: NoteDto[] = [
+  note(1, 3, 'On The Doorstop', { page: 212 }),
+  // A reflection beside an ordinary note, in one list rather than in a tab of
+  // its own — the TUI's ruling, and for its reason: a section is a *collection*
+  // of things and there is exactly one reflection.
+  note(2, 3, 'Reflection: The Doorstop', { kind: 'reflection' }),
+  // Anchored to a passage rather than to a page. `↳` is the only thing that
+  // says so on a row.
+  note(3, 3, 'What survives', { highlight_id: 2 }),
+  // A review, which is the one kind that carries a rating.
+  note(4, 12, 'Review: A Book I Went Back To', { kind: 'review', reading_id: 2 }),
+];
+
+/**
+ * The bodies, which are **not** on `NoteDto` — `notes` has no body column, and
+ * that is why `notes_fts` cannot have triggers.
+ */
+const BODIES: Record<number, string> = {
+  1: `Two hundred pages in and the argument has not started yet, which is either the point or the problem.
+
+See [[Reflection: The Doorstop]], and one day [[The Long Eighteenth Century]].`,
+  2: `What this book is doing to me, kept privately and added to as I go.
+
+It rhymes with [[On The Doorstop]] more than I expected.`,
+  3: 'A single sentence, hung off a single passage.',
+  4: 'Written for other people. Worth the eleven hundred pages, on the second pass.',
+};
+
+/**
+ * The graph, declared **once** and read in both directions.
+ *
+ * Stating outbound and inbound separately is how a fixture comes to claim an
+ * edge one of its two notes denies writing — and the engine cannot be in that
+ * state, because back-resolution keeps `to_note` complete (`docs/decisions.md`
+ * entry 9). So there is one list of edges here and both `outgoingLinks` and
+ * `backlinks` are views of it.
+ *
+ * The target resolves by **exact** title. The engine matches `COLLATE NOCASE`
+ * and understands alias and heading syntax; this is a fixture lookup and
+ * deliberately not a second implementation of that rule, so the titles below
+ * are spelled exactly as the notes are.
+ */
+const EDGES: { from: number; target: string }[] = [
+  { from: 1, target: 'Reflection: The Doorstop' },
+  // A **forward reference**: no such note yet, and it is not an error. It
+  // resolves itself the day that note is written, so a pane shows it as text.
+  { from: 1, target: 'The Long Eighteenth Century' },
+  { from: 2, target: 'On The Doorstop' },
+];
+
+/** Which passages a note cites. By reference, so a device refresh cannot break it. */
+const CITATIONS: { note: number; highlight: number }[] = [{ note: 1, highlight: 2 }];
+
+const TAGS: Record<number, BookTagDto[]> = {
+  // `book_tags` are minted shelves and are **not** `BookDto.subjects`; the raw
+  // string is kept beside the normalized one because the normalization is ours
+  // and the shelf name is theirs.
+  3: [
+    { tag: 'science-fiction', source: 'calibre', raw: 'Science Fiction' },
+    { tag: 'doorstop', source: 'goodreads', raw: null },
+  ],
+};
+
+const FILES: Record<number, BookFileDto[]> = {
   3: [
     {
-      id: 1,
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       book_id: 3,
-      highlight_id: null,
-      reading_id: null,
-      file_path: '0001-the-doorstop.md',
-      title: 'On The Doorstop',
-      kind: 'note',
-      page: null,
-      location: null,
-      created_at: 1735776000,
-      last_modified: 1735776000,
-    } as NoteDto,
+      format: 'epub',
+      original_name: 'the-doorstop.epub',
+      size: 4_718_592,
+      added_at: 1735689600,
+    },
   ],
 };
 
-const READINGS: Record<number, ReadingDto[]> = {
-  // Two readings, one closed and one open. Item 28's card is per reading, so
-  // this book has two of them.
-  12: [
-    reading(1, 12, { status: { state: 'finished' }, finished_at: 1738368000, current_page: 300 }),
-    reading(2, 12, { status: { state: 'reading' }, current_page: 150 }),
+const CONTENTS: Record<number, TableOfContentsDto> = {
+  3: {
+    sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    entries: [
+      { label: 'Part One', depth: 0, target: 'OEBPS/p1.xhtml', spine_index: 1 },
+      { label: 'Chapter 4', depth: 1, target: 'OEBPS/ch4.xhtml', spine_index: 5 },
+      // No spine index. Ordinary, and **not** a page number.
+      { label: 'Notes on the text', depth: 0, target: 'OEBPS/notes.xhtml#top', spine_index: null },
+    ],
+  },
+  // Book 6 owns a readable file that carries no TOC — `entries: []`, which is a
+  // different answer from `null` and must not render as the same sentence.
+  6: { sha256: 'a'.repeat(64), entries: [] },
+};
+
+const PROVENANCE: Record<number, FieldSourceDto[]> = {
+  3: [
+    { field: 'title', source: 'open_library', fetched_at: 1735689600 },
+    { field: 'cover_url', source: 'google_books', fetched_at: 1735689600 },
+    // A field the reader answered back on. `user` outranks every provider.
+    { field: 'page_count', source: 'user', fetched_at: 1738368000 },
   ],
 };
 
+/**
+ * The scale a bare rating would be unreadable against.
+ *
+ * Half steps on purpose: `1 + 0.5 * 5` is `3.5000000000000004` in binary, so a
+ * control enumerating the points has arithmetic to get right, and a fixture
+ * with integer steps would never say so.
+ */
+const SCALE: RatingScaleDto = { id: 1, name: 'stars', min: 1, max: 5, step: 0.5 };
+
+/** Which review notes carry a rating. */
+const RATINGS: Record<number, number> = { 4: 4.5 };
+
+/**
+ * No `as` cast: `ReadingDto` gained `progress` in item 22 and this fixture had
+ * never stated it, so every per-reading progress line in the app would have
+ * rendered `undefined` and no test could have said so.
+ */
 function reading(id: number, bookId: number, over: Partial<ReadingDto>): ReadingDto {
   return {
     id,
@@ -392,11 +525,51 @@ function reading(id: number, bookId: number, over: Partial<ReadingDto>): Reading
     ko_rating: null,
     created_at: 1735689600,
     last_modified: 1735689600,
+    progress: { progress: 'untouched' },
     ...over,
-  } as ReadingDto;
+  };
 }
 
+const READINGS: Record<number, ReadingDto[]> = {
+  // Two readings, one closed and one open. Item 28's card is per reading, so
+  // this book has two of them — and **this** reading's progress, not the
+  // book's: the closed read finished, and printing today's page under it is
+  // exactly what `Progress::of_book` warns about.
+  12: [
+    reading(1, 12, {
+      status: { state: 'finished' },
+      started_at: 1704067200,
+      finished_at: 1706745600,
+      current_page: 300,
+      progress: { progress: 'finished' },
+    }),
+    reading(2, 12, {
+      status: { state: 'reading' },
+      current_page: 150,
+      progress: { progress: 'started', page: 150, of: 300, fraction: 0.5, percent: 50, source: 'pages' },
+    }),
+  ],
+};
+
+/**
+ * A library in memory.
+ *
+ * The book set above is **module state and read-only** — it is the declared
+ * hostile set, and a test that mutated it would change what the next test sees.
+ * Everything item 27 writes to (bodies, annotations, citations, the note list)
+ * is **instance** state, copied on construction, so `new FakeClient()` is a
+ * fresh library and one page session accumulates its own edits. That is what
+ * makes an edit in the running app visible without a database.
+ */
 export class FakeClient implements LibraryClient {
+  #notes: NoteDto[] = NOTES.map((n) => ({ ...n }));
+  #bodies: Record<number, string> = { ...BODIES };
+  #edges: { from: number; target: string }[] = EDGES.map((e) => ({ ...e }));
+  #citations: { note: number; highlight: number }[] = CITATIONS.map((c) => ({ ...c }));
+  #annotations: Record<number, string | null> = {};
+  #ratings: Record<number, number> = { ...RATINGS };
+  #nextNoteId = 100;
+
   async paths(): Promise<PathsDto> {
     return {
       db_url: 'sqlite://fake/app.db',
@@ -441,12 +614,16 @@ export class FakeClient implements LibraryClient {
   }
 
   async listHighlights(bookId: number): Promise<HighlightDto[]> {
-    return HIGHLIGHTS[bookId] ?? [];
+    // The reader's own annotation is instance state, so an edit made in the app
+    // is there when the list is asked for again.
+    return (HIGHLIGHTS[bookId] ?? []).map((h) =>
+      h.id in this.#annotations ? { ...h, annotation: this.#annotations[h.id] ?? null } : h,
+    );
   }
 
   async listNotes(bookId: number | null): Promise<NoteDto[]> {
-    if (bookId === null) return Object.values(NOTES).flat();
-    return NOTES[bookId] ?? [];
+    if (bookId === null) return [...this.#notes];
+    return this.#notes.filter((n) => n.book_id === bookId);
   }
 
   async listReadings(bookId: number): Promise<ReadingDto[]> {
@@ -454,7 +631,200 @@ export class FakeClient implements LibraryClient {
     if (own) return own;
     const b = BOOKS.find((x) => x.id === bookId);
     if (!b || b.reading_state === null) return [];
-    return [reading(100 + bookId, bookId, { status: b.reading_state })];
+    // One reading, so **this** reading's progress is the book's — stated, not
+    // recomputed. `Progress::of_book` reads the current reading, so a book with
+    // a single read is the one case where the two are the same value, and the
+    // reread above is where they are not.
+    return [
+      reading(100 + bookId, bookId, {
+        status: b.reading_state,
+        current_page: b.current_page,
+        progress: b.progress,
+      }),
+    ];
+  }
+
+  // ---- what is behind one book (item 27) ---------------------------------
+
+  async bookTags(bookId: number): Promise<BookTagDto[]> {
+    return TAGS[bookId] ?? [];
+  }
+
+  async bookFiles(bookId: number): Promise<BookFileDto[]> {
+    return FILES[bookId] ?? [];
+  }
+
+  async fieldProvenance(bookId: number): Promise<FieldSourceDto[]> {
+    // Absence is the ordinary answer for every book predating migration `0012`.
+    return PROVENANCE[bookId] ?? [];
+  }
+
+  async tableOfContents(bookId: number): Promise<TableOfContentsDto | null> {
+    // `null` for "no file here we can read", and book 6's empty `entries` for
+    // "this file carries no TOC". Two answers, both reachable from this fixture.
+    return CONTENTS[bookId] ?? null;
+  }
+
+  async setAnnotation(highlightId: number, annotation: string | null): Promise<void> {
+    this.#annotations[highlightId] = annotation;
+  }
+
+  // ---- notes --------------------------------------------------------------
+
+  async getNote(id: number): Promise<NoteDto | null> {
+    return this.#notes.find((n) => n.id === id) ?? null;
+  }
+
+  async noteBody(noteId: number): Promise<string> {
+    return this.#bodies[noteId] ?? '';
+  }
+
+  async updateNoteBody(noteId: number, body: string): Promise<void> {
+    this.#bodies[noteId] = body;
+    // The real one reindexes the FTS row **and** rewrites the wikilink edges,
+    // so a fixture that only stored the text would make an edit that adds a
+    // `[[link]]` look like it did nothing. The extraction is one regex here
+    // against the engine's full alias/heading syntax — enough to keep the pane
+    // honest, and not a claim to be the same parser.
+    this.#edges = this.#edges.filter((e) => e.from !== noteId);
+    for (const m of body.matchAll(/\[\[([^\]|#]+)/g)) {
+      const target = (m[1] ?? '').trim();
+      if (target) this.#edges.push({ from: noteId, target });
+    }
+  }
+
+  async createNote(input: NewNoteDto): Promise<CreatedNoteDto> {
+    const id = this.#nextNoteId++;
+    // `title: null` is the engine deriving one from the body's first six words.
+    // Stated here rather than left blank, because that rule is what the screen's
+    // placeholder promises and a fixture that ignored it would let the promise rot.
+    const title = input.title ?? deriveTitle(input.body);
+    const created: NoteDto = {
+      id,
+      book_id: input.book_id,
+      reading_id: input.reading_id,
+      highlight_id: input.highlight_id,
+      page: input.page,
+      location: input.location,
+      file_path: `unsorted/${id}.md`,
+      title,
+      kind: input.kind,
+      created_at: 1738368000 + id,
+    };
+    this.#notes.push(created);
+    await this.updateNoteBody(id, input.body);
+    return { id, title, file: `/fake/vault/${created.file_path}`, links: [] };
+  }
+
+  async deleteNote(noteId: number): Promise<void> {
+    this.#notes = this.#notes.filter((n) => n.id !== noteId);
+    delete this.#bodies[noteId];
+    this.#edges = this.#edges.filter((e) => e.from !== noteId);
+    this.#citations = this.#citations.filter((c) => c.note !== noteId);
+  }
+
+  async openReflection(bookId: number): Promise<CreatedNoteDto> {
+    return this.#openAnchored(bookId, 'reflection');
+  }
+
+  async openReview(bookId: number): Promise<CreatedNoteDto> {
+    return this.#openAnchored(bookId, 'review');
+  }
+
+  /** Open **or mint** — the engine's `open_anchored`, which is why it is one call. */
+  async #openAnchored(bookId: number, kind: NoteKindDto): Promise<CreatedNoteDto> {
+    const existing = this.#notes.find((n) => n.book_id === bookId && n.kind === kind);
+    if (existing) {
+      return {
+        id: existing.id,
+        title: existing.title,
+        file: `/fake/vault/${existing.file_path}`,
+        links: [],
+      };
+    }
+    const book = BOOKS.find((b) => b.id === bookId);
+    const label = kind === 'reflection' ? 'Reflection' : 'Review';
+    return this.createNote({
+      book_id: bookId,
+      reading_id: null,
+      highlight_id: null,
+      page: null,
+      location: null,
+      kind,
+      title: `${label}: ${book?.title || 'Untitled'}`,
+      body: '',
+    });
+  }
+
+  async noteForReading(readingId: number, kind: NoteKindDto): Promise<NoteDto | null> {
+    return this.#notes.find((n) => n.reading_id === readingId && n.kind === kind) ?? null;
+  }
+
+  // ---- the graph, both directions off one declaration ---------------------
+
+  async outgoingLinks(noteId: number): Promise<OutgoingLinkDto[]> {
+    return this.#edges
+      .filter((e) => e.from === noteId)
+      .map((e) => ({
+        target_title: e.target,
+        note: this.#notes.find((n) => n.title === e.target) ?? null,
+      }));
+  }
+
+  async backlinks(noteId: number): Promise<NoteDto[]> {
+    const me = this.#notes.find((n) => n.id === noteId);
+    if (!me) return [];
+    return this.#edges
+      .filter((e) => e.target === me.title)
+      .map((e) => this.#notes.find((n) => n.id === e.from))
+      .filter((n): n is NoteDto => n !== undefined);
+  }
+
+  // ---- citations ----------------------------------------------------------
+
+  async cite(noteId: number, highlightId: number): Promise<void> {
+    if (!this.#citations.some((c) => c.note === noteId && c.highlight === highlightId)) {
+      this.#citations.push({ note: noteId, highlight: highlightId });
+    }
+  }
+
+  async uncite(noteId: number, highlightId: number): Promise<boolean> {
+    const before = this.#citations.length;
+    this.#citations = this.#citations.filter(
+      (c) => !(c.note === noteId && c.highlight === highlightId),
+    );
+    return this.#citations.length !== before;
+  }
+
+  async citationsFor(noteId: number): Promise<HighlightDto[]> {
+    const ids = this.#citations.filter((c) => c.note === noteId).map((c) => c.highlight);
+    const all = Object.values(HIGHLIGHTS).flat();
+    return ids
+      .map((id) => all.find((h) => h.id === id))
+      .filter((h): h is HighlightDto => h !== undefined);
+  }
+
+  // ---- the rating on a review --------------------------------------------
+
+  async activeRatingScale(): Promise<RatingScaleDto | null> {
+    return SCALE;
+  }
+
+  async reviewRating(noteId: number): Promise<RatingDto | null> {
+    const value = this.#ratings[noteId];
+    // The scale travels **with** the value, never without it — the Goodreads map
+    // is user-editable, so a bare number is not re-derivable into anything.
+    return value === undefined ? null : { scale: SCALE, value };
+  }
+
+  async setRating(noteId: number, value: number): Promise<void> {
+    this.#ratings[noteId] = value;
+  }
+
+  async clearReviewRating(noteId: number): Promise<boolean> {
+    const had = noteId in this.#ratings;
+    delete this.#ratings[noteId];
+    return had;
   }
 
   /**
@@ -477,4 +847,24 @@ export class FakeClient implements LibraryClient {
   coverSrc(): string | null {
     return null;
   }
+
+  /** The hero shot's bytes are withheld for `coverSrc`'s reason. */
+  heroSrc(): string | null {
+    return null;
+  }
+}
+
+/**
+ * The engine's `derive_title`: the body's first six words, trimmed of trailing
+ * punctuation, or *Untitled*.
+ *
+ * Restated rather than imported — there is no wire request that asks the engine
+ * what it would title a body, so a fake that skipped this would let the note
+ * composer promise something nothing checks. It is a **fixture** of the rule,
+ * not a second implementation anything in the app calls.
+ */
+function deriveTitle(body: string): string {
+  const words = body.split(/\s+/).filter(Boolean).slice(0, 6);
+  if (words.length === 0) return 'Untitled';
+  return words.join(' ').replace(/[,.;:]+$/, '');
 }
