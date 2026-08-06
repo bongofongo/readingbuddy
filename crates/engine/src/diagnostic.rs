@@ -122,6 +122,31 @@ pub enum DiagnosticKind {
     SidecarNotIdentified {
         path: PathBuf,
     },
+    /// The sidecar carries annotations that *are* highlights on the device but
+    /// whose anchor this build cannot store: KOReader writes `pos0` as a
+    /// **table** — a page plus coordinates — on a paging document (PDF, DjVu),
+    /// where a reflowable one gets a cre xpointer string.
+    ///
+    /// They used to be dropped in **silence**, which made a PDF library
+    /// indistinguishable from a book nobody had highlighted: the import
+    /// reported zero highlights and no reason. Saying so is the whole variant.
+    ///
+    /// **One per file, carrying a count — not one per entry.** A 300-highlight
+    /// PDF emitting 300 identical diagnostics would have replaced silence with
+    /// noise, which is not an improvement; the count is what a caller needs and
+    /// the path is what it acts on.
+    ///
+    /// **No `ErrorClass`, deliberately.** That type is `From<&EngineError>` and
+    /// exists to classify something that *failed*. Nothing failed here: the file
+    /// read, the chunk evaluated, the entry is well formed. There is no error to
+    /// classify, so a class on this variant would be a field with no source.
+    SidecarAnchorsUnsupported {
+        path: PathBuf,
+        /// How many entries. Never zero — the diagnostic is not constructed
+        /// otherwise, so a caller may read it as "at least one highlight did not
+        /// arrive".
+        entries: usize,
+    },
 
     // ---- goodreads (migration `0009`) -------------------------------------
     //
@@ -327,6 +352,23 @@ impl Diagnostic {
         }
     }
 
+    /// One per **file**, so `entries` is a count and not a list of paths that
+    /// are all the same path.
+    ///
+    /// The wording says *why* rather than naming a value the user cannot see:
+    /// a page-and-coordinates anchor is a fact about their PDF, and the number
+    /// is the part they can check against the device.
+    pub fn sidecar_anchors_unsupported(path: PathBuf, entries: usize) -> Self {
+        Diagnostic {
+            kind: DiagnosticKind::SidecarAnchorsUnsupported { path, entries },
+            severity: Severity::Warning,
+            detail: format!(
+                "{entries} highlight(s) anchored to a page and coordinates, which KOReader \
+                 writes on PDF and this build cannot store; nothing else in the file was affected"
+            ),
+        }
+    }
+
     // ---- koreader statistics (item 31) -------------------------------------
 
     /// No statistics database on this volume. A `Warning`, never an error: the
@@ -437,7 +479,8 @@ impl fmt::Display for Diagnostic {
             DiagnosticKind::SidecarUnreadable { path, .. }
             | DiagnosticKind::SidecarUnparsable { path }
             | DiagnosticKind::UnknownDeviceStatus { path, .. }
-            | DiagnosticKind::SidecarNotIdentified { path } => {
+            | DiagnosticKind::SidecarNotIdentified { path }
+            | DiagnosticKind::SidecarAnchorsUnsupported { path, .. } => {
                 write!(f, "{}: {}", path.display(), self.detail)
             }
             DiagnosticKind::NoSidecarsFound { path } => {

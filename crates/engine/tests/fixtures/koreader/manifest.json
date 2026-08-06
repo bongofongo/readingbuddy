@@ -53,7 +53,12 @@
       "books": [{ "title": "Incomplete Book", "authors": ["Half Written"] }]
     },
     "Gen-Pdf-Sidecar.sdr": {
+      "_note": "Covers the sidecar file NAME (metadata.pdf.lua), not PDF-shaped contents — its annotations are cre xpointers. Gen-Pdf-Anchors is the contents case.",
       "books": [{ "title": "A Scanned Book", "authors": ["Pdf Author"] }]
+    },
+    "Gen-Pdf-Anchors.sdr": {
+      "_note": "pos0 is a TABLE (page + coordinates), which is what KOReader writes on a paging document. Nothing imports; the golden's `warnings` must name SidecarAnchorsUnsupported with a count of 3 — the bookmark at [4] is not one of them. A golden that merely showed zero highlights would be the bug written down.",
+      "books": [{ "title": "A Scanned Monograph", "authors": ["P. D. Fauthor"] }]
     },
 
     "Gen-Summary.sdr": {

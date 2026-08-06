@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 
 use readingbuddy::koreader::{self, parse_sidecar};
-use readingbuddy::{Book, Storage};
+use readingbuddy::{Book, Diagnostic, DiagnosticKind, Storage};
 use serde_json::{Value, json};
 
 fn fixtures_root() -> PathBuf {
@@ -128,9 +128,43 @@ async fn flashcard_words(storage: &Storage, book_id: i64) -> Vec<String> {
     words
 }
 
+/// A golden-safe rendering of one diagnostic: **which** degradation fired, plus
+/// any count it carries. Never `Display`, which prints the fixture's absolute
+/// path and would differ on every machine.
+///
+/// This replaced a bare `has_warnings: bool`, and the reason is item 36's whole
+/// thesis. That boolean was `true` for a sidecar with an unknown device status
+/// and `true` for one whose highlights we could not anchor — so a golden could
+/// not tell the two apart, and a fixture asserting "some warning happened" is
+/// green when the wrong one happens, or when the right one is replaced by a
+/// different wrong one. A golden that merely records an absence is the bug
+/// written down.
+///
+/// The catch-all **panics** rather than bucketing. A new koreader diagnostic has
+/// to be taught to this function on purpose; silently folding it into "other"
+/// is how the next silence would get committed.
+fn warning_name(d: &Diagnostic) -> String {
+    match &d.kind {
+        DiagnosticKind::NoSidecarsFound { .. } => "NoSidecarsFound".to_string(),
+        DiagnosticKind::SidecarUnreadable { .. } => "SidecarUnreadable".to_string(),
+        DiagnosticKind::SidecarUnparsable { .. } => "SidecarUnparsable".to_string(),
+        DiagnosticKind::SidecarNotIdentified { .. } => "SidecarNotIdentified".to_string(),
+        DiagnosticKind::UnknownDeviceStatus { .. } => "UnknownDeviceStatus".to_string(),
+        // The count is in the name on purpose: it is the number the fixture is
+        // about, and a golden carrying the kind without it could not tell three
+        // lost highlights from one.
+        DiagnosticKind::SidecarAnchorsUnsupported { entries, .. } => {
+            format!("SidecarAnchorsUnsupported({entries})")
+        }
+        other => {
+            panic!("koreader::import produced a diagnostic this harness cannot name: {other:?}")
+        }
+    }
+}
+
 /// Import one fixture dir into a freshly seeded in-memory DB and reduce the
 /// result to the golden JSON shape. Warning text carries absolute paths, so we
-/// record only whether warnings fired, never their content.
+/// record which warnings fired and never their prose.
 async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
     let storage = mem_storage().await;
     seed_books(&storage, books).await;
@@ -176,10 +210,16 @@ async fn import_to_golden(fixture: &str, books: &Value) -> (Storage, Value) {
         .map(|u| json!({ "title": u.title }))
         .collect();
 
+    // Sorted: `find_sidecars` fixes file order, but a fixture that ever emits
+    // two warnings from one file should not make the golden depend on which
+    // check `import_into` happens to run first.
+    let mut warnings: Vec<String> = report.warnings.iter().map(warning_name).collect();
+    warnings.sort();
+
     let golden = json!({
         "imported": imported,
         "unmatched": unmatched,
-        "has_warnings": !report.warnings.is_empty(),
+        "warnings": warnings,
     });
     (storage, golden)
 }
@@ -624,6 +664,101 @@ async fn highlight_ids_are_stable_across_refresh() {
         cards_before,
         flashcard_words(&storage, book_id).await,
         "flashcards hang off highlight_id and would have cascaded away"
+    );
+}
+
+/// Item 36's assertion, held outside the golden as well as in it.
+///
+/// The golden pins the shape; this pins the *claim*, in the two ways the shape
+/// alone cannot. First, it names the fixture — if `Gen-Pdf-Anchors` is ever
+/// deleted or renamed, `import_matches_golden` would simply stop checking it and
+/// stay green, which is how a fixture rots into a file nobody notices. Second,
+/// it separates the two numbers that a "0 highlights imported" golden conflates:
+/// **three** entries had an anchor we could not store, and the fourth was a
+/// bookmark that was never a highlight. An implementation that counted all four,
+/// or that counted none and merely imported nothing, produces the same
+/// zero-highlight golden as the correct one.
+#[tokio::test]
+async fn pdf_anchors_are_reported_rather_than_silently_dropped() {
+    let fixture = "Gen-Pdf-Anchors.sdr";
+    let man = manifest();
+    let books = man
+        .get(fixture)
+        .and_then(|f| f.get("books"))
+        .cloned()
+        .expect("Gen-Pdf-Anchors must be in the manifest");
+
+    let storage = mem_storage().await;
+    seed_books(&storage, &books).await;
+    let report = koreader::import(&storage, &synthetic_dir().join(fixture), false)
+        .await
+        .expect("a PDF sidecar must not abort an import");
+
+    // It matched a book and imported nothing — which is the state that used to
+    // be indistinguishable from a book with no highlights.
+    assert_eq!(report.imported.len(), 1, "the sidecar must still match");
+    assert_eq!(report.imported[0].inserted, 0);
+    assert!(report.unmatched.is_empty());
+
+    let anchors: Vec<usize> = report
+        .warnings
+        .iter()
+        .filter_map(|d| match d.kind {
+            DiagnosticKind::SidecarAnchorsUnsupported { entries, .. } => Some(entries),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        anchors,
+        vec![3],
+        "expected exactly one diagnostic naming three lost highlights, got {:?}",
+        report.warnings
+    );
+
+    // One per file, not one per entry — the decision this item made, and the
+    // one a later thread is likeliest to "fix" into a diagnostic per highlight.
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "a 300-highlight PDF must not emit 300 diagnostics"
+    );
+
+    // And it says something a user can act on, naming the file it is about.
+    let text = report.warnings[0].to_string();
+    assert!(text.contains("metadata.pdf.lua"), "no path in {text:?}");
+    assert!(text.contains('3'), "no count in {text:?}");
+}
+
+/// The other half of the same claim, and the one that guards every *other*
+/// fixture: nothing that is not a paging document may acquire this diagnostic.
+///
+/// Item 36 had to be a pure addition — a reflowable sidecar whose highlight
+/// count moved would be a regression dressed as a feature — and the count is
+/// asserted by the goldens. What they cannot say is that no EPUB fixture started
+/// emitting a *spurious* one, because a golden only sees the fixture it belongs
+/// to.
+#[tokio::test]
+async fn only_the_paging_fixture_reports_an_unsupported_anchor() {
+    let storage = mem_storage().await;
+    seed_all_synthetic(&storage).await;
+    let report = koreader::import(&storage, &synthetic_dir(), false)
+        .await
+        .expect("bulk import");
+
+    let named: Vec<String> = report
+        .warnings
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DiagnosticKind::SidecarAnchorsUnsupported { path, entries } => {
+                Some(format!("{}:{entries}", path.display()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named.len(), 1, "expected exactly one, got {named:?}");
+    assert!(
+        named[0].ends_with("Gen-Pdf-Anchors.sdr/metadata.pdf.lua:3"),
+        "the wrong fixture reported an unsupported anchor: {named:?}"
     );
 }
 

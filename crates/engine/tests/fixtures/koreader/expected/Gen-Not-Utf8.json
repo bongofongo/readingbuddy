@@ -1,5 +1,7 @@
 {
-  "has_warnings": true,
   "imported": [],
-  "unmatched": []
+  "unmatched": [],
+  "warnings": [
+    "SidecarUnreadable"
+  ]
 }

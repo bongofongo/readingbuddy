@@ -158,6 +158,12 @@ return {{
 
     // 9. A non-epub sidecar. `is_sidecar_file` accepts any `metadata.*.lua`,
     //    and a PDF-backed book is an ordinary thing to have in a library.
+    //
+    //    **This covers the file NAME and not the file's contents**, and the
+    //    distinction was worth a fixture of its own (9b): the annotations below
+    //    are cre xpointers, which is the shape a *reflowable* document gets. A
+    //    real PDF anchors a highlight quite differently, and for years this
+    //    fixture's name suggested that case was covered when it was not.
     {
         let dir = synthetic.join(format!("{GEN}Pdf-Sidecar.sdr"));
         std::fs::create_dir_all(&dir)?;
@@ -170,6 +176,99 @@ return {{
                  ["pageno"] = 7, ["datetime"] = "2026-05-01 10:00:00" }},
     }},
     ["doc_props"] = {{ ["title"] = "A Scanned Book", ["authors"] = "Pdf Author" }},
+}}
+"#
+            ),
+        )?;
+        n += 1;
+    }
+
+    // 9b. A PDF sidecar with PDF-shaped **anchors** (item 36).
+    //
+    //     On a paging document — PDF, DjVu — KOReader cannot anchor a highlight
+    //     to a position in a text stream, because a scanned page has no text
+    //     stream. So `pos0`/`pos1` are **tables**: a page plus coordinates, with
+    //     a sibling `pboxes` array of the rectangles it drew. The engine's rule
+    //     was `get_str(item, "pos0")?`, which on a table returns `None` — so
+    //     every entry here used to be dropped in total silence, and a user with
+    //     a PDF library imported nothing and was told nothing.
+    //
+    //     **What is asserted, and what is only illustrated.** *That `pos0` is a
+    //     table rather than a string* is the fact this fixture exists to encode,
+    //     and it is the only thing the engine reads: `koreader::anchor` branches
+    //     on the value being a table and never on anything inside it. **The
+    //     table's keys below are a reconstruction and not an observation** — no
+    //     PDF sidecar with annotations has ever been read here (both real ones
+    //     have an empty `annotations`, see docs/koreader-format.md §6) — so they
+    //     are deliberately unread, and no golden can bless a key name. If a real
+    //     device turns out to write `pos` or `rect` instead, nothing here or in
+    //     the engine has to change.
+    //
+    //     Entry [4] is a plain bookmark with no `pos0` at all. It must stay
+    //     *uncounted*: a bookmark is not a highlight that went missing, and a
+    //     diagnostic that inflated its number would be a worse lie than silence.
+    {
+        let dir = synthetic.join(format!("{GEN}Pdf-Anchors.sdr"));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("metadata.pdf.lua"),
+            format!(
+                r#"{HEADER}-- pos0/pos1 are TABLES here, not xpointers. That, and only that, is what
+-- this fixture asserts; the keys inside them are reconstructed and unread.
+return {{
+    ["annotations"] = {{
+        [1] = {{
+            ["chapter"] = "II. Of Scanned Things",
+            ["color"] = "gray",
+            ["datetime"] = "2026-05-02 11:15:00",
+            ["drawer"] = "lighten",
+            ["page"] = 3,
+            ["pageno"] = 3,
+            ["pboxes"] = {{
+                [1] = {{ ["h"] = 16.5, ["w"] = 305.5, ["x"] = 96.5, ["y"] = 220.0 }},
+            }},
+            ["pos0"] = {{ ["page"] = 3, ["rotation"] = 0, ["x"] = 96.5, ["y"] = 220.0, ["zoom"] = 1.0 }},
+            ["pos1"] = {{ ["page"] = 3, ["rotation"] = 0, ["x"] = 402.0, ["y"] = 236.5, ["zoom"] = 1.0 }},
+            ["text"] = "a passage on a scanned page",
+        }},
+        [2] = {{
+            ["chapter"] = "II. Of Scanned Things",
+            ["color"] = "gray",
+            ["datetime"] = "2026-05-02 11:22:41",
+            ["datetime_updated"] = "2026-05-02 11:23:09",
+            ["drawer"] = "underscore",
+            ["page"] = 4,
+            ["pageno"] = 4,
+            ["note"] = "a note on a PDF highlight is lost with it, and must be counted",
+            ["pos0"] = {{ ["page"] = 4, ["rotation"] = 0, ["x"] = 72.0, ["y"] = 118.25, ["zoom"] = 1.0 }},
+            ["pos1"] = {{ ["page"] = 4, ["rotation"] = 0, ["x"] = 388.75, ["y"] = 134.0, ["zoom"] = 1.0 }},
+            ["text"] = "a second passage, this one annotated",
+        }},
+        [3] = {{
+            ["chapter"] = "III. Of Coordinates",
+            ["color"] = "gray",
+            ["datetime"] = "2026-05-03 09:04:12",
+            ["drawer"] = "lighten",
+            ["page"] = 9,
+            ["pageno"] = 9,
+            ["pos0"] = {{ ["page"] = 9, ["rotation"] = 0, ["x"] = 110.0, ["y"] = 512.5, ["zoom"] = 1.0 }},
+            ["pos1"] = {{ ["page"] = 9, ["rotation"] = 0, ["x"] = 431.5, ["y"] = 528.0, ["zoom"] = 1.0 }},
+            ["text"] = "a third passage",
+        }},
+        [4] = {{
+            -- A plain bookmark: no pos0 of any shape. Not a highlight, never
+            -- was, and must NOT be counted as one that failed to arrive.
+            ["chapter"] = "III. Of Coordinates",
+            ["datetime"] = "2026-05-03 09:40:00",
+            ["page"] = 10,
+            ["pageno"] = 10,
+            ["text"] = "in III. Of Coordinates",
+        }},
+    }},
+    ["doc_pages"] = 214,
+    ["doc_props"] = {{ ["authors"] = "P. D. Fauthor", ["title"] = "A Scanned Monograph" }},
+    ["partial_md5_checksum"] = "3c1f5a7e9b2d4068a1c3e5f70921436d",
+    ["percent_finished"] = 0.31,
 }}
 "#
             ),

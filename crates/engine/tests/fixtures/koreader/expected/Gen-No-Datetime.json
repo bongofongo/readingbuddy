@@ -1,5 +1,4 @@
 {
-  "has_warnings": false,
   "imported": [
     {
       "book_title": "Undated Book",
@@ -32,5 +31,6 @@
       "updated": 0
     }
   ],
-  "unmatched": []
+  "unmatched": [],
+  "warnings": []
 }
