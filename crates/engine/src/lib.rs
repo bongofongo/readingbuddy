@@ -71,7 +71,7 @@ pub use koreader::{
     BookImportStats, ImportReport, KoStats, KoStatus, KoSummary, MatchCandidate, MatchMethod,
     PullReport,
 };
-pub use notes::{CreatedNote, NewNoteInput, NoteKind};
+pub use notes::{CreatedNote, NewNoteInput, NoteKind, VaultReconcile};
 pub use partial_md5::partial_md5;
 pub use pdf::{PdfInfo, pdf_info};
 pub use progress::{Fraction, FractionSource, Progress};
@@ -84,7 +84,10 @@ pub use storage::{
     NoteSearchHit, OutgoingLink, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent,
     RefillReport, Source, Storage,
 };
-pub use watch::{MOUNT_QUIET, MountEvent, MountStir, MountWatcher, watch_mounts};
+pub use watch::{
+    MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
+    VaultWatcher, watch_mounts,
+};
 
 use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
@@ -1158,21 +1161,48 @@ impl Engine {
         self.storage.delete_note(note.id).await
     }
 
-    /// Re-read a note file from disk and refresh its FTS body (e.g. after an
-    /// external Obsidian edit).
+    /// Re-read one note file from disk and bring its index in line with it —
+    /// FTS body **and** wikilink edges, since an outside edit is exactly where
+    /// a new `[[wikilink]]` appears.
+    ///
+    /// The single-note form of what [`Engine::reconcile_vault`] does to all of
+    /// them, and worth keeping on the facade and on the wire beside it: a
+    /// frontend that knows which note it just handed to `$EDITOR` should not
+    /// have to sweep a whole vault to learn what it already knows.
     pub async fn refresh_note_from_disk(&self, note: &NoteRecord) -> Result<()> {
         let file = self.note_path(note);
         let content = std::fs::read_to_string(&file)?;
-        let (_, body) = notes::parse_frontmatter(&content);
-        self.storage
-            .refresh_note_body(note.id, &note.title, body)
-            .await?;
-        // An outside edit is exactly where a new [[wikilink]] appears, so the
-        // graph has to follow the file here too.
-        let links = notes::extract_wikilinks(body);
-        self.storage
-            .set_note_links(note.id, &note.title, &links)
-            .await
+        let (_, body) = notes::frontmatter_and_body(&content);
+        notes::reindex_from_body(&self.storage, note.id, &note.title, body).await?;
+        Ok(())
+    }
+
+    // ---- vault coherence (item 24) -----------------------------------------
+
+    /// Follow the vault, so a note edited in Obsidian is a note search can
+    /// still find.
+    ///
+    /// A [`VaultWatcher`] does nothing until it is polled and spawns nothing
+    /// when it is: the caller drives it from its own loop, and the re-index
+    /// happens on the caller's task. Fails when the platform cannot watch,
+    /// which is a thing to degrade around rather than abort on — the vault
+    /// still works, and [`Engine::reconcile_vault`] is the whole answer for a
+    /// machine that cannot watch at all.
+    pub fn watch_vault(&self) -> Result<VaultWatcher> {
+        watch::watch_vault(&self.config.vault_dir, self.storage.clone())
+    }
+
+    /// Bring every note's index in line with its file, once.
+    ///
+    /// **The half a watcher structurally cannot do.** A watcher sees only the
+    /// present, and the ordinary case is a note edited in another program while
+    /// readingbuddy was not running. Cheap on the common path — a `stat` per
+    /// note, and a read only for the ones whose file is newer than their index.
+    ///
+    /// A note whose file is missing is left exactly as it is. Absence is not a
+    /// deletion here, for the reasons [`VaultWatcher`] sets out.
+    pub async fn reconcile_vault(&self) -> Result<VaultReconcile> {
+        notes::reconcile_vault(&self.storage, &self.config.vault_dir).await
     }
 
     // ---- reflection + review -----------------------------------------------

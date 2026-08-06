@@ -956,3 +956,108 @@ because item 31 needed somewhere to put reading time.
       one row per day with the device's and your own claims summed would be
       doing arithmetic above the seam. Neither blocks item 22; both are narrow,
       migration-free engine items.
+24. **Vault coherence.** No migration. `Engine::refresh_note_from_disk` had a
+    facade method, a wire request and a test since item 7, and nothing had ever
+    called it — no frontend issued one and nothing watched the vault, so a note
+    edited in Obsidian was a note `notes_fts` could not find, indefinitely.
+    Item 27's search box is what makes it visible, in the worst shape the
+    failure takes: the box does not look broken, the note looks gone.
+    - **The ruling: watch → refresh directly, not watch → notify → the frontend
+      issues `RefreshNoteFromDisk`.** `VaultWatcher` holds a `Storage` and does
+      the write, which departs from `watch.rs`'s *it may scan; it may not sync*.
+      The argument is that the rule was never about watchers writing — it is
+      about **consent**. A mounted reader is somebody else's disk and a cable is
+      not permission to modify it; the vault is ours, in our own data directory,
+      and the write is a *derived index* catching up with the file that was
+      already the origin of its content. Re-deriving a cache from its source is
+      not a sync. So the rule is preserved by being restated about the thing
+      each watcher watches: **`MountWatcher` never writes to a device;
+      `VaultWatcher` never writes to the vault** — asserted by
+      `never_writes_to_the_vault` over a whole tree, and everything the watcher
+      can do to the database is recomputable by `reconcile_vault`, which is what
+      makes the departure cheap to be wrong about.
+    - **Why notify-the-frontend is worse, in four parts.** The daemon has no
+      push channel: every reply carries the id it answers, and a server-initiated
+      frame has no id to carry — so that design's first cost is a wire-protocol
+      change in a crate the item does not own. **The CLI could not participate at
+      all**: every command is its own process and there is no loop for a
+      notification to arrive in, so the CLI would have been permanently stale.
+      The refresh is not "call a method" — it is *decide which note this path is,
+      decide whether an absence is a deletion, decide whether to trust a file
+      still being written* — and three frontends re-deriving those three
+      decisions is precisely item 17's finding. And the failure mode is the worst
+      available: a frontend that forgets to wire it has a stale index and **no
+      symptom**. What the alternative buys — a storage-free watcher — buys
+      nothing, because the write it avoids is not one anybody needs to consent to.
+    - **No task is ever spawned, and that answers most of the objection.** Both
+      watchers are pull-driven: nothing happens until the caller polls `next()`,
+      and for the vault that includes the write. So there is no background writer
+      racing a foreground import — the refresh runs on the caller's own task and
+      takes the pool the ordinary way — and a `select!` arm whose handler is
+      empty is still doing the whole job, because polling *is* the work.
+    - **The push-back was considered and is half right.** Refresh-on-read plus
+      refresh-on-search is cheaper, has no background task and no platform
+      surface, and it is what the **CLI** actually does. It is not sufficient on
+      its own, for a reason beyond "search reads the index": `note_links` is a
+      *cross-note* index. Adding `[[B]]` to note A in Obsidian changes B's
+      backlinks, and no read of B will ever notice, because B's file did not
+      change. Refresh-on-read is structurally blind to it. So both were built,
+      and each covers what the other cannot: **`reconcile_vault` is the sweep**
+      (a `stat` per note, a read only where the file is newer than the index),
+      because a watcher only ever sees the present and the ordinary case is a
+      note edited on Tuesday and searched for on Thursday; the watcher is the
+      liveness, for an edit made while the app is open.
+    - **The three races.** *We wrote it*: not a loop and unable to become one,
+      because the only thing written is the database and the database is not
+      watched — the echo is one event deep however many notes are saved. It does
+      not even cost a transaction: `reindex_from_body` compares the file against
+      what is already indexed, which also absorbs the far commoner event of an
+      editor rewriting a file on focus loss without a character changing.
+      *A partial write*: the debounce first (`VAULT_QUIET` = 400ms, short
+      because the thing waiting on it is a search box), and explicitly **not**
+      claimed sufficient, since a write slower than the quiet period lands inside
+      it — so `settled_read` stats either side of the read and re-arms when the
+      stamps moved. The remaining hole is stated: a write changing neither length
+      nor mtime between the two stats is indistinguishable from a file at rest.
+      *Deleted and recreated*: **absence is never destructive**. `Vanished`
+      writes nothing. Other tools move files (Obsidian's `.trash/`, a `git
+      checkout`, a sync client resolving a conflict); deletion already has an
+      explicit path that removes row and file together; the row holds more than
+      the file ever did (`book_id`, `reading_id`, page, location, citations, and
+      every *inbound* edge); and the asymmetry settles it — believe a deletion
+      wrongly and something is gone, believe a persistence wrongly and the user
+      sees a hit for a note whose file moved. Recreation then needs no case of
+      its own, which is the ruling's real payoff.
+    - **Unclaimed files are not adopted.** A markdown file under the vault that
+      no note row claims is left alone. Adopting one would have to invent its
+      book, its kind and its anchor out of whatever an editor left lying there.
+    - **`notes_fts` cannot have triggers, and that settles the question item 24
+      was told to ask.** A trigger copies between tables, and the note body is
+      **not in the database** — `notes` has no body column, and `notes_fts` *is*
+      the only copy. There is nothing for a trigger to read. Making triggers
+      possible would mean storing every note body in a second column beside the
+      index, i.e. making the vault a cache of the database rather than the other
+      way round, which inverts the ownership `docs/decisions.md` states. Not an
+      unallocated migration — a non-option.
+    - **`notes.title` is still not unique, and was not made so.** Item 9 pinned
+      that deliberately; a uniqueness constraint would have made this item's
+      lookups easier and would change what the vault permits, so it stays.
+      Relatedly and newly documented: a **derived title is the note's first six
+      words and is indexed beside the body**, so an outside edit leaves the old
+      words findable through the title. That is not staleness — the title is the
+      `[[wikilink]]` target, and re-deriving it from an outside edit would
+      silently repoint every backlink in the vault.
+    - **Two pre-existing bugs the build surfaced.** `create_note` indexed the
+      body it was *handed* rather than the one it *wrote* — they differ by a trim
+      and a newline, so no note was ever byte-identical to its own index, and the
+      first thing to compare the two would have re-indexed the entire vault while
+      looking correct. And `refresh_note_from_disk`'s FTS write and link write
+      were two transactions, so a cancelled refresh could leave a note whose
+      searchable body and whose graph edges came from different versions of the
+      file, with nothing on either side looking wrong; `Storage::reindex_note`
+      is now one transaction.
+    - **Nothing counts what is out of sync.** `VaultReconcile` is past tense and
+      for the engine's own log and its tests. There is no "3 notes out of sync"
+      anywhere, and the TUI's watcher arm shows nothing at all: an index quietly
+      being right is not news, and announcing it would be a notification about a
+      chore the user did not have.

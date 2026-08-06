@@ -293,7 +293,13 @@ pub async fn create_note(
     );
     std::fs::write(&file, &content)?;
 
-    let links = extract_wikilinks(&input.body);
+    // **Index the body that was actually written**, not the one that was
+    // passed in. They differ by a trim and a newline, and until item 24 that
+    // difference meant a note was never byte-identical to its own index — so
+    // the first time anything compared the file against the index it found a
+    // change that had not happened, and re-indexed the entire vault.
+    let (_, written_body) = frontmatter_and_body(&content);
+    let links = extract_wikilinks(written_body);
     let id = storage
         .insert_note(
             crate::storage::NewNoteMeta {
@@ -306,7 +312,7 @@ pub async fn create_note(
                 title: &title,
                 kind: input.kind.as_str(),
             },
-            &input.body,
+            written_body,
             &links,
         )
         .await?;
@@ -317,6 +323,156 @@ pub async fn create_note(
         file,
         links,
     })
+}
+
+// ---- vault coherence (item 24) ---------------------------------------------
+
+/// What a sweep of the vault found, in the past tense.
+///
+/// **Not a to-do list.** `absent` counts notes whose file was not there when we
+/// looked; it exists so the non-destructive ruling below can be *asserted*, and
+/// so the engine can say something in its own log. No frontend turns it into "3
+/// notes out of sync" — a stale index is the app's problem, not a chore
+/// assigned to the reader, and there is no screen in this repo that counts what
+/// the user has not done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VaultReconcile {
+    /// Notes whose file was looked at.
+    pub checked: usize,
+    /// Notes whose index was behind their file and has caught up.
+    pub reindexed: usize,
+    /// Notes whose file was not there. Nothing was written for any of them.
+    pub absent: usize,
+}
+
+/// A note file's body, or `None` when there is no file there.
+///
+/// A read error that is *not* absence propagates: a permission problem is worth
+/// hearing about, while a file that is simply gone is an ordinary state of the
+/// vault (see [`reconcile_vault`]).
+pub(crate) fn body_on_disk(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let (_, body) = frontmatter_and_body(&content);
+            Ok(Some(body.to_string()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Bring one note's index in line with a body read from its file, and say
+/// whether that changed anything.
+///
+/// **The one place a note's index catches up with its file** — the watcher, the
+/// sweep and [`crate::Engine::refresh_note_from_disk`] all come through here,
+/// so none of them can hold a different opinion about what a change is.
+///
+/// The comparison against what is already indexed is what makes seeing our own
+/// writes free rather than merely harmless: `create_note` and
+/// `update_note_body` write the file *and* the index, and the watcher then sees
+/// the file event they caused. Without this the echo is one extra pointless
+/// transaction per save; with it, it is one read and one `SELECT`. It also
+/// absorbs the ordinary editor no-op — Obsidian rewrites a file on focus loss
+/// whether or not a character changed.
+///
+/// Compared **trim-end**: an editor that adds a trailing newline on save has
+/// not changed what the note says, and treating it as a change would re-index
+/// the whole vault the first time one ran over it.
+pub(crate) async fn reindex_from_body(
+    storage: &Storage,
+    note_id: i64,
+    title: &str,
+    body: &str,
+) -> Result<bool> {
+    let indexed = storage.indexed_body(note_id).await?;
+    if indexed.as_deref().map(str::trim_end) == Some(body.trim_end()) {
+        return Ok(false);
+    }
+    let links = extract_wikilinks(body);
+    storage.reindex_note(note_id, title, body, &links).await?;
+    Ok(true)
+}
+
+/// A path under the vault, as `notes.file_path` spells it.
+///
+/// `None` for anything that is not a markdown file inside the vault — an
+/// editor's swap file, `.obsidian/workspace.json`, a directory. Components are
+/// joined with `/` rather than the platform separator because that is what
+/// `create_note` wrote, and a lookup that spelled it the other way would find
+/// nothing on Windows and never say why.
+pub(crate) fn vault_relative(vault: &Path, path: &Path) -> Option<String> {
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+    {
+        return None;
+    }
+    let rest = path.strip_prefix(vault).ok()?;
+    let parts: Vec<&str> = rest
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// Walk every note and bring the ones whose file has moved ahead back in line.
+///
+/// **This is the half a watcher cannot do**, and the reason it exists beside
+/// one rather than instead of one: a watcher only ever sees the present, and
+/// the ordinary case is a note edited in Obsidian on Tuesday and searched for
+/// in readingbuddy on Thursday. It is also the whole of the answer on a
+/// platform where `notify` will not start — `docs/decisions.md` makes absence a
+/// first-class answer, and an unwatchable directory must still hold a working
+/// vault.
+///
+/// **Two stages, the pattern `sidecar_seen` established.** `stat` first and
+/// skip when the file is no newer than the index; only then read and compare.
+/// One caveat, stated rather than papered over: `notes.last_modified` is unix
+/// *seconds*, so an external edit landing in the same second as one of our own
+/// index writes is skipped by this sweep. The watcher is what covers a live
+/// edit; this covers a cold one, and a cold one is never in the same second.
+pub(crate) async fn reconcile_vault(storage: &Storage, vault: &Path) -> Result<VaultReconcile> {
+    let mut report = VaultReconcile::default();
+    for note in storage.note_files().await? {
+        let path = vault.join(&note.file_path);
+        report.checked += 1;
+
+        let Ok(meta) = std::fs::metadata(&path) else {
+            // Absent, unreadable, or a directory where a note should be. None
+            // of those is a deletion — see `VaultWatcher`'s ruling.
+            report.absent += 1;
+            continue;
+        };
+        let newer = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .is_none_or(|d| d.as_secs() as i64 > note.last_modified);
+        if !newer {
+            continue;
+        }
+        let Some(body) = body_on_disk(&path)? else {
+            report.absent += 1;
+            continue;
+        };
+        if reindex_from_body(storage, note.id, &note.title, &body).await? {
+            report.reindexed += 1;
+        }
+    }
+    // The path is deliberately not in here: a note's filename is its slugified
+    // title, which `derive_title` takes from the first six words of the body.
+    // A vault path is the user's prose and belongs no higher than `trace!`.
+    tracing::debug!(
+        checked = report.checked,
+        reindexed = report.reindexed,
+        absent = report.absent,
+        "vault reconciled"
+    );
+    Ok(report)
 }
 
 #[cfg(test)]

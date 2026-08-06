@@ -63,11 +63,38 @@ impl InProcess {
     /// against. Absolute here means `convertFileSrc(book.cover_path)` works with
     /// a single asset-protocol scope entry, and means the frontend must never
     /// join `images_dir` with `cover_path` (that would double the prefix).
+    ///
+    /// # The vault (item 24)
+    ///
+    /// The note index catches up with the vault here, so the search box item 27
+    /// adds cannot silently miss the note edited in Obsidian five minutes ago —
+    /// which is the worst shape that bug takes, because the box does not look
+    /// broken, the note looks gone. Once for the edits made while the app was
+    /// closed, then a task that drives the watcher: polling it *is* the work,
+    /// and the re-index happens inside it rather than needing anything from
+    /// this side or from the frontend.
+    ///
+    /// Both degrade to nothing. A window that will not open because a directory
+    /// could not be watched is a far worse bug than a stale index.
     pub async fn open(data_dir: PathBuf) -> Result<Self, readingbuddy_api::ApiError> {
         let data_dir = std::path::absolute(&data_dir).unwrap_or(data_dir);
-        Ok(Self {
-            api: Api::open(&data_dir).await?,
-        })
+        let api = Api::open(&data_dir).await?;
+
+        // `eprintln!` and not `tracing::warn!`: this crate installs no
+        // subscriber, so a tracing event here would go precisely nowhere.
+        // stderr is what `pnpm tauri dev` shows and what a packaged app's log
+        // captures.
+        if let Err(e) = api.engine().reconcile_vault().await {
+            eprintln!("readingbuddy: could not reconcile the vault: {e}");
+        }
+        match api.engine().watch_vault() {
+            Ok(mut watcher) => {
+                tauri::async_runtime::spawn(async move { while watcher.next().await.is_some() {} });
+            }
+            Err(e) => eprintln!("readingbuddy: not watching the vault: {e}"),
+        }
+
+        Ok(Self { api })
     }
 
     pub fn images_dir(&self) -> String {

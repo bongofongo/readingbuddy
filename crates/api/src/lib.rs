@@ -89,8 +89,15 @@ impl Api {
     }
 
     /// The engine underneath, for a host that also drives it directly — the
-    /// mount watcher, for one, which this vocabulary deliberately does not
-    /// carry (see [`protocol`]).
+    /// mount watcher and the **vault watcher**, neither of which this
+    /// vocabulary carries (see [`protocol`]).
+    ///
+    /// The vault watcher is the load-bearing case for this accessor. A watcher
+    /// is a long-lived thing a host owns, not a request/reply pair, and item 24
+    /// deliberately kept it off the wire: because the watcher performs the
+    /// re-index itself, a host that drives one has correct note searches with no
+    /// server-initiated frame, and a host that does not still has
+    /// `RefreshNoteFromDisk` and `Engine::reconcile_vault`.
     pub fn engine(&self) -> &Arc<Engine> {
         &self.engine
     }

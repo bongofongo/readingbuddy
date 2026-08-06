@@ -31,9 +31,16 @@ that recur throughout:
 
 - **A note's prose is on disk, not in the DB.** `notes` holds metadata; the body
   lives in the vault file. `notes_fts` is a *searchable cache* of the body, kept
-  in step by delete+insert on every save (`storage/notes.rs::refresh_note_body`).
-  Editing a vault file in Obsidian therefore leaves the FTS index stale until
-  `Engine::refresh_note_from_disk` re-reads it.
+  in step by delete+insert on every save (`storage/notes.rs::reindex_note`).
+  Editing a vault file in Obsidian therefore makes the index stale, which is
+  what item 24 fixed — in two halves, because they cover different things: a
+  `VaultWatcher` for an edit made while the app is running, and
+  `Engine::reconcile_vault` for one made while it was not. Both go through
+  `notes::reindex_from_body`, and **neither ever writes to the vault**. A file
+  that disappears is not a note that was deleted, and nothing at all is written
+  for one — deletion is `Engine::delete_note` and only that. `notes_fts`
+  **cannot have triggers**: a trigger copies between tables, and the body is in
+  no table — the FTS row is the only copy there is.
 - **A file's address is derived, never stored.** `Engine::file_path` computes
   `files_dir/<ab>/<sha256>.<ext>` from the row. There is no path column that
   could disagree with the content hash.

@@ -353,6 +353,135 @@ async fn refresh_note_from_disk_reindexes_an_external_edit() {
     );
 }
 
+// ---- vault coherence (item 24) ---------------------------------------------
+
+/// **The whole bug, at the facade.** A note edited in another program while
+/// readingbuddy was not running, and then searched for.
+///
+/// This is the half no watcher can ever cover: a watcher sees the present, and
+/// Tuesday's edit is not the present on Thursday. Nothing here called
+/// `refresh_note_from_disk` — the sweep found it.
+#[tokio::test]
+async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
+    let (_tmp, engine) = engine().await;
+    let saved = engine.save_book(&book("Pachinko")).await.unwrap();
+    let created = engine
+        .create_note(NewNoteInput {
+            // Titled, so the search below is about the body: a derived title is
+            // the note's first six words and is indexed beside it.
+            title: Some("Pachinko, chapter 4".into()),
+            book_id: saved.id,
+            body: "Sunja's dignity under pressure.".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(engine.search_notes("dignity", 10).await.unwrap().len(), 1);
+
+    let raw = std::fs::read_to_string(&created.file).unwrap();
+    std::fs::write(
+        &created.file,
+        raw.replace("Sunja's dignity under pressure.", "Hansu's calculation."),
+    )
+    .unwrap();
+    days_later(&created.file);
+
+    let report = engine.reconcile_vault().await.unwrap();
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.reindexed, 1);
+    assert_eq!(report.absent, 0);
+
+    assert_eq!(
+        engine.search_notes("calculation", 10).await.unwrap().len(),
+        1,
+        "the sweep never reached the index"
+    );
+    assert!(engine.search_notes("dignity", 10).await.unwrap().is_empty());
+}
+
+/// The sweep is idempotent, and **observably** so.
+///
+/// Asserted rather than assumed, because the failure is invisible: a sweep that
+/// re-indexes every note every time is *correct* and merely rewrites the whole
+/// index on every pass. That is the trap the tier-2 corpus fell into, where
+/// every import reported `updated` and idempotency could never be observed.
+#[tokio::test]
+async fn a_second_sweep_over_an_unchanged_vault_writes_nothing() {
+    let (_tmp, engine) = engine().await;
+    let saved = engine.save_book(&book("Pachinko")).await.unwrap();
+    for body in ["first thought", "second thought", "third thought"] {
+        engine
+            .create_note(NewNoteInput {
+                book_id: saved.id,
+                body: body.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
+    let first = engine.reconcile_vault().await.unwrap();
+    assert_eq!(first.checked, 3);
+    assert_eq!(
+        first.reindexed, 0,
+        "a note the engine just wrote is not a note that changed"
+    );
+
+    let second = engine.reconcile_vault().await.unwrap();
+    assert_eq!(second, first);
+}
+
+/// A file that is not there is not a note that was deleted — the sweep's half
+/// of the watcher's ruling.
+///
+/// A vault on an unmounted network share would otherwise empty the note index
+/// on the next search.
+#[tokio::test]
+async fn the_sweep_never_deletes_a_note_whose_file_is_missing() {
+    let (_tmp, engine) = engine().await;
+    let saved = engine.save_book(&book("Pachinko")).await.unwrap();
+    let created = engine
+        .create_note(NewNoteInput {
+            title: Some("Pachinko, chapter 9".into()),
+            book_id: saved.id,
+            body: "Something worth keeping.".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    std::fs::remove_file(&created.file).unwrap();
+    let report = engine.reconcile_vault().await.unwrap();
+    assert_eq!(report.absent, 1);
+    assert_eq!(report.reindexed, 0);
+
+    assert_eq!(
+        engine.search_notes("keeping", 10).await.unwrap().len(),
+        1,
+        "an absent file destroyed a note"
+    );
+    assert!(engine.get_note(created.id).await.unwrap().is_some());
+}
+
+/// Push a file's `mtime` a minute forward.
+///
+/// `notes.last_modified` is unix **seconds**, so a file rewritten in the same
+/// second as its index write is indistinguishable from one that was not. That
+/// is a stated limit of the sweep rather than a bug — the watcher covers a live
+/// edit, and a cold edit is never in the same second — but a test that wrote
+/// both inside one second would be asserting the limit instead of the
+/// behaviour.
+fn days_later(path: &std::path::Path) {
+    let meta = std::fs::metadata(path).unwrap();
+    let ahead = meta.modified().unwrap() + std::time::Duration::from_secs(60);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(ahead)
+        .unwrap();
+}
+
 // ---- flashcards ------------------------------------------------------------
 
 #[tokio::test]

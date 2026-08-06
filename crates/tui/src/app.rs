@@ -14,7 +14,7 @@ use ratatui::widgets::ListState;
 use readingbuddy::{
     Book, BookSort, CalibreRowState, DeviceBook, DeviceState, Diagnostic, Engine, EngineError,
     FlashcardRow, Highlight, MatchCandidate, MountEvent, MountWatcher, NewNoteInput, NoteKind,
-    NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest,
+    NoteRecord, RankedResult, ReadNumbering, Reading, SearchRequest, VaultEvent, VaultWatcher,
 };
 
 use crossterm::event::KeyModifiers;
@@ -3878,19 +3878,45 @@ async fn next_mount(watcher: &mut Option<MountWatcher>) -> MountEvent {
     }
 }
 
-/// The event loop: crossterm events, a 20fps animation tick, and the mount
-/// watcher — redrawing only when something actually changed.
+/// The next note whose index caught up with its file, or never.
 ///
-/// `mounts` is an `Option` because not every machine can watch, and one that
-/// cannot is a machine that still runs the app.
+/// [`next_mount`]'s reason for `pending()` applies unchanged. What is different
+/// here is that **polling this is the work**: the re-index happens inside
+/// `next()`, on this task, so an arm that merely ignored the event would still
+/// be doing the whole job. See `watch.rs`'s module doc.
+async fn next_vault(watcher: &mut Option<VaultWatcher>) -> VaultEvent {
+    match watcher {
+        Some(w) => match w.next().await {
+            Some(event) => event,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// The event loop: crossterm events, a 20fps animation tick, and the two
+/// watchers — redrawing only when something actually changed.
+///
+/// `mounts` and `vault` are `Option`s because not every machine can watch, and
+/// one that cannot is a machine that still runs the app.
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     mut mounts: Option<MountWatcher>,
+    mut vault: Option<VaultWatcher>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Before the first frame, and before anything can search. The watcher above
+    // only ever sees the present; this is what catches the note edited in
+    // Obsidian while the TUI was not running, which is the ordinary case rather
+    // than the exotic one. A vault that cannot be swept is not a reason to
+    // refuse to open — logged, and the app carries on with the index it has.
+    if let Err(e) = app.engine.reconcile_vault().await {
+        tracing::warn!(error = %e, "could not reconcile the vault");
+    }
 
     redraw(terminal, app)?;
 
@@ -3920,6 +3946,14 @@ pub async fn run<B: Backend>(
             // handler only queues work — the walk itself goes through
             // `pending_scan` like every other one.
             event = next_mount(&mut mounts) => app.on_mount_event(event),
+            // **This arm has no handler on purpose.** By the time it resolves,
+            // the note's index has already caught up — the work is the poll.
+            // There is nothing to show, either: an index quietly being right is
+            // not news, and announcing it would be a notification about a chore
+            // the user did not have.
+            event = next_vault(&mut vault) => {
+                tracing::trace!(note = event.note_id(), "vault event");
+            }
             _ = std::future::ready(()), if app.has_deferred() => {}
         }
 

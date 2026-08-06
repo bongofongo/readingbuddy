@@ -75,12 +75,29 @@ pub async fn create(engine: &Engine, opts: NoteOpts<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Bring the note index in line with the vault before reading it.
+///
+/// The CLI is the one frontend that **cannot** hold a watcher: every command is
+/// its own process, so there is no loop for one to live in. A sweep before the
+/// two commands that read the *index* — rather than the rows — is the whole of
+/// its answer, and it is a `stat` per note on the common path.
+///
+/// Never fatal. A vault that cannot be swept is a reason to search the index we
+/// have, not a reason to refuse to search at all — an unreadable file must not
+/// turn `notes -s` into an error.
+async fn catch_up(engine: &Engine) {
+    if let Err(e) = engine.reconcile_vault().await {
+        tracing::warn!(error = %e, "could not reconcile the vault");
+    }
+}
+
 pub async fn list_or_search(
     engine: &Engine,
     book_selector: Option<&str>,
     query: Option<&str>,
 ) -> Result<()> {
     if let Some(q) = query {
+        catch_up(engine).await;
         let hits = engine.search_notes(q, 25).await?;
         if hits.is_empty() {
             println!("no notes match '{q}'");
@@ -128,6 +145,9 @@ pub async fn list_or_search(
 /// haven't written" into a dead end, which is the one thing this app is not
 /// allowed to be.
 pub async fn links(engine: &Engine, selector: &str) -> Result<()> {
+    // The graph is written from the file too — a `[[wikilink]]` added in
+    // Obsidian is an edge that only exists once somebody has re-read the note.
+    catch_up(engine).await;
     let note = resolve_note(engine, selector).await?;
     println!("#{} “{}”  ({})", note.id, note.title, note.file_path);
 
