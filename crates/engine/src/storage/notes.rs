@@ -35,14 +35,8 @@ pub struct NoteRecord {
     pub created_at: Option<OffsetDateTime>,
 }
 
-const NOTE_COLUMNS: &str = "id, book_id, reading_id, highlight_id, page, location, \
+pub(super) const NOTE_COLUMNS: &str = "id, book_id, reading_id, highlight_id, page, location, \
      file_path, title, kind, created_at";
-
-#[derive(Debug, Clone)]
-pub struct NoteSearchHit {
-    pub note: NoteRecord,
-    pub snippet: String,
-}
 
 /// One outgoing edge, read from the linking note's side.
 ///
@@ -61,7 +55,7 @@ pub struct OutgoingLink {
 /// Prefix a canonical column list with a table alias, so a joined query can
 /// reuse `NOTE_COLUMNS` / `HIGHLIGHT_COLUMNS` instead of spelling out a second
 /// copy that can drift from it.
-fn qualified(columns: &str, alias: &str) -> String {
+pub(super) fn qualified(columns: &str, alias: &str) -> String {
     columns
         .split(", ")
         .map(|c| format!("{alias}.{c}"))
@@ -69,7 +63,7 @@ fn qualified(columns: &str, alias: &str) -> String {
         .join(", ")
 }
 
-fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> NoteRecord {
+pub(super) fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> NoteRecord {
     NoteRecord {
         id: r.get("id"),
         book_id: r.get("book_id"),
@@ -413,29 +407,6 @@ impl Storage {
         Ok(row.as_ref().map(row_to_note))
     }
 
-    pub async fn search_notes(&self, query: &str, limit: i64) -> Result<Vec<NoteSearchHit>> {
-        let rows = sqlx::query(
-            r#"SELECT n.id, n.book_id, n.reading_id, n.highlight_id, n.page, n.location,
-                      n.file_path, n.title, n.kind, n.created_at,
-                      snippet(notes_fts, 1, '>>', '<<', '…', 12) AS snip
-               FROM notes_fts
-               JOIN notes n ON n.id = notes_fts.rowid
-               WHERE notes_fts MATCH ?
-               ORDER BY rank LIMIT ?"#,
-        )
-        .bind(query)
-        .bind(limit)
-        .fetch_all(self.pool())
-        .await?;
-        Ok(rows
-            .iter()
-            .map(|r| NoteSearchHit {
-                note: row_to_note(r),
-                snippet: r.get("snip"),
-            })
-            .collect())
-    }
-
     /// Cite a highlight from a note.
     ///
     /// **By reference, never by copying the text in.** A citation that embedded
@@ -612,17 +583,22 @@ mod tests {
         assert_eq!(links, vec![("Han".to_string(), Some(n2))]);
 
         // FTS hits body content.
-        let hits = s.search_notes("grief", 10).await.unwrap();
+        let search = |s: Storage, q: &'static str| async move {
+            s.search_marks(q, Some(super::super::SearchSource::Note), 10)
+                .await
+                .unwrap()
+        };
+        let hits = search(s.clone(), "grief").await;
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].note.id, n2);
-        assert!(hits[0].snippet.contains(">>grief<<"));
+        assert_eq!(hits[0].as_note().unwrap().id, n2);
+        assert!(hits[0].snippet().contains(">>grief<<"));
 
         // Refresh replaces body in the index.
         s.refresh_note_body(n2, "Han", "Now about resilience.")
             .await
             .unwrap();
-        assert!(s.search_notes("grief", 10).await.unwrap().is_empty());
-        assert_eq!(s.search_notes("resilience", 10).await.unwrap().len(), 1);
+        assert!(search(s.clone(), "grief").await.is_empty());
+        assert_eq!(search(s.clone(), "resilience").await.len(), 1);
     }
 
     /// `limit` selects along `created_at`, and its absence is every note.

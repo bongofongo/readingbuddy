@@ -30,9 +30,21 @@ The reasoning behind every migration lives beside the module that uses it:
 `0001`–`0002` and `0007`–`0008` in [`../CLAUDE.md`](../CLAUDE.md) under
 "notes.rs"; `0003`/`0006` under "device.rs"; `0004` under "koreader.rs"; `0005`
 and `0011`–`0012` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md);
-`0009` under "goodreads.rs"; `0010` under "files.rs"; `0013` and `0014` in
-[`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
+`0009` under "goodreads.rs"; `0010` under "files.rs"; `0013`, `0014` and `0015`
+in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
 deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md).
+
+`0015` is the **first migration with triggers**, and the argument for them is in
+the file: it is the inverse of the one that keeps `notes_fts` trigger-free. A
+note's body is not in the database, so a trigger has nothing to read;
+`highlights.text` is a column, so a trigger can read it and an
+*external-content* table can index it without a second copy. Read it before
+adding any FTS index — it also records the two things that were **measured**
+rather than assumed (a foreign-key cascade *does* fire the delete trigger, and
+`AFTER UPDATE OF <columns>` is what keeps `attribute_highlights` and
+`merge_books` from paying a reindex per row for columns the index does not
+hold), and it back-fills with `'rebuild'`, which is the one-statement back-fill
+an external-content index gets for free.
 
 `0014` is the repo's second **deliberate non-back-fill**, and unlike `0012` it
 could not have had one at all: `cover_width` is the result of decoding a PNG

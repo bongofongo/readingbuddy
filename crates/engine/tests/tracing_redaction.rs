@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};
 use tracing::subscriber::with_default;
 use tracing_subscriber::Layer;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::registry::Registry;
 
@@ -132,7 +133,6 @@ fn the_engine_installs_no_global_subscriber() {
 #[tokio::test]
 async fn a_note_body_never_reaches_a_log_above_trace() {
     use readingbuddy::{Engine, EngineConfig, NewNoteInput, VaultStir, VaultWatcher};
-    use tracing_subscriber::filter::LevelFilter;
 
     const SECRET: &str = "Sunja's dignity under Hansu's calculation";
 
@@ -205,5 +205,102 @@ async fn a_note_body_never_reaches_a_log_above_trace() {
             !line.contains("vault/"),
             "a vault path reached a log above trace!: {line}"
         );
+    }
+}
+
+/// A **search query** is the user's private reading too, and a new query path is
+/// exactly where a helpful `info!("searching for {q}")` gets added.
+///
+/// The sibling of the test above, and it covers the two things a search touches
+/// that the watcher does not: the words the reader typed, and the text of the
+/// highlight that came back. Filtered to `DEBUG` for the same reason — this
+/// asserts the *rule* (`trace!` may carry it), not that nothing is logged. The
+/// count of hits is fine at `debug!`: a number is not the query.
+#[test]
+fn a_search_query_never_reaches_a_log_above_trace() {
+    use readingbuddy::{Engine, EngineConfig, NewHighlight, NewNoteInput};
+
+    const TYPED: &str = "Hansu";
+    const PASSAGE: &str = "Hansu's calculation, which Sunja never saw coming";
+
+    let captured = Captured::default();
+    let subscriber = Registry::default().with(captured.clone().with_filter(LevelFilter::DEBUG));
+
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tracing::subscriber::with_default(subscriber, || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let engine = Engine::open(EngineConfig::rooted_at(tmp.path()))
+                        .await
+                        .unwrap();
+                    let book = engine
+                        .save_book(&readingbuddy::Book {
+                            title: Some("Pachinko".into()),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap()
+                        .id
+                        .unwrap();
+                    engine
+                        .storage()
+                        .insert_highlight(
+                            book,
+                            &NewHighlight {
+                                text: PASSAGE.into(),
+                                chapter: None,
+                                page: None,
+                                pos0: None,
+                                pos1: None,
+                                ko_datetime: Some("2026-01-01 10:00:00".into()),
+                                ko_datetime_updated: None,
+                                color: None,
+                                note: None,
+                                source: "koreader".into(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    engine
+                        .create_note(NewNoteInput {
+                            book_id: Some(book),
+                            body: PASSAGE.into(),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap();
+
+                    let hits = engine.search_marks(TYPED, None, 10).await.unwrap();
+                    assert_eq!(
+                        hits.len(),
+                        2,
+                        "the fixture has to actually match, or this passes for \
+                         the wrong reason"
+                    );
+                    // A query that matches nothing goes down the same path.
+                    assert!(
+                        engine
+                            .search_marks("thermodynamics", None, 10)
+                            .await
+                            .unwrap()
+                            .is_empty()
+                    );
+                });
+            });
+        });
+    });
+
+    for line in captured.contents() {
+        for word in ["Hansu", "Sunja", "calculation", "thermodynamics"] {
+            assert!(
+                !line.contains(word),
+                "a search query or a highlight reached a log above trace!: {line}"
+            );
+        }
     }
 }

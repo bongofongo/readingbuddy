@@ -1313,3 +1313,95 @@ because item 31 needed somewhere to put reading time.
       show the lost highlights *as a diagnostic* rather than as an absence, which
       is the only version of this item worth having: a golden that merely lacks
       the highlights is the original bug, written down and made permanent.
+
+33. **One search surface.** Migration `0015`; a `highlights` FTS index, one
+    request answering notes and highlights together, and `title` as a predicate
+    on `BookFilter`. It builds finding (a) of item 18, and its subject is that
+    `notes_fts` was the only virtual table in the repo — so a search box would
+    have found the six notes a reader has written and none of the four hundred
+    passages they kept, correctly reported as a bug.
+    - **Triggers, and the argument is the inverse of `notes_fts`'.** `notes.rs`
+      records "`notes_fts` cannot have triggers" as a settled answer rather than
+      a deferral: a trigger copies between tables and a note's body is **not in
+      the database** — `notes` has no body column, so there is nothing to read.
+      `highlights.text` is a column, so the same sentence read the other way
+      says a trigger *can*, and an **external-content** fts5 table can index it
+      without storing a second copy of the reader's private passages at all.
+      That buys the property the index exists for: **no write path can skip
+      it.** `insert_highlight`, `refresh_device_fields`, `set_annotation`,
+      `merge_books`' drop and `delete_book`'s cascade all maintain it without
+      naming it — and so does `crates/corpus`' `gen-devdb`, which writes raw SQL
+      and by design does not link the engine, so an explicit Rust writer would
+      have had to be re-implemented there, exactly as `notes_fts` in fact is.
+      Four things were rehearsed against sqlite3 3.51 rather than reasoned
+      about, and two changed the file: **a cascade does fire the delete
+      trigger** (without it, `MATCH` keeps returning a deleted book's rowids),
+      and the update trigger is **`AFTER UPDATE OF text, ko_note, annotation`**,
+      because `attribute_highlights` rewrites `reading_id` for every highlight
+      of a book on every import and `merge_books` rewrites `book_id` per moved
+      row — neither touches an indexed column, and an unrestricted trigger would
+      make both pay a reindex per row for nothing. The back-fill is `'rebuild'`,
+      one statement: unlike `0012` and `0014`, this migration *can* back-fill
+      honestly, because the values are already in the column.
+    - **One ranked list, and it is deliberately not ranked by bm25.** The item
+      was right that two lists a frontend interleaves is a relevance ordering
+      invented above the seam. It was wrong to imply the merge key is a score:
+      fts5's rank comes from **that index's own corpus** — its document
+      frequencies, its average document length — so a note's −8.2 and a
+      highlight's −8.2 are not the same claim and no constant converts one into
+      the other. Sorting a union on them would be arithmetic on incommensurable
+      units, which is worse than source order because it *looks* like relevance.
+      So each index is ordered by its own rank, which is the one thing bm25
+      supports, and the two are merged **by within-source position** — the best
+      note beside the best highlight, then the seconds, and so on. That is
+      reciprocal rank fusion with one source per item, so no `k` has to be
+      picked. Its one consequence is stated rather than discovered: a query
+      matching fifty notes strongly and one highlight weakly puts that weak
+      highlight at the top. For this app that is right — a single matching
+      passage buried at position 47 is a passage nobody sees. Ties across the
+      two sources break on **recency**, the one key genuinely comparable
+      between them (both `created_at` columns are "when we stored it", unix
+      seconds, one clock).
+    - **`search_notes` was replaced, not joined, and `API_VERSION` is 2.** The
+      recommendation was accepted. Keeping both doors would leave a client able
+      to ask the two halves separately and merge two rankings it has no rule
+      for — the interleaving problem with extra steps, and it would make the
+      one-list guarantee optional. The narrowing survives as a **filter**
+      (`source`, absent means both) in `BookFilter`'s idiom, because "search my
+      notes" is a real question while the *ordering* is never the caller's;
+      `rb notes --search` is that filter and shares every line of printing with
+      `rb find`, so the two doors cannot come to disagree.
+    - **`title` is `LIKE`, not FTS, and that is a refusal of the item's own
+      suggestion.** Three reasons in the order they bind. It has to compose with
+      `count_books`, all five sorts and the offset paging, and `BookFilter`
+      writes **one** `WHERE` for the page and the count alike — fts5 would have
+      to arrive as `books.id IN (SELECT rowid …)` plus a third index with a
+      third maintenance discipline, for one short line of text. It has to behave
+      like its five neighbours, or a struct whose fields match by different
+      rules is a struct whose callers guess. And **infix is what a shelf filter
+      means**: `possess` finds *The Dispossessed* under `LIKE` and finds nothing
+      under fts5, whose tokens start at word boundaries. Relevance lives in the
+      search, over what the reader wrote and kept; a book is neither.
+    - **The defect the door exposed, and it was live.** `search_notes` bound the
+      user's raw text straight into `MATCH`, and fts5 reads `-`, `+`, `*`, `:`,
+      `(`, `NEAR`, `OR` and a bare `'` as syntax — so `rb notes --search "don't"`
+      and `C++` failed with a raw sqlx error rather than a search, and had since
+      item 7. Every token is now a quoted phrase, joined by a space (which fts5
+      reads as AND), with a trailing `*` kept because prefix search is reached
+      for on purpose. Measured against sqlite3 3.51, which is also how the
+      empty case was settled: **`MATCH ''` raises**, so `Some("")` was never
+      "returns nothing" for free. An empty or whitespace query is no hits and no
+      error and issues no statement — an empty search box is not asking, and
+      "everything" is not what it would mean if it were.
+    - **Findings for a number, not built here.** (a) `highlights_fts` indexes
+      `text`, `ko_note` and `annotation` but **`chapter` is left out** — every
+      highlight in a book carries one, so it matches broadly and means nothing.
+      If a "which chapter was that in" question ever arrives it is a filter, not
+      a fourth indexed column. (b) **Books are not in the unified search** and
+      `title` stays a filter, so "find" and "which book" remain two questions; a
+      third arm would put an index over four hundred short strings beside two
+      indexes over prose, where the position merge would give a title hit the
+      top slot on every query. (c) The **query language stops at a trailing
+      `*`** — no `OR`, no `NEAR`, no column syntax. A reader who wants one is
+      asking for a query language, which is a surface somebody has to decide on,
+      not an escape hatch to leave open by accident.

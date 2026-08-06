@@ -85,8 +85,8 @@ pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport,
-    NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit, OutgoingLink, Rating, RatingScale,
-    ReadNumbering, Reading, ReadingEvent, RefillReport, Source, StatusFilter, Storage,
+    NewHighlight, NewReadingEvent, NoteRecord, OutgoingLink, Rating, RatingScale, ReadNumbering,
+    Reading, ReadingEvent, RefillReport, SearchHit, SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -1109,8 +1109,25 @@ impl Engine {
         self.storage.list_notes(book_id, limit).await
     }
 
-    pub async fn search_notes(&self, query: &str, limit: i64) -> Result<Vec<NoteSearchHit>> {
-        self.storage.search_notes(query, limit).await
+    /// Everything the reader wrote or kept, matching one query, as **one**
+    /// ranked list.
+    ///
+    /// This replaced `search_notes`, which answered half the question. Two
+    /// lists a frontend interleaves is a relevance ordering invented above the
+    /// seam — it cannot say a note outranks a highlight, so it interleaves by
+    /// source order — so the ranking happens once, here.
+    ///
+    /// `source` narrows *which* indexes are asked and never how the answer is
+    /// ordered; `None` asks both. An empty query is no hits and no error. The
+    /// ordering rule, and why it is deliberately not bm25 across the two
+    /// indexes, is in [`crate::storage`]'s `fts` module header.
+    pub async fn search_marks(
+        &self,
+        query: &str,
+        source: Option<SearchSource>,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        self.storage.search_marks(query, source, limit).await
     }
 
     /// One note by id.

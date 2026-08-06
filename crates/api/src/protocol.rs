@@ -38,8 +38,20 @@ use crate::error::ApiError;
 /// Adding a method does not bump it: an older client never sends the new name,
 /// and a newer client meets [`crate::error::ErrorCode::BadRequest`] on an older
 /// daemon — which is a clear failure rather than a silent misread, and is why
-/// the number can stay still through ordinary growth.
-pub const API_VERSION: u32 = 1;
+/// the number can stay still through ordinary growth. Items 18, 19, 22 and the
+/// surfacing item all grew this vocabulary without moving it.
+///
+/// **2 — item 33 removed `SearchNotes` and `Response::NoteHits`.** Their
+/// replacement, [`Request::SearchMarks`], answers the same question and more of
+/// it, so the two could have stood side by side and the number could have
+/// stayed at 1. Keeping both was rejected: a client able to ask for notes alone
+/// and highlights alone has to merge two rankings, has no rule for doing it,
+/// and will merge them by source order — which is exactly the failure the
+/// unified request exists to remove, so a second door makes the guarantee
+/// optional. That is a removal, and a removal is what this number is for. It
+/// costs one client (`rb notes --search`, updated here) and it can never be
+/// done as cheaply again.
+pub const API_VERSION: u32 = 2;
 
 /// The build, for a human reading a log. Never branch on it.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -320,8 +332,24 @@ pub enum Request {
         #[serde(default)]
         limit: Option<i64>,
     },
-    SearchNotes {
+    /// Notes and highlights matching one query, as **one ranked list**.
+    ///
+    /// This replaced `SearchNotes`, which is the change that moved
+    /// [`API_VERSION`] to 2, and the replacement rather than the addition is
+    /// the decision. Leaving both doors up would leave a client able to ask for
+    /// notes and highlights separately and then interleave them itself — which
+    /// it cannot do honestly, because it has no rule for whether a note
+    /// outranks a highlight and would fall back to source order. Ranking once,
+    /// below the seam, is the whole content of this method, and a second door
+    /// past it makes that guarantee optional.
+    ///
+    /// `source` narrows which indexes are asked; **absent is both**, and it
+    /// never changes the order. `limit` is the length of the answer. An empty
+    /// query is no hits and no error.
+    SearchMarks {
         query: String,
+        #[serde(default)]
+        source: Option<SearchSourceDto>,
         limit: i64,
     },
     GetNote {
@@ -517,7 +545,7 @@ pub enum Response {
 
     Note(Option<NoteDto>),
     Notes(Vec<NoteDto>),
-    NoteHits(Vec<NoteSearchHitDto>),
+    SearchHits(Vec<SearchHitDto>),
     Links(Vec<OutgoingLinkDto>),
     CreatedNote(CreatedNoteDto),
 

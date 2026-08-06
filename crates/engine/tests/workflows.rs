@@ -427,9 +427,13 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
     );
 
     // FTS follows the same write.
-    let hits = engine.search_notes("preoccupations", 10).await.unwrap();
+    let hits = engine
+        .search_marks("preoccupations", Some(readingbuddy::SearchSource::Note), 10)
+        .await
+        .unwrap();
     assert!(
-        hits.iter().any(|h| h.note.id == a.id),
+        hits.iter()
+            .any(|h| h.as_note().is_some_and(|n| n.id == a.id)),
         "a rewritten body has to reach the search index"
     );
 
@@ -444,7 +448,7 @@ async fn a_reflection_links_to_another_and_the_graph_follows_the_body() {
     );
     assert!(
         engine
-            .search_notes("preoccupations", 10)
+            .search_marks("preoccupations", Some(readingbuddy::SearchSource::Note), 10)
             .await
             .unwrap()
             .is_empty(),
@@ -488,7 +492,7 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
     // asserting it is what makes the next block mean something.
     assert!(
         engine
-            .search_notes("antechamber", 10)
+            .search_marks("antechamber", Some(readingbuddy::SearchSource::Note), 10)
             .await
             .unwrap()
             .is_empty(),
@@ -497,8 +501,15 @@ async fn an_edit_made_outside_the_app_reaches_the_index_and_the_graph() {
 
     engine.refresh_note_from_disk(&a_rec).await.unwrap();
 
-    let hits = engine.search_notes("antechamber", 10).await.unwrap();
-    assert!(hits.iter().any(|h| h.note.id == a.id), "the index followed");
+    let hits = engine
+        .search_marks("antechamber", Some(readingbuddy::SearchSource::Note), 10)
+        .await
+        .unwrap();
+    assert!(
+        hits.iter()
+            .any(|h| h.as_note().is_some_and(|n| n.id == a.id)),
+        "the index followed"
+    );
 
     let links = engine.storage().note_links(a.id).await.unwrap();
     assert_eq!(links.len(), 1, "and so did the graph");

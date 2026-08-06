@@ -661,9 +661,12 @@ mod tests {
         assert!(content.contains("kind: note"));
         assert_eq!(created.links, vec!["Han".to_string()]);
 
-        let hits = s.search_notes("dignity", 10).await.unwrap();
+        let hits = s
+            .search_marks("dignity", Some(crate::SearchSource::Note), 10)
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].note.id, created.id);
+        assert_eq!(hits[0].as_note().unwrap().id, created.id);
 
         std::fs::remove_dir_all(&vault).ok();
     }

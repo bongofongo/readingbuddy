@@ -91,6 +91,27 @@ pub enum StatusFilter {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BookFilter {
     pub status: Option<StatusFilter>,
+    /// Matched as a **substring of the title**, case-insensitively — the shape
+    /// `author` states one field down, and deliberately so.
+    ///
+    /// This is a *filter*, not a search, and that is the whole of why it is
+    /// `LIKE` rather than a books FTS index. Three reasons, in the order they
+    /// bind. It has to compose with `count_books` and with all five sorts and
+    /// with the offset paging, and `BookFilter::predicate` writes **one**
+    /// `WHERE` for the page and the count alike — an FTS predicate would have to
+    /// arrive as `books.id IN (SELECT rowid FROM …)`, and a second index with a
+    /// second maintenance discipline to keep it honest, for a column that is one
+    /// short line of text. It has to behave like its five neighbours, because a
+    /// struct whose fields match by different rules is a struct whose callers
+    /// guess: `author` finds *Le Guin* inside a JSON array of whole names, and a
+    /// title filter that stemmed and tokenised instead would answer a different
+    /// question in the same call. And **infix is what a shelf filter means** —
+    /// `possess` finds *The Dispossessed* under `LIKE` and finds nothing under
+    /// fts5, whose tokens start at word boundaries.
+    ///
+    /// Relevance lives in [`Storage::search_marks`](crate::Storage), over what
+    /// the reader wrote and kept. A book is neither.
+    pub title: Option<String>,
     /// Matched as a **substring of the stored author list**, case-insensitively.
     ///
     /// Not `names::sort_key` and not a join: `books.authors` is a JSON array of
@@ -155,6 +176,10 @@ impl BookFilter {
             // only honest spelling of "no reading".
             Some(StatusFilter::NoReading) => parts.push("cur.id IS NULL".into()),
             None => {}
+        }
+        if let Some(title) = &self.title {
+            parts.push(r"books.title LIKE ? ESCAPE '\'".into());
+            binds.push(Bind::Text(format!("%{}%", like_escape(title))));
         }
         if let Some(author) = &self.author {
             parts.push(r"books.authors LIKE ? ESCAPE '\'".into());
@@ -331,6 +356,7 @@ mod tests {
     fn every_predicate_binds_in_the_order_it_names() {
         let p = BookFilter {
             status: Some(StatusFilter::Is(ReadingState::Reading)),
+            title: Some("Dispossessed".into()),
             author: Some("Le Guin".into()),
             year: Some(1974),
             language: Some("en".into()),
@@ -342,18 +368,20 @@ mod tests {
             p.binds,
             vec![
                 Bind::Text("reading".into()),
+                Bind::Text("%Dispossessed%".into()),
                 Bind::Text("%Le Guin%".into()),
                 Bind::Int(1974),
                 Bind::Text("en".into()),
                 Bind::Text("sf".into()),
             ],
-            "the clause names five values and `has_cover` names none"
+            "the clause names six values and `has_cover` names none"
         );
-        // Six predicates, and `has_cover` is the one that binds nothing. Not
+        // Seven predicates, and `has_cover` is the one that binds nothing. Not
         // counted by splitting on " AND " — the tag clause contains one of its
         // own, which is exactly the sort of thing a structural count gets wrong.
         for named in [
             "cur.status",
+            "books.title LIKE",
             "books.authors LIKE",
             "books.publish_year",
             "books.language",
@@ -373,6 +401,47 @@ mod tests {
         assert_eq!(like_escape("100%"), r"100\%");
         assert_eq!(like_escape("a_b"), r"a\_b");
         assert_eq!(like_escape(r"a\b"), r"a\\b");
+    }
+
+    /// `title` matches by exactly the rule `author` does, and that is the
+    /// decision rather than an implementation detail — a filter struct whose
+    /// fields match by different rules is a filter struct whose callers guess.
+    /// Structural, because the behavioural version passes just as well against
+    /// an FTS predicate that happens to find the same book.
+    #[test]
+    fn the_title_filter_matches_the_way_its_neighbours_do() {
+        let title = BookFilter {
+            title: Some("Dispossessed".into()),
+            ..Default::default()
+        }
+        .predicate();
+        let author = BookFilter {
+            author: Some("Dispossessed".into()),
+            ..Default::default()
+        }
+        .predicate();
+        assert_eq!(
+            title.sql.replace("books.title", "X"),
+            author.sql.replace("books.authors", "X"),
+            "one clause shape, two columns"
+        );
+        assert_eq!(title.binds, author.binds, "and one binding shape");
+        assert!(
+            !title.sql.contains("MATCH") && !title.sql.contains("fts"),
+            "a filter is not a search: {}",
+            title.sql
+        );
+        // Infix, which is the half fts5 could not do: `possess` finds
+        // *The Dispossessed*.
+        assert_eq!(
+            BookFilter {
+                title: Some("possess".into()),
+                ..Default::default()
+            }
+            .predicate()
+            .binds,
+            vec![Bind::Text("%possess%".into())]
+        );
     }
 
     #[test]

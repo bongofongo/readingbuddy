@@ -213,6 +213,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "covers",
         "enrich",
         "epub",
+        "find",
         "goodreads",
         "help",
         "highlights",
@@ -631,4 +632,60 @@ fn the_cover_back_fill_is_reachable_from_the_binary() {
     cli.run(&["covers"])
         .has("already measured")
         .lacks("0 covers");
+}
+
+// ---- item 33: the search door ----------------------------------------------
+
+/// The whole point of `rb find`: a highlight that arrived through the KOReader
+/// path is findable from a terminal.
+///
+/// Through the binary rather than the facade, because that is the claim — the
+/// engine could search and, until this command, nothing outside the process
+/// could ask it to. That is the failure `measure_stored_covers` and
+/// `list --sort author` both had.
+#[test]
+fn an_imported_highlight_is_findable_from_the_command_line() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+
+    cli.run(&["find", "passage"])
+        .has("highlight")
+        .has(">>passage<<");
+
+    // The narrowing is a filter over the same list, not a second search.
+    cli.run(&["find", "passage", "--notes"])
+        .has("no notes match");
+    cli.run(&["find", "passage", "--highlights"])
+        .has(">>passage<<");
+}
+
+/// Absence is an answer, in all three of its shapes: nothing matched, nothing
+/// was asked, and something was typed that fts5 reads as syntax.
+///
+/// The last one is a live defect this item fixed rather than a hypothetical —
+/// `notes --search "don't"` used to fail with a raw database error, because the
+/// query went into `MATCH` unquoted.
+#[test]
+fn a_search_that_finds_nothing_is_never_an_error() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+
+    let none = cli.run(&["find", "thermodynamics"]);
+    none.has("no notes or highlights match");
+    assert!(
+        !none.stdout.contains('0'),
+        "absence is not zero: {}",
+        none.stdout
+    );
+
+    cli.run(&["find", "   "]).has("nothing to search for");
+    // Two things fts5 would have raised a syntax error on.
+    cli.run(&["find", "don't"])
+        .has("no notes or highlights match");
+    cli.run(&["find", "C++"])
+        .has("no notes or highlights match");
 }
