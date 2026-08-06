@@ -92,6 +92,8 @@ enum Cmd {
         #[arg(long)]
         refill: bool,
     },
+    /// Measure the covers already on disk, so a shelf can lay them out (item 20)
+    Covers,
     /// Ask the providers about a book you already have (item 30)
     Enrich { book: String },
     /// Correct a book's metadata, and record that you are the one who said so
@@ -446,6 +448,7 @@ async fn main() -> Result<()> {
             )
             .await?
         }
+        Cmd::Covers => commands::covers::measure(&engine).await?,
         Cmd::Enrich { book } => commands::enrich::enrich(&engine, &book).await?,
         Cmd::Set(args) => commands::enrich::set(&engine, &args).await?,
         Cmd::Rm { book, yes } => commands::book::remove(&engine, &book, yes).await?,

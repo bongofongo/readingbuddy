@@ -142,7 +142,9 @@ DEV_DB_SRC := corpus/generated/devdb
 dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vault
 	@command -v sqlite3 >/dev/null || { \
 	  echo "dev-db needs the sqlite3 CLI (present on macOS and ubuntu runners)."; exit 1; }
-	cargo run -q -p corpus -- gen-devdb --seed $(DEV_DB_SEED)
+	@# --data-dir, and not only --out: `cover_path` is a whole path in this
+	@# schema, so the seed has to name where the library is being built.
+	cargo run -q -p corpus -- gen-devdb --seed $(DEV_DB_SEED) --data-dir "$(DEV_DB_DIR)"
 	rm -rf "$(DEV_DB_DIR)"
 	mkdir -p "$(DEV_DB_DIR)/database/images" "$(DEV_DB_DIR)/vault"
 	@# The engine creates and migrates the database, so corpus never owns a second
@@ -152,6 +154,11 @@ dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vau
 	cp $(DEV_DB_SRC)/covers/*.png "$(DEV_DB_DIR)/database/images/"
 	cp $(DEV_DB_SRC)/vault/*.md "$(DEV_DB_DIR)/vault/"
 	sqlite3 "$(DEV_DB_DIR)/database/app.db" < $(DEV_DB_SRC)/seed.sql
+	@# The seed states `cover_path` and cannot state `cover_width` — SQLite cannot
+	@# decode a PNG, which is why item 20's back-fill is a command. Without this
+	@# every book here has a cover and a NULL `cover_aspect`, and a shelf reading
+	@# that column concludes the column does not work.
+	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" covers
 	@# reading_events comes from the engine's own fillers rather than from invented
 	@# rows — the fixture states highlights and readings, and the real derivation
 	@# turns them into a log. A generator writing that table directly would be

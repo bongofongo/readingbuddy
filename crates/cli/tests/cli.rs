@@ -210,6 +210,7 @@ fn the_subcommand_set_is_what_we_decided() {
         "cards",
         "cite",
         "config",
+        "covers",
         "enrich",
         "epub",
         "goodreads",
@@ -606,4 +607,28 @@ fn set_writes_the_series_pair_and_refuses_half_of_it() {
     cli.run(&["set", &id, "--series-index", "3"])
         .has("series_index");
     cli.run(&["show", &id]).has("Dune #3");
+}
+
+/// The cover back-fill has a door, and it is reachable from the binary.
+///
+/// `Engine::measure_stored_covers` was written by item 20 and called by nothing
+/// for a whole wave — tested on the facade, unreachable from outside the
+/// process, and therefore never run over the library a shelf would be built
+/// against. That is the same failure as `list --sort author`: the engine can do
+/// it and nothing can ask. The counts are the facade test's business
+/// (`engine_facade.rs`); what only this can observe is that the verb exists,
+/// opens the engine and exits 0.
+///
+/// A book pulled from a sidecar has no cover, so the work list is empty — and
+/// the empty answer must not be a zero.
+#[test]
+fn the_cover_back_fill_is_reachable_from_the_binary() {
+    let cli = Cli::new();
+    let device = cli.root.path().join("device");
+    let sidecar = place(&device, "Gen-Summary.sdr");
+    cli.run(&["ko", "pull", sidecar.to_str().unwrap()]);
+
+    cli.run(&["covers"])
+        .has("already measured")
+        .lacks("0 covers");
 }

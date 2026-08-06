@@ -3,6 +3,7 @@ pub mod book;
 pub mod calibre;
 pub mod cards;
 pub mod config;
+pub mod covers;
 pub mod enrich;
 pub mod goodreads;
 pub mod ko;
