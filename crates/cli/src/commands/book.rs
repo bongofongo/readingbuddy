@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use readingbuddy::{BookSort, Engine};
+use readingbuddy::{BookQuery, BookSort, Engine};
 
 use super::resolve_one;
 use crate::{prompt, render};
@@ -32,13 +32,21 @@ pub async fn import_epub(engine: &Engine, path: &Path) -> Result<()> {
 }
 
 pub async fn list(engine: &Engine, limit: i64, sort: &str) -> Result<()> {
+    // `author` and `year` landed with item 17 and never reached a user: this
+    // match was the only door and it was not widened, so two of the engine's
+    // five sorts were unreachable from the CLI. Named here rather than reported,
+    // because a sort nothing can ask for is a sort nothing exercises.
     let sort = match sort {
         "title" => BookSort::Title,
         "progress" => BookSort::Progress,
+        "author" => BookSort::Author,
+        "year" => BookSort::Year,
         "last-modified" | "last_modified" => BookSort::LastModified,
-        other => bail!("unknown sort '{other}' (last-modified | title | progress)"),
+        other => {
+            bail!("unknown sort '{other}' (last-modified | title | progress | author | year)")
+        }
     };
-    let books = engine.list_books(limit, sort).await?;
+    let books = engine.list_books(&BookQuery::new(limit, sort)).await?;
     if books.is_empty() {
         println!("library is empty — try `readingbuddy search` or `readingbuddy epub`");
         return Ok(());
@@ -52,7 +60,7 @@ pub async fn list(engine: &Engine, limit: i64, sort: &str) -> Result<()> {
 pub async fn show(engine: &Engine, selector: &str) -> Result<()> {
     let book = resolve_one(engine, selector).await?;
     print!("{}", render::book_details(&book));
-    let notes = engine.list_notes(book.id).await?;
+    let notes = engine.list_notes(book.id, None).await?;
     if !notes.is_empty() {
         println!("  {:<14} {}", "notes", notes.len());
     }

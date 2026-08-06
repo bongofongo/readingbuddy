@@ -340,17 +340,46 @@ impl Storage {
         Ok(())
     }
 
-    pub async fn list_notes(&self, book_id: Option<i64>) -> Result<Vec<NoteRecord>> {
+    /// Notes, newest first — for one book or for the whole vault.
+    ///
+    /// **`limit` selects along `created_at`**, the same contract
+    /// [`BookSort`](super::BookSort) states for books: `list_notes(None,
+    /// Some(12))` is the twelve most recent notes, not twelve arbitrary ones.
+    ///
+    /// `None` is every note, and it stays reachable **deliberately**. Item 18
+    /// found this method with no limit at all — a full table scan into a `Vec`
+    /// for a screen showing twelve rows — and the obvious fix, a default cap, is
+    /// wrong for the callers that are not screens: `resolve_note` scans every
+    /// title in the vault to answer `rb links "Reflection: Pachinko"`, and a cap
+    /// there would silently stop resolving the notes past it. A truncated
+    /// correctness pass is worse than a slow one. So the cap belongs to the
+    /// caller that has a viewport, and `None` belongs to the caller that has a
+    /// whole graph to walk.
+    pub async fn list_notes(
+        &self,
+        book_id: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Vec<NoteRecord>> {
+        // `created_at` is a second-resolution timestamp and two notes written in
+        // one second are ordinary, so `id` closes the order the way every book
+        // sort now does — without it a limit could cut a tie arbitrarily.
+        let order = "ORDER BY created_at DESC, id DESC";
+        // SQLite reads a negative limit as no limit, which is what makes the two
+        // arms one statement rather than four.
+        let limit = limit.unwrap_or(-1);
         let rows = match book_id {
             Some(id) => {
-                let sql = format!(
-                    "SELECT {NOTE_COLUMNS} FROM notes WHERE book_id = ? ORDER BY created_at DESC"
-                );
-                sqlx::query(&sql).bind(id).fetch_all(self.pool()).await?
+                let sql =
+                    format!("SELECT {NOTE_COLUMNS} FROM notes WHERE book_id = ? {order} LIMIT ?");
+                sqlx::query(&sql)
+                    .bind(id)
+                    .bind(limit)
+                    .fetch_all(self.pool())
+                    .await?
             }
             None => {
-                let sql = format!("SELECT {NOTE_COLUMNS} FROM notes ORDER BY created_at DESC");
-                sqlx::query(&sql).fetch_all(self.pool()).await?
+                let sql = format!("SELECT {NOTE_COLUMNS} FROM notes {order} LIMIT ?");
+                sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?
             }
         };
         Ok(rows.iter().map(row_to_note).collect())
@@ -594,5 +623,45 @@ mod tests {
             .unwrap();
         assert!(s.search_notes("grief", 10).await.unwrap().is_empty());
         assert_eq!(s.search_notes("resilience", 10).await.unwrap().len(), 1);
+    }
+
+    /// `limit` selects along `created_at`, and its absence is every note.
+    ///
+    /// Item 18's whole change to this method, and both halves matter: a screen
+    /// showing twelve rows no longer reads the table, and `resolve_note` — which
+    /// walks every title in the vault — still can.
+    #[tokio::test]
+    async fn a_note_limit_selects_the_newest_and_its_absence_is_everything() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for (i, title) in ["one", "two", "three", "four"].into_iter().enumerate() {
+            s.insert_note(
+                NewNoteMeta {
+                    book_id: None,
+                    reading_id: None,
+                    highlight_id: None,
+                    page: None,
+                    location: None,
+                    file_path: &format!("unsorted/{i}.md"),
+                    title,
+                    kind: "note",
+                },
+                "body",
+                &[],
+            )
+            .await
+            .unwrap();
+        }
+
+        let all = s.list_notes(None, None).await.unwrap();
+        assert_eq!(all.len(), 4, "no limit is every note");
+        let page = s.list_notes(None, Some(2)).await.unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(
+            page.iter().map(|n| n.id).collect::<Vec<_>>(),
+            all.iter().take(2).map(|n| n.id).collect::<Vec<_>>(),
+            "a limited list is the head of the unlimited one — the newest, not \
+             two arbitrary notes"
+        );
+        assert!(s.list_notes(None, Some(0)).await.unwrap().is_empty());
     }
 }

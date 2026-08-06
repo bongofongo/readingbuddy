@@ -55,7 +55,10 @@ fn files_dir(tmp: &tempfile::TempDir) -> PathBuf {
 async fn library_size(engine: &Engine) -> usize {
     engine
         .storage()
-        .list_books(1000, readingbuddy::BookSort::Title)
+        .list_books(&readingbuddy::BookQuery::new(
+            1000,
+            readingbuddy::BookSort::Title,
+        ))
         .await
         .unwrap()
         .len()

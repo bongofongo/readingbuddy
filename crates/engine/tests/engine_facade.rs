@@ -18,7 +18,7 @@ async fn open_creates_its_directories_and_migrates() {
     assert!(tmp.path().join("database/files").is_dir());
     assert!(tmp.path().join("vault").is_dir());
     // Migrations ran, so the schema is queryable.
-    assert!(engine.list_notes(None).await.unwrap().is_empty());
+    assert!(engine.list_notes(None, None).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -254,7 +254,7 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
         "note file was not written to the vault"
     );
 
-    let notes = engine.list_notes(saved.id).await.unwrap();
+    let notes = engine.list_notes(saved.id, None).await.unwrap();
     assert_eq!(notes.len(), 1);
     let note = &notes[0];
 
@@ -293,7 +293,7 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
 
     engine.delete_note(note).await.unwrap();
     assert!(!created.file.exists(), "vault file outlived its row");
-    assert!(engine.list_notes(saved.id).await.unwrap().is_empty());
+    assert!(engine.list_notes(saved.id, None).await.unwrap().is_empty());
     let _ = tmp;
 }
 
@@ -312,12 +312,12 @@ async fn deleting_a_note_whose_file_is_already_gone_still_clears_the_row() {
         .unwrap();
 
     std::fs::remove_file(&created.file).unwrap();
-    let note = &engine.list_notes(saved.id).await.unwrap()[0];
+    let note = &engine.list_notes(saved.id, None).await.unwrap()[0];
     engine
         .delete_note(note)
         .await
         .expect("a missing vault file must not block the row delete");
-    assert!(engine.list_notes(saved.id).await.unwrap().is_empty());
+    assert!(engine.list_notes(saved.id, None).await.unwrap().is_empty());
 }
 
 /// Obsidian edits the file behind our back; the FTS index has to catch up.
@@ -334,7 +334,7 @@ async fn refresh_note_from_disk_reindexes_an_external_edit() {
         .await
         .unwrap();
 
-    let note = engine.list_notes(saved.id).await.unwrap().remove(0);
+    let note = engine.list_notes(saved.id, None).await.unwrap().remove(0);
     let raw = std::fs::read_to_string(&created.file).unwrap();
     std::fs::write(
         &created.file,

@@ -83,10 +83,10 @@ pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
-    ActivitySummary, BookFile, BookSort, BookTag, Confidence, DayActivity, DayRange, FieldSource,
-    FillStats, FlashcardRow, Highlight, MergeReport, NewHighlight, NewReadingEvent, NoteRecord,
-    NoteSearchHit, OutgoingLink, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent,
-    RefillReport, Source, Storage,
+    ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
+    DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport,
+    NewHighlight, NewReadingEvent, NoteRecord, NoteSearchHit, OutgoingLink, Rating, RatingScale,
+    ReadNumbering, Reading, ReadingEvent, RefillReport, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -326,9 +326,32 @@ impl Engine {
             .ok_or_else(|| EngineError::NotFound(format!("book id {id}")))
     }
 
-    /// The library, newest-touched first unless told otherwise.
-    pub async fn list_books(&self, limit: i64, sort: BookSort) -> Result<Vec<Book>> {
-        self.storage.list_books(limit, sort).await
+    /// One page of the library, newest-touched first unless told otherwise.
+    ///
+    /// `BookQuery::new(limit, sort)` is the whole of what this used to take.
+    /// [`BookQuery`] adds the filter and the offset; see its module for why the
+    /// page is an offset rather than a cursor.
+    pub async fn list_books(&self, query: &BookQuery) -> Result<Vec<Book>> {
+        self.storage.list_books(query).await
+    }
+
+    /// How many books match — the number a shelf needs *before* it needs the
+    /// rows, and the one thing `list_books` could not answer without returning
+    /// the whole library.
+    ///
+    /// The same `WHERE` the page is built from, so the count and the pages
+    /// cannot disagree. See [`BookFilter`].
+    pub async fn count_books(&self, filter: &BookFilter) -> Result<i64> {
+        self.storage.count_books(filter).await
+    }
+
+    /// What is behind each of these books — highlights, notes, owned files —
+    /// in one call for a whole page.
+    ///
+    /// The detail screen makes four queries for one book. A list of eight
+    /// hundred cannot, which is why nothing in a list could show this before.
+    pub async fn book_summaries(&self, book_ids: &[i64]) -> Result<Vec<BookSummary>> {
+        self.storage.book_summaries(book_ids).await
     }
 
     /// One book by its internal id. [`Engine::resolve_books`] is what a
@@ -1075,8 +1098,15 @@ impl Engine {
         notes::create_note(&self.storage, &self.config.vault_dir, book.as_ref(), input).await
     }
 
-    pub async fn list_notes(&self, book_id: Option<i64>) -> Result<Vec<NoteRecord>> {
-        self.storage.list_notes(book_id).await
+    /// Notes, newest first. `limit` selects along `created_at`; `None` is every
+    /// note and is for callers walking the whole graph rather than filling a
+    /// viewport — see [`Storage::list_notes`].
+    pub async fn list_notes(
+        &self,
+        book_id: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<Vec<NoteRecord>> {
+        self.storage.list_notes(book_id, limit).await
     }
 
     pub async fn search_notes(&self, query: &str, limit: i64) -> Result<Vec<NoteSearchHit>> {

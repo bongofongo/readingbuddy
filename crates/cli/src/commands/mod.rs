@@ -48,7 +48,7 @@ pub async fn resolve_note(engine: &Engine, selector: &str) -> Result<NoteRecord>
     }
     let needle = selector.to_lowercase();
     let mut candidates: Vec<NoteRecord> = engine
-        .list_notes(None)
+        .list_notes(None, None)
         .await?
         .into_iter()
         .filter(|n| n.title.to_lowercase().contains(&needle))

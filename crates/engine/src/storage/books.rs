@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+
 use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use sqlx::query::Query;
+use sqlx::sqlite::{Sqlite, SqliteArguments, SqliteRow};
 use time::OffsetDateTime;
 
 use super::field_provenance::{self, Source};
 use super::highlights::identity_hash_of;
+use super::query::{Bind, BookFilter, BookQuery, BookSummary};
 use super::{Storage, now_unix};
 use crate::book::{Book, series_index_text};
 use crate::error::{EngineError, Result};
@@ -128,6 +132,61 @@ pub(super) const BOOK_FROM: &str = "FROM books LEFT JOIN readings cur ON cur.id 
           ORDER BY (r.finished_at IS NULL) DESC,
                    COALESCE(r.started_at, r.created_at) DESC, r.id DESC
           LIMIT 1)";
+
+/// The `ORDER BY` for one sort key, **ending in `books.id`**.
+///
+/// The tie-break is what makes offset pagination coherent. `publish_year DESC`
+/// across four hundred books sharing a year is a *partial* order, and page 2 is
+/// only the successor of page 1 if both statements break those ties the same
+/// way. SQLite's sorter happens to today — the same plan over the same rows
+/// produces the same sequence, which is why removing this line does **not**
+/// break `a_page_and_its_successor_partition_the_list` — and that is precisely
+/// the reason to write it down rather than rely on it: the guarantee is a
+/// property of the current query plan, and the day an index over `title` or a
+/// different `LIMIT` sends the planner down another path, a book would appear on
+/// two pages and another on none, intermittently, with nothing on screen looking
+/// wrong. `books.id` is unique and never NULL, so every arm here is a total order
+/// by construction instead.
+///
+/// `order_by_is_a_total_order` is the assertion, and it is structural for that
+/// reason: the behavioural test cannot fail today, so a test that reads the SQL
+/// is the only one with teeth.
+///
+/// The tie-break follows the primary key's own direction, so a descending list's
+/// ties read newest-first like the rest of it.
+///
+/// [`BookSort::Author`] has no arm and cannot: see `list_books_by_author`.
+fn order_by(sort: BookSort) -> &'static str {
+    match sort {
+        BookSort::LastModified => "books.last_modified DESC, books.id DESC",
+        BookSort::Title => "books.title COLLATE NOCASE ASC, books.id ASC",
+        // The joined reading's page, not a `books` column any more. A computed
+        // ratio across a LEFT JOIN, which is exactly why it has no cursor key
+        // and why this item paginates by offset.
+        BookSort::Progress => {
+            "CAST(cur.current_page AS REAL) / NULLIF(books.page_count, 0) DESC NULLS LAST, \
+             books.id ASC"
+        }
+        // Undated last, so the `NULL` arm must sit outside the reversal.
+        BookSort::Year => "books.publish_year DESC NULLS LAST, books.id DESC",
+        BookSort::Author => unreachable!("BookSort::Author has no ORDER BY — see list_books"),
+    }
+}
+
+/// Apply a [`Predicate`](super::query::Predicate)'s values, in the order its
+/// clause named them.
+fn bind_all<'q>(
+    mut q: Query<'q, Sqlite, SqliteArguments<'q>>,
+    binds: &[Bind],
+) -> Query<'q, Sqlite, SqliteArguments<'q>> {
+    for b in binds {
+        q = match b {
+            Bind::Text(s) => q.bind(s.clone()),
+            Bind::Int(i) => q.bind(*i),
+        };
+    }
+    q
+}
 
 pub(super) fn row_to_book(row: &SqliteRow) -> Result<Book> {
     let authors: String = row.try_get("authors")?;
@@ -1017,7 +1076,7 @@ impl Storage {
     pub async fn find_books_by_title(&self, fragment: &str) -> Result<Vec<Book>> {
         let sql = format!(
             "SELECT {BOOK_COLUMNS} {BOOK_FROM} WHERE books.title LIKE ?
-             ORDER BY books.last_modified DESC"
+             ORDER BY books.last_modified DESC, books.id DESC"
         );
         let rows = sqlx::query(&sql)
             .bind(format!("%{fragment}%"))
@@ -1026,41 +1085,136 @@ impl Storage {
         rows.iter().map(row_to_book).collect()
     }
 
-    /// The first `limit` books by `sort`. See [`BookSort`] for what that means
-    /// about membership — it is a contract, not an accident of `LIMIT`.
-    pub async fn list_books(&self, limit: i64, sort: BookSort) -> Result<Vec<Book>> {
-        let order = match sort {
-            BookSort::LastModified => "books.last_modified DESC",
-            BookSort::Title => "books.title COLLATE NOCASE ASC",
-            // The joined reading's page, not a `books` column any more.
-            BookSort::Progress => {
-                "CAST(cur.current_page AS REAL) / NULLIF(books.page_count, 0) DESC NULLS LAST"
-            }
-            // Undated last, so the `NULL` arm must sit outside the reversal.
-            BookSort::Year => "books.publish_year DESC NULLS LAST",
-            // SQL cannot answer this one. Read, sort, truncate — see the
-            // variant's own note for why that is the whole design and not a
-            // stopgap hiding a missing column.
-            BookSort::Author => return self.list_books_by_author(limit).await,
-        };
-        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} ORDER BY {order} LIMIT ?");
-        let rows = sqlx::query(&sql).bind(limit).fetch_all(self.pool()).await?;
+    /// One page of the library. See [`BookSort`] for what `limit` means about
+    /// membership — it is a contract, not an accident of `LIMIT` — and
+    /// `storage/query.rs` for why the page is an offset and why every arm ends in
+    /// `books.id`.
+    pub async fn list_books(&self, query: &BookQuery) -> Result<Vec<Book>> {
+        // SQL cannot answer this one. Read, sort, slice — see the variant's own
+        // note for why that is the whole design and not a stopgap hiding a
+        // missing column.
+        if query.sort == BookSort::Author {
+            return self.list_books_by_author(query).await;
+        }
+        let predicate = query.filter.predicate();
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} {} ORDER BY {} LIMIT ? OFFSET ?",
+            predicate.sql,
+            order_by(query.sort)
+        );
+        let q = bind_all(sqlx::query(&sql), &predicate.binds)
+            .bind(query.limit)
+            .bind(query.offset.max(0));
+        let rows = q.fetch_all(self.pool()).await?;
         rows.iter().map(row_to_book).collect()
     }
 
-    /// [`BookSort::Author`]'s arm: the whole library, sorted in Rust, truncated.
+    /// [`BookSort::Author`]'s arm: the whole matching library, sorted in Rust,
+    /// then sliced.
     ///
     /// The base order is recency and it is load-bearing rather than arbitrary:
     /// `sort_by_key` is **stable**, so two books by one author keep the order
     /// the library screen would otherwise have shown them in. That is a better
-    /// tie-break than any second key, and it costs nothing.
-    async fn list_books_by_author(&self, limit: i64) -> Result<Vec<Book>> {
-        let sql = format!("SELECT {BOOK_COLUMNS} {BOOK_FROM} ORDER BY books.last_modified DESC");
-        let rows = sqlx::query(&sql).fetch_all(self.pool()).await?;
+    /// tie-break than any second key, and it costs nothing. `books.id` closes
+    /// it, because recency ties too and a stable sort over an unstable base is
+    /// not stable — which under paging is a book on two pages and another on
+    /// none.
+    ///
+    /// The slice happens **after** the sort, which is the only place it can
+    /// happen and still mean "the first N by this key". That is also why the
+    /// whole-table read cannot be paged away: page 40 of an author sort costs
+    /// exactly what page 1 does.
+    async fn list_books_by_author(&self, query: &BookQuery) -> Result<Vec<Book>> {
+        let predicate = query.filter.predicate();
+        let sql = format!(
+            "SELECT {BOOK_COLUMNS} {BOOK_FROM} {} ORDER BY books.last_modified DESC, books.id DESC",
+            predicate.sql
+        );
+        let rows = bind_all(sqlx::query(&sql), &predicate.binds)
+            .fetch_all(self.pool())
+            .await?;
         let mut books: Vec<Book> = rows.iter().map(row_to_book).collect::<Result<_>>()?;
         books.sort_by_key(|b| crate::names::sort_key(&b.authors));
-        books.truncate(limit.max(0) as usize);
+        let skip = query.skip().min(books.len());
+        books.drain(..skip);
+        if let Some(take) = query.take() {
+            books.truncate(take);
+        }
         Ok(books)
+    }
+
+    /// How many books a [`BookFilter`] matches.
+    ///
+    /// The same clause the page uses, from the same function — see
+    /// `storage/query.rs`. A shelf wants this once per filter and the page
+    /// many times per filter, which is why it is its own call rather than a
+    /// field beside the rows: bundled, every scroll would pay for a scan of the
+    /// whole matching set.
+    ///
+    /// A count of books that exist. Nothing here counts what has not been done.
+    pub async fn count_books(&self, filter: &BookFilter) -> Result<i64> {
+        let predicate = filter.predicate();
+        let sql = format!("SELECT COUNT(*) {BOOK_FROM} {}", predicate.sql);
+        let row = bind_all(sqlx::query(&sql), &predicate.binds)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(row.try_get::<i64, _>(0)?)
+    }
+
+    /// What is behind each of these books: highlights, notes, owned files.
+    ///
+    /// **One call for a page, not four per row.** The detail screen makes four
+    /// queries for one book, which a list of eight hundred cannot; this is three
+    /// grouped aggregates over three `book_id` indexes, whatever the page size.
+    ///
+    /// Returns one [`BookSummary`] per id **in the order given**, zeros
+    /// included, so a caller can zip it against the page it just fetched without
+    /// a lookup — and so "nothing behind this book" is an answer rather than a
+    /// missing row.
+    pub async fn book_summaries(&self, book_ids: &[i64]) -> Result<Vec<BookSummary>> {
+        let mut totals: HashMap<i64, BookSummary> = HashMap::new();
+        for id in book_ids {
+            totals.entry(*id).or_insert(BookSummary {
+                book_id: *id,
+                ..Default::default()
+            });
+        }
+        // SQLite's default parameter ceiling is 999 on older builds, and a
+        // caller may hand this the whole library. Chunked rather than
+        // documented-as-a-limit, because a limit stated in a doc comment is a
+        // limit somebody exceeds.
+        let ids: Vec<i64> = totals.keys().copied().collect();
+        for chunk in ids.chunks(500) {
+            let holes = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            for (table, pick) in [
+                ("highlights", 0usize),
+                ("notes", 1usize),
+                ("book_files", 2usize),
+            ] {
+                let sql = format!(
+                    "SELECT book_id, COUNT(*) AS n FROM {table} \
+                     WHERE book_id IN ({holes}) GROUP BY book_id"
+                );
+                let mut q = sqlx::query(&sql);
+                for id in chunk {
+                    q = q.bind(*id);
+                }
+                for row in q.fetch_all(self.pool()).await? {
+                    let id: i64 = row.try_get("book_id")?;
+                    let n: i64 = row.try_get("n")?;
+                    if let Some(s) = totals.get_mut(&id) {
+                        match pick {
+                            0 => s.highlights = n,
+                            1 => s.notes = n,
+                            _ => s.files = n,
+                        }
+                    }
+                }
+            }
+        }
+        Ok(book_ids.iter().map(|id| totals[id]).collect())
     }
 
     /// Fold `src` into `dst`: move highlights, notes, flashcards, readings,
@@ -1651,7 +1805,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(s.list_books(10, BookSort::Title).await.unwrap().len(), 1);
+        assert_eq!(
+            s.list_books(&BookQuery::new(10, BookSort::Title))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         let got = s.get_book(id).await.unwrap().unwrap();
         assert_eq!(got.publisher.as_deref(), Some("Self"));
         assert_eq!(got.title.as_deref(), Some("Untitled Draft"));
@@ -1668,7 +1828,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(s.list_books(10, BookSort::Title).await.unwrap().len(), 2);
+        assert_eq!(
+            s.list_books(&BookQuery::new(10, BookSort::Title))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -2586,6 +2752,381 @@ mod tests {
         );
     }
 
+    // ---- pages, filters and counts (item 18) -------------------------------
+
+    use crate::book::ReadingState;
+    use crate::storage::query::StatusFilter;
+
+    /// Five books whose sort keys collide on purpose: two share a title
+    /// case-insensitively, two share a year, all five are written in the same
+    /// second. Ties are what breaks offset pagination, so the fixture is made of
+    /// them.
+    async fn shelf(s: &Storage) -> Vec<i64> {
+        let mut ids = Vec::new();
+        for (title, author, year, lang) in [
+            ("Dune", "Frank Herbert", Some(1965), "en"),
+            ("dune", "Frank Herbert", Some(1965), "en"),
+            ("Kindred", "Octavia E. Butler", Some(1979), "en"),
+            ("Solaris", "Stanisław Lem", Some(1961), "pl"),
+            ("Ubik", "Philip K. Dick", None, "en"),
+        ] {
+            ids.push(
+                s.upsert_book(
+                    &Book {
+                        title: Some(title.into()),
+                        authors: vec![author.into()],
+                        publish_year: year,
+                        language: Some(lang.into()),
+                        page_count: Some(300),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        ids
+    }
+
+    fn all(sort: BookSort) -> BookQuery {
+        BookQuery {
+            sort,
+            ..Default::default()
+        }
+    }
+
+    const EVERY_SORT: [BookSort; 5] = [
+        BookSort::LastModified,
+        BookSort::Title,
+        BookSort::Progress,
+        BookSort::Year,
+        BookSort::Author,
+    ];
+
+    /// **The keystone of offset pagination**, and the thing the spec did not ask
+    /// for.
+    ///
+    /// Walking a library one page at a time must visit every book exactly once,
+    /// in the same order a single unpaged read would. The fixture is built out
+    /// of ties, since ties are the only thing that can break it.
+    ///
+    /// Note what this does and does not cover, because it was measured rather
+    /// than assumed: deleting the `books.id` tie-break from every SQL arm leaves
+    /// this **green**, because SQLite's sorter is deterministic for one plan over
+    /// one set of rows. So this test covers the arithmetic — the `Author` arm's
+    /// skip-and-truncate in Rust especially, which is the only arm where the
+    /// slicing is ours — and `order_by_is_a_total_order` covers the ordering.
+    #[tokio::test]
+    async fn a_page_and_its_successor_partition_the_list() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for sort in EVERY_SORT {
+            let whole: Vec<Option<i64>> = s
+                .list_books(&all(sort))
+                .await
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect();
+            assert_eq!(whole.len(), ids.len(), "{sort:?}");
+            for page in 1..=ids.len() as i64 + 1 {
+                let mut walked = Vec::new();
+                let mut offset = 0;
+                loop {
+                    let got = s
+                        .list_books(&BookQuery::new(page, sort).at_offset(offset))
+                        .await
+                        .unwrap();
+                    if got.is_empty() {
+                        break;
+                    }
+                    assert!(got.len() as i64 <= page, "{sort:?} overran its limit");
+                    walked.extend(got.iter().map(|b| b.id));
+                    offset += page;
+                }
+                assert_eq!(walked, whole, "{sort:?} at page size {page}");
+            }
+        }
+    }
+
+    /// Every SQL arm orders by something unique, so a page is the successor of
+    /// the one before it by construction rather than by the query planner's
+    /// current mood.
+    ///
+    /// Structural on purpose: the behavioural test above passes with the
+    /// tie-breaks removed, so this is the one that fails.
+    #[test]
+    fn order_by_is_a_total_order() {
+        for sort in EVERY_SORT {
+            if sort == BookSort::Author {
+                // No `ORDER BY` at all — the Rust arm closes its own base read
+                // with `books.id DESC`, which `a_page_and_its_successor…` covers.
+                continue;
+            }
+            let clause = super::order_by(sort);
+            assert!(
+                clause.trim_end().ends_with("books.id ASC")
+                    || clause.trim_end().ends_with("books.id DESC"),
+                "{sort:?} orders by `{clause}`, which ties — and a tie under \
+                 LIMIT/OFFSET is a book on two pages and another on none"
+            );
+        }
+    }
+
+    /// A count and a page are the same question asked two ways, which is the
+    /// whole reason one function writes the clause.
+    #[tokio::test]
+    async fn the_count_agrees_with_the_page_for_every_filter() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        s.update_progress(ids[0], Some(100), None).await.unwrap();
+        s.update_progress(ids[1], None, Some(true)).await.unwrap();
+        s.add_book_tags(ids[2], "goodreads", &[("sf".to_string(), "SF".to_string())])
+            .await
+            .unwrap();
+
+        for filter in [
+            BookFilter::default(),
+            BookFilter {
+                status: Some(StatusFilter::NoReading),
+                ..Default::default()
+            },
+            BookFilter {
+                status: Some(StatusFilter::Is(ReadingState::Reading)),
+                ..Default::default()
+            },
+            BookFilter {
+                status: Some(StatusFilter::Is(ReadingState::Finished)),
+                ..Default::default()
+            },
+            BookFilter {
+                author: Some("herbert".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                year: Some(1965),
+                ..Default::default()
+            },
+            BookFilter {
+                language: Some("PL".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                tag: Some("SF".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                has_cover: Some(false),
+                ..Default::default()
+            },
+            BookFilter {
+                author: Some("herbert".into()),
+                year: Some(1965),
+                language: Some("en".into()),
+                ..Default::default()
+            },
+        ] {
+            let count = s.count_books(&filter).await.unwrap();
+            for sort in EVERY_SORT {
+                let rows = s
+                    .list_books(&all(sort).with_filter(filter.clone()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    count,
+                    rows.len() as i64,
+                    "{filter:?} counted {count} and listed {} under {sort:?}",
+                    rows.len()
+                );
+            }
+        }
+    }
+
+    /// The four status cases, and the one that is absence.
+    ///
+    /// A book with no reading is not `finished: false` and not a state — it is
+    /// the join coming back empty. Asserted here so that adding a
+    /// `ReadingState::NeverOpened` to make this tidier would have to break a
+    /// test that says why it must not exist.
+    #[tokio::test]
+    async fn a_status_filter_has_four_cases_and_one_of_them_is_absence() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        s.update_progress(ids[0], Some(100), None).await.unwrap();
+        s.update_progress(ids[1], None, Some(true)).await.unwrap();
+        s.open_reading(ids[2], None, "local").await.unwrap();
+        s.abandon_reading(ids[2]).await.unwrap();
+
+        let of = |st: StatusFilter| BookFilter {
+            status: Some(st),
+            ..Default::default()
+        };
+        let mut counted = 0;
+        for (case, want) in [
+            (StatusFilter::Is(ReadingState::Reading), vec![ids[0]]),
+            (StatusFilter::Is(ReadingState::Finished), vec![ids[1]]),
+            (StatusFilter::Is(ReadingState::Abandoned), vec![ids[2]]),
+            (StatusFilter::NoReading, vec![ids[3], ids[4]]),
+        ] {
+            let mut got: Vec<i64> = s
+                .list_books(&all(BookSort::Title).with_filter(of(case.clone())))
+                .await
+                .unwrap()
+                .iter()
+                .filter_map(|b| b.id)
+                .collect();
+            got.sort();
+            let mut want = want;
+            want.sort();
+            assert_eq!(got, want, "{case:?}");
+            counted += s.count_books(&of(case)).await.unwrap();
+        }
+        // The four cases partition the library: nothing is in two of them and
+        // nothing is in none.
+        assert_eq!(counted, ids.len() as i64);
+    }
+
+    /// Item 17's contract, now that a page exists: `limit` selects along the
+    /// sort key. The first two books alphabetically, not two arbitrary books
+    /// shown alphabetically.
+    #[tokio::test]
+    async fn a_limit_selects_along_the_sort_key() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+        let titles: Vec<String> = s
+            .list_books(&BookQuery::new(2, BookSort::Title))
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.title.clone())
+            .collect();
+        assert_eq!(titles, vec!["Dune".to_string(), "dune".to_string()]);
+        let authors: Vec<String> = s
+            .list_books(&BookQuery::new(2, BookSort::Author))
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.authors[0].clone())
+            .collect();
+        assert_eq!(
+            authors,
+            vec![
+                "Octavia E. Butler".to_string(),
+                "Philip K. Dick".to_string()
+            ],
+            "Butler and Dick by last name, not whatever the recency order was"
+        );
+    }
+
+    /// The filter reaches the arm SQL cannot order, and the slice still happens
+    /// after the Rust sort — which is the only place it can happen and still
+    /// mean "the first N by this key".
+    #[tokio::test]
+    async fn the_author_arm_filters_and_pages_like_the_others() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+        let q = all(BookSort::Author).with_filter(BookFilter {
+            language: Some("en".into()),
+            ..Default::default()
+        });
+        let names: Vec<String> = s
+            .list_books(&q)
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.authors[0].clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Octavia E. Butler".to_string(),
+                "Philip K. Dick".to_string(),
+                "Frank Herbert".to_string(),
+                "Frank Herbert".to_string(),
+            ]
+        );
+        let second = s
+            .list_books(&BookQuery::new(1, BookSort::Author).at_offset(1))
+            .await
+            .unwrap();
+        assert_eq!(second[0].authors[0], "Philip K. Dick");
+    }
+
+    /// A negative limit is the whole library, in both arms. Two arms meaning
+    /// different things by the same number would be a bug invisible from a call
+    /// site.
+    #[tokio::test]
+    async fn a_negative_limit_is_the_whole_library_in_every_arm() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for sort in EVERY_SORT {
+            assert_eq!(
+                s.list_books(&BookQuery::new(-1, sort)).await.unwrap().len(),
+                ids.len(),
+                "{sort:?}"
+            );
+        }
+    }
+
+    /// One call for a page, one row per id **in the order asked**, zeros
+    /// included — so a caller can zip it against the page it just fetched.
+    #[tokio::test]
+    async fn the_summary_counts_what_is_behind_a_book() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let ids = shelf(&s).await;
+        for text in ["one", "two", "three"] {
+            s.insert_highlight(
+                ids[1],
+                &crate::NewHighlight {
+                    text: text.into(),
+                    chapter: None,
+                    page: None,
+                    pos0: None,
+                    pos1: None,
+                    ko_datetime: None,
+                    ko_datetime_updated: None,
+                    color: None,
+                    note: None,
+                    source: "manual".into(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        s.insert_note(
+            crate::storage::NewNoteMeta {
+                book_id: Some(ids[1]),
+                reading_id: None,
+                highlight_id: None,
+                page: None,
+                location: None,
+                file_path: "vault/a.md",
+                title: "a thought",
+                kind: "note",
+            },
+            "a body",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let got = s.book_summaries(&[ids[0], ids[1]]).await.unwrap();
+        assert_eq!(got[0].book_id, ids[0], "the order asked for is kept");
+        assert_eq!(
+            (got[0].highlights, got[0].notes, got[0].files),
+            (0, 0, 0),
+            "nothing behind a book is an answer, not a missing row"
+        );
+        assert!(!got[0].has());
+        assert_eq!((got[1].highlights, got[1].notes, got[1].files), (3, 1, 0));
+        assert!(got[1].has());
+        assert!(
+            s.book_summaries(&[]).await.unwrap().is_empty(),
+            "no ids is no rows, not every row"
+        );
+    }
+
     // ---- provenance --------------------------------------------------------
 
     use super::tests_support::{PROBES, columns, probes_cover_the_merge_table, says_everything};
@@ -3121,6 +3662,7 @@ mod tests {
 #[cfg(test)]
 mod props {
     use super::tests_support::*;
+    use super::{Book, BookFilter, BookQuery, Storage};
     use proptest::prelude::*;
 
     proptest! {
@@ -3159,6 +3701,86 @@ mod props {
                 prop_assert!(!second.src_existed, "src is gone; there is nothing left to do");
                 prop_assert_eq!(second, super::MergeReport::default());
                 prop_assert_eq!(after_one, snapshot(&s.storage, dst).await);
+                Ok(())
+            })?;
+        }
+
+        /// **Paging is a partition.** For any library, any sort and any page
+        /// size, walking the pages visits every book exactly once and in the
+        /// order one unpaged read would give.
+        ///
+        /// A property rather than more examples because the interesting input is
+        /// the *tie structure*, and picking three libraries by hand is picking
+        /// the three whose ties happen to fall between page boundaries. The
+        /// generators here deliberately draw titles and years from tiny
+        /// alphabets, so collisions are the common case rather than the corner.
+        ///
+        /// This is what `books.id` on the end of every `ORDER BY` buys. Remove
+        /// it and this fails at some page size for some seed, which is exactly
+        /// how the bug would have reached a shelf: intermittently, and looking
+        /// fine.
+        #[test]
+        fn paging_partitions_the_library(
+            titles in proptest::collection::vec("[a-c]", 1..7),
+            years in proptest::collection::vec(proptest::option::of(1960i64..1963), 1..7),
+            page in 1usize..5,
+            sort in 0usize..5,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                let sort = [
+                    super::BookSort::LastModified,
+                    super::BookSort::Title,
+                    super::BookSort::Progress,
+                    super::BookSort::Year,
+                    super::BookSort::Author,
+                ][sort];
+                let s = Storage::connect("sqlite::memory:").await.unwrap();
+                for (i, title) in titles.iter().enumerate() {
+                    s.upsert_book(
+                        &Book {
+                            title: Some(title.clone()),
+                            authors: vec![title.clone()],
+                            publish_year: *years.get(i).unwrap_or(&None),
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                }
+
+                let whole: Vec<Option<i64>> = s
+                    .list_books(&BookQuery { sort, ..Default::default() })
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.id)
+                    .collect();
+
+                let mut walked = Vec::new();
+                let mut offset = 0i64;
+                loop {
+                    let got = s
+                        .list_books(&BookQuery::new(page as i64, sort).at_offset(offset))
+                        .await
+                        .unwrap();
+                    if got.is_empty() {
+                        break;
+                    }
+                    walked.extend(got.iter().map(|b| b.id));
+                    offset += page as i64;
+                }
+                prop_assert_eq!(&walked, &whole, "{:?} at page size {}", sort, page);
+                // And the count is the same question: it must agree with the
+                // number of rows the walk produced.
+                prop_assert_eq!(
+                    s.count_books(&BookFilter::default()).await.unwrap(),
+                    walked.len() as i64
+                );
                 Ok(())
             })?;
         }

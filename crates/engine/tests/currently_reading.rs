@@ -95,7 +95,7 @@ async fn the_record_wrapper_opens_the_same_reflection() {
     assert_eq!(record.id, created.id);
     assert_eq!(record.title, created.title);
     assert_eq!(record.kind, "reflection");
-    assert_eq!(engine.list_notes(Some(book)).await.unwrap().len(), 1);
+    assert_eq!(engine.list_notes(Some(book), None).await.unwrap().len(), 1);
 
     // And it is a record an editor can actually use: read the body, write it
     // back, read it again.
@@ -133,7 +133,7 @@ async fn the_review_twin_is_its_own_note() {
         "one review per reading, and reopening finds it"
     );
     // Two notes on one reading, and the two openings did not start two readings.
-    assert_eq!(engine.list_notes(Some(book)).await.unwrap().len(), 2);
+    assert_eq!(engine.list_notes(Some(book), None).await.unwrap().len(), 2);
     assert_eq!(engine.storage().list_readings(book).await.unwrap().len(), 1);
 }
 

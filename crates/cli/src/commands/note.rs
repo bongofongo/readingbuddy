@@ -114,7 +114,9 @@ pub async fn list_or_search(
         Some(sel) => Some(resolve_one(engine, sel).await?),
         None => None,
     };
-    let notes = engine.list_notes(book.as_ref().and_then(|b| b.id)).await?;
+    let notes = engine
+        .list_notes(book.as_ref().and_then(|b| b.id), None)
+        .await?;
     if notes.is_empty() {
         println!("no notes yet — `readingbuddy note \"first thought\"`");
         return Ok(());

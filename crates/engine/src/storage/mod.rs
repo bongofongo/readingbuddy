@@ -6,6 +6,7 @@ mod flashcards;
 mod highlights;
 mod notes;
 mod provenance;
+mod query;
 mod ratings;
 mod reading_events;
 mod readings;
@@ -28,6 +29,7 @@ pub(crate) use highlights::DeviceDigest;
 pub use highlights::{Highlight, NewHighlight};
 pub use notes::{NewNoteMeta, NoteFile, NoteRecord, NoteSearchHit, OutgoingLink};
 pub use provenance::BookTag;
+pub use query::{BookFilter, BookQuery, BookSummary, StatusFilter};
 pub use ratings::{Rating, RatingScale};
 pub use reading_events::{
     ActivitySummary, Confidence, DayActivity, DayRange, FillStats, NewReadingEvent, ReadingEvent,

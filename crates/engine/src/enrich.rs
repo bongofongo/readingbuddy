@@ -1200,7 +1200,7 @@ mod tests {
         // extreme-value draw `matching.rs` was rewritten over.
         assert_eq!(s.get_book(id).await.unwrap().unwrap().page_count, Some(490));
         for book in s
-            .list_books(100, crate::storage::BookSort::Title)
+            .list_books(&crate::BookQuery::new(100, crate::storage::BookSort::Title))
             .await
             .unwrap()
         {

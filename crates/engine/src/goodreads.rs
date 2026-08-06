@@ -869,7 +869,9 @@ async fn write_side_note(
 ) -> Result<TextOutcome> {
     if let Some(existing) = engine
         .storage
-        .list_notes(Some(book_id))
+        // Every note on the book: the one being looked for may be any of them,
+        // and a viewport's limit here would silently write a second copy.
+        .list_notes(Some(book_id), None)
         .await?
         .into_iter()
         .find(|n| n.title == title)
@@ -993,10 +995,14 @@ pub async fn export(engine: &Engine) -> Result<(String, Vec<Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut rows = Vec::new();
 
-    for book in storage
-        .list_books(i64::MAX, storage::BookSort::Title)
-        .await?
-    {
+    // The whole library, and now it says so: `i64::MAX` was a limit standing in
+    // for its own absence, and a limit that means "all of them" is one somebody
+    // eventually reads as a cap.
+    let whole_library = crate::BookQuery {
+        sort: storage::BookSort::Title,
+        ..Default::default()
+    };
+    for book in storage.list_books(&whole_library).await? {
         let Some(book_id) = book.id else { continue };
         let readings = storage.list_readings(book_id).await?;
         if readings.len() > 1 {

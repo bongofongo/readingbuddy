@@ -536,10 +536,13 @@ async fn syncing_a_new_row_creates_the_book_once() {
 
     device::sync_device(&s, &[stranger]).await.unwrap();
     assert_eq!(
-        s.list_books(100, readingbuddy::BookSort::LastModified)
-            .await
-            .unwrap()
-            .len(),
+        s.list_books(&readingbuddy::BookQuery::new(
+            100,
+            readingbuddy::BookSort::LastModified
+        ))
+        .await
+        .unwrap()
+        .len(),
         1,
         "a second sync must reuse the recorded link"
     );

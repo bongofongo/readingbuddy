@@ -29,7 +29,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use readingbuddy::{Book, BookSort, Engine, EngineConfig};
+use readingbuddy::{Book, BookQuery, BookSort, Engine, EngineConfig};
 
 use render3d::{RenderParams, Scene};
 
@@ -530,7 +530,9 @@ async fn bench_render(engine: Engine, which: BenchArg, cli: &Cli) -> Result<()> 
     let book = match &cli.book {
         Some(sel) => resolve_book(&engine, sel).await?,
         None => {
-            let library = engine.list_books(200, BookSort::LastModified).await?;
+            let library = engine
+                .list_books(&BookQuery::new(200, BookSort::LastModified))
+                .await?;
             library
                 .iter()
                 .max_by_key(|b| cover_width(b))
@@ -938,7 +940,7 @@ async fn bench_rich(engine: &Engine, frames: u32, cli: &Cli) -> Result<()> {
     let book = match &cli.book {
         Some(sel) => resolve_book(engine, sel).await?,
         None => engine
-            .list_books(1, BookSort::LastModified)
+            .list_books(&BookQuery::new(1, BookSort::LastModified))
             .await?
             .into_iter()
             .next()
@@ -1035,7 +1037,7 @@ async fn dump_frame(engine: &Engine, spec: &str, cli: &Cli) -> Result<()> {
     let book = match cli.book.as_deref() {
         Some(s) => resolve_book(engine, s).await?,
         None => engine
-            .list_books(1, BookSort::LastModified)
+            .list_books(&BookQuery::new(1, BookSort::LastModified))
             .await?
             .into_iter()
             .next()
