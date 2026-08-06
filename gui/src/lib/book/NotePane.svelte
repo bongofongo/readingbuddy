@@ -384,6 +384,23 @@
     cursor: default;
     opacity: 0.55;
   }
+  /*
+   * `Saved` is a status readout wearing a control, and the two want opposite
+   * treatments: a disabled button should recede, and the only statement on this
+   * page that the note reached the vault must not. Inheriting the 0.55 dim put
+   * it at **2.31:1** — under the 4.5:1 text needs and under even the 3:1
+   * non-text floor — which made the one place this screen tells you what you
+   * did the least legible thing on it.
+   *
+   * So the primary button states its disabled case rather than inheriting it.
+   * `--ink-dim` measures 5.29:1 on the light theme; the border keeps the shape
+   * of a control that is simply not currently actionable.
+   */
+  button.primary:disabled {
+    opacity: 1;
+    color: var(--ink-dim);
+    border-color: var(--line);
+  }
   button.primary:not(:disabled) {
     color: var(--accent-on);
     background: var(--accent);
