@@ -1,12 +1,13 @@
 ---
-title: Handoff — item 17 has landed; the rest of the engine half is next
-date: 2026-08-05
-source: sessions/2026-08-05-the-derived-facts-layer.md for item 17;
-        sessions/2026-08-05-gui-scaffold-and-the-seam.md for the scaffold;
-        docs/gui/spec-gui-17-28.md for the wave; docs/decisions.md for the
-        product rulings
-supersedes: the previous 2026-08-05 handoff — its `cargo deny` gap is closed and
-        its option A is done
+title: Handoff — the engine half is finished; the GUI half is what is left
+date: 2026-08-06
+source: sessions/2026-08-05-covers-a-grid-can-use.md (20),
+        sessions/2026-08-05-the-shape-of-an-edition.md (19),
+        sessions/2026-08-05-reading-here-the-local-source.md (22),
+        sessions/2026-08-05-vault-coherence.md (24),
+        sessions/2026-08-06-list-endpoints-that-survive-a-real-library.md (18);
+        docs/decisions.md entries 18–24 for the rulings
+supersedes: the 2026-08-05 handoff — all five of its prompts have landed
 ---
 
 # Handoff
@@ -16,367 +17,174 @@ previous conversation.
 
 ## Where things stand
 
-Green: **`make ci` exit 0**. Working tree clean, committed straight to `main`
-(nothing is pushed; this repo has no remote it uses).
+**`make ci` exit 0 on `main` at `da589fc`.** Working tree clean, committed
+straight to `main` (nothing is pushed; this repo has no remote it uses). The
+gate is the full one: fmt, lint, build-check, ts-check, whole-workspace test,
+web-check, and 30 Playwright routes on WebKit.
 
-`make ci` is **wider than it was**. It is now:
+**Items 18, 19, 20, 22 and 24 are all merged** — the rest of the engine half.
+Migration `0014` is applied (item 20's cover metrics). `0015` still belongs to
+item 23.
 
-```
-fmt-check  lint  build-check  ts-check  test  web-check  routes
-```
+Each item's own corrections are in `docs/decisions.md`, which is in **build
+order and not numeric order** — the wave appended 20, 22, 24, 19, 18 in that
+sequence. Read those five entries before touching any of it; several are
+load-bearing and three of them overturned what the spec asked for.
 
-Counts: engine lib **355**, TUI 290, API 20 integration + 22 unit, CLI 14 + 12,
-`readingbuddy-gui` **2**, frontend **24** vitest + **30** Playwright.
+## What the wave overturned, in one line each
 
-### `cargo deny` — run, and clean
+The spec lost five arguments and was right to. These are the ones a later thread
+is likeliest to re-open by accident:
 
-The previous handoff's one gap. `cargo deny check bans licenses sources` is
-**ok on all three** against the full Tauri 2 tree; no `deny.toml` entry was
-needed. The `bans` half reports duplicate-version *warnings* only — `zip` 2.4.2
-beside 3.0.0 (the pinned `epub = "=2.1.4"` holds the newer one), `toml_edit`,
-the usual windows-sys spread. Re-run it after any dependency change; it is a CI
-job, so an unlisted licence is a red gate waiting rather than a hidden problem.
+- **`readings.source = 'local'` was not added** (item 22). That column names the
+  *writer of the row*, and a typed page's writer is `update_progress`, which
+  already writes `manual` — so `local` there is a synonym, and
+  `readings_from_source` (every importer's idempotency) would have had to know
+  both. The ownership row landed on `reading_events.source`, where the
+  vocabulary is *claimants* rather than writers.
+- **Attaching a file opens no reading** (item 22). The spec asked for one; it
+  would mark five newly attached PDFs as five books you are currently reading.
+- **Cover metrics are deliberately *not* `MERGE_RULES` rows** (item 20) — the
+  opposite of what `0013` did, and the first time that has been right.
+  `the_cover_metrics_sit_outside_the_merge_table_and_the_path_does_not` stops a
+  later thread quietly adding a `Rule`, and stops it removing `cover_path`.
+- **Pagination is offset everywhere, not the spec's hybrid** (item 18). The two
+  sorts with no cursor key (`Progress`, `Author`) are exactly the two whose
+  pages are already whole-table reads, so keyset buys nothing where it is needed
+  and costs a second shape at every call site. A count composes with an offset
+  and not with a cursor.
+- **`sort_author` was refused twice**, by items 20 and 18, on the same ground:
+  SQLite cannot compute the value, so the column is NULL for every existing row
+  and `ORDER BY sort_author` is silently *wrong* until a back-fill nobody has
+  run yet runs — which adds an arm beside the slow one instead of replacing it.
 
-**The engine wave (items 21, 29–32) is finished and fully surfaced** — CLI and API
-both. The `MERGE_RULES` debt is closed; `search::merge_into` is generated from the
-table like the other five things. Read `docs/decisions.md`'s build order (entries
-21, 29–33) before touching any of it — every correction those items forced is
-recorded there and several are load-bearing.
+## Three traps this wave found, all still live
 
-**The GUI wave has started.** Item 25's scaffold landed as a thin vertical slice.
-
-## What exists in `gui/` now, so you do not rebuild it
-
-A real Tauri 2 + SvelteKit 5 app over the API, running against a real library.
-
-```
-gui/src/lib/api/bindings.ts   GENERATED by `make ts`. 80 types. Never hand-edit.
-gui/src/lib/api/client.ts     LibraryClient interface + TauriClient
-gui/src/lib/api/fake.ts       the in-memory library layers 1 and 2 render
-gui/src/lib/phrasing.ts       words for values the engine already decided
-gui/src/routes/               +page (library grid), book/[id] (detail)
-gui/tests/routes.spec.ts      layer 2: every route, 3 viewports, WebKit
-gui/tests/shots/              24 committed PNGs — a reviewable artifact
-gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
-```
-
-**Read [`gui/CLAUDE.md`](../gui/CLAUDE.md) before touching any of it.** It carries
-the three rules, the Svelte 5 dialect table, and which client each of the four
-test layers gets. The short version of what matters:
-
-- `gui/src-tauri` links **`readingbuddy-api` and not the engine**, and is a
-  workspace member, so `cargo check --workspace` makes reaching past the API a CI
-  failure rather than a decision. **One** `#[tauri::command]`, taking `Call` and
-  returning `Reply`, so adding an API method is a regenerated `bindings.ts` and no
-  Rust at all.
-- Types are generated. `make ts` regenerates, `make ts-check` gates. A DTO change
-  without a regeneration fails CI.
-- `make dev-db` builds the library to render (~220 books, 20 deliberate edge
-  cases). `corpus/generated/devdb/manifest.json` says what each edge case is for.
-
-Run it:
-
-```sh
-make dev-db
-cd gui && pnpm install            # once
-READINGBUDDY_DATA_DIR=$PWD/../dev-data pnpm tauri dev
-```
-
-**The data dir must be absolute.** `cover_path` is stored as
-`images_dir.join(name)`, so a relative root yields a relative `cover_path` and a
-webview has no working directory to resolve one against.
+- **`sort_title` has never been computed by anything.** It is a `MERGE_RULES`
+  column, `Federated::Local`, present on `Book` and on the DTO — and
+  `BookSort::Title` orders by `books.title COLLATE NOCASE`. **A sort-key column
+  added without a writer looks answered and is not.** Check any column you plan
+  to lean on actually has a writer.
+- **A behavioural test that cannot fail is not a guard.** Item 18's offset
+  paging needs a total order, so every SQL arm ends in `books.id` — and removing
+  those tie-breaks leaves the behavioural partition test **green**, measured.
+  SQLite's sorter is deterministic for one plan over one set of rows; that
+  determinism belongs to the query plan, not the schema. The guard is
+  `order_by_is_a_total_order`, which reads the SQL.
+- **`create_note` indexed the body it was handed, not the one it wrote** (found
+  by item 24; fixed). They differ by a trim and a newline, so no note was ever
+  byte-identical to its own index — the first comparison anybody wrote would
+  have re-indexed the whole vault while looking correct.
 
 ## What is next
 
-### Item 17 is **done**. Read what it decided before you build on it
-
-`docs/decisions.md` entry 17 and `sessions/2026-08-05-the-derived-facts-layer.md`.
-The four things it **refused** to move are the part most likely to be re-opened
-by accident: relative dates (the engine will not decide what "today" is —
-item 31's refusal, restated), absence *wording* (the engine states the absence,
-the frontend words it), `ReadingDto.source` (still a `String`, on purpose), and
-the per-row "what is behind this book" summary, which was **reassigned to item
-18** as a query shape rather than a derivation.
-
-What landed, in one paragraph: `readingbuddy::names` (author filing and display
-order, moved out of the TUI), `readingbuddy::Progress` (one value type replacing
-four disagreeing implementations, with the `ko_percent` fallback decided once and
-the zero-denominator bug fixed), `ReadingState` (typed on the wire, `String` in
-the column, **no `NeverOpened` variant**), `BookSort::Author`/`Year`,
-`ReadNumbering`, `CalibreReport::row_state`, and `CalibreRowState::is_importable`.
-`BookDto` gained `progress`, `series_label`, `authors_display` and
-`reading_state`, and **lost `reading_status`**.
-
-### A. Items 18, 19, 20, 22, 24 — the rest of the engine half
-
-**All five prompts are written**, one per thread, in `docs/prompts/`:
-
-| item | prompt | migration |
-|---|---|---|
-| 18 — list endpoints | [`18-list-endpoints.md`](prompts/18-list-endpoints.md) | none |
-| 19 — the shape of an edition | [`19-shape-of-an-edition.md`](prompts/19-shape-of-an-edition.md) | none |
-| 20 — covers a grid can use | [`20-covers-a-grid-can-use.md`](prompts/20-covers-a-grid-can-use.md) | **`0014`** |
-| 22 — reading here, the local source | [`22-reading-here.md`](prompts/22-reading-here.md) | none |
-| 24 — vault coherence | [`24-vault-coherence.md`](prompts/24-vault-coherence.md) | none |
-
-#### Launch order, and the one file collision
-
-The five prompts all point here rather than repeating it.
-
-```
-       ┌─ 20 (covers, migration 0014) ──┬──> 18 (list endpoints)
-start ─┤                                └──> 19's rewire
-       ├─ 19 (edition shape) ── lands on a parameter, rewires after 20
-       ├─ 22 (local source)  ── independent
-       └─ 24 (vault watcher) ── independent
-```
-
-- **Item 20 goes first.** It adds columns to `books`, it owns the only migration
-  in the wave, and it holds the live cover bug.
-- **Item 18 branches after 20 merges.** They are the wave's **one real
-  collision**: item 20 adds columns (and therefore `MERGE_RULES`, `BOOK_COLUMNS`
-  and `row_to_book` rows) while item 18 rewrites `list_books`, both in
-  `crates/engine/src/storage/books.rs`. The last wave learned this the expensive
-  way — **parallel worktrees produce semantic conflicts git cannot see**, and
-  `cargo check --workspace` does not resolve dev-dependencies, so only
-  `cargo test` catches them.
-- **Item 19 need not wait.** It takes the cover aspect as a parameter and is
-  rewired onto item 20's column afterwards; its prompt says so and says what the
-  rewire looks like.
-- **Items 22 and 24 are independent** of all of the above.
-- The `crates/engine/src/lib.rs` export list is the only file most of them touch.
-  Those conflicts are textual and trivial.
-
-#### What item 17 handed forward
-
-- **Item 18** owns the per-row summary above, and must be designed against
-  `BookSort`'s contract as item 17 restated it: **`limit` selects along the sort
-  key**, in every arm. The TUI's opposite policy (reorder a fixed page) is a
-  frontend decision and stays there. Do not paginate one and not the other.
-  Note also that `BookSort::Author` has **no cursor key that exists in the
-  database** — it sorts in Rust — so the wave's hardest design question is item
-  18's and its prompt lays out the three options.
-- **Item 20** inherited the live Google Books cover collision — see the traps
-  below, and its prompt.
-- **Item 19** is the second instance of item 17's rule (`CLAUDE.md`'s new
-  *"derived facts live here, phrasing does not"* bullet), so `progress.rs` is the
-  shape to copy.
-- **Item 22** must write a `NULL` page count and never `0` when PDF extraction
-  fails — `Progress` treats a zero denominator as a bug, not a length.
-
-The one loose end item 17 left is small and named: `BookSort::Author` reads the
-whole table, because SQLite cannot parse a human name. A `sort_author` column
-computed on write is the fix and it needs a migration, so it belongs to whichever
-item next takes one — item 20 is the only one in this wave that has one, and its
-prompt asks it to say whether it should carry it.
-
-### B. Items 26, 27, 28 — the shelf, the book-and-notes view, the chain
+### The GUI half — items 26, 27, 28, and item 23
 
 **These must run in sequence, never in parallel.** Three agents there produce
-three dialects of one app. `docs/gui/claude-code-plan.md` item 7 argues it, and the
-current library screen is a plain grid *on purpose* rather than a half-built item
-26 in the wrong dialect.
+three dialects of one app. `docs/gui/claude-code-plan.md` item 7 argues it, and
+the current library screen is a plain grid *on purpose* rather than a half-built
+item 26 in the wrong dialect.
 
-And the standing instruction from that plan, which has not changed: **do not let
-an agent decide the shelf's feel.** It can build the shelf, screenshot it and say
-what is on it. Whether it reads as a place is the user's call.
+And the standing instruction, unchanged: **do not let an agent decide the
+shelf's feel.** It can build the shelf, screenshot it and say what is on it.
+Whether it reads as a place is the user's call.
 
-## The next migration number is `0014`, and it belongs to GUI item 20
+**Item 26 is unblocked.** Item 19 landed `readingbuddy::EditionShape` and item
+18 carried it across the seam as `BookDto.shape` (`EditionShapeDto`,
+`ShapeSourceDto`), so a WebGL shelf reads the engine's proportions instead of
+re-deriving the arithmetic in TypeScript. **Do not push a scene constant back
+down into that derivation** — `HALF_HEIGHT` is the renderer's and the whole
+point is that two frontends scale the same ratios differently.
 
-`0011`–`0013` are taken. **`0014` → item 20** (cover dimensions + accent),
-**`0015` → item 23** (moments). `docs/gui/spec-gui-17-28.md` and the
-`new-wave-item` skill both record it.
+**But run `make covers` — or rather, build its door first.** See finding 1
+below: every book in `make dev-db` has a `cover_path` and a **NULL**
+`cover_aspect`, so a shelf built today will conclude the column does not work.
 
-`migration_versions_are_contiguous_from_one` fails on a **gap** as well as a
-duplicate. A branch holding `0015` before `0014` merges is red until its
-predecessor lands — expected; rebase, never renumber.
+### Open work, none of it allocated a number
 
-## Traps that will bite you
+The user allocates numbers; these are stated well enough to allocate.
 
-### The live bug, unfixed and assigned
+1. **The cover back-fill has no door.** `Engine::measure_stored_covers` exists
+   and nothing calls it. The whole fix is a `Covers` variant in
+   `crates/cli/src/main.rs` plus one line in the `dev-db` target. Item 20 left
+   `crates/cli` alone for merge cost, not doubt. **Do this before item 26.**
+2. **A `highlights` FTS index.** `notes_fts` is still the only virtual table.
+   Needs a migration, plus a trigger trio or an explicit writer beside
+   `insert_highlight`, and a `search_highlights` returning the `snippet()` shape
+   `NoteSearchHit` has. Item 18's framing is the good one: the *surface* wants
+   **one** request answering notes and highlights together, because two lists a
+   frontend interleaves is a relevance ordering invented above the seam — and
+   `find_books_by_title` belongs in the same item, as a `title` predicate on
+   `BookFilter`, so search arrives as a filter rather than a seventh endpoint.
+   Item 27's search box is what needs it.
+3. **Indexes on the sort keys** (`books.last_modified`,
+   `books.title COLLATE NOCASE`, `books.publish_year`). There is no index on any
+   of them today, so `ORDER BY title` sorts the whole table however you
+   paginate. This is what makes a deep page cheap, and it is what turns item
+   18's `books.id` tie-break from insurance into load-bearing.
+4. **`sort_author`**, refused twice above — it only pays *inside* (3), where the
+   back-fill and the index arrive together. Item 20 made the write side cheap:
+   `invalidate_cover_metrics` is the pattern (a companion clause generated from
+   another column's value expression, bound from Rust because SQL cannot derive
+   it).
+5. **`MatchCandidateDto` carries no author**, though `koreader::band` already
+   holds the whole `Book` — so the "which Dune is this" chooser, which is the
+   *first* screen a refusal sends you to, costs an N+1 `get_book` per candidate.
+   Reported independently by items 22 and 18. Narrow, migration-free.
+6. **The border-median accent arithmetic is duplicated** between
+   `crates/engine/src/images.rs` and `crates/tui/src/render3d/texture.rs`. Not a
+   drive-by: `images.rs` measures the original file and `texture.rs` measures the
+   *scaled texture*, so they can legitimately differ, and the renderer is frozen.
+   Deleting the renderer's copy is a decision about what it draws.
+7. **A real PDF sidecar in the corpus.** `entry_to_highlight` requires a string
+   `pos0` and KOReader stores a *table* there on PDF, so those entries are
+   skipped **in silence** — reasoned, not observed, and it deserves a
+   `Diagnostic` rather than silence. `docs/koreader-format.md` files PDF
+   annotations under *unobserved* for this reason.
+8. **`gen-devdb` and `gui/src/lib/api/fake.ts` can diverge** and nothing asserts
+   they agree; the fake serves **no covers**, so cover layout still has no
+   headless regression test. Pre-existing, and item 26 is what makes it bite.
 
-**Every Google Books cover collides on one filename.**
-`images::filename_from_url` (`crates/engine/src/images.rs:17`) names the file
-after the URL's last path segment, and a GB thumbnail is
-`.../books/content?id=…` — so **every** GB-sourced cover writes
-`images_dir/content` and the last import wins. Two books render each other's
-cover. Epub extraction (`slugify(title)`) collides on two editions of one title.
+## Running the next wave as multiple workers
 
-The fix is to content-address the filename — the sha256 pattern `files.rs` already
-established, which also makes the write idempotent and gives `FetchCover` a free
-skip-if-present. **Assigned to item 20**, which rewrites cover storage anyway.
-Nothing will catch it for you: it is invisible in a single-provider library, and
-`make dev-db` generates its own covers.
+The mechanics worked again — five items, five worktrees, `make ci` green after
+every merge. What changed since the last handoff:
 
-### Touching the GUI
+- **Reset the last worker's worktree onto the *finished* main rather than
+  rebasing it afterwards.** Item 18 was the one with a real file collision
+  (`storage/books.rs`, against item 20) and it merged with **zero conflicts**,
+  because its base already contained all four siblings. Rebase-after is the
+  thing that produces semantic conflicts git cannot see; not needing one is
+  better than surviving one.
+- **`docs/decisions.md` is the guaranteed conflict.** Three of the four merges
+  conflicted there and nowhere else. Tell every worker to **append** its entry
+  and restructure nothing; then the resolution is deleting three marker lines.
+- **A worker cannot gate on `make ci`.** A fresh worktree has no
+  `gui/node_modules` (gitignored) and `make web-check` / `make routes` degrade
+  to a stated `SKIPPED:` — so a worker "passes" them without running them. Gate
+  workers on `make fmt lint build-check test ts-check` plus `cargo-tester`, and
+  run the full `make ci` **from the main checkout after each merge**. `ts-check`
+  needs cargo and no node, so it is the cheap guard on a DTO change.
+- **Never read a pipeline's exit code.** `make test | tail -25` reports *tail's*
+  status; it was 0 over an unread log. Redirect to a file and read `$?`.
+- **APFS-clone `target/debug` into each worktree** (`cp -Rc`, near-zero bytes)
+  but **strip `incremental/` and set `CARGO_INCREMENTAL=0`** — it was 26G of the
+  51G, and four diverging copies of it is the difference between a full disk and
+  a comfortable one. Budget ~10 minutes for the clone; it is not instant.
+- **A worker can die instantly on a session limit** and its notification carries
+  a one-line transcript that looks like a result. The worktree and branch
+  survive untouched, so a relaunch costs nothing but the wall clock — but check
+  what actually landed before believing a short report.
 
-- **`#[serde(other)]` does not survive ts-rs.** `ErrorCode::Internal` carries it,
-  which is what makes an unknown code degrade rather than fail to parse — so the
-  generated TS union is exhaustive over *today's* codes while the wire is not. Keep
-  a default arm tsc believes is unreachable. The four `failed to parse serde
-  attribute` warnings on every `make ts` are this and are **not** to be silenced.
-- **`bigint` is widened to `number`** by `scripts/gen-ts.sh`, with a guard that
-  fails if any survives. Tauri IPC is JSON: an `i64` arrives from `JSON.parse` as a
-  `number`, and `JSON.stringify(3n)` **throws**, so a `bigint` id on an outgoing
-  request is a runtime failure tsc calls correct. Do not "fix" the widening.
-- **`cover_path` is a whole path**, not a name relative to `images_dir`. Joining
-  the two doubles the prefix. Use `TauriClient.coverSrc`.
-- **The asset-protocol scope is set at runtime** in `src-tauri/src/lib.rs`, because
-  the directory is not known until the engine is open. And
-  `core:asset:allow-asset-protocol` is **not** a capability permission in Tauri 2 —
-  naming it in `capabilities/default.json` fails the build with a 400-line list of
-  what it expected instead.
-- **Tauri forces a `Result` on any async command with a reference input**, which is
-  why `api_call` takes an owned `AppHandle` and reaches for the state itself. Do not
-  add a second error channel beside the protocol's `Outcome::Error`.
-- **Svelte 4 still compiles**, which is why the ban is a lint rule *and*
-  `src/lib/dialect.test.ts` asserts the selectors actually fire. If you add a ban,
-  add its test — an absent rule reads exactly like a passing one.
-- **`bindings.ts` is in `.prettierignore`** and eslint's ignores. Formatting it
-  makes `make ts-check` fail on a clean tree.
-- **`TauriClient` must never fall back to the fake.** A GUI that quietly rendered
-  fixture data when the engine failed to open would look like a working app showing
-  somebody else's library.
-- **Never divide `current_page` by `page_count` in a frontend.** One book in
-  `make dev-db` has a `page_count` of 0 and another has `NULL`; `book.progress`
-  is the answer and it normalises both to absence. And use its `percent`, not
-  `Math.round(fraction * 100)` — the engine's is an **integer division** and
-  `29/100` is `0.28999999999999998` in binary, so the float says 28.
-- **`book.authors` is the record; `book.authors_display` is the parse.** Join the
-  second, never reorder the first. Same shape for `series` + `series_index`
-  against `series_label`.
-- **`reading_status` is gone from `BookDto`.** `reading_state` is a typed union
-  with an `other` arm carrying the raw word. There is deliberately no variant for
-  "no reading" — that is `null`, so nothing can filter or count on it.
-- **`fake.ts` states the derived fields as literals.** Do not compute them there.
-  A fake that re-derived them would agree with itself no matter how wrong it was.
+## Everything below here is unchanged from the previous handoff
 
-### Touching engine internals
-
-- **`MERGE_RULES` (`crates/engine/src/storage/books.rs`) generates six things**:
-  the upsert's `ON CONFLICT`, `enrich_book`'s `UPDATE`, `merge_books`' `dst`-wins
-  fill, the `field_provenance` stamps, `Rule::show`, and `Rule::federated` (which
-  is `search::merge_provider_record`). Plus `PROBES` in `tests_support`, whose
-  column list is *asserted* equal to `MERGE_RULES`' in order — a new column fails
-  those sweeps with a message rather than going quietly uncovered. Extend it.
-- **`upsert_book`/`enrich_book`/`fill_book` take a required `Option<Source>`.** A
-  test seed passes `None`; `save_book` stamps `None` on purpose, because
-  `search::merge_provider_books` discards which provider supplied each field before
-  it arrives.
-- **A `user` claim protects a field *pair*** (`isbn_13`/`isbn_10`,
-  `series`/`series_index`) in both the merge clause and the stamp. A new pair means
-  `Rule::pair`, not a second guard.
-- **`DiagnosticKind` is mirrored in full in `crates/api/src/dto.rs`** with an
-  exhaustive match. A new variant will refuse to compile the API crate, which is
-  correct.
-- **Absence is not zero, anywhere.** Aggregates return absent minutes for a month
-  with no device data; a measured twenty-second session records `Some(0)`.
-- **`Book` carries six reading projections**, not four: `current_page`,
-  `finished`, `date_started`, `date_finished`, plus `reading_status` (item 25)
-  and `ko_percent` (item 17). None is a `books` column and `upsert_book` ignores
-  all six; `update_progress` is the writer. Adding a seventh is a `BOOK_COLUMNS`
-  line and not a migration — that is the move to reach for when a *list* needs a
-  per-row value, since the alternative is one query per row.
-- **`Book::reading_status` stays a `String`; the wire is typed.** An importer can
-  write a status this build does not know, and a parse that refused one would
-  turn a foreign device's vocabulary into an error on the read path — that
-  argument is about storage and still holds. `Book::reading_state()` reads
-  `ReadingState` off it (`Other(raw)` for the unknown case), and that is what
-  `BookDto` carries. It sits beside `finished` rather than replacing it, because
-  `finished` is load-bearing for `render.rs` and `progress_tag`.
-- **`Api::open(data_dir)` is new** and is what lets a client depend on the API
-  crate and not the engine. `Api::new` needs an `Arc<Engine>` — harmless for
-  `readingbuddyd`, which names no method and is tempted by nothing, and fatal for a
-  semantic client whose whole discipline is that a missing request must be a
-  compile error rather than one `use` away.
-- **No task-completion framing, ever** — no counts of what the user has not done,
-  no streaks, no badges. `docs/decisions.md` bans it by name, the TUI asserts it
-  against a drawn buffer, and `gui/tests/routes.spec.ts` now asserts it against a
-  rendered page.
-- **Provider enrichment stays off the device pull path.**
-  `import_book_from_sidecar` is fully offline by design.
-
-### Touching fixtures
-
-- **`corpus` must never depend on `readingbuddy`.** `gen-devdb` keeps that rule by
-  emitting **data and never a schema**: the real `rb` binary creates and migrates
-  the database, `seed.sql` fills it. Do not add `rusqlite` — its `bundled` feature
-  would unify onto the engine's `libsqlite3-sys` and change how the *shipped*
-  engine links SQLite.
-- **`notes_fts` has no triggers**; the engine writes it from application code, so a
-  seeded note without its FTS row is a note `SearchNotes` cannot find — which is
-  the one thing item 27's search box exists to do.
-- **`reading_events` is not seeded** — `make dev-db` runs `rb activity --refill`,
-  so the log comes from the engine's own fillers. Writing that table directly would
-  assert item 21's arithmetic rather than exercise it.
-- **Two fixtures exist and can diverge.** `gen-devdb` is the app's library;
-  `gui/src/lib/api/fake.ts` is the frontend's, because layer 2 runs in a bare
-  browser with no IPC and cannot reach a database. The shapes are named after
-  `manifest.json`'s entries so the drift is visible, but nothing asserts they
-  agree, and the fake serves **no covers** — so cover layout has no headless
-  regression test. Unifying them is open work.
-
-## Agents, skills, checks
-
-Four agents in `.claude/agents/`, all reporting **failures only**: `cargo-tester`,
-`web-checker`, `screenshot-reviewer`, `api-surface-auditor`. Launch them; do not
-reimplement what they do.
-
-**Run `api-surface-auditor` before building any GUI feature.** It has earned that
-twice already — it found `reading_status` missing from `BookDto` and the cover
-collision above, both before a line of Svelte was written. A gap it reports is an
-engine item, never a frontend workaround.
-
-**Run `make shots`, then `screenshot-reviewer`, and read the PNGs yourself.** It is
-the only check here that can see. `make routes` proves a route renders; it cannot
-tell you it is wrong.
-
-Three skills: `new-wave-item` (start a numbered item — pre-allocate the migration,
-write the prompt file, then build), `gui-component` (a Svelte component to one
-dialect), `wrap-session` (verify → session log → commit).
-
-Two hooks (`.claude/settings.json`): `SessionStart` warms a cloud container;
-`PostToolUse` runs the cheapest check for the touched file's package, never blocks,
-and is bounded at 45s. It is a smoke alarm; `make check` is the gate.
-
-## If you run this as a multi-worker wave
-
-The mechanics worked for items 11/12/13 and again for 29–32. Four things are worth
-repeating and four cost time.
-
-Repeat: a **git worktree per item** with an APFS-cloned `target/` (`cp -Rc`, ~90s,
-parallel builds with no cold start); one **prompt file per thread** under
-`docs/prompts/`; **`make ci` run directly on every branch after rebase and on main
-after every merge**, never trusting a worker's own report; and **feeding each
-landed item's corrections into the next item's brief** before launching it — that
-is what stopped item 31 writing a delete-then-insert that would have wiped item
-21's highlight-filler days.
-
-Avoid: creating a worktree from `main` **before committing** the prompt edit it
-needs (the worker reads the committed tree, not yours); trusting `claude -p`'s
-shell exit code (it is the pipeline's — a transport drop reports
-`subtype=success` with `is_error=true`, so read `is_error`); and assuming a clean
-textual rebase is a clean rebase — **parallel worktrees produce semantic conflicts
-git cannot see**, and the last wave hit one (a signature change against a sibling's
-test seeds) that only `cargo test` catches, because `cargo check --workspace` does
-not resolve dev-dependencies.
-
-**New, and specific to the GUI half:** a fresh worktree has no `gui/node_modules`
-(gitignored), and every web target degrades to a stated `SKIPPED:` rather than
-failing — so a worker can "pass" `make web-check` **without running it**. Either
-`pnpm install` in the worktree, or gate the item's "done" on `make ci` run from the
-main checkout after merge. The same applies to `make ts-check`, which does run
-without node and is therefore the cheaper guard on a DTO change.
-
-## Two constraints on cloud sessions
-
-- **The sandbox proxy blocks gutenberg.org**, so `make corpus` (tier 2) cannot run
-  in a cloud session at all — it is a `scheduled.yml` job for exactly that reason.
-  crates.io works; `get.nexte.st` does not, which is why the hook does not install
-  nextest and why the Makefile's degradation to plain `cargo test` matters.
-- **The TUI suite is fully headless** and needs no terminal, and so is the GUI's
-  layer 2. But Chromium is what is preinstalled
-  (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`) and the suite asks for **WebKit**,
-  because WKWebView is what the app ships inside on macOS — so a cloud thread needs
-  `pnpm exec playwright install webkit` first. Only `make bench`, `make bench-box`
-  and `--probe` need a real, active pane.
+The GUI seam (`bindings.ts` is generated; `cover_path` is a whole path; the
+asset protocol scope is set at runtime; `TauriClient` must never fall back to
+the fake), the engine-internals rules (`MERGE_RULES` generates six things; a
+`user` claim protects a field *pair*; absence is not zero, anywhere), the
+fixture rules (`corpus` must never depend on `readingbuddy`; `notes_fts` has no
+triggers; `reading_events` is not seeded), the two cloud-session constraints
+(gutenberg.org is blocked by the sandbox proxy; Playwright needs
+`pnpm exec playwright install webkit`), and the four agents and three skills.
+`CLAUDE.md` and the per-crate files carry all of it, and this wave updated them
+where it changed something.
