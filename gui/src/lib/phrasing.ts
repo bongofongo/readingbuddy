@@ -298,3 +298,121 @@ export function fieldLabel(field: string): string {
   const said = field.replace(/_/g, ' ');
   return said.charAt(0).toUpperCase() + said.slice(1);
 }
+
+// ---------------------------------------------------------------------------
+// Item 28's words. The reading-life page is the one surface counts appear on,
+// so this is where the pluralisation lives — and where the difference between
+// *nothing measured* and *zero* becomes a sentence.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a `null` measurement says.
+ *
+ * The single most important string on the reading-life page. `minutes` and
+ * `pages` are `Option` at every level of item 21's log, and item 42 exists
+ * because bucketing days into months in a client **collapses that `null` to
+ * `0`** — telling a reader they read for no time at all in a month they simply
+ * read off-device.
+ *
+ * Past tense and no apology: it says what the record holds, and the hint beside
+ * it names where minutes come from. It is deliberately not *missing*, *no data
+ * yet*, or anything else that frames an absence as an omission somebody owes.
+ */
+export const NOT_MEASURED = 'not measured';
+
+/**
+ * Minutes read, or the absence.
+ *
+ * **`0` is a measurement and prints as one.** Item 31: *"a measured
+ * twenty-second session records `Some(0)`, not `None`"* — the device is saying
+ * something, and rendering that as [`NOT_MEASURED`] would throw away the one
+ * distinction the whole column is nullable to keep.
+ */
+export function minutesLabel(minutes: number | null): string {
+  if (minutes === null) return NOT_MEASURED;
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** Pages turned, or the absence. Independent of minutes — either may be null alone. */
+export function pagesLabel(pages: number | null): string {
+  return pages === null ? NOT_MEASURED : countLabel(pages, 'page');
+}
+
+/**
+ * What a month with nothing from a device says instead of a number.
+ *
+ * *"A month with no device data **says so**; it does not show a zero."* It is a
+ * statement about provenance and not an apology or an omission — minutes and
+ * pages come from a reader's own `statistics.sqlite3` (item 31) and a library
+ * built from a Goodreads CSV has none, for ever, which is not a gap anybody is
+ * going to fill.
+ */
+export const NO_DEVICE_DATA = 'no device data';
+
+/**
+ * The device's two figures for a period, worded — one chip or two.
+ *
+ * Collapsed to one when **both** are absent, because two chips reading *not
+ * measured* side by side say the same thing twice and neither says which is
+ * which. Named when only one is, because `minutes` and `pages` are independent
+ * `Option`s — the fixture has a month with pages and no minutes, and a page
+ * treating them as a pair would be wrong about it.
+ *
+ * Never empty: a period that measured nothing still gets a sentence, which is
+ * the difference between rendering an absence and rendering nothing.
+ */
+export function deviceFigures(minutes: number | null, pages: number | null): string[] {
+  if (minutes === null && pages === null) return [NO_DEVICE_DATA];
+  return [
+    minutes === null ? `minutes ${NOT_MEASURED}` : minutesLabel(minutes),
+    pages === null ? `pages ${NOT_MEASURED}` : pagesLabel(pages),
+  ];
+}
+
+/**
+ * A count and its noun, agreed.
+ *
+ * Pluralisation is the frontend's half of item 17 and this is the whole of it:
+ * nothing here computes the number, and every caller hands one the engine
+ * counted. `0` is a legitimate answer for the fields the engine can count
+ * honestly — `books_finished` is ours, so a zero there is *knowable* — which is
+ * exactly what separates it from the nullable ones above.
+ */
+export function countLabel(n: number, singular: string, plural = `${singular}s`): string {
+  return `${n} ${n === 1 ? singular : plural}`;
+}
+
+/**
+ * `2025-03` as *March 2025*.
+ *
+ * Spelled from a fixed table rather than handed to `Intl`, for `dayLabel`'s own
+ * reason: a locale-dependent rendering makes the committed screenshots depend on
+ * the machine that took them. An unparseable month is shown verbatim — it came
+ * off `substr(day, 1, 7)` over a zero-padded ISO date, so it cannot be wrong,
+ * and inventing a correction for a case that cannot happen would hide one that
+ * could.
+ */
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+export function monthLabel(month: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(month);
+  if (m === null) return month;
+  const name = MONTH_NAMES[Number(m[2]) - 1];
+  return name === undefined ? month : `${name} ${m[1]}`;
+}

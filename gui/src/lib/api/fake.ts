@@ -22,6 +22,7 @@
  * work, recorded in the session log rather than pretended away.
  */
 import type {
+  ActivitySummaryDto,
   BookDto,
   BookFileDto,
   BookSortDto,
@@ -29,6 +30,8 @@ import type {
   CreatedNoteDto,
   FieldSourceDto,
   HighlightDto,
+  MomentDto,
+  MonthActivityDto,
   NewNoteDto,
   NoteDto,
   NoteKindDto,
@@ -363,19 +366,83 @@ const HIGHLIGHTS: Record<number, HighlightDto[]> = {
     // rewritten toward the device on every pull, `annotation` is the reader's
     // and no import touches it. A screen showing them unlabelled, or showing
     // only one, has lost the distinction `docs/decisions.md` spends a section on.
+    //
+    // Two of these three carry `reading_id: 103` — the id `listReadings`
+    // synthesises for a book with a single read (`100 + bookId`, below). The
+    // third does not, because that is the ordinary shape of a real library:
+    // entry 44 calls an unattributed mark *"an ordinary, well-understood set of
+    // marks"*, so a fixture where every highlight belonged to a read would make
+    // the commonest case the one nothing renders.
     highlight(1, 3, 'The thing about a place is that it is still there when you are not.', {
       chapter: 'Chapter 4',
       page: 212,
       ko_note: 'What did they mean by this?',
       annotation: 'The whole book is arguing with this sentence.',
+      reading_id: 103,
     }),
     highlight(2, 3, 'What survives is not what was meant to.', { chapter: 'Chapter 9', page: 640 }),
     // No chapter and no page: KOReader does produce this, and the "where" line
     // must then render as nothing rather than as a stray separator.
-    highlight(3, 3, 'She counted the bells and then stopped counting.', {}),
+    highlight(3, 3, 'She counted the bells and then stopped counting.', { reading_id: 103 }),
   ],
   11: [highlight(4, 11, 'It is a mistake to read a map as a promise.', { chapter: 'Chapter 2', page: 31 })],
+  /**
+   * The reread, and the case item 44's `CardPassage` exists for.
+   *
+   * Book 12 has two readings, so it has two cards — and the three shapes below
+   * are what stop a card being written wrong:
+   *
+   * - Each read has **its own** longest mark, so a card scoped to `book_id`
+   *   would hand both cards the same sentence and the side-by-side comparison
+   *   the card exists for would show two identical passages.
+   * - The longest mark on the *book* (id 10) belongs to **neither** read, so a
+   *   selection over the book would pick a passage no card should carry.
+   * - Neither read's chosen passage is its **first**, so `highlights[0]` — the
+   *   rule a frontend invents — renders visibly different text.
+   */
+  12: [
+    highlight(5, 12, 'She said it plainly.', { chapter: 'One', page: 11, reading_id: 1 }),
+    highlight(
+      6,
+      12,
+      'The first time through, I took this for a description of a house; it is a description of a marriage, and every room in it was already named.',
+      { chapter: 'Four', page: 88, reading_id: 1, annotation: 'I had this completely backwards.' },
+    ),
+    highlight(7, 12, 'Nobody was coming.', { chapter: 'Nine', page: 204, reading_id: 1 }),
+    highlight(8, 12, 'A door is a decision.', { chapter: 'Two', page: 34, reading_id: 2 }),
+    highlight(
+      9,
+      12,
+      'Second time: the house is not a metaphor at all, and the marriage is the thing being described in terms of it. The book is funnier than I remembered and much less kind.',
+      { chapter: 'Eleven', page: 231, reading_id: 2, ko_note: 'cf. the opening' },
+    ),
+    // Longer than either chosen passage, and attributed to **no** read: a
+    // highlight the dates could not place belongs to neither card. `null` here
+    // is an ordinary answer, not a missing one.
+    highlight(
+      10,
+      12,
+      'Marked once, on some pass or other, and the dates can no longer say which — a mark between two readings belongs to neither of them, and the device cannot tell us otherwise.',
+      { chapter: 'Six', page: 140 },
+    ),
+  ],
 };
+
+/**
+ * Which passage each reading's card carries — **stated, never computed**.
+ *
+ * The rule is *longest, ties to the lowest id*, and it lives in SQL (item 44)
+ * because which passage a card shows is a **selection predicate** and item 17
+ * puts those in the engine. So this fixture states the engine's answer the way
+ * `book()` states `progress` and `series_label`: a fake that ran the rule would
+ * agree with the engine no matter how wrong either of them was, and this file's
+ * whole job is to be a second opinion rather than a second implementation.
+ *
+ * Reading 111 (book 11) is deliberately **absent**: its one mark is
+ * unattributed, so it has no card passage at all, and `cardPassage` returns
+ * `null` there exactly as `highlightsForReading` returns `[]`.
+ */
+const CARD_PASSAGE: Record<number, number> = { 1: 6, 2: 9, 103: 1 };
 
 /** No cast here either. `NoteDto` has no `last_modified`; this file claimed one. */
 function note(id: number, bookId: number | null, title: string, over: Partial<NoteDto>): NoteDto {
@@ -405,6 +472,27 @@ const NOTES: NoteDto[] = [
   note(3, 3, 'What survives', { highlight_id: 2 }),
   // A review, which is the one kind that carries a rating.
   note(4, 12, 'Review: A Book I Went Back To', { kind: 'review', reading_id: 2 }),
+  /**
+   * The first read's own review and reflection, which is what makes the two
+   * cards a **comparison** rather than a duplicate.
+   *
+   * `gui-vision.md:114`: *"reading Piranesi twice mints two cards, and the two
+   * sit side by side showing what changed. What you rated it at 22 and at 31."*
+   * The ratings below are 3 then 4.5, so that sentence is a thing this fixture
+   * can actually render.
+   *
+   * Note that every one of these carries a `reading_id`. `NoteScope::Reading` is
+   * literally `WHERE reading_id = ?` with **no** fall-back to the book's
+   * unanchored notes, so a note created without one appears on no card — which
+   * is a real property of a real vault and is why `NotePane`'s plain notes (1–3)
+   * are left without one here.
+   */
+  // Titled by its **date**, not by "first read": a read ordinal is item 41's
+  // and nothing in this app may spell one, so a fixture that spelled one in a
+  // title would defeat the assertion that nothing does.
+  note(5, 12, 'Review: A Book I Went Back To (January 2024)', { kind: 'review', reading_id: 1 }),
+  note(6, 12, 'Reflection: A Book I Went Back To', { kind: 'reflection', reading_id: 1 }),
+  note(7, 12, 'The house, again', { kind: 'note', reading_id: 2, page: 231 }),
 ];
 
 /**
@@ -420,6 +508,11 @@ See [[Reflection: The Doorstop]], and one day [[The Long Eighteenth Century]].`,
 It rhymes with [[On The Doorstop]] more than I expected.`,
   3: 'A single sentence, hung off a single passage.',
   4: 'Written for other people. Worth the eleven hundred pages, on the second pass.',
+  5: 'Written the first time through, when I thought I had it.',
+  6: `What this book was doing to me in January, and I was wrong about most of it.
+
+It argues with [[On The Doorstop]].`,
+  7: 'The same passage, read the other way round.',
 };
 
 /**
@@ -503,8 +596,153 @@ const PROVENANCE: Record<number, FieldSourceDto[]> = {
  */
 const SCALE: RatingScaleDto = { id: 1, name: 'stars', min: 1, max: 5, step: 0.5 };
 
-/** Which review notes carry a rating. */
-const RATINGS: Record<number, number> = { 4: 4.5 };
+/**
+ * Which review notes carry a rating.
+ *
+ * Two readings of book 12, two reviews, two different numbers — the comparison
+ * the card is for. A card whose read has no review carries no rating at all,
+ * which is most of them.
+ */
+const RATINGS: Record<number, number> = { 4: 4.5, 5: 3 };
+
+/**
+ * What is worth noticing and has not been shown (item 23).
+ *
+ * **Newest first by `occurred_at`**, which is the order the engine returns and
+ * the only order `limit` makes sense against — it takes from the newest end.
+ *
+ * All four kinds are here because each ends in a *different move*, and a
+ * fixture carrying only the obvious one would leave three arms of
+ * `momentSentence` rendered nowhere. `id` is opaque on the wire and opaque
+ * here: these are strings a client hands back, never strings it parses.
+ */
+const MOMENTS: MomentDto[] = [
+  // A reading closed — the kind the whole chain is drawn around, and the only
+  // kind whose `reading_id` the engine guarantees. It is what mints a card.
+  {
+    id: 'reading_closed:1',
+    kind: { kind: 'reading_closed' },
+    book_id: 12,
+    reading_id: 1,
+    day: '2025-01-31',
+    occurred_at: 1738368000,
+  },
+  {
+    id: 'first_annotation:3',
+    kind: { kind: 'first_annotation' },
+    book_id: 3,
+    // Absent where the evidence does not settle on one read, which is ordinary.
+    reading_id: null,
+    day: '2025-01-20',
+    occurred_at: 1737331200,
+  },
+  {
+    id: 'reflection_reached:2:12',
+    kind: { kind: 'reflection_reached', note_id: 2, reached_book_id: 12 },
+    book_id: 3,
+    reading_id: null,
+    day: '2025-01-14',
+    occurred_at: 1736812800,
+  },
+  // The one that had to be argued. `days` is on the wire and this frontend
+  // deliberately does not draw it — see `$lib/moments/sentence.ts`.
+  {
+    id: 'run_ended:2025-01-05:2025-01-08',
+    kind: { kind: 'run_ended', from: '2025-01-05', to: '2025-01-08', days: 4 },
+    book_id: null,
+    reading_id: null,
+    day: '2025-01-08',
+    occurred_at: 1736294400,
+  },
+];
+
+/**
+ * The reading life, as fixture data (items 21, 31, 42).
+ *
+ * **Stated at both grains, never folded from one to the other**, and that is
+ * the whole reason item 42 exists rather than a nicety of this file. A fake
+ * that summed its own months into a year would be the client-side bucketing
+ * this page was built to refuse, sitting inside the thing that is supposed to
+ * catch it — and it would agree with itself no matter how wrong it was.
+ *
+ * The shapes below are chosen so every branch of the rendering is reachable:
+ *
+ * - **A whole year with no device data** (2024). A Goodreads CSV or a calibre
+ *   library reads exactly like this, and it is the case `minutes: null` exists
+ *   for. It must never render as *0 min*.
+ * - **A measured zero** (2025-02). Item 31: a twenty-second session records
+ *   `Some(0)`, not `None` — the device *is* saying something, and collapsing it
+ *   into the absence throws away the distinction the column is nullable to keep.
+ * - **Minutes absent beside pages present** (2025-04). The two are independent
+ *   `Option`s and one page treating them as a pair would be wrong here.
+ * - **Gaps** (no 2025-06 onward, nothing before 2024-11). Only months carrying
+ *   an event come back; the empty ones are the client's to draw or to leave out.
+ */
+const MONTHS: MonthActivityDto[] = [
+  { month: '2024-11', books: 2, activity_days: 9, minutes: null, pages: null },
+  { month: '2024-12', books: 3, activity_days: 14, minutes: null, pages: null },
+  { month: '2025-01', books: 2, activity_days: 12, minutes: 620, pages: 410 },
+  { month: '2025-02', books: 1, activity_days: 3, minutes: 0, pages: 0 },
+  { month: '2025-03', books: 4, activity_days: 18, minutes: 900, pages: 590 },
+  { month: '2025-04', books: 1, activity_days: 6, minutes: null, pages: 120 },
+  { month: '2025-05', books: 2, activity_days: 12, minutes: 460, pages: 170 },
+];
+
+/**
+ * What a period held.
+ *
+ * `books_finished`, `activity_days`, `notes_created` and `links_created` are
+ * counts the engine **originates**, so a zero in one is knowable and is not an
+ * absence. `minutes` and `pages` are a device's and are not — which is the whole
+ * distinction the reading-life page is built to render.
+ */
+type PeriodFigures = Omit<ActivitySummaryDto, 'range'>;
+
+/**
+ * Everything recorded, kept out of the year map on purpose.
+ *
+ * `tsconfig` sets `noUncheckedIndexedAccess`, so a `Record` lookup is
+ * `T | undefined` **including** for the one key you know is there — and a
+ * `?? SUMMARIES.all` fallback would not have discharged it. A separate binding
+ * makes the fallback genuinely total rather than asserting that it is, which is
+ * this repo's own line about a guard that cannot fail.
+ */
+const WHOLE_LIFE: PeriodFigures = {
+  books_finished: 7,
+  activity_days: 74,
+  notes_created: 12,
+  links_created: 5,
+  minutes: 1980,
+  pages: 1290,
+};
+
+/**
+ * One summary per year the fixture has.
+ *
+ * **2024's minutes are `null` while its `activity_days` is 23**, and that pair
+ * is the point: a reader with no device still has a reading life, recorded from
+ * highlights, notes and reading endpoints — which is exactly what item 21's
+ * three device-free fillers are for, and what a page showing *0 min* for the
+ * year would deny.
+ */
+const SUMMARIES: Record<string, PeriodFigures> = {
+  '2024': {
+    books_finished: 3,
+    activity_days: 23,
+    notes_created: 4,
+    links_created: 1,
+    minutes: null,
+    pages: null,
+  },
+  '2025': {
+    books_finished: 4,
+    activity_days: 51,
+    notes_created: 8,
+    links_created: 4,
+    minutes: 1980,
+    pages: 1290,
+  },
+};
 
 /**
  * No `as` cast: `ReadingDto` gained `progress` in item 22 and this fixture had
@@ -569,6 +807,26 @@ export class FakeClient implements LibraryClient {
   #annotations: Record<number, string | null> = {};
   #ratings: Record<number, number> = { ...RATINGS };
   #nextNoteId = 100;
+  /** Moments already handed back. Acknowledging is idempotent, so this is a set. */
+  #surfaced = new Set<string>();
+  #device: boolean;
+
+  /**
+   * `device: false` is **a reader, not an edge case** — the required fixture.
+   *
+   * A library built from a Goodreads CSV, or from calibre, or from epub imports
+   * has no `statistics.sqlite3` behind it and therefore no minutes and no pages
+   * anywhere, at any grain, for ever. That reader still has a reading life —
+   * item 21's three device-free fillers record highlight days, vault days and
+   * reading endpoints — and the reading-life page owes them a page that says so
+   * rather than a calendar of zeros.
+   *
+   * It is a constructor argument rather than a twenty-second fixture book
+   * because it is a property of the whole library and not of one row.
+   */
+  constructor(options: { device?: boolean } = {}) {
+    this.#device = options.device ?? true;
+  }
 
   async paths(): Promise<PathsDto> {
     return {
@@ -642,6 +900,90 @@ export class FakeClient implements LibraryClient {
         progress: b.progress,
       }),
     ];
+  }
+
+  // ---- one card, per reading (item 28) ------------------------------------
+
+  async highlightsForReading(readingId: number): Promise<HighlightDto[]> {
+    // Scoped to the read, not to the book — and the reader's own annotation is
+    // instance state here for `listHighlights`' reason.
+    return Object.values(HIGHLIGHTS)
+      .flat()
+      .filter((h) => h.reading_id === readingId)
+      .map((h) => (h.id in this.#annotations ? { ...h, annotation: this.#annotations[h.id] ?? null } : h));
+  }
+
+  /** The engine's stated answer, looked up. See [`CARD_PASSAGE`] for why. */
+  async cardPassage(readingId: number): Promise<HighlightDto | null> {
+    const chosen = CARD_PASSAGE[readingId];
+    if (chosen === undefined) return null;
+    const all = Object.values(HIGHLIGHTS).flat();
+    return all.find((h) => h.id === chosen) ?? null;
+  }
+
+  /**
+   * `WHERE reading_id = ?`, with **no** fall-back to the book's unanchored
+   * notes — which is literally what `NoteScope::Reading` is. A fake that widened
+   * to the book when a read had nothing would hide the one thing a card's empty
+   * note band has to be honest about.
+   */
+  async notesForReading(readingId: number): Promise<NoteDto[]> {
+    return this.#notes.filter((n) => n.reading_id === readingId);
+  }
+
+  // ---- moments (item 23) --------------------------------------------------
+
+  async pendingMoments(limit = 1): Promise<MomentDto[]> {
+    // Newest first, and what has been surfaced is gone. `limit` takes from the
+    // newest end, which is the only lever the wire offers and the only one here.
+    return MOMENTS.filter((m) => !this.#surfaced.has(m.id)).slice(0, limit);
+  }
+
+  /**
+   * Idempotent, and it does **not** check that the moment is still derivable —
+   * both of which are the engine's own behaviour. A well-formed id for a moment
+   * that never existed costs one inert row there and one set entry here.
+   */
+  async acknowledgeMoment(id: string): Promise<void> {
+    this.#surfaced.add(id);
+  }
+
+  // ---- the reading life (items 21, 31, 42) --------------------------------
+
+  /**
+   * The summary for the span asked about.
+   *
+   * A span lying inside one calendar year gets that year's; anything wider gets
+   * the whole life. That is a **fixture lookup** keyed on the request, not an
+   * aggregation of the months — see [`SUMMARIES`], and the module rule that this
+   * file states the engine's answers rather than computing them.
+   *
+   * `range` is echoed back because the DTO carries it and a client may read it.
+   */
+  async activitySummary(from: string, to: string): Promise<ActivitySummaryDto> {
+    const year = from.slice(0, 4);
+    const within = year === to.slice(0, 4) && from.endsWith('-01-01');
+    const found: PeriodFigures = (within ? SUMMARIES[year] : undefined) ?? WHOLE_LIFE;
+    return { range: { from, to }, ...this.#measured(found) };
+  }
+
+  async activityByMonth(from: string, to: string): Promise<MonthActivityDto[]> {
+    // Both ends inclusive, and `YYYY-MM` compares correctly against the first
+    // seven characters of a `YYYY-MM-DD` — the same property `substr(day, 1, 7)`
+    // rests on, used again rather than a second date function that could
+    // disagree with it. A month at the edge is reported, never widened away.
+    return MONTHS.filter((m) => m.month >= from.slice(0, 7) && m.month <= to.slice(0, 7)).map((m) =>
+      this.#measured(m),
+    );
+  }
+
+  /**
+   * A library with no device behind it has no minutes and no pages — anywhere,
+   * at any grain. Applied at the seam rather than in a second copy of every
+   * fixture, so the two libraries cannot drift about which months exist.
+   */
+  #measured<T extends { minutes: number | null; pages: number | null }>(row: T): T {
+    return this.#device ? row : { ...row, minutes: null, pages: null };
   }
 
   // ---- what is behind one book (item 27) ---------------------------------
@@ -723,17 +1065,31 @@ export class FakeClient implements LibraryClient {
     this.#citations = this.#citations.filter((c) => c.note !== noteId);
   }
 
-  async openReflection(bookId: number): Promise<CreatedNoteDto> {
-    return this.#openAnchored(bookId, 'reflection');
+  async openReflection(bookId: number, readingId: number | null = null): Promise<CreatedNoteDto> {
+    return this.#openAnchored(bookId, 'reflection', readingId);
   }
 
   async openReview(bookId: number): Promise<CreatedNoteDto> {
-    return this.#openAnchored(bookId, 'review');
+    return this.#openAnchored(bookId, 'review', null);
   }
 
-  /** Open **or mint** — the engine's `open_anchored`, which is why it is one call. */
-  async #openAnchored(bookId: number, kind: NoteKindDto): Promise<CreatedNoteDto> {
-    const existing = this.#notes.find((n) => n.book_id === bookId && n.kind === kind);
+  /**
+   * Open **or mint** — the engine's `open_anchored`, which is why it is one call.
+   *
+   * A named `readingId` narrows the search to that read, which is what makes a
+   * moment about a *closed* reading open that reading's reflection rather than
+   * the current one's. A reread has two, and picking wrong here would put
+   * January's thoughts under the note for the read that is still open.
+   */
+  async #openAnchored(
+    bookId: number,
+    kind: NoteKindDto,
+    readingId: number | null,
+  ): Promise<CreatedNoteDto> {
+    const existing = this.#notes.find(
+      (n) =>
+        n.book_id === bookId && n.kind === kind && (readingId === null || n.reading_id === readingId),
+    );
     if (existing) {
       return {
         id: existing.id,
@@ -746,7 +1102,7 @@ export class FakeClient implements LibraryClient {
     const label = kind === 'reflection' ? 'Reflection' : 'Review';
     return this.createNote({
       book_id: bookId,
-      reading_id: null,
+      reading_id: readingId,
       highlight_id: null,
       page: null,
       location: null,

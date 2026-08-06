@@ -2245,3 +2245,190 @@ because item 31 needed somewhere to put reading time.
       fails the property and two facade tests; measuring bytes fails the
       property and `a_passage_is_measured_in_characters_and_not_in_bytes`;
       scoping to `book_id` fails `two_readings_of_one_book_choose_their_own_passage`.
+
+28. **The chain, and the reading-life page.** No migration and no engine or API
+    change; two routes, five components, two pure modules, and nine methods on
+    the client seam over requests that all already existed. It closes the GUI
+    wave by drawing the three things the engine had built and nothing had shown:
+    moments (23), the card's passage (44) and the month aggregate (42).
+    - **The moment is a band on the shelf, and there is no close button in the
+      file.** `gui-vision.md:121` is the whole design — *"a moment that ended in
+      a dismissable dialog would be a task-completion popup wearing a costume."*
+      So it ends by being acted on or by being read and left alone, and
+      `a moment ends by opening the reflection, and offers no way to dismiss it`
+      asserts the absence of *Dismiss*, *Close*, *Later*, *Not now*, *Got it* and
+      `×` rather than trusting the author. Item 27 refused a modal on a *page*
+      for the smaller version of this reason; a ceremony is where it would have
+      been most tempting.
+    - **It asks for exactly one, and that is not a page size.** A second moment
+      queued behind the first is an inbox with a ceremony's manners, which this
+      document bans by name. `PendingMoments { limit: 1 }`, and nothing renders
+      a length — there is no count on the wire (`the_wire_states_no_number_of_moments`
+      asserts that absence deliberately) and a `3` here would put the badge back
+      one layer up.
+    - **`run_ended` is spoken as its span and never as its count**, and this is
+      the one line of the item that was argued rather than written. `days` is on
+      the DTO and entry 23 defends it: a run is recognised only after it is over,
+      `RUN_MIN_DAYS` is 2 because that is what *consecutive* means, and a count
+      of your own past days is the kind item 17 permits. All true — and the
+      moment surfaces on the **home surface**, where the rule sharpened this
+      session allows a number that describes *one book* and nothing else. A run
+      of days describes neither one book nor the collection; it describes a
+      habit, and a habit with a number on it is a streak one product decision
+      later. *"You read every day from 2025-01-05 to 2025-01-08"* carries the
+      same fact with nothing in it to beat. Entry 23 put the wording in the
+      frontend precisely so this call could be made here, and the engine keeps
+      the field for the reading-life page, where a count is permitted.
+      `does not put the number of days in the sentence` is the guard.
+    - **The moment lives on the shelf rather than in the layout**, which also
+      answers *"poll after any write that could mint one"* without a cross-route
+      store: every write is on the book view, and coming back to the shelf
+      remounts the band and asks again. `a moment is shown once and is never
+      counted` drives exactly that — out to the reading life, back, and the next
+      moment is there while the first is not. It navigates rather than reloading
+      on purpose: a reload rebuilds `FakeClient` and would prove nothing, since
+      the real acknowledgement is a row in SQLite and layer 2 has no database.
+    - **Acknowledged when shown, not when clicked.** `surfaced_at` means *shown*,
+      so a moment you read and walked away from has fired. The DTO is then held
+      in local state and nothing polls again, so it cannot vanish out from under
+      the sentence being read; acknowledging is idempotent through both doors, so
+      a double render costs nothing.
+    - **The moment ends in item 27's note pane, reached by `?note=`.** Building a
+      second editor for the ceremony would be two places to fix the day the first
+      one changes, and the existing pane is the one that knows about links,
+      citations and saving. A query parameter rather than a store because it
+      survives a reload — the axiom's *state persists and is visible* — and
+      because a link is the one way to arrive somewhere that cannot be a dead
+      end. It **seeds** state once rather than being `$derived`: derived, it
+      would re-open the note after every save, so a reader who closed the pane
+      would find it open again.
+    - **`openReflection` gained an optional `readingId`, and that does not
+      re-open item 27's ruling.** That ruling was that a *frontend* must not pick
+      which read a reflection belongs to. `MomentDto` carries `reading_id` beside
+      `book_id` because entry 23 says item 28's audit asked for it — a card is
+      minted per reading and a moment identified by its book cannot select
+      between a reread's two — so passing it back is relaying the engine's own
+      answer, not choosing. Optional, so every caller without one still omits it.
+    - **The card carries no ordinal, and that is item 41.** `readings.indexOf(id)
+      + 1` would re-implement a domain rule *and* silently re-acquire a
+      dependency on `list_readings`' oldest-first ordering, which is stated
+      nowhere on the wire — item 27's finding for the read gutter, arriving from
+      a second direction. The dates name the read instead, in the terms a reader
+      remembers. `a card names its read by its dates and never by a number`
+      pins it, and it caught its own **fixture** first: a note titled *"(first
+      read)"* failed it, which is the guard working on the only material it
+      could have been wrong about.
+    - **A card is drawn for every reading, including the open one**, which reads
+      against the vision's *"a reading closes → the card is minted"* and was
+      decided the other way on purpose. Gating on `finished_at` would have the
+      app tell you the read you are in the middle of has no card yet, which is
+      completion framing in the one place this wave was most careful about — and
+      *state persists and is visible* is the axiom's first clause. Minting is
+      about the ceremony chain, not about a permission to look.
+    - **Notes on a card are `WHERE reading_id = ?` with no fall-back**, which the
+      API audit found before it could be discovered as a bug. `NoteScope::Reading`
+      does not widen to the book's unanchored notes, and today's `NotePane`
+      creates plain notes with a `book_id` only — so a card on a real vault shows
+      its reflection and review and often nothing else. The fake states that
+      shape rather than hiding it, and the fix is in the *creating* call site,
+      not in the query.
+    - **The reading-life page asks three times and folds nothing.**
+      `activityByMonth` and `activitySummary` over the whole life, plus one
+      `activitySummary` per year the switch is set to. A year's figures are a
+      *request* because item 42 says `books` is distinct over a period and
+      therefore not recoverable from the periods inside it, and because
+      `minutes: null` collapses to `0` on the first `reduce`. A summary per
+      *month* was item 42's rejected option — sixty round trips for five years;
+      per *year* is five, and each answers exactly the question its heading asks.
+      A **year heading therefore carries no figure at all**, because a wrong
+      number there would be worse than none.
+    - **The span starts at 1970 and ends today, and is never rendered.**
+      `DayRange` refuses only a malformed or inverted span, and only months with
+      an event come back, so the width is free — while "the last five years"
+      would be this page deciding when a reading life began, and a Goodreads
+      export can carry a book read in 1998. `today` is injected into every
+      function that needs it so the suite can pin it, and the raw span is never
+      drawn: a screenshot carrying today's date changes every day.
+    - **Absence is rendered at two grains and in two voices.** `NOT_MEASURED`
+      names one missing figure and `NO_DEVICE_DATA` collapses the pair, because
+      two chips reading *not measured* side by side say the same thing twice and
+      neither says which is which — while `minutes` and `pages` are independent
+      `Option`s and the fixture has a month with pages and no minutes. Both are
+      italic at body size rather than at figure size, the voice `BookTile` gives
+      *Untitled*: setting an absence in the type reserved for measurements makes
+      it look like a value. **A measured `0` prints as `0`** — item 31's
+      twenty-second session — and `prints a measured zero as a zero` is a
+      separate test from `says an absence rather than a zero` for that reason.
+    - **A reader with no device at all is a constructor argument on the fake, not
+      a twenty-second fixture book.** It is a property of a whole library — a
+      Goodreads CSV or a calibre import has no `statistics.sqlite3` behind it
+      and never will — so `new FakeClient({ device: false })` nulls minutes and
+      pages at the seam rather than in a second copy of every row. The suite
+      asserts both halves: nothing measured anywhere, **and** a reading life
+      still recorded, which is what item 21's three device-free fillers are for.
+    - **`activity_days` is labelled *days with something on them*, not *in a
+      row*.** It is a count of days inside a range you asked about, and a current
+      streak rendered from it is a threshold announced in advance in a costume —
+      the nearest wrong turn on the screen. `the reading life counts what you did
+      and sets no target` bans *streak*, *goal*, *target*, *in a row*, *on
+      track*, *pace* and *behind* over the whole body.
+    - **Three things only the screenshots could have settled**, which is the
+      argument for rendering rather than reasoning. A lone card in a `1fr` track
+      stretched to a thousand pixels and put four words of an empty state across
+      the window; capping the *track* fixed that and cost the side-by-side
+      comparison at 720px, which is the entire reason the screen exists — the
+      ceiling belongs on the card, not on the track. The moment band at full
+      width put its invitation nine hundred pixels from its sentence, which is
+      the shape of a promotional banner rather than a note to you. And six
+      summary figures under `auto-fit` landed as four then two, reading as a row
+      that ran out; six divides by three.
+    - **One trap paid for twice.** A top-level `const state` in `Card.svelte`
+      broke `svelte-check` with sixteen errors on *other* lines — the exact
+      failure entry 27 recorded, in the first rune file written after it. The
+      note is in `gui/CLAUDE.md` and it did not stop the next author, which is
+      worth knowing about that kind of note.
+    - **Item 43 is the boundary this route was kept behind.** `CardPassage` is
+      one call per card, right for a card reached by selecting a book and wrong
+      for a wall across the library — so the cards live under `/book/[id]/cards`
+      and the reading-life page deliberately does not grow *"and here are the
+      books"*, which has no request behind it at all.
+    - **The screenshot review found the axiom broken in a band heading, and it
+      was the sentence itself.** The card's band read **"What you left"** — the
+      second half of *"the app tells you what you did; it never tells you what
+      you have left"*, word for word, over a band that then printed a count. It
+      meant *what you left behind* and English does not disambiguate that at a
+      glance. The phrase is finished rather than trimmed. Nothing but reading the
+      rendered words could have caught it: it passed every assertion, because the
+      assertions ban *unread*, *remaining*, *pending* — the words somebody else
+      would use.
+    - **"Yet" was doing the same work in two empty states**, and it is the one
+      word that turns an absence into something outstanding — the grammar of
+      *pending* in a softer coat. Both facts are identical without it.
+    - **A GUI empty state must not prescribe a CLI command.** The library's
+      failure state may name `make dev-db`, because its audience is whoever
+      mis-set the data dir. An ordinary book with no card has a *reader* for an
+      audience, there is no terminal in that window, and `rb read start 4` also
+      leaked a raw row id into user-facing copy. It names the book and links to
+      it instead — which fixed a second defect, since the page had not said
+      *whose* cards were missing.
+    - **The moment band read as a promotional banner, and the diagnosis was
+      exact**: a filled accent pill was the only solid colour block above the
+      fold on a surface whose subject is books, and the ceremony was *about a
+      book* while showing no book — every other reference to one on that surface
+      is a tile with its jacket. It now carries the jacket and the control is a
+      ghost rather than a fill. The wording had passed every check; the
+      **grammar** had not, which is the class of defect the reviewer exists for.
+    - **The month table had no columns, and a floor per chip was not enough.**
+      *minutes not measured* is wider than any number, so it blew out its slot
+      and shoved its whole row 65px left of its neighbours — on a page of monthly
+      figures whose purpose is reading *down* a column. A fixed four-column
+      template, with the absence spanning the two device slots. Still not a
+      `<table>`: what is borrowed is the geometry, not the element.
+    - **Two contrast findings, both on the absence.** `no device data` measured
+      **3.88:1** — under AA, on the one string that must be legible *as* an
+      absence — because an `opacity: 0.85` sat on top of `--ink-dim`. And the
+      month name was three times the contrast of the figures beside it,
+      inverting the hierarchy of a page whose subject is the figures. Fixing the
+      second made the first worse before it made it better: with the figures at
+      `--ink`, italics alone separated a measured `0 min` from *not measured*, so
+      the absence now carries **two** signals rather than one.

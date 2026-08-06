@@ -50,6 +50,21 @@
 
   const id = $derived(Number(page.params.id));
 
+  /**
+   * The note a link asked for, or `null`.
+   *
+   * A plain function rather than a `$derived`: it seeds state once, on arrival.
+   * Deriving it would re-open the note every time the query string was still
+   * there — which is after every save — and a reader who closed the pane would
+   * find it open again.
+   */
+  function paramNote(): number | null {
+    const raw = page.url.searchParams.get('note');
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+
   let book = $state<StoredBook | null>(null);
   let readings = $state<ReadingDto[]>([]);
   let highlights = $state<HighlightDto[]>([]);
@@ -67,8 +82,19 @@
    * would pin a stale object — a note whose title changed would keep the old
    * one, and a deleted note would stay open over nothing. An id resolved
    * against the current list makes both of those correct for free.
+   *
+   * **Seeded from `?note=`** (item 28), which is how a moment ends *in* the
+   * reflection rather than beside it. The moment opens the note through
+   * `OpenReflection` and lands here naming it, so the ceremony reuses this
+   * pane instead of growing a second editor that would have to be fixed twice.
+   * It is a URL rather than a store because it survives a reload — the axiom's
+   * *state persists and is visible* — and because a link is the one way to
+   * arrive somewhere that cannot be a dead end.
+   *
+   * An id naming a note this book does not have resolves to `null` and the pane
+   * shows the list, which is the same answer a deleted note already gets.
    */
-  let openNoteId = $state<number | null>(null);
+  let openNoteId = $state<number | null>(paramNote());
   const openNote = $derived(notes.find((n) => n.id === openNoteId) ?? null);
 
   /** Which passages the open note cites. **One** call, for the one open note. */
@@ -207,7 +233,14 @@
                reread, and the progress on each row is **that** reading's —
                putting the current page under a read that closed in January is
                what `Progress::of_book` warns about. -->
-          <h2 class="band-title">{readings.length > 1 ? 'Reads' : 'Read'}</h2>
+          <div class="band-head">
+            <h2 class="band-title">{readings.length > 1 ? 'Reads' : 'Read'}</h2>
+            <!-- The card, which is per reading — so a reread has two and they
+                 sit side by side. Its own route rather than a band here: a card
+                 carries a passage, and a passage wants a measure this column
+                 does not have. -->
+            <a class="cards" href={`/book/${id}/cards`}>Cards →</a>
+          </div>
           <ul class="readings">
             {#each readings as r (r.id)}
               <li>
@@ -339,6 +372,18 @@
     margin-top: 2.2rem;
   }
 
+  .band-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.3rem;
+  }
+  .cards {
+    font-size: 0.8rem;
+    color: var(--accent-text);
+    flex: none;
+  }
   ul.readings {
     list-style: none;
     padding: 0;
