@@ -235,6 +235,37 @@ pub struct DayActivity {
     pub pages: Option<i64>,
 }
 
+/// One month of the period, for a caller drawing a year rather than a week.
+/// Only months carrying an event appear, exactly as [`DayActivity`] only
+/// carries days that do — the gaps are the client's to draw, and drawing them
+/// *as an absence* is the whole point.
+///
+/// **This is not [`DayActivity`] added up, and `books` is why.** Minutes and
+/// days do sum; distinct books do not — a reader who opened the same two books
+/// on twelve days read two books that month and not twenty-four — so a client
+/// bucketing days into months in its own language either gets that field wrong
+/// or cannot produce it at all. Which is a semantic decision, and semantic
+/// decisions are the engine's (item 17).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonthActivity {
+    /// `YYYY-MM`.
+    pub month: String,
+    /// Distinct books with an event **anywhere in the month**. Deliberately not
+    /// derivable from the days.
+    pub books: i64,
+    /// Days of this month that carry an event. The month's own share of
+    /// [`ActivitySummary::activity_days`], and the denominator a client would
+    /// otherwise invent.
+    pub activity_days: i64,
+    /// `None` when nothing in the month measured minutes. **Never `Some(0)`** —
+    /// a month with no device data has no minutes, it does not have zero of
+    /// them, and collapsing the two is the lie the whole column exists to
+    /// refuse.
+    pub minutes: Option<i64>,
+    /// `None` when nothing in the month measured pages.
+    pub pages: Option<i64>,
+}
+
 /// `YYYY-MM-DD`, UTC, from unix seconds.
 pub fn day_of_unix(ts: i64) -> Result<String> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
@@ -652,6 +683,57 @@ impl Storage {
             .map(|r| DayActivity {
                 day: r.get("day"),
                 books: r.get("books"),
+                minutes: r.get("minutes"),
+                pages: r.get("pages"),
+            })
+            .collect())
+    }
+
+    /// The months of a period that carry an event, oldest first.
+    ///
+    /// The same aggregate as [`Storage::activity_by_day`] one grain up, and it
+    /// exists because the grain is **not** a client's to change. Bucketing days
+    /// into months above this seam goes wrong twice: `minutes: None` collapses
+    /// to `0` on the first `reduce` in any language that has one, turning "the
+    /// device never measured this month" into "you read for zero minutes"; and
+    /// `books` cannot be recovered at all, since distinct-books-per-day do not
+    /// sum to distinct-books-per-month. The alternative — a summary call per
+    /// month — is sixty round trips to draw five years.
+    ///
+    /// `substr(day, 1, 7)` is the whole grouping because `day` is a
+    /// zero-padded ISO date, so its lexicographic order is its chronological
+    /// order and its first seven characters are its month. That is the same
+    /// property `BETWEEN` already relies on, used again rather than a second
+    /// date function that could disagree with it.
+    ///
+    /// **A month at the edge of the range is reported for the part of it that
+    /// is inside the range**, and is not silently widened: `2026-01-20 ..
+    /// 2026-02-10` answers about twelve days of January and ten of February,
+    /// because reporting a whole January would be answering about days the
+    /// caller did not ask for and could not see in the same call's
+    /// [`ActivitySummary`].
+    pub async fn activity_by_month(&self, range: &DayRange) -> Result<Vec<MonthActivity>> {
+        let rows = sqlx::query(
+            "SELECT substr(day, 1, 7)    AS month,
+                    count(DISTINCT book_id) AS books,
+                    count(DISTINCT day)     AS activity_days,
+                    sum(minutes)            AS minutes,
+                    sum(pages)              AS pages
+               FROM reading_events
+              WHERE day BETWEEN ? AND ?
+              GROUP BY month
+              ORDER BY month ASC",
+        )
+        .bind(range.from())
+        .bind(range.to())
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| MonthActivity {
+                month: r.get("month"),
+                books: r.get("books"),
+                activity_days: r.get("activity_days"),
                 minutes: r.get("minutes"),
                 pages: r.get("pages"),
             })
@@ -1252,6 +1334,157 @@ mod tests {
         );
     }
 
+    // ---- item 42: the month is a period too --------------------------------
+
+    /// Seed one row directly. The month aggregate is about grouping, not about
+    /// which filler wrote a row, so the fillers are not in the way here.
+    async fn event(s: &Storage, book: i64, day: &str, minutes: Option<i64>) {
+        s.record_reading_events(&[NewReadingEvent {
+            book_id: book,
+            reading_id: None,
+            day: day.into(),
+            minutes,
+            pages: None,
+            source: SOURCE_KOREADER.into(),
+            confidence: Confidence::Measured,
+        }])
+        .await
+        .unwrap();
+    }
+
+    /// **The test the item is for.** A month holding measured days *beside*
+    /// unmeasured ones must report only what was measured, and a month holding
+    /// none at all must report `None` — never `Some(0)`, which is the lie a
+    /// client's `reduce` produces on the first `null` it meets.
+    #[tokio::test]
+    async fn a_months_minutes_sum_only_what_was_measured() {
+        let (s, book) = seeded().await;
+        // March: two days the device timed, two it never did.
+        event(&s, book, "2026-03-02", None).await;
+        event(&s, book, "2026-03-05", Some(40)).await;
+        event(&s, book, "2026-03-09", None).await;
+        event(&s, book, "2026-03-21", Some(20)).await;
+        // April: read about, never timed.
+        event(&s, book, "2026-04-03", None).await;
+        event(&s, book, "2026-04-04", None).await;
+
+        let year = DayRange::new("2026-01-01", "2026-12-31").unwrap();
+        let months = s.activity_by_month(&year).await.unwrap();
+
+        let march = months.iter().find(|m| m.month == "2026-03").unwrap();
+        assert_eq!(
+            march.minutes,
+            Some(60),
+            "the unmeasured days must contribute nothing, not zero"
+        );
+        assert_eq!(march.activity_days, 4, "all four days still happened");
+
+        let april = months.iter().find(|m| m.month == "2026-04").unwrap();
+        assert_eq!(
+            april.minutes, None,
+            "a month with no device data has no minutes; it does not have zero"
+        );
+        assert_ne!(april.minutes, Some(0));
+        assert_eq!(april.activity_days, 2, "and the days are still known");
+        assert_eq!(april.pages, None);
+    }
+
+    /// The field that cannot be summed from days, which is the whole reason
+    /// this grain lives below the seam rather than in a frontend's `reduce`.
+    #[tokio::test]
+    async fn a_months_books_are_distinct_over_the_month_and_do_not_sum_from_days() {
+        let (s, a) = seeded().await;
+        let b = s
+            .upsert_book(
+                &Book {
+                    title: Some("Piranesi".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        for day in ["2026-05-01", "2026-05-02", "2026-05-03"] {
+            event(&s, a, day, None).await;
+        }
+        event(&s, b, "2026-05-02", None).await;
+
+        let may = DayRange::new("2026-05-01", "2026-05-31").unwrap();
+        let by_day = s.activity_by_day(&may).await.unwrap();
+        let summed: i64 = by_day.iter().map(|d| d.books).sum();
+        assert_eq!(summed, 4, "three days of one book and one day of two");
+
+        let months = s.activity_by_month(&may).await.unwrap();
+        assert_eq!(months.len(), 1);
+        assert_eq!(
+            months[0].books, 2,
+            "two books were open that month, however many days each was"
+        );
+        assert_ne!(
+            months[0].books, summed,
+            "summing the days is the arithmetic this method exists to refuse"
+        );
+        assert_eq!(months[0].activity_days, 3);
+    }
+
+    /// Only months carrying an event appear, for the reason only days do: an
+    /// empty month is the client's to draw, and drawing it *as an absence* is
+    /// what stops a gap looking like a zero.
+    #[tokio::test]
+    async fn only_months_carrying_an_event_appear() {
+        let (s, book) = seeded().await;
+        event(&s, book, "2026-03-11", Some(5)).await;
+        event(&s, book, "2026-05-02", Some(7)).await;
+
+        let year = DayRange::new("2026-01-01", "2026-12-31").unwrap();
+        let months = s.activity_by_month(&year).await.unwrap();
+        assert_eq!(
+            months.iter().map(|m| m.month.as_str()).collect::<Vec<_>>(),
+            vec!["2026-03", "2026-05"],
+            "April is not a row of zeroes, and neither are the other nine"
+        );
+
+        // A year with nothing in it is an empty list, not twelve empty months.
+        let before = DayRange::new("2025-01-01", "2025-12-31").unwrap();
+        assert!(s.activity_by_month(&before).await.unwrap().is_empty());
+    }
+
+    /// A month at the edge of the range covers the part of it inside the range,
+    /// and the range is never silently widened to whole months — that would
+    /// report days the caller could not see in the same call's summary.
+    #[tokio::test]
+    async fn a_month_at_the_edge_covers_only_the_days_inside_the_range() {
+        let (s, book) = seeded().await;
+        for day in ["2026-01-05", "2026-01-25", "2026-02-05", "2026-02-20"] {
+            event(&s, book, day, Some(10)).await;
+        }
+
+        let straddling = DayRange::new("2026-01-20", "2026-02-10").unwrap();
+        let months = s.activity_by_month(&straddling).await.unwrap();
+        assert_eq!(
+            months.iter().map(|m| m.month.as_str()).collect::<Vec<_>>(),
+            vec!["2026-01", "2026-02"]
+        );
+        assert_eq!(months[0].activity_days, 1, "only the 25th is in range");
+        assert_eq!(months[0].minutes, Some(10));
+        assert_eq!(months[1].activity_days, 1, "only the 5th is in range");
+        assert_eq!(months[1].minutes, Some(10));
+
+        // And the summary of the same range agrees, which is the coherence a
+        // widened month would have quietly broken.
+        let sum = s.activity_summary(&straddling).await.unwrap();
+        assert_eq!(sum.activity_days, 2);
+        assert_eq!(sum.minutes, Some(20));
+    }
+
+    /// An inverted span is refused before it can become a confident empty year,
+    /// the same refusal the two older aggregates get.
+    #[tokio::test]
+    async fn an_inverted_range_never_reaches_the_month_aggregate() {
+        assert!(DayRange::new("2026-12-31", "2026-01-01").is_err());
+    }
+
     // ---- item 22: the typed page, the fifth filler -------------------------
 
     /// The `local` row of a book's log, as `(day, minutes, pages, confidence)`.
@@ -1763,6 +1996,91 @@ mod props {
                     s.activity_by_day(&range).await.unwrap().len(),
                     days.len()
                 );
+                Ok(())
+            })?;
+        }
+
+        /// The months regroup the days — except for `books`, which is the one
+        /// field that cannot be recovered from them (item 42).
+        ///
+        /// A property rather than more examples because the interesting input
+        /// is the *shape of the overlap*: whether a book appears on one day of
+        /// a month or on nine, and whether a month's measured days sit beside
+        /// unmeasured ones, is what decides whether summing the days happens to
+        /// give the right answer. Hand-picked libraries are hand-picked to be
+        /// ones where it does.
+        ///
+        /// Three claims, and the third is deliberately an inequality rather
+        /// than an equation: `books` is asserted **exactly** against the events
+        /// and only *bounded* by the days, because there is no arithmetic over
+        /// `activity_by_day` that yields it — which is the claim itself.
+        #[test]
+        fn months_regroup_the_days_and_books_is_the_field_that_does_not(
+            ev in proptest::collection::vec(evidence(), 0..14),
+            (from, to) in (0u8..20, 0u8..20),
+        ) {
+            let (from, to) = (from.min(to), from.max(to));
+            rt().block_on(async {
+                let s = library(&ev).await;
+                s.refill_reading_events().await.unwrap();
+
+                let range = DayRange::new(
+                    &day_of_unix(BASE + i64::from(from) * DAY).unwrap(),
+                    &day_of_unix(BASE + i64::from(to) * DAY).unwrap(),
+                ).unwrap();
+
+                let events: Vec<ReadingEvent> = snapshot(&s).await
+                    .into_iter()
+                    .filter(|e| e.day.as_str() >= range.from() && e.day.as_str() <= range.to())
+                    .collect();
+
+                let by_day = s.activity_by_day(&range).await.unwrap();
+                let months = s.activity_by_month(&range).await.unwrap();
+
+                // 1. The months are exactly the months of the days, in order,
+                //    and no empty month is invented between two full ones.
+                let mut want: Vec<String> =
+                    by_day.iter().map(|d| d.day[..7].to_string()).collect();
+                want.dedup();
+                prop_assert_eq!(
+                    months.iter().map(|m| m.month.clone()).collect::<Vec<_>>(),
+                    want
+                );
+
+                for m in &months {
+                    let days: Vec<&DayActivity> =
+                        by_day.iter().filter(|d| d.day.starts_with(&m.month)).collect();
+
+                    // 2. Days and minutes are sums of the days — and `None`
+                    //    survives the sum rather than becoming zero.
+                    prop_assert_eq!(m.activity_days, days.len() as i64);
+                    let measured: Vec<i64> = days.iter().filter_map(|d| d.minutes).collect();
+                    if measured.is_empty() {
+                        prop_assert_eq!(
+                            m.minutes, None,
+                            "a month whose every day was unmeasured cannot claim a number"
+                        );
+                    } else {
+                        prop_assert_eq!(m.minutes, Some(measured.iter().sum::<i64>()));
+                    }
+
+                    // 3. `books` is distinct over the month, which the days
+                    //    bound from both sides and determine from neither.
+                    let mut books: Vec<i64> = events.iter()
+                        .filter(|e| e.day.starts_with(&m.month))
+                        .map(|e| e.book_id)
+                        .collect();
+                    books.sort_unstable();
+                    books.dedup();
+                    prop_assert_eq!(m.books, books.len() as i64);
+
+                    let most = days.iter().map(|d| d.books).max().unwrap_or(0);
+                    let summed: i64 = days.iter().map(|d| d.books).sum();
+                    prop_assert!(
+                        m.books >= most && m.books <= summed,
+                        "a month holds at least its busiest day's books and at most their sum"
+                    );
+                }
                 Ok(())
             })?;
         }

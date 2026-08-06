@@ -2134,3 +2134,114 @@ because item 31 needed somewhere to put reading time.
       about — a note open in place and its links replacing it — would have been
       reviewed by nobody otherwise. The shelf's arrangement test set the
       precedent and this follows it: drive the thing, then take the picture.
+42. **The month is a period too.** No migration and no `API_VERSION` move; one
+    aggregate beside `activity_by_day`, one DTO, one request. Its subject is
+    that item 21 built the activity log at one grain and item 28's reading-life
+    page draws years, so a frontend had two moves and both were wrong.
+    - **The bad options are the argument, and neither is merely slow.**
+      Bucketing `ActivityByDay` into months above the seam **collapses `null` to
+      `0` on the first `reduce`** in any language that has one — so a month the
+      device never measured renders as *you read for zero minutes*, which is
+      exactly the claim `minutes: Option` was made nullable to refuse, now
+      spread across a calendar. The other option, an `ActivitySummary` per
+      month, is sixty round trips to draw five years and answers a slightly
+      different question at each one.
+    - **`books` is the field that settles where this lives.** Minutes and days
+      sum; distinct books do not — a reader who opened the same two books on
+      twelve days read two books that month, not twenty-four — so a client
+      folding days either gets it wrong or cannot produce it at all. That is a
+      *semantic* decision about what a month means, and item 17's line puts
+      those below the seam. The property asserts `books` **exactly** against the
+      events and only **bounds** it by the days (at least the busiest day's, at
+      most their sum), because there is no arithmetic over `activity_by_day`
+      that yields it — the inequality *is* the claim, and asserting an equation
+      there would be asserting something false.
+    - **`substr(day, 1, 7)` is the whole grouping**, because `day` is a
+      zero-padded ISO date and its first seven characters are its month — the
+      same property `BETWEEN` has relied on since `0011`, used again rather than
+      a second date function that could disagree with it.
+    - **A month at the edge of the range is reported for the part inside the
+      range, and the range is never widened to whole months.** Widening would
+      answer about days the caller did not ask for and cannot see in the same
+      call's `ActivitySummary`, so the two would quietly disagree; the test
+      asserts they agree over a straddling span. Only months carrying an event
+      appear, for the reason only days do: an empty month is the client's to
+      draw, and drawing it *as an absence* is what item 28 means by "a month
+      with no device data says so rather than showing a zero".
+    - **Validated through the engine's own `DayRange`**, like both siblings, so
+      this layer cannot route around the refusal an inverted span gets. And
+      **`API_VERSION` stays at 2**: a new request and a new response shape are
+      additive, and no existing request changed — which matters more than it
+      reads, since `ts-rs` emits a new field on an *existing* request as
+      required in TypeScript however `#[serde(default)]` the Rust is.
+    - **Three neuters, each red.** `coalesce(sum(minutes), 0)` fails the minutes
+      test and the property; `count(book_id)` for `count(DISTINCT book_id)`
+      fails the books test and the property; grouping the `WHERE` by month
+      instead of by day fails the edge-of-range test. A behavioural test that
+      cannot fail is not a guard, and this repo has three recorded instances of
+      shipping one.
+44. **The card's passage, chosen once.** No migration and no `API_VERSION` move;
+    one `ORDER BY` and one request. `gui-vision.md:125` says a card carries "one
+    passage pulled from the highlights", and **which passage is a selection
+    predicate**, which item 17 puts in the engine. `highlights[0]` in TypeScript
+    is a frontend inventing a rule, and the day the TUI grows a card the two
+    apps show a different passage for the same reading with neither looking
+    wrong.
+    - **The rule is the longest passage, ties to the lowest id — and it is the
+      one part of this thread settled by taste rather than by argument from the
+      code.** Three things chose it. **This database already treats a short mark
+      as not-a-passage**: `koreader.rs` turns single-word highlights into
+      flashcard candidates, because a one-word mark on a reader is a dictionary
+      lookup, and any rule keyed on *position* (first marked, lowest page) picks
+      those up constantly since they are scattered and one is usually near the
+      front. **It needs nothing that is usually missing** — `annotation`,
+      `ko_note` and a citation are all better signals of "the passage that
+      mattered" and all three are absent for most readings, so a rule resting on
+      one makes the ordinary card the empty one. And **it survives a device
+      re-import**: `refresh_device_fields` rewrites `ko_note`, `color`, `chapter`
+      and `page` in place and never `text`, and `highlight_ids_are_stable_across_refresh`
+      already pins the tie-break, while a rule ordering by `page` would be
+      reshuffled by every re-render.
+    - **What it costs, stated rather than mitigated: it selects for the longest
+      *drag*, not the best passage.** A mis-drag that grabbed half a screen
+      outranks the sentence the reader loved, and a reading whose marks are all
+      one sentence is decided by a few characters. A length cap would trade that
+      for a magic number making a claim about how long a passage may be, so
+      there is none.
+    - **Characters, not bytes.** SQLite's `length()` over TEXT counts
+      characters, which is the honest measure of how much was dragged; on bytes
+      a CJK passage scores three times a Latin one of the same length and would
+      win every card in a mixed library. The test is a 13-character/39-byte mark
+      beside a 32-character/32-byte one, so the two measures disagree by
+      construction.
+    - **Scoped to the reading, not the book**, exactly like
+      `highlights_for_reading`. The card is per reading and a reread mints a
+      second beside the first; selecting over `book_id` would hand both cards
+      the same sentence, and the side-by-side comparison the card exists for
+      would show two identical passages. It follows that a reading whose
+      highlights are all unattributed has **no** card passage — `reading_id` is
+      `None` for an ordinary, well-understood set of marks, so this returns
+      `None` the way `highlights_for_reading` returns an empty list, and a card
+      drawing that absence as an absence is right.
+    - **The order is total.** `id` is the primary key, so no two rows tie all
+      the way down, and "the same passage on every call" is a property of the
+      statement rather than of SQLite's query plan — `storage/CLAUDE.md` records
+      the same requirement for the paged list arms after a partial order there
+      was deterministic in testing right up until the plan would have changed.
+    - **A request, not a field on a card DTO, and not a field on `ReadingDto`.**
+      There is no `CardDto` and minting one would have the API declare a
+      *layout* — cover, dates, rating, passage, notes — which is a frontend's
+      composition of facts the API already serves. Putting `passage` on
+      `ReadingDto` instead would ride the reader's private highlight text along
+      on every row of every `ListReadings`, including the ones nobody is drawing
+      a card for. **The honest cost of the request is that it is one call per
+      card**, which is right for a card reached by selecting a book and wrong
+      for the wall of cards across the library; that wall needs item 43 first,
+      and when it arrives the passage belongs on whatever list item 43 mints
+      rather than in N of these. Said here so a later thread does not quietly
+      do the N+1 across four hundred cards, which is the pathology item 18
+      exists to remove.
+    - **Three neuters, each red.** `ORDER BY id ASC` (the `highlights[0]` rule)
+      fails the property and two facade tests; measuring bytes fails the
+      property and `a_passage_is_measured_in_characters_and_not_in_bytes`;
+      scoping to `book_id` fails `two_readings_of_one_book_choose_their_own_passage`.

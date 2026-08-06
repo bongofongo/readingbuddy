@@ -87,9 +87,9 @@ pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
-    MomentKind, NewHighlight, NewReadingEvent, NoteRecord, NoteScope, OutgoingLink, RUN_MIN_DAYS,
-    Rating, RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport, SearchHit,
-    SearchSource, Source, StatusFilter, Storage,
+    MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteRecord, NoteScope, OutgoingLink,
+    RUN_MIN_DAYS, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport,
+    SearchHit, SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -801,6 +801,17 @@ impl Engine {
         self.storage.activity_by_day(range).await
     }
 
+    /// The same period one grain up, for a caller drawing years rather than
+    /// weeks (item 42). Only months carrying an event come back.
+    ///
+    /// It exists because a month is **not** a bucket of days a frontend can
+    /// fold for itself: `minutes: None` collapses to `0` on the first `reduce`,
+    /// and `books` — distinct over the whole month — cannot be recovered from
+    /// the days at all.
+    pub async fn activity_by_month(&self, range: &DayRange) -> Result<Vec<MonthActivity>> {
+        self.storage.activity_by_month(range).await
+    }
+
     // ---- moments -----------------------------------------------------------
 
     /// Everything worth noticing that has not been shown yet, newest first
@@ -852,6 +863,24 @@ impl Engine {
     /// the schema could answer well before anything could ask it.
     pub async fn highlights_for_reading(&self, reading_id: i64) -> Result<Vec<Highlight>> {
         self.storage.highlights_for_reading(reading_id).await
+    }
+
+    /// The one passage a card shows for a reading (item 44), or `None` when the
+    /// reading has no attributed highlight.
+    ///
+    /// **Which passage is a selection predicate, and item 17 puts those here.**
+    /// The rule is the longest, ties broken by the lowest id; the argument for
+    /// it — and what it costs — is on [`Storage::card_passage`], and
+    /// `docs/decisions.md` entry 44 is where it is settled. The point of it
+    /// being one function is that the GUI's card and any later TUI card show
+    /// the *same* passage for the same reading, which two frontends each
+    /// reaching for `highlights[0]` would not.
+    ///
+    /// Always a member of [`Engine::highlights_for_reading`] for the same
+    /// reading, so a card and the full list can never disagree about what was
+    /// marked.
+    pub async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
+        self.storage.card_passage(reading_id).await
     }
 
     /// Write **our** annotation on a highlight — the column beside `ko_note`

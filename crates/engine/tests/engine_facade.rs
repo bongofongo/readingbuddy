@@ -862,6 +862,185 @@ async fn highlights_for_reading_is_that_read_and_only_that_read() {
     );
 }
 
+// ---- item 44: the card's passage ------------------------------------------
+
+/// The rule, asserted as a rule: the longest passage of the reading, and
+/// deliberately **not** the first one marked.
+///
+/// The short mark is first by every positional key there is — lowest id,
+/// earliest stamp — so an implementation that took `highlights[0]` in any
+/// spelling passes nothing here. It is also a *single word*, which is what this
+/// database already treats as a dictionary lookup rather than a passage
+/// (`koreader.rs` turns those into flashcard candidates), and is exactly what a
+/// positional rule picks up.
+#[tokio::test]
+async fn the_card_passage_is_the_longest_mark_and_not_the_first() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Pachinko").await;
+    let s = engine.storage();
+
+    let reading = s
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+    for h in [
+        // A word looked up on the way past. First by id and by stamp.
+        highlight("hansu", "2026-01-02 09:00:00"),
+        highlight(
+            "History has failed us, but no matter — the sentence the reader \
+             would show somebody",
+            "2026-01-03 09:00:00",
+        ),
+        highlight("a middling clause worth keeping", "2026-01-04 09:00:00"),
+    ] {
+        s.insert_highlight(id, &h).await.unwrap();
+    }
+    s.attribute_highlights(id).await.unwrap();
+
+    let passage = engine
+        .card_passage(reading)
+        .await
+        .unwrap()
+        .expect("a reading with marks has a passage");
+    assert!(
+        passage.text.starts_with("History has failed us"),
+        "the card must show the longest mark, not the first: {:?}",
+        passage.text
+    );
+
+    // Asked twice, the same passage — a card that moved under its reader would
+    // be a card nobody could show anyone.
+    assert_eq!(
+        engine.card_passage(reading).await.unwrap().map(|h| h.id),
+        Some(passage.id)
+    );
+}
+
+/// A reading with nothing marked has no passage. Ordinary, not an error — the
+/// same absence `highlights_for_reading` reports as an empty list.
+#[tokio::test]
+async fn a_reading_with_no_marks_has_no_card_passage() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Piranesi").await;
+    let reading = engine
+        .storage()
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+
+    assert!(engine.card_passage(reading).await.unwrap().is_none());
+    assert!(
+        engine
+            .highlights_for_reading(reading)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// **Scoped to the reading, which is the point of a card per reading.** Two
+/// reads of one book choose independently, and the book's own longest mark does
+/// not leak into a read that did not make it.
+///
+/// The second read's marks are all shorter than the first's, so a
+/// `card_passage` that selected over `book_id` would hand both cards the same
+/// sentence — and the comparison the card exists to make would show two
+/// identical passages.
+#[tokio::test]
+async fn two_readings_of_one_book_choose_their_own_passage() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Pachinko").await;
+    let s = engine.storage();
+
+    let first = s
+        .record_reading(
+            id,
+            unix("2020-01-01"),
+            unix("2020-02-01"),
+            "finished",
+            "manual",
+        )
+        .await
+        .unwrap();
+    let second = s
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+
+    for h in [
+        highlight(
+            "the longest thing in the whole book, marked the first time through",
+            "2020-01-10 09:00:00",
+        ),
+        highlight("shorter, first read", "2020-01-20 09:00:00"),
+        highlight("what the second read noticed", "2026-01-15 09:00:00"),
+        // Longer than either read's own longest, and attributed to neither
+        // read — it falls between the two windows.
+        highlight(
+            "an unplaceable mark that is longer than anything either read \
+             actually chose, sitting between the two windows",
+            "2023-06-01 09:00:00",
+        ),
+    ] {
+        s.insert_highlight(id, &h).await.unwrap();
+    }
+    s.attribute_highlights(id).await.unwrap();
+
+    let one = engine.card_passage(first).await.unwrap().unwrap();
+    let two = engine.card_passage(second).await.unwrap().unwrap();
+    assert!(one.text.starts_with("the longest thing"));
+    assert_eq!(two.text, "what the second read noticed");
+    assert_ne!(one.id, two.id, "two reads, two cards, two passages");
+
+    // The unattributed mark is the book's longest and belongs to no card. It
+    // is still the book's, and still listed there.
+    assert!(
+        !one.text.starts_with("an unplaceable") && !two.text.starts_with("an unplaceable"),
+        "a mark attributed to no read cannot be any read's card passage"
+    );
+    assert_eq!(engine.list_highlights(id).await.unwrap().len(), 4);
+}
+
+/// Length is counted in **characters, not bytes**, and this is the case that
+/// tells them apart.
+///
+/// The CJK mark is 13 characters and 39 bytes; the Latin one is 32 characters
+/// and 32 bytes. On bytes the CJK mark wins, which would quietly hand every
+/// card in a mixed library to whichever passage happened to be non-Latin.
+#[tokio::test]
+async fn a_passage_is_measured_in_characters_and_not_in_bytes() {
+    let (_tmp, engine) = engine().await;
+    let id = seed_book(&engine, "Norwegian Wood").await;
+    let s = engine.storage();
+    let reading = s
+        .record_reading(id, unix("2026-01-01"), None, "reading", "manual")
+        .await
+        .unwrap();
+
+    let cjk = "完全な絶望が存在しないよう";
+    let latin = "no such thing as perfect despair";
+    assert_eq!(cjk.chars().count(), 13);
+    assert_eq!(latin.chars().count(), 32);
+    assert!(
+        cjk.len() > latin.len(),
+        "the fixture only means something while the shorter one is more bytes"
+    );
+
+    for h in [
+        highlight(cjk, "2026-01-02 09:00:00"),
+        highlight(latin, "2026-01-03 09:00:00"),
+    ] {
+        s.insert_highlight(id, &h).await.unwrap();
+    }
+    s.attribute_highlights(id).await.unwrap();
+
+    assert_eq!(
+        engine.card_passage(reading).await.unwrap().unwrap().text,
+        latin,
+        "characters are what was dragged; bytes are an encoding detail"
+    );
+}
+
 /// `%Y-%m-%d` as unix seconds, for readings whose exact hour is not the point.
 fn unix(day: &str) -> Option<i64> {
     readingbuddy::storage::ko_datetime_to_unix(&format!("{day} 00:00:00"))

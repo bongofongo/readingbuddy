@@ -492,6 +492,125 @@ async fn a_backwards_range_is_refused_rather_than_answered() {
     }
 }
 
+/// **Item 42 crosses with its absences intact, which is the whole reason it is
+/// a method here rather than a `reduce` in a client.**
+///
+/// A month with activity and no measured minutes must arrive as `null`. Given
+/// `ActivityByDay` a client would fold those days together, and the first
+/// `reduce` in any language turns `null` into `0` — so the page built to say
+/// "nothing measured this month" would say "you read for zero minutes" instead.
+#[tokio::test]
+async fn a_month_with_no_device_data_crosses_the_wire_as_null_minutes() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    // A note is the one event no importer can fail to supply — and it carries
+    // no minutes, which is exactly the case being protected.
+    api.create_note(NewNoteDto {
+        book_id: Some(book_id),
+        body: "A month that happened, and was never timed.".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    api.refill_reading_events().await.unwrap();
+
+    let typed = api
+        .activity_by_month("2000-01-01", "2099-12-31")
+        .await
+        .unwrap();
+    assert_eq!(typed.len(), 1, "one month carried an event: {typed:?}");
+    let month = &typed[0];
+    assert_eq!(month.month.len(), 7, "YYYY-MM: {:?}", month.month);
+    assert_eq!(month.activity_days, 1, "the vault knows you were here");
+    assert_eq!(month.books, 1);
+    assert_eq!(
+        month.minutes, None,
+        "nothing measured minutes, and zero would be a claim"
+    );
+    assert_ne!(month.minutes, Some(0));
+    assert_eq!(month.pages, None);
+
+    let json = serde_json::to_string(month).unwrap();
+    assert!(json.contains("\"minutes\":null"), "{json}");
+
+    match ok(api
+        .dispatch(Request::ActivityByMonth {
+            from: "2000-01-01".into(),
+            to: "2099-12-31".into(),
+        })
+        .await)
+    {
+        Response::ActivityByMonth(d) => assert_eq!(d, typed),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The month aggregate validates through the same `DayRange` its two siblings
+/// do, so this layer cannot route around the refusal an inverted span gets.
+#[tokio::test]
+async fn a_backwards_range_is_refused_by_the_month_aggregate_too() {
+    let (api, _tmp) = api().await;
+
+    let err = api
+        .activity_by_month("2026-12-31", "2026-01-01")
+        .await
+        .expect_err("an inverted range is not a question with an answer");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    match api
+        .dispatch(Request::ActivityByMonth {
+            from: "2026-01-01".into(),
+            to: "2026-13-45".into(),
+        })
+        .await
+    {
+        Err(e) => assert_eq!(e.code, ErrorCode::InvalidInput),
+        Ok(r) => panic!("a non-day was answered: {r:?}"),
+    }
+}
+
+/// **Item 44 crosses as `null` rather than as an error**, and the typed method
+/// and `dispatch` agree about it.
+///
+/// A reading with nothing marked is the ordinary case for most of a library —
+/// a Goodreads import mints readings and no highlights at all — so the card
+/// asking for its passage must get an answer, not a failure.
+#[tokio::test]
+async fn a_reading_with_no_marks_has_no_card_passage_across_the_seam() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    // Typing a page opens a reading, which is the only door to one on this
+    // surface that does not need an importer.
+    api.update_progress(book_id, Some(12), None).await.unwrap();
+    let reading = api
+        .active_reading(book_id)
+        .await
+        .unwrap()
+        .expect("typing a page opens a reading");
+
+    let typed = api.card_passage(reading.id).await.unwrap();
+    assert_eq!(typed, None, "no marks is an answer, not an error");
+
+    match ok(api
+        .dispatch(Request::CardPassage {
+            reading_id: reading.id,
+        })
+        .await)
+    {
+        Response::Highlight(h) => assert_eq!(h, typed),
+        other => panic!("{other:?}"),
+    }
+
+    // And the same reading's full list agrees — the card and the list are
+    // never allowed to disagree about what was marked.
+    assert!(
+        api.highlights_for_reading(reading.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// Refilling twice changes nothing the second time, and the report says so per
 /// filler rather than as one total.
 #[tokio::test]

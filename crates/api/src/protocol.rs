@@ -216,6 +216,23 @@ pub enum Request {
     HighlightsForReading {
         reading_id: i64,
     },
+    /// The one passage a card shows for this reading (item 44), or `null`.
+    ///
+    /// **A request rather than a field, because which passage is a rule and
+    /// not a row.** Every client asking this gets the same answer, so the GUI's
+    /// card and a later TUI card cannot show different passages for one
+    /// reading — which two frontends each taking `highlights[0]` would. It is
+    /// deliberately *not* a field on `ReadingDto`: that would put the reader's
+    /// private highlight text on every row of every `ListReadings`, including
+    /// the ones nobody is drawing a card for.
+    ///
+    /// One call per card. That is right for a card reached by selecting a book
+    /// — a book has one or two readings — and **wrong for the wall of cards
+    /// across the library**, which needs item 43 first; when that arrives the
+    /// passage belongs on whatever list it mints, not in N of these.
+    CardPassage {
+        reading_id: i64,
+    },
     SetAnnotation {
         highlight_id: i64,
         #[serde(default)]
@@ -312,6 +329,20 @@ pub enum Request {
     /// The days behind `ActivitySummary::activity_days`. Only days carrying an
     /// event come back.
     ActivityByDay {
+        from: String,
+        to: String,
+    },
+    /// The same period by month rather than by day (item 42), for a client
+    /// drawing years. Only months carrying an event come back, and a month at
+    /// the edge of the range covers the part of it inside the range.
+    ///
+    /// **Not something a client folds `ActivityByDay` into.** `minutes: null`
+    /// collapses to `0` on the first `reduce` in any language that has one —
+    /// which turns "the device never measured this month" into "you read for
+    /// zero minutes" — and `books` is distinct *over the month*, which
+    /// distinct-books-per-day cannot be summed into. The alternative shape,
+    /// twelve `ActivitySummary` calls a year, is sixty round trips to draw five.
+    ActivityByMonth {
         from: String,
         to: String,
     },
@@ -599,6 +630,10 @@ pub enum Response {
     Readings(Vec<ReadingDto>),
 
     Highlights(Vec<HighlightDto>),
+    /// One passage, or `null` because this reading has none attributed to it —
+    /// an ordinary answer, and the same absence `Highlights` reports as an
+    /// empty list.
+    Highlight(Option<HighlightDto>),
 
     SearchOutcome(SearchOutcomeDto),
 
@@ -631,6 +666,7 @@ pub enum Response {
     RefillReport(RefillReportDto),
     ActivitySummary(ActivitySummaryDto),
     ActivityByDay(Vec<DayActivityDto>),
+    ActivityByMonth(Vec<MonthActivityDto>),
     StatsImport(StatsImportReportDto),
 
     ImportReport(ImportReportDto),
