@@ -177,6 +177,8 @@ mod tests {
                 request: Request::ListBooks {
                     limit: 5,
                     sort: Default::default(),
+                    offset: 0,
+                    filter: None,
                 },
             })
             .await;

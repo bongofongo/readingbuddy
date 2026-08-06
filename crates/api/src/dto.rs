@@ -41,16 +41,17 @@ use readingbuddy::GoodreadsMatch;
 use readingbuddy::koreader::UnmatchedSidecar;
 use readingbuddy::providers::ProviderId;
 use readingbuddy::{
-    ActivitySummary, Book, BookFile, BookImportStats, BookSort, BookTag, CalibreBook,
-    CalibreBookReport, CalibreMatch, CalibreReport, Confidence, CreatedNote, DayActivity, DayRange,
-    DeviceBook, DeviceScan, DeviceState, Diagnostic, DiagnosticKind, EnrichCandidate, EnrichMatch,
-    EnrichOutcome, EnrichReport, ErrorClass, FieldChange, FieldSource, FileIdentity,
-    FileImportReport, FileMatch, FileOutcome, FillStats, FlashcardRow, FractionSource,
-    GoodreadsBookReport, GoodreadsReport, HeldField, Highlight, ImportReport, KoStatus,
-    MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind, NoteRecord, NoteSearchHit,
-    OutgoingLink, Progress, PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent,
-    ReadingState, RefillReport, SearchOutcome, SearchRequest, Severity, Source, StatsImportReport,
-    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    ActivitySummary, Book, BookFile, BookFilter, BookImportStats, BookQuery, BookSort, BookSummary,
+    BookTag, CalibreBook, CalibreBookReport, CalibreMatch, CalibreReport, Confidence, CreatedNote,
+    DayActivity, DayRange, DeviceBook, DeviceScan, DeviceState, Diagnostic, DiagnosticKind,
+    EditionShape, EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, ErrorClass,
+    FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
+    FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
+    ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind,
+    NoteRecord, NoteSearchHit, OutgoingLink, Progress, PullReport, RankedResult, Rating,
+    RatingScale, Reading, ReadingEvent, ReadingState, RefillReport, SearchOutcome, SearchRequest,
+    Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome,
+    TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -218,6 +219,22 @@ pub struct BookDto {
     /// list and not a sentence.
     #[serde(default)]
     pub authors_display: Vec<String>,
+    /// What shape this edition is, in multiples of its own height — item 19,
+    /// carried across the seam by item 18.
+    ///
+    /// **Derived, read-only.** A shelf needs it *per row* and the GUI links this
+    /// crate and not the engine, so without it the only way to draw three
+    /// hundred spines is to re-derive the arithmetic in TypeScript — where it
+    /// would eventually disagree with the TUI's Unicode book about how fat
+    /// *Infinite Jest* is, with nothing on either screen looking wrong. That is
+    /// the failure item 19 exists to prevent, and it is prevented here or not at
+    /// all.
+    ///
+    /// Never `None`: a book always has *a* shape, and
+    /// [`EditionShapeDto::width_source`]/`thickness_source` say which of its two
+    /// numbers were assumed.
+    #[serde(default)]
+    pub shape: EditionShapeDto,
     /// Unix seconds. `OffsetDateTime`'s own serde format is a dependency's
     /// choice; an integer is ours.
     #[serde(default)]
@@ -238,6 +255,11 @@ impl From<Book> for BookDto {
         let cover_shelf_path = b.shelf_cover_path().map(str::to_string);
         let cover_aspect = b.cover_aspect();
         let cover_accent = b.cover_accent_rgb().map(AccentDto::from);
+        // Item 20's stored dimensions are what makes this a division of two
+        // columns rather than three hundred image decodes — the rewire item 19
+        // said would need no signature change, and did not.
+        let shape =
+            EditionShapeDto::from(EditionShape::of_book(&b, cover_aspect.map(|a| a as f32)));
         BookDto {
             id: b.id,
             title: b.title,
@@ -270,6 +292,7 @@ impl From<Book> for BookDto {
             progress,
             series_label,
             authors_display,
+            shape,
             created_at: b.created_at.map(|t| t.unix_timestamp()),
             last_modified: b.last_modified.map(|t| t.unix_timestamp()),
         }
@@ -287,7 +310,8 @@ impl From<BookDto> for Book {
     /// should stay rather than being re-implemented here.
     ///
     /// The **derived** fields — `progress`, `series_label`, `authors_display`,
-    /// and item 20's three cover readings — are dropped outright. They are
+    /// `shape`, and item 20's three cover readings — are dropped outright. They
+    /// are
     /// readings of other columns and there is nothing to write them to; a client
     /// that sends a `series_label` of "Dune #2" and a `series_index` of 3 has
     /// not asked for anything, and taking the label would be inventing a second
@@ -524,6 +548,229 @@ impl From<BookSortDto> for BookSort {
             BookSortDto::Progress => BookSort::Progress,
             BookSortDto::Author => BookSort::Author,
             BookSortDto::Year => BookSort::Year,
+        }
+    }
+}
+
+/// Which books a list is about, before it is ordered or paged (item 18).
+///
+/// Every field absent is *every book*, so a client with no opinion sends
+/// nothing — and `Request::ListBooks` carries this as an `Option`, which is why
+/// the default and the absence are the same answer twice over rather than a
+/// distinction nobody wanted.
+///
+/// The mirror of [`readingbuddy::BookFilter`]; the predicates and their
+/// case-sensitivity are documented there, because they are properties of the
+/// SQL and not of the wire.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookFilterDto {
+    #[serde(default)]
+    pub status: Option<StatusFilterDto>,
+    /// A substring of the stored author list, case-insensitive.
+    #[serde(default)]
+    pub author: Option<String>,
+    #[serde(default)]
+    pub year: Option<i64>,
+    #[serde(default)]
+    pub language: Option<String>,
+    /// A minted shelf name out of `book_tags` — **not** `subjects`.
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub has_cover: Option<bool>,
+}
+
+impl From<BookFilterDto> for BookFilter {
+    fn from(f: BookFilterDto) -> Self {
+        BookFilter {
+            status: f.status.map(Into::into),
+            author: f.author,
+            year: f.year,
+            language: f.language,
+            tag: f.tag,
+            has_cover: f.has_cover,
+        }
+    }
+}
+
+/// What the current reading's state has to be for a book to be in the answer.
+///
+/// Four reachable cases: the three states this build writes, an importer's own
+/// word through [`ReadingStateDto::Other`], and **absence**.
+///
+/// [`StatusFilterDto::NoReading`] is here rather than as a fifth
+/// `ReadingStateDto` variant, and that placement is the ruling: absence is a
+/// question somebody asked once, not a permanent claim about every book. A
+/// variant is a thing a UI filters on, counts, and eventually puts a badge
+/// beside — which is the completion framing `docs/decisions.md` bans, and which
+/// `no_reading_is_absence_rather_than_a_variant` exists to keep out.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "match", rename_all = "snake_case")]
+pub enum StatusFilterDto {
+    /// The book's current reading is in this state.
+    State { is: ReadingStateDto },
+    /// The book has no reading at all.
+    NoReading,
+}
+
+impl From<StatusFilterDto> for StatusFilter {
+    fn from(s: StatusFilterDto) -> Self {
+        match s {
+            StatusFilterDto::State { is } => StatusFilter::Is(is.into()),
+            StatusFilterDto::NoReading => StatusFilter::NoReading,
+        }
+    }
+}
+
+/// One page of the library: which books, in what order, and which slice.
+///
+/// The typed argument to [`crate::Api::list_books`]. `Request::ListBooks`
+/// carries the same four values **flat**, so a payload of `{"limit":20,
+/// "sort":"title"}` still means what it always did and no client had to change
+/// for this item — the offset and the filter are additive, and an omitted one is
+/// the old behaviour exactly.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookQueryDto {
+    #[serde(default)]
+    pub sort: BookSortDto,
+    #[serde(default)]
+    pub filter: Option<BookFilterDto>,
+    /// **Negative means no limit.** The whole-library read, and the same reading
+    /// SQLite gives `LIMIT -1`.
+    pub limit: i64,
+    /// Rows to skip. **Pagination here is an offset and not a cursor** — see
+    /// `docs/decisions.md` entry 18 for the argument, which turns on two of the
+    /// five sorts having no cursor key that exists in the database.
+    #[serde(default)]
+    pub offset: i64,
+}
+
+impl From<BookQueryDto> for BookQuery {
+    fn from(q: BookQueryDto) -> Self {
+        BookQuery {
+            sort: q.sort.into(),
+            filter: q.filter.map(Into::into).unwrap_or_default(),
+            limit: q.limit,
+            offset: q.offset,
+        }
+    }
+}
+
+/// What is behind one book — item 18's answer to the four-calls-per-row problem.
+///
+/// **Counts, not marks.** A tile saying *3 highlights* and a tile showing a dot
+/// are different products, and this is the more informative one at the same
+/// cost; a frontend that wants the dot reads `> 0`, which
+/// [`readingbuddy::BookSummary::has`] spells once so twelve components do not
+/// each spell it.
+///
+/// Every number here is **past tense** — highlights taken, notes written, files
+/// owned. Nothing in this struct counts what has not been done, and nothing
+/// derived from it may.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookSummaryDto {
+    pub book_id: i64,
+    pub highlights: i64,
+    pub notes: i64,
+    pub files: i64,
+}
+
+impl From<BookSummary> for BookSummaryDto {
+    fn from(s: BookSummary) -> Self {
+        BookSummaryDto {
+            book_id: s.book_id,
+            highlights: s.highlights,
+            notes: s.notes,
+            files: s.files,
+        }
+    }
+}
+
+/// The physical shape of one edition, in multiples of its own height (item 19).
+///
+/// **Derived, read-only**, and here because item 19 landed `EditionShape` in the
+/// engine while the GUI links this crate and not the engine — so a WebGL shelf
+/// either gets this field or re-derives the arithmetic in TypeScript, which is
+/// the exact failure item 19 was written to prevent. Height is `1.0` and is not
+/// a field; see [`readingbuddy::EditionShape`] for why millimetres were refused.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct EditionShapeDto {
+    pub width_over_height: f32,
+    pub width_source: ShapeSourceDto,
+    pub thickness_over_height: f32,
+    pub thickness_source: ShapeSourceDto,
+}
+
+/// Whether one of [`EditionShapeDto`]'s numbers came from anything recorded.
+///
+/// Mirrored as an enum rather than flattened to `width_assumed: bool`, for
+/// `DiagnosticKind`'s reason: the vocabulary is the information, and a boolean
+/// named after one of two states is a coin flip about which way it reads.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShapeSourceDto {
+    /// Derived from something recorded about this edition.
+    Recorded,
+    /// Nobody recorded it, so a trade paperback stood in.
+    Assumed,
+}
+
+impl From<ShapeSource> for ShapeSourceDto {
+    fn from(s: ShapeSource) -> Self {
+        match s {
+            ShapeSource::Recorded => ShapeSourceDto::Recorded,
+            ShapeSource::Assumed => ShapeSourceDto::Assumed,
+        }
+    }
+}
+
+impl Default for EditionShapeDto {
+    /// The trade paperback the engine stands in with when nothing was recorded,
+    /// **through the engine's own function** — a literal here would be a second
+    /// copy of the fallback, and the two would part company the day the curve
+    /// moves.
+    fn default() -> Self {
+        EditionShape::new(None, None).into()
+    }
+}
+
+impl From<EditionShape> for EditionShapeDto {
+    fn from(s: EditionShape) -> Self {
+        EditionShapeDto {
+            width_over_height: s.width_over_height,
+            width_source: s.width_source.into(),
+            thickness_over_height: s.thickness_over_height,
+            thickness_source: s.thickness_source.into(),
         }
     }
 }

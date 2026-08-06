@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use readingbuddy::{Engine, EngineConfig};
 use readingbuddy_api::{
-    Api, ApiError, BookDto, ErrorCode, NewNoteDto, NoteKindDto, Outcome, Request, Response,
+    Api, ApiError, BookDto, BookFilterDto, BookQueryDto, ErrorCode, NewNoteDto, NoteKindDto,
+    Outcome, ReadingStateDto, Request, Response, ShapeSourceDto, StatusFilterDto,
 };
 
 /// A library in a tempdir with an in-memory database, like every other suite
@@ -75,11 +76,21 @@ async fn dispatch_and_the_typed_method_agree() {
         other => panic!("{other:?}"),
     }
 
-    let typed = api.list_books(10, Default::default()).await.unwrap();
+    let typed = api
+        .list_books(BookQueryDto {
+            sort: Default::default(),
+            filter: None,
+            limit: 10,
+            offset: 0,
+        })
+        .await
+        .unwrap();
     match ok(api
         .dispatch(Request::ListBooks {
             limit: 10,
             sort: Default::default(),
+            offset: 0,
+            filter: None,
         })
         .await)
     {
@@ -560,4 +571,135 @@ async fn a_correction_crosses_as_the_users_and_is_recorded_that_way() {
     assert!(claimed.contains(&"series_index"), "{provenance:?}");
     // A field nobody has claimed is simply absent — never "unknown provider".
     assert!(!provenance.iter().any(|f| f.field == "publisher"));
+}
+
+// ---- item 18: the list surface ------------------------------------------
+
+/// An old client's payload still means what it did. `offset` and `filter` are
+/// additive and their absence is the previous behaviour exactly, which is why
+/// this item did not move `API_VERSION`.
+#[test]
+fn a_list_books_payload_without_the_new_fields_still_parses() {
+    let r: Request =
+        serde_json::from_str(r#"{"method":"list_books","params":{"limit":20}}"#).unwrap();
+    assert_eq!(
+        r,
+        Request::ListBooks {
+            limit: 20,
+            sort: Default::default(),
+            offset: 0,
+            filter: None,
+        }
+    );
+    let r: Request = serde_json::from_str(r#"{"method":"list_notes","params":{}}"#).unwrap();
+    assert_eq!(
+        r,
+        Request::ListNotes {
+            book_id: None,
+            limit: None,
+        },
+        "no limit is every note, which is what this method always did"
+    );
+}
+
+/// The count and the page answer the same filter, across the seam.
+#[tokio::test]
+async fn a_filtered_page_and_its_count_agree_over_the_wire() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+    api.save_book(BookDto {
+        title: Some("Sea of Tranquility".into()),
+        authors: vec!["Emily St. John Mandel".into()],
+        isbn_13: Some("9780593321447".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    api.update_progress(id, Some(40), None).await.unwrap();
+
+    let reading = BookFilterDto {
+        status: Some(StatusFilterDto::State {
+            is: ReadingStateDto::Reading,
+        }),
+        ..Default::default()
+    };
+    match ok(api
+        .dispatch(Request::CountBooks {
+            filter: Some(reading.clone()),
+        })
+        .await)
+    {
+        Response::Count(n) => assert_eq!(n, 1),
+        other => panic!("{other:?}"),
+    }
+    match ok(api
+        .dispatch(Request::ListBooks {
+            limit: -1,
+            sort: Default::default(),
+            offset: 0,
+            filter: Some(reading),
+        })
+        .await)
+    {
+        Response::Books(books) => assert_eq!(books.len(), 1),
+        other => panic!("{other:?}"),
+    }
+
+    // Absence is a filter case and not a reading state — the wire says so too.
+    match ok(api
+        .dispatch(Request::CountBooks {
+            filter: Some(BookFilterDto {
+                status: Some(StatusFilterDto::NoReading),
+                ..Default::default()
+            }),
+        })
+        .await)
+    {
+        Response::Count(n) => assert_eq!(n, 1),
+        other => panic!("{other:?}"),
+    }
+    match ok(api.dispatch(Request::CountBooks { filter: None }).await) {
+        Response::Count(n) => assert_eq!(n, 2, "no filter is every book"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// One call for a page, one row per id in the order asked.
+#[tokio::test]
+async fn the_summary_crosses_the_seam_in_the_order_asked() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+    match ok(api
+        .dispatch(Request::BookSummaries {
+            book_ids: vec![id, id],
+        })
+        .await)
+    {
+        Response::BookSummaries(rows) => {
+            assert_eq!(rows.len(), 2);
+            assert!(rows.iter().all(|r| r.book_id == id));
+            assert_eq!(rows[0].highlights, 0);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Item 19's arithmetic reaches a client that links this crate and not the
+/// engine — which is the whole reason the field exists.
+#[tokio::test]
+async fn a_book_carries_the_shape_of_its_edition() {
+    let (api, _tmp) = api().await;
+    let id = seed(&api).await;
+    let book = api.get_book(id).await.unwrap().unwrap();
+    // 333 pages is recorded; nothing measured the cover, so the width stands in.
+    assert_eq!(book.shape.thickness_source, ShapeSourceDto::Recorded);
+    assert_eq!(book.shape.width_source, ShapeSourceDto::Assumed);
+    assert!(book.shape.width_over_height > 0.0);
+    assert!(book.shape.thickness_over_height > 0.0);
+
+    // A provider candidate has no page count, so both numbers are stand-ins —
+    // and the field is still there, because a book always has *a* shape.
+    let bare = BookDto::default();
+    assert_eq!(bare.shape.width_source, ShapeSourceDto::Assumed);
+    assert_eq!(bare.shape.thickness_source, ShapeSourceDto::Assumed);
 }

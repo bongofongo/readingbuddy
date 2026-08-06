@@ -118,8 +118,17 @@ export class TauriClient implements LibraryClient {
     return expect(await this.#call({ method: 'paths' }), 'where').value;
   }
 
+  /**
+   * `offset` and `filter` reached the wire with item 18 and are passed at their
+   * do-nothing values here on purpose: this interface grows one method per thing
+   * a *screen* needs, and no screen pages or filters yet. The shelf (item 26) is
+   * what widens the signature — the request already answers it.
+   */
   async listBooks(limit = 200, sort: BookSortDto = 'last_modified'): Promise<StoredBook[]> {
-    const r = expect(await this.#call({ method: 'list_books', params: { limit, sort } }), 'books');
+    const r = expect(
+      await this.#call({ method: 'list_books', params: { limit, sort, offset: 0, filter: null } }),
+      'books',
+    );
     // Every row from the library has an id. Narrowed once, here.
     return r.value as StoredBook[];
   }
@@ -136,9 +145,16 @@ export class TauriClient implements LibraryClient {
     ).value;
   }
 
+  /**
+   * `limit: null` is every note, which is what this call has always meant. The
+   * book detail screen shows a book's whole note list, so a cap here would be a
+   * cap on the page rather than a page of it.
+   */
   async listNotes(bookId: number | null): Promise<NoteDto[]> {
-    return expect(await this.#call({ method: 'list_notes', params: { book_id: bookId } }), 'notes')
-      .value;
+    return expect(
+      await this.#call({ method: 'list_notes', params: { book_id: bookId, limit: null } }),
+      'notes',
+    ).value;
   }
 
   async listReadings(bookId: number): Promise<ReadingDto[]> {

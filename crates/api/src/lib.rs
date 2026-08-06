@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use readingbuddy::{
-    Book, BookSort, CalibreImportOptions, DayRange, Engine, EngineError, FileImportOptions,
-    GoodreadsImportOptions, NoteKind, NoteRecord, RatingScale,
+    Book, BookFilter, BookQuery, CalibreImportOptions, DayRange, Engine, EngineError,
+    FileImportOptions, GoodreadsImportOptions, NoteKind, NoteRecord, RatingScale,
 };
 
 pub use dto::*;
@@ -159,9 +159,27 @@ impl Api {
         Ok(self.engine.save_book(&book.into()).await?.into())
     }
 
-    pub async fn list_books(&self, limit: i64, sort: BookSortDto) -> ApiResult<Vec<BookDto>> {
-        let sort: BookSort = sort.into();
-        Ok(map(self.engine.list_books(limit, sort).await?))
+    /// One page of the library (item 18).
+    ///
+    /// One struct rather than four arguments because `limit` and `offset` are
+    /// both `i64` and adjacent, which is a swap no type checker catches. The
+    /// **request** carries the same four values flat, so a payload written
+    /// against the old two-field method still means what it did.
+    pub async fn list_books(&self, query: BookQueryDto) -> ApiResult<Vec<BookDto>> {
+        let query: BookQuery = query.into();
+        Ok(map(self.engine.list_books(&query).await?))
+    }
+
+    /// How many books match. See [`Request::CountBooks`] for why this is its own
+    /// call and not a field beside the rows.
+    pub async fn count_books(&self, filter: Option<BookFilterDto>) -> ApiResult<i64> {
+        let filter: BookFilter = filter.map(Into::into).unwrap_or_default();
+        Ok(self.engine.count_books(&filter).await?)
+    }
+
+    /// What is behind each of these books, one call for a whole page.
+    pub async fn book_summaries(&self, book_ids: &[i64]) -> ApiResult<Vec<BookSummaryDto>> {
+        Ok(map(self.engine.book_summaries(book_ids).await?))
     }
 
     pub async fn get_book(&self, id: i64) -> ApiResult<Option<BookDto>> {
@@ -444,8 +462,13 @@ impl Api {
         Ok(self.engine.create_note(note.into()).await?.into())
     }
 
-    pub async fn list_notes(&self, book_id: Option<i64>) -> ApiResult<Vec<NoteDto>> {
-        Ok(map(self.engine.list_notes(book_id).await?))
+    /// Notes, newest first. `None` is every note — see [`Request::ListNotes`].
+    pub async fn list_notes(
+        &self,
+        book_id: Option<i64>,
+        limit: Option<i64>,
+    ) -> ApiResult<Vec<NoteDto>> {
+        Ok(map(self.engine.list_notes(book_id, limit).await?))
     }
 
     pub async fn search_notes(&self, query: &str, limit: i64) -> ApiResult<Vec<NoteSearchHitDto>> {
@@ -766,7 +789,27 @@ impl Api {
             R::LookupIsbn { isbn } => Response::Book(self.lookup_isbn(&isbn).await?),
 
             R::SaveBook { book } => Response::Book(Some(self.save_book(book).await?)),
-            R::ListBooks { limit, sort } => Response::Books(self.list_books(limit, sort).await?),
+            // Assembling the struct is unpacking, not deciding: the request
+            // carries the four values flat for wire compatibility and the typed
+            // method takes them as one. No arm here may do more than this.
+            R::ListBooks {
+                limit,
+                sort,
+                offset,
+                filter,
+            } => Response::Books(
+                self.list_books(BookQueryDto {
+                    sort,
+                    filter,
+                    limit,
+                    offset,
+                })
+                .await?,
+            ),
+            R::CountBooks { filter } => Response::Count(self.count_books(filter).await?),
+            R::BookSummaries { book_ids } => {
+                Response::BookSummaries(self.book_summaries(&book_ids).await?)
+            }
             R::GetBook { id } => Response::Book(self.get_book(id).await?),
             R::ResolveBooks { selector } => Response::Books(self.resolve_books(&selector).await?),
             R::BookTags { book_id } => Response::BookTags(self.book_tags(book_id).await?),
@@ -869,7 +912,9 @@ impl Api {
             }
 
             R::CreateNote { note } => Response::CreatedNote(self.create_note(note).await?),
-            R::ListNotes { book_id } => Response::Notes(self.list_notes(book_id).await?),
+            R::ListNotes { book_id, limit } => {
+                Response::Notes(self.list_notes(book_id, limit).await?)
+            }
             R::SearchNotes { query, limit } => {
                 Response::NoteHits(self.search_notes(&query, limit).await?)
             }
