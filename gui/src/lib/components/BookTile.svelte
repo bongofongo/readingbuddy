@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { plateShades } from '$lib/accent';
   import { client, type StoredBook } from '$lib/api/client';
+  import Jacket from '$lib/components/Jacket.svelte';
   import { authorsLabel, progressLabel, readingStateLabel, titleLabel } from '$lib/phrasing';
 
   let { book, proud = false }: { book: StoredBook; proud?: boolean } = $props();
@@ -29,40 +29,15 @@
    * the rest of the shelf mostly is.
    */
   const aspect = $derived(book.cover_aspect ?? 2 / 3);
-
-  /**
-   * The jacket's own border colour, as measured off the file by the engine
-   * (`images.rs`), pulled into the band this frontend can light — see
-   * `$lib/accent`. A book with no cover gets a plate in *its* colour rather
-   * than the same grey as every other coverless book, which is the difference
-   * between a shelf with gaps in it and a shelf.
-   */
-  const accent = $derived(plateShades(book.cover_accent));
 </script>
 
 <a class="tile" class:proud href={`/book/${book.id}`}>
   <div class="art" style:aspect-ratio={aspect}>
-    {#if cover}
-      <img src={cover} alt="" loading="lazy" />
-    {:else if accent}
-      <!-- Not a broken-image icon and not an apology: a designed jacket.
-           The base, the inset panel and the two rules are `procedural_cover`'s
-           composition in `crates/tui/src/render3d/texture.rs`, so a book with no
-           cover looks like the same book in both frontends. -->
-      <span
-        class="plate"
-        style:--plate={accent.base}
-        style:--panel={accent.panel}
-        style:--rule={accent.rule}
-        aria-hidden="true"
-      >
-        <span class="panel"><span class="rule"></span><span class="rule short"></span></span>
-      </span>
-    {:else}
-      <!-- Neither bytes nor a measurement. The last honest state, and still a
-           composed one. -->
-      <span class="bare" aria-hidden="true"></span>
-    {/if}
+    <!-- The three states — bytes, a plate in this jacket's own colour, the hatch
+         — moved into `Jacket` when the book view needed the same three (item
+         27). One composition, so a coverless book cannot come to look like two
+         different books on two screens of one app. -->
+    <Jacket src={cover} accent={book.cover_accent} />
   </div>
   <div class="meta">
     <span class="title" class:untitled>{title}</span>
@@ -106,62 +81,6 @@
       0 2px 4px rgb(0 0 0 / 0.22),
       0 14px 24px -10px rgb(0 0 0 / 0.5);
   }
-  .art img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-
-  /* The coverless jacket. `--plate` is the engine's measured accent. */
-  .plate {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    background: linear-gradient(
-      160deg,
-      color-mix(in srgb, var(--plate) 88%, white 12%),
-      var(--plate) 55%,
-      color-mix(in srgb, var(--plate) 82%, black 18%)
-    );
-  }
-  /* `--panel` and `--rule` are computed in `$lib/accent`, not mixed here: the
-     step has to be away from *this* jacket's lightness, and a stylesheet mixes
-     toward a colour named at author time. See `plateShades`. */
-  .panel {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    gap: 5px;
-    width: 62%;
-    height: 58%;
-    padding: 0 0 12%;
-    background: var(--panel);
-  }
-  .rule {
-    height: 2px;
-    width: 74%;
-    margin-inline: auto;
-    background: var(--rule);
-  }
-  .rule.short {
-    width: 46%;
-    margin-inline: auto auto;
-  }
-
-  .bare {
-    display: block;
-    height: 100%;
-    background: repeating-linear-gradient(
-      -45deg,
-      transparent,
-      transparent 7px,
-      var(--line) 7px,
-      var(--line) 8px
-    );
-  }
-
   .meta {
     display: flex;
     flex-direction: column;

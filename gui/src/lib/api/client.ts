@@ -34,14 +34,24 @@ import { FakeClient } from './fake';
 import type {
   ApiError,
   BookDto,
+  BookFileDto,
   BookSortDto,
+  BookTagDto,
+  CreatedNoteDto,
+  FieldSourceDto,
   HighlightDto,
+  NewNoteDto,
   NoteDto,
+  NoteKindDto,
+  OutgoingLinkDto,
   PathsDto,
+  RatingDto,
+  RatingScaleDto,
   ReadingDto,
   Reply,
   Request,
   Response,
+  TableOfContentsDto,
 } from './bindings';
 
 /** A book that came out of the library, so it has an id. See the module doc. */
@@ -82,8 +92,120 @@ export interface LibraryClient {
   listHighlights(bookId: number): Promise<HighlightDto[]>;
   listNotes(bookId: number | null): Promise<NoteDto[]>;
   listReadings(bookId: number): Promise<ReadingDto[]>;
+
+  // ---- what is behind one book (item 27) ---------------------------------
+
+  /** Minted shelves out of `book_tags` — **not** `BookDto.subjects`. */
+  bookTags(bookId: number): Promise<BookTagDto[]>;
+  /** The ebook files this library owns for the book. */
+  bookFiles(bookId: number): Promise<BookFileDto[]>;
+  /**
+   * Who said what about this book, and when (item 29).
+   *
+   * An **empty list is ordinary**: every book predating migration `0012`
+   * reports one however well populated it is, which is why a screen must
+   * render absence as *unattributed* and never as "unknown provider".
+   */
+  fieldProvenance(bookId: number): Promise<FieldSourceDto[]>;
+  /**
+   * The chapter list, read out of an owned file on every call.
+   *
+   * `null` and `{ entries: [] }` are **different answers** — no file here we
+   * can read, against an EPUB that carries no TOC — and `TableOfContentsDto`
+   * says in as many words that a client collapsing them tells its reader the
+   * same thing about a missing file and an ordinary book. Loaded on demand
+   * rather than with the page, because the engine derives it from the file
+   * each time and stores nothing.
+   */
+  tableOfContents(bookId: number): Promise<TableOfContentsDto | null>;
+
+  // ---- the reader's own marks --------------------------------------------
+
+  /**
+   * The reader's annotation on a passage — **ours**, and the only field of a
+   * highlight an import never touches. `ko_note` beside it is the device's and
+   * is rewritten toward the device on every pull; that split is the whole of
+   * `docs/decisions.md`'s highlight-ownership seam, and this is the writer for
+   * our half.
+   */
+  setAnnotation(highlightId: number, annotation: string | null): Promise<void>;
+
+  // ---- notes --------------------------------------------------------------
+
+  getNote(id: number): Promise<NoteDto | null>;
+  /** The markdown body. Not on `NoteDto`: `notes` has no body column. */
+  noteBody(noteId: number): Promise<string>;
+  /** Rewrites the file, and reindexes both the FTS row and the wikilink edges. */
+  updateNoteBody(noteId: number, body: string): Promise<void>;
+  createNote(note: NewNoteDto): Promise<CreatedNoteDto>;
+  deleteNote(noteId: number): Promise<void>;
+  /**
+   * Open (or mint) this book's reflection or review.
+   *
+   * `reading_id` is deliberately not chosen here. A reread has two readings and
+   * picking one is a decision; the engine's `open_anchored` already makes it
+   * from the reading state, and a frontend guessing would be item 17's finding
+   * with a new coat on.
+   *
+   * Returns a [`CreatedNoteDto`], which is what a *creating* caller wants — an
+   * id, a title and a path. Everything that then edits the note wants a
+   * `NoteDto`, and `Engine::open_reflection_record` exists for exactly that and
+   * **is not on the wire**, so the screen pays one `getNote` afterwards. That
+   * is one extra request rather than a re-derivation, which is the right side
+   * of the seam to be on; the DTO is the cheaper fix and belongs to whoever
+   * owns `crates/api`.
+   */
+  openReflection(bookId: number): Promise<CreatedNoteDto>;
+  openReview(bookId: number): Promise<CreatedNoteDto>;
+  /** This reading's note of that kind, when it has one. */
+  noteForReading(readingId: number, kind: NoteKindDto): Promise<NoteDto | null>;
+
+  // ---- the graph ----------------------------------------------------------
+
+  /**
+   * The `[[wikilinks]]` this note writes.
+   *
+   * `note: null` is a **forward reference**, not an error — it resolves itself
+   * the day that note is written — so a pane shows it as text rather than
+   * dropping it.
+   */
+  outgoingLinks(noteId: number): Promise<OutgoingLinkDto[]>;
+  /** The notes that link *here*. */
+  backlinks(noteId: number): Promise<NoteDto[]>;
+
+  // ---- citations ----------------------------------------------------------
+
+  /**
+   * Tie a note to a passage, **by reference**: the citation survives a device
+   * refresh rewriting the highlight's device-owned fields.
+   */
+  cite(noteId: number, highlightId: number): Promise<void>;
+  uncite(noteId: number, highlightId: number): Promise<boolean>;
+  /** Which passages one note cites. One call per note, so ask it for one. */
+  citationsFor(noteId: number): Promise<HighlightDto[]>;
+
+  // ---- the rating on a review --------------------------------------------
+
+  /** The scale a bare number would otherwise be unreadable against. */
+  activeRatingScale(): Promise<RatingScaleDto | null>;
+  /** A rating belongs to a **review note**, never to a book. */
+  reviewRating(noteId: number): Promise<RatingDto | null>;
+  setRating(noteId: number, value: number): Promise<void>;
+  clearReviewRating(noteId: number): Promise<boolean>;
+
+  // ---- covers -------------------------------------------------------------
+
   /** A cover as a URL this environment can actually load, or null. */
   coverSrc(book: BookDto): string | null;
+  /**
+   * The **hero shot** — `cover_path`, the largest jacket a provider published.
+   *
+   * Not [`coverSrc`], which is the shelf tier: a grid of sixty tiles must not
+   * load sixty full-size jackets, and a detail view showing one book wants the
+   * file that has not been downscaled. Two methods rather than a boolean, so a
+   * call site says which it meant.
+   */
+  heroSrc(book: BookDto): string | null;
 }
 
 export class ApiCallFailed extends Error {
@@ -225,6 +347,140 @@ export class TauriClient implements LibraryClient {
    */
   coverSrc(book: BookDto): string | null {
     return book.cover_shelf_path ? convertFileSrc(book.cover_shelf_path) : null;
+  }
+
+  /** `cover_path`, for the one screen that shows one book. See the interface. */
+  heroSrc(book: BookDto): string | null {
+    return book.cover_path ? convertFileSrc(book.cover_path) : null;
+  }
+
+  // ---- item 27 ------------------------------------------------------------
+
+  async bookTags(bookId: number): Promise<BookTagDto[]> {
+    return expect(await this.#call({ method: 'book_tags', params: { book_id: bookId } }), 'book_tags')
+      .value;
+  }
+
+  async bookFiles(bookId: number): Promise<BookFileDto[]> {
+    return expect(
+      await this.#call({ method: 'book_files', params: { book_id: bookId } }),
+      'book_files',
+    ).value;
+  }
+
+  async fieldProvenance(bookId: number): Promise<FieldSourceDto[]> {
+    return expect(
+      await this.#call({ method: 'field_provenance', params: { book_id: bookId } }),
+      'field_provenance',
+    ).value;
+  }
+
+  async tableOfContents(bookId: number): Promise<TableOfContentsDto | null> {
+    return expect(
+      await this.#call({ method: 'table_of_contents', params: { book_id: bookId } }),
+      'table_of_contents',
+    ).value;
+  }
+
+  async setAnnotation(highlightId: number, annotation: string | null): Promise<void> {
+    expect(
+      await this.#call({ method: 'set_annotation', params: { highlight_id: highlightId, annotation } }),
+      'unit',
+    );
+  }
+
+  async getNote(id: number): Promise<NoteDto | null> {
+    return expect(await this.#call({ method: 'get_note', params: { id } }), 'note').value;
+  }
+
+  async noteBody(noteId: number): Promise<string> {
+    return expect(await this.#call({ method: 'note_body', params: { note_id: noteId } }), 'text')
+      .value;
+  }
+
+  async updateNoteBody(noteId: number, body: string): Promise<void> {
+    expect(await this.#call({ method: 'update_note_body', params: { note_id: noteId, body } }), 'unit');
+  }
+
+  async createNote(note: NewNoteDto): Promise<CreatedNoteDto> {
+    return expect(await this.#call({ method: 'create_note', params: { note } }), 'created_note')
+      .value;
+  }
+
+  async deleteNote(noteId: number): Promise<void> {
+    expect(await this.#call({ method: 'delete_note', params: { note_id: noteId } }), 'unit');
+  }
+
+  async openReflection(bookId: number): Promise<CreatedNoteDto> {
+    return expect(
+      await this.#call({ method: 'open_reflection', params: { book_id: bookId, reading_id: null } }),
+      'created_note',
+    ).value;
+  }
+
+  async openReview(bookId: number): Promise<CreatedNoteDto> {
+    return expect(
+      await this.#call({ method: 'open_review', params: { book_id: bookId, reading_id: null } }),
+      'created_note',
+    ).value;
+  }
+
+  async noteForReading(readingId: number, kind: NoteKindDto): Promise<NoteDto | null> {
+    return expect(
+      await this.#call({ method: 'note_for_reading', params: { reading_id: readingId, kind } }),
+      'note',
+    ).value;
+  }
+
+  async outgoingLinks(noteId: number): Promise<OutgoingLinkDto[]> {
+    return expect(await this.#call({ method: 'outgoing_links', params: { note_id: noteId } }), 'links')
+      .value;
+  }
+
+  async backlinks(noteId: number): Promise<NoteDto[]> {
+    return expect(await this.#call({ method: 'backlinks', params: { note_id: noteId } }), 'notes')
+      .value;
+  }
+
+  async cite(noteId: number, highlightId: number): Promise<void> {
+    expect(
+      await this.#call({ method: 'cite', params: { note_id: noteId, highlight_id: highlightId } }),
+      'unit',
+    );
+  }
+
+  async uncite(noteId: number, highlightId: number): Promise<boolean> {
+    return expect(
+      await this.#call({ method: 'uncite', params: { note_id: noteId, highlight_id: highlightId } }),
+      'bool',
+    ).value;
+  }
+
+  async citationsFor(noteId: number): Promise<HighlightDto[]> {
+    return expect(
+      await this.#call({ method: 'citations_for', params: { note_id: noteId } }),
+      'highlights',
+    ).value;
+  }
+
+  async activeRatingScale(): Promise<RatingScaleDto | null> {
+    return expect(await this.#call({ method: 'active_rating_scale' }), 'rating_scale').value;
+  }
+
+  async reviewRating(noteId: number): Promise<RatingDto | null> {
+    return expect(await this.#call({ method: 'review_rating', params: { note_id: noteId } }), 'rating')
+      .value;
+  }
+
+  async setRating(noteId: number, value: number): Promise<void> {
+    expect(await this.#call({ method: 'set_rating', params: { note_id: noteId, value } }), 'unit');
+  }
+
+  async clearReviewRating(noteId: number): Promise<boolean> {
+    return expect(
+      await this.#call({ method: 'clear_review_rating', params: { note_id: noteId } }),
+      'bool',
+    ).value;
   }
 }
 

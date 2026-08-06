@@ -26,7 +26,13 @@
  * states the absence, the frontend words it**. `title` is `null` and `authors`
  * is `[]` on the wire; *Untitled* is a word, and a word is ours.
  */
-import type { ProgressDto, ReadingStateDto } from '$lib/api/bindings';
+import type {
+  NoteDto,
+  ProgressDto,
+  RatingDto,
+  ReadingDto,
+  ReadingStateDto,
+} from '$lib/api/bindings';
 
 /** The current reading's state, phrased. */
 export function readingStateLabel(state: ReadingStateDto | null): string | null {
@@ -140,4 +146,155 @@ export function progressDetail(p: ProgressDto): string | null {
   // is zero; the engine already collapsed those, so there is no `of 0` to guard.
   const where = p.of === null ? `p. ${p.page}` : `p. ${p.page} of ${p.of}`;
   return pct === null ? where : `${where} · ${pct}`;
+}
+
+// ---------------------------------------------------------------------------
+// Item 27's words. Everything below phrases a value some other layer decided.
+// ---------------------------------------------------------------------------
+
+/**
+ * A day, in UTC, as `2025-01-14`.
+ *
+ * Item 17 decided dates stay in the frontend, and stated the limit of that
+ * ruling: *relative* time needs an answer to "what is today", the engine's day
+ * convention is UTC, and inventing a local-time answer is what item 31 refused
+ * for reading minutes. So this does the half that is safe — an absolute day,
+ * on the engine's own convention — and there is deliberately no "3 days ago"
+ * anywhere in this app.
+ *
+ * Formatted rather than handed to `Intl`, because a locale-dependent rendering
+ * makes the committed screenshots depend on the machine that took them.
+ */
+export function dayLabel(unixSeconds: number | null): string | null {
+  if (unixSeconds === null) return null;
+  const d = new Date(unixSeconds * 1000);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
+/**
+ * When one reading ran.
+ *
+ * `finished_at` being null means **open**, not unknown — at most one reading
+ * per book may be — so an open read says when it started and stops there rather
+ * than drawing a dash toward a date it is waiting for. Nothing here counts days
+ * or measures a run against anything.
+ */
+export function readingSpan(r: ReadingDto): string | null {
+  const from = dayLabel(r.started_at);
+  const to = dayLabel(r.finished_at);
+  if (from && to) return `${from} – ${to}`;
+  if (from) return `from ${from}`;
+  if (to) return `to ${to}`;
+  return null;
+}
+
+/**
+ * Which kind of note a row is — and `null` for an ordinary one.
+ *
+ * The four kinds live in one list rather than in four tabs (the TUI's ruling: a
+ * section is a *collection*, and there is exactly one reflection), so a row has
+ * to say which it is. A plain note gets no label because the whole list is
+ * notes; labelling every row would be a column of the same word.
+ *
+ * `kind` is a `String` on the wire and stays one, so an unknown value shows
+ * verbatim — the same call `readingStateLabel` makes about another app's word.
+ */
+export function noteKindLabel(kind: string): string | null {
+  switch (kind) {
+    case 'note':
+      return null;
+    case 'session':
+      return 'Session';
+    case 'reflection':
+      return 'Reflection';
+    case 'review':
+      return 'Review';
+    default:
+      return kind;
+  }
+}
+
+/**
+ * What a note is hung off: a page, a location, or a passage.
+ *
+ * The TUI's `anchor_tag`, ported — including its ordering, and its rule that a
+ * note anchored to a highlight with no page says so with an arrow rather than
+ * with nothing. Choosing which of three absences to word is phrasing; the
+ * absences themselves are the engine's columns.
+ */
+export function noteAnchorLabel(n: NoteDto): string | null {
+  const parts: string[] = [];
+  if (n.page !== null) parts.push(`p. ${n.page}`);
+  if (n.location !== null) parts.push(n.location);
+  if (parts.length === 0 && n.highlight_id !== null) parts.push('↳ passage');
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
+/**
+ * A rating, against the scale it was recorded on.
+ *
+ * The scale travels **with** the value on the wire and this is why: the
+ * Goodreads map is user-editable, so `4.5` alone is not re-derivable into
+ * anything. `4.5 / 5`, never `4.50`.
+ */
+export function ratingLabel(r: RatingDto): string {
+  return `${trimNumber(r.value)} / ${trimNumber(r.scale.max)}`;
+}
+
+/** `4.5` and `4`, never `4.50` or `4.0`. A `step` of 0.5 makes both reachable. */
+export function trimNumber(v: number): string {
+  return String(Math.round(v * 100) / 100);
+}
+
+/**
+ * A file's size, roughly. Binary units, because that is what a file browser on
+ * either platform will say about the same file.
+ */
+export function fileSizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+/**
+ * Who supplied a field.
+ *
+ * `FieldSourceDto.source` is read straight off the column, whose vocabulary
+ * lives in a comment rather than a `CHECK` — so an unrecognised token is a row
+ * a newer engine wrote and is shown as it was stored. `user` is the rank that
+ * outranks every provider, and *You* is what that reads as on a screen you own.
+ */
+export function sourceLabel(source: string): string {
+  switch (source) {
+    case 'open_library':
+      return 'Open Library';
+    case 'google_books':
+      return 'Google Books';
+    case 'koreader':
+      return 'KOReader';
+    case 'goodreads':
+      return 'Goodreads';
+    case 'calibre':
+      return 'calibre';
+    case 'epub':
+      return 'the EPUB';
+    case 'pdf':
+      return 'the PDF';
+    case 'user':
+      return 'You';
+    default:
+      return source;
+  }
+}
+
+/** A column name, said out loud. `publish_year` is a schema word, not a English one. */
+export function fieldLabel(field: string): string {
+  const said = field.replace(/_/g, ' ');
+  return said.charAt(0).toUpperCase() + said.slice(1);
 }

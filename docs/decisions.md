@@ -1943,3 +1943,126 @@ because item 31 needed somewhere to put reading time.
       complaint in advance: five engine items once landed with no way to see any
       of them. Stated rather than hidden — `rb moments` is the obvious next
       thing and belongs with whoever builds the ceremony.
+
+27. **The book, and the notes.** No migration and no engine or API change; one
+    route, four components, two pure modules, and fifteen methods on the client
+    seam over requests that all already existed. Its subject is that the engine
+    had been ahead of its frontends for four items in a row — citations, the
+    graph, per-field provenance, the chapter list and the ownership seam on a
+    highlight were all built, tested, on the wire, and drawn nowhere.
+    - **Three depths, one pane, no dialog.** The notes band is the list, or one
+      note, or that note's links — each replacing the last **in place**, with
+      the way back on screen at every depth. The spec named this as the axiom's
+      *nothing is modal-by-default* doing real work and it is: the TUI reached
+      the same arrangement (`app.links` swaps out the note list rather than
+      opening a layer over it), and a page has more room for a modal than a pane
+      does, which is exactly why the temptation had to be refused here rather
+      than merely inherited.
+    - **A passage carries two notes with two owners, and the labels are the
+      feature.** `ko_note` is KOReader's and is rewritten toward the device on
+      every import; `annotation` is the reader's and no import has ever touched
+      it. That is a whole section of this document and **nothing had ever drawn
+      the pair** — unlabelled they are two grey paragraphs, and the one place a
+      reader can learn that their own words survive a device refresh and the
+      device's do not is this screen. Asserted, not reviewed: `a passage says
+      who wrote what against it`.
+    - **Citing is per open note, and that is not the N+1 it looks like.**
+      `CitationsFor` is **one** call, for the one note the pane has open, which
+      is what makes `Uncite` reachable at all — a control that can only add is
+      not a control. Marking which passages *any* note cites is the different
+      question, needs one call per note in the book, has no request behind it,
+      and stays a later item. The distinction is worth keeping because the
+      cheap half was nearly dropped with the expensive one.
+    - **The note search was excluded before the item began, and the exclusion
+      was right.** `SearchMarks` takes no `book_id` and its `limit` applies to
+      the **global** ranked list, so filtering its results to one book above the
+      seam returns nothing whenever the top hits are in other books. Item 24
+      predicted the shape of this failure in advance — *"the box does not look
+      broken, the note looks gone"* — and a client-side narrowing would have
+      produced it from a second direction. `NotePane.svelte` carries a comment
+      where the input goes and no input; item 40 is the engine change.
+    - **The read-number gutter stays out**, and for item 17c's own reason.
+      `ReadNumbering` is in the engine because it silently depends on
+      `list_readings`' oldest-first ordering contract; `readings.indexOf(id) +
+      1` in TypeScript would re-implement a domain rule *and* re-acquire that
+      dependency, with nothing on either screen looking wrong.
+    - **Three `as` casts in `fake.ts` were hiding live drift, in both
+      directions.** Item 38 removed the one on `book()` and named the failure —
+      a cast makes an *added* DTO field silently absent — and the other three
+      survived it. `highlight()` stated `pos0`, `pos1` and `identity_hash`,
+      **none of which are on `HighlightDto`**; the note literal stated a
+      `last_modified` that `NoteDto` does not have; and `reading()` **omitted
+      `progress`**, which item 22 added. That last one is not cosmetic: every
+      per-reading progress line in the app would have rendered `undefined`, and
+      no layer-1 test could have said so. A cast hides invented fields as
+      readily as missing ones, which is the half item 38 did not have to say.
+    - **`open_reflection_record` is not on the wire, and the screen pays for
+      it.** `Engine::open_reflection_record`/`open_review_record` exist because
+      *"everything that then edits the note wants a `NoteRecord`"* — which is
+      exactly a GUI opening a reflection — and the API exposes only the
+      `CreatedNote` half. So this screen issues a `get_note` after every open.
+      One extra request rather than a re-derivation, which is the right side of
+      the seam to be wrong on; the fix is additive and belongs to `crates/api`.
+    - **Two cover methods, not a flag.** `coverSrc` is `cover_shelf_path` and
+      `heroSrc` is `cover_path`, so a call site says which it meant. Item 38
+      records the shelf reading `cover_path` for a whole wave as *a bug no
+      screenshot could show*, because a dev library renders the identical file;
+      one method with a boolean would have left that bug exactly as easy to
+      write.
+    - **`Jacket` is the promotion item 26 invited, and it went to a component
+      rather than to a token.** Entry 26 declined to promote anything to
+      `app.css` on the grounds that one screen existed. Three things turned out
+      to be genuinely shared once a second did — the band heading, the dim
+      explanatory line and the inline command literal — and those are tokens.
+      The plate is not: it is a *composition*, and its comment already claimed
+      "a book with no cover looks like the same book in both frontends", which
+      was about to become a claim made twice in two files. One component, and
+      the tile and the hero cannot drift.
+    - **The reference material is a margin, and the split is by whose it is
+      rather than by size.** What you wrote is the page; what is known about the
+      book is beside it. At one column the same order still reads top to bottom,
+      which is why the reference half is last in the markup rather than
+      reordered by CSS. The two-column breakpoint is 1024px because `--measure`
+      caps prose at 68ch: below that a sidebar takes width the passages need
+      rather than width nobody was using.
+    - **Two absences are rendered as two different sentences, because the engine
+      went to the trouble of distinguishing them.** `TableOfContents` returns
+      `null` for *no file here we can read* and `{ entries: [] }` for *this file
+      carries no TOC*; `FieldProvenance` returns an empty list for *nobody has
+      claimed the field*, which is every book predating migration `0012`, so it
+      renders as nothing at all rather than as "unknown provider" — which would
+      be a claim. The chapter list is loaded **when its disclosure opens**: the
+      engine derives it from the file on every call and stores nothing, so
+      asking with the page would open an EPUB every time anyone looked at a
+      book.
+    - **The four states of a lazy load are four, not a boolean and a nullable.**
+      Collapsing "not asked" and "still reading" into `contents === null` showed
+      *No readable file for this book* for the whole duration of every load —
+      the page telling its reader something false about their library and then
+      correcting itself. Found by clicking it, not by reading it.
+    - **A rating scale is a declared range and a control needs a list**, so
+      `ratingSteps` is a module with a suite rather than four lines in a
+      component. Both failures it guards are invisible on a screenshot:
+      `rating_scales.step` carries no `CHECK`, so a `while (v <= max) v += step`
+      hangs the whole webview on a zero, and `1 + 0.5 * 5` accumulates to
+      `3.5000000000000004`, which reaches `set_rating` as a value the scale does
+      not contain. A scale too long to draw reports its recorded value and
+      offers no control, which is a refusal that says what it refused.
+    - **Flashcards were left out on purpose.** `list_flashcards_for_book` is
+      served and `Storage::insert_flashcard` has **no `Engine` wrapper**, so no
+      frontend can make one — cards arrive only from single-word KOReader
+      highlights. A band whose contents cannot be created is a fourth band
+      saying nothing on every book that has not had an import, and its empty
+      state would be naming a mechanism rather than a move.
+    - **Two things that cost a session each, recorded so they do not cost a
+      second.** A top-level `const state` in a rune file breaks `svelte-check`
+      with two dozen errors about `$state` on *other* lines (`BookTile` gets
+      away with the name only because it declares no `$state`). And
+      `toContainText` on a `<textarea>` **passes on an empty box**: the text
+      node is the initial markup and `bind:value` sets the property, so the
+      first spelling of the body assertion asserted nothing.
+    - **The deep states are driven and screenshotted, because a route shot only
+      ever sees a page's first frame.** The two things this item is actually
+      about — a note open in place and its links replacing it — would have been
+      reviewed by nobody otherwise. The shelf's arrangement test set the
+      precedent and this follows it: drive the thing, then take the picture.

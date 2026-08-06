@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
+import type { NoteDto, ReadingDto } from './api/bindings';
 import {
   authorsLabel,
+  dayLabel,
+  fieldLabel,
+  fileSizeLabel,
+  noteAnchorLabel,
+  noteKindLabel,
   progressDetail,
   progressLabel,
+  ratingLabel,
+  readingSpan,
   readingStateLabel,
+  sourceLabel,
   titleLabel,
+  trimNumber,
 } from './phrasing';
 
 describe('reading state', () => {
@@ -137,5 +147,151 @@ describe('progress, at length', () => {
         source: 'device',
       }),
     ).toBe('43%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item 27's words.
+// ---------------------------------------------------------------------------
+
+function note(over: Partial<NoteDto>): NoteDto {
+  return {
+    id: 1,
+    book_id: 3,
+    reading_id: null,
+    highlight_id: null,
+    page: null,
+    location: null,
+    file_path: '1.md',
+    title: 'A note',
+    kind: 'note',
+    created_at: 1735689600,
+    ...over,
+  };
+}
+
+function reading(over: Partial<ReadingDto>): ReadingDto {
+  return {
+    id: 1,
+    book_id: 3,
+    started_at: null,
+    finished_at: null,
+    status: { state: 'reading' },
+    source: 'koreader',
+    current_page: null,
+    ko_status: null,
+    ko_percent: null,
+    ko_rating: null,
+    created_at: 1735689600,
+    last_modified: 1735689600,
+    progress: { progress: 'untouched' },
+    ...over,
+  };
+}
+
+describe('days', () => {
+  it('says a day in UTC, which is the day convention the engine already uses', () => {
+    // Not `Intl`: a locale-dependent rendering makes the committed screenshots
+    // depend on the machine that took them.
+    expect(dayLabel(1735689600)).toBe('2025-01-01');
+  });
+
+  it('has no word for an absent date', () => {
+    expect(dayLabel(null)).toBeNull();
+  });
+
+  it('says nothing rather than "Invalid Date" for a value it cannot read', () => {
+    expect(dayLabel(Number.NaN)).toBeNull();
+  });
+});
+
+describe('a reading, worded', () => {
+  it('gives an open read a start and no dash toward a date it is waiting for', () => {
+    // `finished_at: null` means **open**, not unknown. A range with a blank
+    // right-hand side would read as a gap in the record.
+    expect(readingSpan(reading({ started_at: 1735689600 }))).toBe('from 2025-01-01');
+  });
+
+  it('gives a closed read both ends', () => {
+    expect(readingSpan(reading({ started_at: 1735689600, finished_at: 1738368000 }))).toBe(
+      '2025-01-01 – 2025-02-01',
+    );
+  });
+
+  it('says nothing at all about a reading with no dates', () => {
+    expect(readingSpan(reading({}))).toBeNull();
+  });
+});
+
+describe('notes', () => {
+  it('labels the kinds that are singular and leaves an ordinary note bare', () => {
+    // The four kinds share one list, so a row has to say which it is — except
+    // the ordinary one, where a label would be a column of the same word.
+    expect(noteKindLabel('note')).toBeNull();
+    expect(noteKindLabel('reflection')).toBe('Reflection');
+    expect(noteKindLabel('review')).toBe('Review');
+  });
+
+  it('shows a kind this build does not know verbatim', () => {
+    // `notes.kind` is a `String` on the wire and stays one. The same call
+    // `readingStateLabel` makes about another application's word.
+    expect(noteKindLabel('marginalia')).toBe('marginalia');
+  });
+
+  it('anchors a note to its page, its location, or the passage it hangs off', () => {
+    expect(noteAnchorLabel(note({ page: 212 }))).toBe('p. 212');
+    expect(noteAnchorLabel(note({ location: 'ch4/p3' }))).toBe('ch4/p3');
+    expect(noteAnchorLabel(note({ page: 212, location: 'ch4/p3' }))).toBe('p. 212 · ch4/p3');
+  });
+
+  it('says a passage anchor only where there is no page or location instead', () => {
+    // The TUI's rule, ported: an arrow rather than nothing, so a note hung off a
+    // highlight with no page does not look unanchored.
+    expect(noteAnchorLabel(note({ highlight_id: 7 }))).toBe('↳ passage');
+    expect(noteAnchorLabel(note({ page: 5, highlight_id: 7 }))).toBe('p. 5');
+  });
+
+  it('has no anchor to word for a note about the book as a whole', () => {
+    expect(noteAnchorLabel(note({}))).toBeNull();
+  });
+});
+
+describe('ratings', () => {
+  it('says the value against the scale it was recorded on', () => {
+    // A bare number is not re-derivable into anything: the Goodreads map is
+    // user-editable, which is why the scale travels with the value.
+    expect(
+      ratingLabel({ scale: { id: 1, name: 'stars', min: 1, max: 5, step: 0.5 }, value: 4.5 }),
+    ).toBe('4.5 / 5');
+  });
+
+  it('never prints a trailing zero', () => {
+    expect(trimNumber(4)).toBe('4');
+    expect(trimNumber(4.5)).toBe('4.5');
+    expect(trimNumber(3.5000000000000004)).toBe('3.5');
+  });
+});
+
+describe('files and provenance', () => {
+  it('says a size the way a file browser would', () => {
+    expect(fileSizeLabel(512)).toBe('512 B');
+    expect(fileSizeLabel(4 * 1024 * 1024)).toBe('4.0 MB');
+    expect(fileSizeLabel(40 * 1024 * 1024)).toBe('40 MB');
+  });
+
+  it('names the origins in the words a person uses for them', () => {
+    expect(sourceLabel('open_library')).toBe('Open Library');
+    // The rank that outranks every provider, on a screen you own.
+    expect(sourceLabel('user')).toBe('You');
+  });
+
+  it('shows a source token this build does not know as it was stored', () => {
+    // The column's vocabulary lives in a comment rather than a `CHECK`, so an
+    // unrecognised token is a row a newer engine wrote — not an error.
+    expect(sourceLabel('kobo')).toBe('kobo');
+  });
+
+  it('says a column name out loud', () => {
+    expect(fieldLabel('publish_year')).toBe('Publish year');
   });
 });

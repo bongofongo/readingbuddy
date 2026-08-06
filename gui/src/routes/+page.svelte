@@ -53,17 +53,17 @@
   <p class="note">
     The library did not open: {failure}
   </p>
-  <p class="note dim">
+  <p class="hint">
     readingbuddy reads the library in <code>READINGBUDDY_DATA_DIR</code>, or the
     directory it was started in. <code>make dev-db</code> builds one to look at.
   </p>
 {:else if books === null}
-  <p class="note dim">Reading the shelf…</p>
+  <p class="hint">Reading the shelf…</p>
 {:else if books.length === 0}
   <!-- Idle is not blank. An empty state names the moves that fill it and never
        apologises. These are the two importers that need no network. -->
   <p class="note">Nothing on the shelf yet.</p>
-  <p class="note dim">
+  <p class="hint">
     <code>rb epub &lt;file&gt;</code> adds a book from a file.
     <code>rb ko pull</code> takes what is on a connected reader.
   </p>
@@ -72,7 +72,7 @@
     <!-- Pulled proud. Which books these are is the engine's answer
          (`currently_reading`), not a filter spelled a second time here. -->
     <section class="band reading-band">
-      <h2>Reading</h2>
+      <h2 class="band-title">Reading</h2>
       <div class="proud">
         {#each reading as { book, reading: r } (r.id)}
           <BookTile {book} proud />
@@ -83,7 +83,7 @@
 
   <section class="band">
     <div class="band-head">
-      <h2>On the shelf</h2>
+      <h2 class="band-title">On the shelf</h2>
       <ShelfSwitch current={layoutId} onpick={pick} />
     </div>
     <!-- No count. Not here and not in the header: this is the surface you land
@@ -113,12 +113,9 @@
     flex-wrap: wrap;
     margin-bottom: 1rem;
   }
+  /* The heading itself is `.band-title` in `app.css` now — item 27 promoted it
+     when the book view needed the same voice. Only the spacing is this page's. */
   h2 {
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--ink-dim);
     margin-bottom: 1rem;
   }
   .band-head h2 {
@@ -169,13 +166,5 @@
   .note {
     max-width: var(--measure);
     margin: 0 0 0.5rem;
-  }
-  .dim {
-    color: var(--ink-dim);
-  }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85em;
-    color: var(--accent-text);
   }
 </style>
