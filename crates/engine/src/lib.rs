@@ -9,6 +9,9 @@ pub mod config;
 pub mod crash;
 pub mod device;
 pub mod diagnostic;
+/// The physical shape of one edition, as proportions — item 19. Height is 1.0
+/// and a frontend picks the unit, so no scene constant travels with it.
+pub mod edition;
 pub mod enrich;
 pub mod epub;
 pub mod error;
@@ -54,6 +57,7 @@ pub use device::{
     mount_roots, offers_reader,
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
+pub use edition::{EditionShape, ShapeSource};
 pub use enrich::{
     EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, FieldChange, HeldField,
 };

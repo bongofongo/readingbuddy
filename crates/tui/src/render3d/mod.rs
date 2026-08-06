@@ -16,7 +16,7 @@ pub mod texture;
 
 use std::path::{Path, PathBuf};
 
-use readingbuddy::Book;
+use readingbuddy::{Book, EditionShape};
 
 pub use blit::{GlyphSet, RgbBuf};
 pub use caps::Caps;
@@ -106,25 +106,43 @@ impl Default for RenderParams {
     }
 }
 
-/// The physical shape of one edition. Deriving it from the book rather than
-/// hard-coding a box is what stops covers being stretched onto the wrong
-/// aspect, and it gives a doorstop a visibly fatter spine than a novella.
+/// This scene's half-extents for one edition — [`readingbuddy::EditionShape`]
+/// scaled into scene units.
+///
+/// The *decision* about what shape a book is moved to the engine in item 19, so
+/// that a WebGL shelf and this ray tracer agree about how fat *Infinite Jest*
+/// is. What is left here is the scaling, which is the renderer's alone:
+/// `EditionShape` states proportions with height fixed at 1.0, and
+/// [`scene::HALF_HEIGHT`] is this camera rig's idea of how tall that is.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Model {
     pub half: Vec3,
 }
 
 impl Model {
-    /// Width follows the cover's aspect (clamped to shapes books actually
-    /// come in); thickness follows the page count, defaulting to a 320-page
-    /// paperback when the count is unknown.
+    /// Ask the engine for the edition's proportions, then scale them by this
+    /// scene's height.
+    ///
+    /// The aspect comes from item 20's **stored** cover dimensions where they
+    /// exist, and falls back to `cover.aspect` — a *decoded* image's
+    /// width/height — where they do not. That fallback is not vestigial: the
+    /// column is `None` for every cover written before `0014` and for every
+    /// cover a back-fill has not reached, and this renderer already holds the
+    /// decoded image for the one book it draws. A shelf holds three hundred and
+    /// must not decode any of them, which is what the column is for.
     pub fn new(book: &Book, cover: &Cover) -> Model {
+        let aspect = book
+            .cover_aspect()
+            .map(|a| a as f32)
+            .unwrap_or(cover.aspect);
+        let shape = EditionShape::of_book(book, Some(aspect));
         let h = scene::HALF_HEIGHT;
-        let width = h * cover.aspect.clamp(0.55, 0.85);
-        let pages = book.page_count.unwrap_or(320).clamp(48, 1400) as f32;
-        let depth = (0.045 + pages / 9000.0).clamp(0.05, 0.20);
         Model {
-            half: vec3(width, h, depth),
+            half: vec3(
+                h * shape.width_over_height,
+                h,
+                h * shape.thickness_over_height,
+            ),
         }
     }
 }
@@ -318,6 +336,125 @@ mod tests {
             title: Some("Station Eleven".into()),
             ..Book::default()
         }
+    }
+
+    /// Item 19 moved the derivation into the engine and the renderer is frozen,
+    /// so the numbers must not have moved with it. This reproduces the four
+    /// lines `Model::new` used to hold, byte for byte, and compares.
+    ///
+    /// It is also the only place the scene-unit ↔ height-ratio conversion is
+    /// checked: `EditionShape` speaks in multiples of height, this scene's
+    /// half-height is 0.75, and getting that factor wrong would change every
+    /// spine's thickness by a third with nothing failing.
+    #[test]
+    fn the_engines_shape_reproduces_the_renderers_old_arithmetic() {
+        fn historical(book: &Book, cover: &Cover) -> Vec3 {
+            let h = scene::HALF_HEIGHT;
+            let width = h * cover.aspect.clamp(0.55, 0.85);
+            // The old `unwrap_or(320)`, kept here as it was: the *only* input
+            // where the two disagree is a non-positive page count, which the
+            // engine now reads as absence rather than as a 48-page pamphlet.
+            let pages = book.page_count.unwrap_or(320).clamp(48, 1400) as f32;
+            let depth = (0.045 + pages / 9000.0).clamp(0.05, 0.20);
+            vec3(width, h, depth)
+        }
+        let cover = texture::procedural_cover("Station Eleven");
+        for pages in [None, Some(1), Some(48), Some(320), Some(1408), Some(9999)] {
+            let book = Book {
+                page_count: pages,
+                ..test_book()
+            };
+            let old = historical(&book, &cover);
+            let new = Model::new(&book, &cover).half;
+            for (a, b, axis) in [
+                (old.x, new.x, "width"),
+                (old.y, new.y, "height"),
+                (old.z, new.z, "depth"),
+            ] {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{axis} moved for {pages:?}: {a} -> {b}"
+                );
+            }
+        }
+        // `scene::DEFAULT_HALF_EXTENTS` is the reference trade paperback the
+        // scene tests are written against; the procedural cover is 48x72, so
+        // this is the same object.
+        let paperback = Model::new(
+            &Book {
+                page_count: Some(320),
+                ..test_book()
+            },
+            &cover,
+        );
+        assert!((paperback.half.x - scene::DEFAULT_HALF_EXTENTS.x).abs() < 1e-6);
+        assert!((paperback.half.y - scene::DEFAULT_HALF_EXTENTS.y).abs() < 1e-6);
+    }
+
+    /// The item 19 → item 20 rewire: where the columns exist, the *stored*
+    /// measurement decides the shape and the decoded texture does not get a
+    /// vote. Asserted with the two deliberately disagreeing, because agreeing
+    /// inputs cannot tell which one was read — and the decode is what a shelf
+    /// of three hundred spines cannot afford.
+    #[test]
+    fn a_measured_cover_is_not_decoded_to_find_its_aspect() {
+        let cover = texture::procedural_cover("Station Eleven");
+        let measured = Book {
+            // Deliberately unlike the 48x72 procedural cover, and inside the
+            // 0.55..0.85 clamp at both ends so neither collapses onto it.
+            cover_width: Some(170),
+            cover_height: Some(200),
+            ..test_book()
+        };
+        let stored = Model::new(&measured, &cover).half.x;
+        let decoded = Model::new(&test_book(), &cover).half.x;
+        assert!(
+            (stored - scene::HALF_HEIGHT * 0.85).abs() < 1e-6,
+            "the stored 170x200 should decide the width, got {stored}"
+        );
+        assert!(
+            (stored - decoded).abs() > 1e-3,
+            "the two inputs must disagree or this test proves nothing"
+        );
+    }
+
+    /// An unmeasured cover — every row written before `0014`, and every one a
+    /// back-fill has not reached — still decodes. The fallback is the state of
+    /// the library, not a leftover.
+    #[test]
+    fn an_unmeasured_cover_still_falls_back_to_the_decoded_image() {
+        let cover = texture::procedural_cover("Station Eleven");
+        let half_measured = Book {
+            cover_width: Some(170),
+            cover_height: None,
+            ..test_book()
+        };
+        assert_eq!(
+            Model::new(&half_measured, &cover).half.x,
+            Model::new(&test_book(), &cover).half.x,
+        );
+    }
+
+    /// The behaviour item 19 *did* change, isolated so it cannot be mistaken
+    /// for drift. `page_count = 0` is a real row in `make dev-db`; the old
+    /// arithmetic clamped it to 48 and drew a book of unknown length as the
+    /// thinnest pamphlet the model allows.
+    #[test]
+    fn a_zero_page_count_no_longer_draws_the_thinnest_possible_book() {
+        let cover = texture::procedural_cover("Station Eleven");
+        let with = |pages| {
+            Model::new(
+                &Book {
+                    page_count: pages,
+                    ..test_book()
+                },
+                &cover,
+            )
+            .half
+            .z
+        };
+        assert_eq!(with(Some(0)), with(None), "zero is absence, not a length");
+        assert!(with(Some(0)) > with(Some(48)));
     }
 
     #[test]

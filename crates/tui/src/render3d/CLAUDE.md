@@ -5,14 +5,17 @@ beside it. Moved here from the root `CLAUDE.md` unchanged.
 
 **The renderer is frozen** (`docs/decisions.md`). `raster.rs` already emits
 RGBA, so it survives a frontend change intact. The GUI does **not** port it —
-what crosses is `Model`'s derivation of an edition's shape, four lines of
-arithmetic, which spec item 19 moves into the engine. See
-`docs/gui/spec-gui-17-28.md`.
+what crosses is an edition's *shape*, and item 19 moved that out of `Model` and
+into **`readingbuddy::edition`**, where it is stated as proportions (height is
+`1.0`). `Model::new` now asks the engine and multiplies by `scene::HALF_HEIGHT`.
+**Do not push a scene constant back down into that derivation**: the whole point
+is that a WebGL shelf and this ray tracer scale the same ratios differently. See
+`docs/decisions.md` entry 19.
 
 Siblings: [`../ui/CLAUDE.md`](../ui/CLAUDE.md) ·
 [`../../CLAUDE.md`](../../CLAUDE.md) (bench/perf commands live there)
 
-- `render3d/` — the book object. **No rasterizer**: the book is one cuboid, so `scene.rs` builds a camera ray per subpixel, pulls it into local space with the transposed rotation, and runs a slab intersection — the winning axis names the face, the other two local coords are the UV. Faces: cover texture / accent spine + back / cream page edges striped along local Z. `Model` (in `mod.rs`) takes the front face's aspect from the cover image (so covers are never stretched) and the thickness from `page_count`. Lighting is key + fill + ambient — the fill exists so the back cover isn't a black hole every time the 360° spin brings it round.
+- `render3d/` — the book object. **No rasterizer**: the book is one cuboid, so `scene.rs` builds a camera ray per subpixel, pulls it into local space with the transposed rotation, and runs a slab intersection — the winning axis names the face, the other two local coords are the UV. Faces: cover texture / accent spine + back / cream page edges striped along local Z. `Model` (in `mod.rs`) is `readingbuddy::EditionShape` scaled by `scene::HALF_HEIGHT` — width follows the cover's aspect (so covers are never stretched) and thickness follows `page_count`, both decided in the engine. The cover aspect is passed *in* as an `Option<f32>`; item 20's stored cover dimensions turn that decode into a column read without changing any signature. Lighting is key + fill + ambient — the fill exists so the back cover isn't a black hole every time the 360° spin brings it round.
 - The book turns about its own centre, ~27s per revolution. `Pose::default` tips it back (negative pitch) so the cover faces upward and the bottom page edges show; positive pitch would face the cover down instead.
 - `camera_distance` fits by projecting the 8 corners over a full yaw sweep, so scale stays constant through a whole turn rather than breathing in and out. `scene::fill_for(rows)` slides the fill fraction from 0.88 on a small pane down to 0.60 on a big one: this caps the object's *absolute* size instead of letting it track the window. Raising it makes the book too big on a full terminal — that was fixed once already.
 - `blit.rs` quantizes a cell's subpixels into one block glyph, over a selectable `GlyphSet`: **Quadrant** (2x2, sixteen glyphs U+2580..U+259F) or the default **Octant** (2x4, Unicode 16 mosaics U+1CD00.. plus reused block/quarter glyphs — 2× vertical resolution). A cell holds two colors, so it tries every split and keeps the lowest squared error; where a cell straddles the silhouette the split is forced by coverage, which buys subcell edges instead of whole-column stair-steps. `None` subpixels emit `Color::Reset`, so the pane keeps the user's terminal background. The **octant mask→char table is generated from the Unicode 16 UCD, not hand-written** (230 masks map to dedicated code points, 26 reuse scattered legacy glyphs); `octant_masks_round_trip` guards it — never hand-edit. Octants need a Unicode-16 font (else tofu), so `--glyphs quadrant` is a first-class fallback on both the TUI and `--dump-frame`.

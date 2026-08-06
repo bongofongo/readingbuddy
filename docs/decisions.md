@@ -1061,3 +1061,61 @@ because item 31 needed somewhere to put reading time.
       anywhere, and the TUI's watcher arm shows nothing at all: an index quietly
       being right is not news, and announcing it would be a notification about a
       chore the user did not have.
+19. **The shape of an edition.** No migration; four lines of arithmetic moved out
+    of `crates/tui/src/render3d/mod.rs`'s `Model::new` into
+    `readingbuddy::edition`. The second instance of item 17's rule, and the one
+    that names its second half: *a `Progress` enum is not terminal I/O; `"p.42"`
+    is* has a twin in *proportions are not rendering; a Bézier spine highlight
+    is*. The question `Model::new` was answering — what shape is this edition —
+    is asked by a WebGL shelf and a Unicode-glyph book alike, and two frontends
+    answering it separately is a shelf that contradicts a book view about the
+    same object with nothing on either screen looking wrong.
+    - **The type is `EditionShape`, and it speaks in multiples of the book's own
+      height.** *Edition*, not book or work: page count and cover art belong to a
+      printing, and two printings of the same novel are different objects on a
+      shelf. Not `Extent` — half-extents are a graphics word, and importing the
+      renderer's vocabulary into the engine is the coupling this item exists to
+      remove.
+    - **`HALF_HEIGHT` deliberately did not travel, and that is the whole
+      design.** A scene constant is one ratatui camera rig's idea of how big a
+      book is; had the engine handed back a number that only meant something
+      inside that rig, the arithmetic would have moved and the decision would
+      not. Height is `1.0` and is not a field. Millimetres were the alternative
+      and were rejected: we do not know an edition's real dimensions, and
+      deriving "152mm" from a cover *image's* aspect ratio is inventing a
+      measurement — a number wearing a unit it did not come by is worse than an
+      honest ratio.
+    - **The clamps are the engine's, and the line is proportions against look.**
+      They are open to the charge of being aesthetic, and the charge is half
+      right. The ruling: the object's *proportions* are the engine's, because
+      they are what makes an edition that edition; colour, lighting, bevels,
+      shadow, spine typography and whether it is drawn at all are the
+      frontend's. The width clamp in particular is not taste — a cover image is
+      cropped, scanned and jacketed at whatever aspect a provider felt like, so
+      clamping corrects an unreliable proxy back onto a plausible physical
+      object, which is a data judgement.
+    - **`unwrap_or(320)` is honest here, and would not have been in item 17.** A
+      renderer has no `None` to draw: a solid has to be *some* thickness, where a
+      progress bar may legitimately draw nothing. So absence is filled — but it
+      is never hidden. `ShapeSource::{Recorded, Assumed}` marks each number, the
+      way `FractionSource` marks where a fraction came from, and the invented
+      thickness is a middling paperback rather than an edge, so a book of unknown
+      length does not masquerade as a remarkable one.
+    - **`page_count = 0` was drawing as a pamphlet, and is now absence.** Moving
+      the derivation found it: `unwrap_or(320).clamp(48, 1400)` sends `Some(0)`
+      and every negative to 48, the thinnest book the model allows, and `make
+      dev-db` has real zero rows. Unknown is not short. This is the one
+      user-visible behaviour change in the item; everything else is asserted
+      identical to the old arithmetic across six page counts, because the
+      renderer is frozen and a move must not be a redesign.
+    - **The GUI cannot reach this yet, and that is an API item rather than a
+      frontend workaround.** `crates/api` was out of scope here (item 18 is
+      editing DTOs in parallel), so `EditionShape` is engine-side only. A WebGL
+      shelf gets it as a DTO field or it re-derives it in TypeScript, which is
+      the exact failure this item was written to prevent — so the shelf item must
+      not start before the DTO exists.
+    - **The parameter, not a column.** `EditionShape::of_book` takes the cover
+      aspect as `Option<f32>` because the engine stores no cover dimensions; item
+      20 adds them. The TUI passes a decoded image's aspect, which is fine for
+      the one book on screen and absurd for three hundred spines. When 20 lands,
+      that call site becomes a division of two columns and no signature changes.
