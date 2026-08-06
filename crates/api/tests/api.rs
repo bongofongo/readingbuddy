@@ -16,7 +16,8 @@ use std::sync::Arc;
 use readingbuddy::{Engine, EngineConfig};
 use readingbuddy_api::{
     Api, ApiError, BookDto, BookFilterDto, BookQueryDto, ErrorCode, NewNoteDto, NoteKindDto,
-    Outcome, ReadingStateDto, Request, Response, ShapeSourceDto, StatusFilterDto,
+    Outcome, ReadingStateDto, Request, Response, SearchHitDto, SearchSourceDto, ShapeSourceDto,
+    StatusFilterDto,
 };
 
 /// A library in a tempdir with an in-memory database, like every other suite
@@ -702,4 +703,163 @@ async fn a_book_carries_the_shape_of_its_edition() {
     let bare = BookDto::default();
     assert_eq!(bare.shape.width_source, ShapeSourceDto::Assumed);
     assert_eq!(bare.shape.thickness_source, ShapeSourceDto::Assumed);
+}
+
+// ---- item 33: one search surface -------------------------------------------
+
+/// `source` is a filter and its absence is *both*, in `BookFilterDto`'s idiom.
+///
+/// A payload that names no source has to be the widest question rather than a
+/// parse error, or every client would have to spell out the default it wanted
+/// anyway.
+#[test]
+fn a_search_payload_without_a_source_asks_both_indexes() {
+    let r: Request =
+        serde_json::from_str(r#"{"method":"search_marks","params":{"query":"grief","limit":25}}"#)
+            .unwrap();
+    assert_eq!(
+        r,
+        Request::SearchMarks {
+            query: "grief".into(),
+            source: None,
+            limit: 25,
+        }
+    );
+    let narrowed: Request = serde_json::from_str(
+        r#"{"method":"search_marks","params":{"query":"grief","source":"highlight","limit":5}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        narrowed,
+        Request::SearchMarks {
+            query: "grief".into(),
+            source: Some(SearchSourceDto::Highlight),
+            limit: 5,
+        }
+    );
+}
+
+/// The removal, pinned — this is what `API_VERSION = 2` is *for*.
+///
+/// A client still speaking version 1 must meet a clear refusal rather than
+/// having its search silently answer half the question, and this asserts the
+/// refusal exists rather than trusting that deleting the variant produced one.
+#[test]
+fn the_replaced_method_is_gone_from_the_wire() {
+    let old = r#"{"method":"search_notes","params":{"query":"grief","limit":25}}"#;
+    assert!(
+        serde_json::from_str::<Request>(old).is_err(),
+        "search_notes still parses, so nothing was actually replaced"
+    );
+    assert_eq!(readingbuddy_api::API_VERSION, 2);
+}
+
+/// One list, and every hit says which kind it is — so a client switches on a
+/// string rather than probing for the field that happens to be present.
+#[test]
+fn a_hit_names_its_kind_on_the_wire() {
+    let raw = r#"{"kind":"highlight",
+                  "highlight":{"id":7,"book_id":1,"text":"history has failed us",
+                               "source":"koreader","created_at":0},
+                  "snippet":"history has >>failed<< us"}"#;
+    let hit: SearchHitDto = serde_json::from_str(raw).unwrap();
+    let SearchHitDto::Highlight { highlight, snippet } = &hit else {
+        panic!("the tag did not select the highlight arm: {hit:?}");
+    };
+    assert_eq!(highlight.id, 7);
+    assert_eq!(snippet, "history has >>failed<< us");
+
+    let json = serde_json::to_value(&hit).unwrap();
+    assert_eq!(json["kind"], "highlight");
+    assert!(
+        json.get("note").is_none(),
+        "one row, not two nullable ones: {json}"
+    );
+    assert_eq!(serde_json::from_value::<SearchHitDto>(json).unwrap(), hit);
+}
+
+/// The typed method and the dispatch arm are the same call, for the item's own
+/// method — claim 1 of this suite, applied where it is newest.
+#[tokio::test]
+async fn dispatch_and_the_typed_method_agree_on_a_search() {
+    let (api, _tmp) = api().await;
+    let book = seed(&api).await;
+    api.create_note(NewNoteDto {
+        book_id: Some(book),
+        title: Some("On collapse".into()),
+        body: "The symphony rehearses in an antechamber.".into(),
+        kind: NoteKindDto::Note,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let typed = api.search_marks("antechamber", None, 10).await.unwrap();
+    assert_eq!(typed.len(), 1);
+    assert!(matches!(typed[0], SearchHitDto::Note { .. }));
+
+    match ok(api
+        .dispatch(Request::SearchMarks {
+            query: "antechamber".into(),
+            source: None,
+            limit: 10,
+        })
+        .await)
+    {
+        Response::SearchHits(dispatched) => assert_eq!(dispatched, typed),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Absence crosses the seam as an answer. A query nothing matches, and a query
+/// nobody typed, are both an empty list and never an error.
+#[tokio::test]
+async fn an_empty_answer_is_not_an_error_across_the_seam() {
+    let (api, _tmp) = api().await;
+    seed(&api).await;
+    for query in ["thermodynamics", "", "   ", "don't"] {
+        assert!(
+            api.search_marks(query, None, 10).await.unwrap().is_empty(),
+            "{query:?} should answer nothing rather than fail"
+        );
+    }
+}
+
+/// `title` joins the five filters that were already there, rather than becoming
+/// a seventh endpoint — so it composes with the count and the paging that
+/// `BookFilterDto` already had.
+#[tokio::test]
+async fn a_title_filter_crosses_the_seam_as_a_predicate() {
+    let (api, _tmp) = api().await;
+    seed(&api).await;
+
+    let filter = BookFilterDto {
+        title: Some("station".into()),
+        ..Default::default()
+    };
+    assert_eq!(api.count_books(Some(filter.clone())).await.unwrap(), 1);
+    let rows = api
+        .list_books(BookQueryDto {
+            sort: Default::default(),
+            filter: Some(filter),
+            limit: 10,
+            offset: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+
+    // And it composes with a neighbour rather than replacing it.
+    let both = BookFilterDto {
+        title: Some("station".into()),
+        author: Some("mandel".into()),
+        ..Default::default()
+    };
+    assert_eq!(api.count_books(Some(both)).await.unwrap(), 1);
+
+    let none = BookFilterDto {
+        title: Some("thermodynamics".into()),
+        ..Default::default()
+    };
+    assert_eq!(api.count_books(Some(none)).await.unwrap(), 0);
 }

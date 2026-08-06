@@ -48,10 +48,10 @@ use readingbuddy::{
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
     ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind,
-    NoteRecord, NoteSearchHit, OutgoingLink, Progress, PullReport, RankedResult, Rating,
-    RatingScale, Reading, ReadingEvent, ReadingState, RefillReport, SearchOutcome, SearchRequest,
-    Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome,
-    TocEntry, UnmatchedRow,
+    NoteRecord, OutgoingLink, Progress, PullReport, RankedResult, Rating, RatingScale, Reading,
+    ReadingEvent, ReadingState, RefillReport, SearchHit, SearchOutcome, SearchRequest,
+    SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents,
+    TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -571,6 +571,17 @@ impl From<BookSortDto> for BookSort {
 pub struct BookFilterDto {
     #[serde(default)]
     pub status: Option<StatusFilterDto>,
+    /// A substring of the title, case-insensitive — the same rule `author`
+    /// states below it, and **not** the full-text index `SearchMarks` uses.
+    ///
+    /// A title search is a predicate here rather than a seventh endpoint
+    /// because item 18 already made every list a filter + sort + page over one
+    /// shared `WHERE`, and this joins the five that were already there: it
+    /// composes with `CountBooks`, with the offset paging and with every sort,
+    /// none of which a separate method would get. The engine's `BookFilter`
+    /// carries the argument for `LIKE` over fts5 in full.
+    #[serde(default)]
+    pub title: Option<String>,
     /// A substring of the stored author list, case-insensitive.
     #[serde(default)]
     pub author: Option<String>,
@@ -589,6 +600,7 @@ impl From<BookFilterDto> for BookFilter {
     fn from(f: BookFilterDto) -> Self {
         BookFilter {
             status: f.status.map(Into::into),
+            title: f.title,
             author: f.author,
             year: f.year,
             language: f.language,
@@ -1118,22 +1130,79 @@ impl From<CreatedNote> for CreatedNoteDto {
     }
 }
 
+/// Which index a search is about, or `null` for both.
+///
+/// A **filter**, in `BookFilterDto`'s idiom rather than a second method:
+/// `null` is not asking, and naming one narrows what is in the list without
+/// touching how the list is ordered. It exists because "search my notes" is a
+/// real question — `rb notes --search` has asked it since item 7 — while the
+/// ordering never belongs to the caller.
+///
+/// It is emphatically **not** a way to fetch the two halves separately and
+/// interleave them above the seam. Two calls give a client two rankings and no
+/// rule for merging them, which is the thing [`Request::SearchMarks`] exists to
+/// make unnecessary.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSourceDto {
+    Note,
+    Highlight,
+}
+
+impl From<SearchSourceDto> for SearchSource {
+    fn from(s: SearchSourceDto) -> Self {
+        match s {
+            SearchSourceDto::Note => SearchSource::Note,
+            SearchSourceDto::Highlight => SearchSource::Highlight,
+        }
+    }
+}
+
+/// One hit in the one ranked list, carrying whichever row matched.
+///
+/// Internally tagged on `kind`, the shape [`StatusFilterDto`] already uses, so
+/// a client switches on one string rather than probing for which field is
+/// present. **Not two nullable fields**: exactly one of the two rows exists,
+/// and a shape that can represent neither or both is a shape somebody
+/// eventually reads wrong.
+///
+/// The order these arrive in is the engine's and is the whole point of the
+/// method — see [`Request::SearchMarks`]. Nothing above this layer re-sorts it.
 #[cfg_attr(
     feature = "ts",
     derive(ts_rs::TS),
     ts(export, export_to = "bindings.ts")
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NoteSearchHitDto {
-    pub note: NoteDto,
-    pub snippet: String,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SearchHitDto {
+    Note {
+        note: NoteDto,
+        /// The matching text with `>>` and `<<` around the terms.
+        snippet: String,
+    },
+    Highlight {
+        highlight: HighlightDto,
+        snippet: String,
+    },
 }
 
-impl From<NoteSearchHit> for NoteSearchHitDto {
-    fn from(h: NoteSearchHit) -> Self {
-        NoteSearchHitDto {
-            note: h.note.into(),
-            snippet: h.snippet,
+impl From<SearchHit> for SearchHitDto {
+    fn from(h: SearchHit) -> Self {
+        match h {
+            SearchHit::Note { note, snippet } => SearchHitDto::Note {
+                note: note.into(),
+                snippet,
+            },
+            SearchHit::Highlight { highlight, snippet } => SearchHitDto::Highlight {
+                highlight: highlight.into(),
+                snippet,
+            },
         }
     }
 }

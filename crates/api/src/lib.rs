@@ -471,8 +471,20 @@ impl Api {
         Ok(map(self.engine.list_notes(book_id, limit).await?))
     }
 
-    pub async fn search_notes(&self, query: &str, limit: i64) -> ApiResult<Vec<NoteSearchHitDto>> {
-        Ok(map(self.engine.search_notes(query, limit).await?))
+    /// Notes and highlights matching one query, as one ranked list.
+    ///
+    /// See [`Request::SearchMarks`] for why there is one method here and not
+    /// two, and `readingbuddy`'s `storage::fts` for the ordering rule.
+    pub async fn search_marks(
+        &self,
+        query: &str,
+        source: Option<SearchSourceDto>,
+        limit: i64,
+    ) -> ApiResult<Vec<SearchHitDto>> {
+        Ok(map(self
+            .engine
+            .search_marks(query, source.map(Into::into), limit)
+            .await?))
     }
 
     pub async fn get_note(&self, id: i64) -> ApiResult<Option<NoteDto>> {
@@ -915,9 +927,11 @@ impl Api {
             R::ListNotes { book_id, limit } => {
                 Response::Notes(self.list_notes(book_id, limit).await?)
             }
-            R::SearchNotes { query, limit } => {
-                Response::NoteHits(self.search_notes(&query, limit).await?)
-            }
+            R::SearchMarks {
+                query,
+                source,
+                limit,
+            } => Response::SearchHits(self.search_marks(&query, source, limit).await?),
             R::GetNote { id } => Response::Note(self.get_note(id).await?),
             R::NoteForReading { reading_id, kind } => {
                 Response::Note(self.note_for_reading(reading_id, kind).await?)

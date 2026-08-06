@@ -143,6 +143,21 @@ enum Cmd {
         #[arg(long)]
         highlight: Option<i64>,
     },
+    /// Search everything you have written and kept — notes and highlights, one list
+    Find {
+        /// What to look for. Punctuation is searched for, not parsed; a
+        /// trailing `*` is a prefix search.
+        query: String,
+        /// Only notes
+        #[arg(long)]
+        notes: bool,
+        /// Only highlights
+        #[arg(long, conflicts_with = "notes")]
+        highlights: bool,
+        /// How many hits
+        #[arg(long, default_value_t = commands::find::DEFAULT_LIMIT)]
+        limit: i64,
+    },
     /// List notes, or full-text search them
     Notes {
         /// Restrict to a book (id, ISBN, or title fragment)
@@ -482,6 +497,21 @@ async fn main() -> Result<()> {
                 },
             )
             .await?
+        }
+        Cmd::Find {
+            query,
+            notes,
+            highlights,
+            limit,
+        } => {
+            // Neither flag is **both**, the way `BookFilter`'s `None` is not
+            // asking rather than asking for nothing.
+            let source = match (notes, highlights) {
+                (true, _) => Some(readingbuddy::SearchSource::Note),
+                (_, true) => Some(readingbuddy::SearchSource::Highlight),
+                _ => None,
+            };
+            commands::find::find(&engine, &query, source, limit).await?
         }
         Cmd::Notes { book, search } => {
             commands::note::list_or_search(&engine, book.as_deref(), search.as_deref()).await?

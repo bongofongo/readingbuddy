@@ -328,9 +328,12 @@ async fn a_reflection_is_searchable() {
         .await
         .unwrap();
 
-    let hits = engine.search_notes("boarding", 10).await.unwrap();
+    let hits = engine
+        .search_marks("boarding", Some(readingbuddy::SearchSource::Note), 10)
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].note.id, note.id);
+    assert_eq!(hits[0].as_note().unwrap().id, note.id);
 }
 
 // ---- citations ------------------------------------------------------------

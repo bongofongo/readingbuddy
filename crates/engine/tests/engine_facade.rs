@@ -285,7 +285,7 @@ async fn a_note_survives_a_full_create_edit_reread_delete_cycle() {
     // FTS picked up the new body, not the old one.
     assert!(
         !engine
-            .search_notes("Rewritten", 10)
+            .search_marks("Rewritten", Some(readingbuddy::SearchSource::Note), 10)
             .await
             .unwrap()
             .is_empty()
@@ -345,7 +345,7 @@ async fn refresh_note_from_disk_reindexes_an_external_edit() {
     engine.refresh_note_from_disk(&note).await.unwrap();
     assert!(
         !engine
-            .search_notes("externally", 10)
+            .search_marks("externally", Some(readingbuddy::SearchSource::Note), 10)
             .await
             .unwrap()
             .is_empty(),
@@ -376,7 +376,14 @@ async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
         })
         .await
         .unwrap();
-    assert_eq!(engine.search_notes("dignity", 10).await.unwrap().len(), 1);
+    assert_eq!(
+        engine
+            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     let raw = std::fs::read_to_string(&created.file).unwrap();
     std::fs::write(
@@ -392,11 +399,21 @@ async fn a_cold_edit_is_found_by_the_sweep_and_becomes_searchable() {
     assert_eq!(report.absent, 0);
 
     assert_eq!(
-        engine.search_notes("calculation", 10).await.unwrap().len(),
+        engine
+            .search_marks("calculation", Some(readingbuddy::SearchSource::Note), 10)
+            .await
+            .unwrap()
+            .len(),
         1,
         "the sweep never reached the index"
     );
-    assert!(engine.search_notes("dignity", 10).await.unwrap().is_empty());
+    assert!(
+        engine
+            .search_marks("dignity", Some(readingbuddy::SearchSource::Note), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The sweep is idempotent, and **observably** so.
@@ -456,7 +473,11 @@ async fn the_sweep_never_deletes_a_note_whose_file_is_missing() {
     assert_eq!(report.reindexed, 0);
 
     assert_eq!(
-        engine.search_notes("keeping", 10).await.unwrap().len(),
+        engine
+            .search_marks("keeping", Some(readingbuddy::SearchSource::Note), 10)
+            .await
+            .unwrap()
+            .len(),
         1,
         "an absent file destroyed a note"
     );

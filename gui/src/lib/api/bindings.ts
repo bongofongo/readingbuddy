@@ -195,6 +195,18 @@ export type BookFileDto = { sha256: string, book_id: number, format: string, ori
  */
 export type BookFilterDto = { status: StatusFilterDto | null, 
 /**
+ * A substring of the title, case-insensitive — the same rule `author`
+ * states below it, and **not** the full-text index `SearchMarks` uses.
+ *
+ * A title search is a predicate here rather than a seventh endpoint
+ * because item 18 already made every list a filter + sort + page over one
+ * shared `WHERE`, and this joins the five that were already there: it
+ * composes with `CountBooks`, with the offset paging and with every sort,
+ * none of which a separate method would get. The engine's `BookFilter`
+ * carries the argument for `LIKE` over fts5 in full.
+ */
+title: string | null, 
+/**
  * A substring of the stored author list, case-insensitive.
  */
 author: string | null, year: number | null, language: string | null, 
@@ -555,8 +567,6 @@ kind: string, created_at: number | null, };
 
 export type NoteKindDto = "note" | "session" | "reflection" | "review";
 
-export type NoteSearchHitDto = { note: NoteDto, snippet: string, };
-
 /**
  * One row of the currently-reading shelf.
  *
@@ -766,7 +776,7 @@ filter: BookFilterDto | null, } } | { "method": "count_books", "params": { filte
  * Create a book even over a near-miss candidate. Without it an
  * ambiguous file comes back as `Unmatched` with **nothing written**.
  */
-new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, limit: number | null, } } | { "method": "search_notes", "params": { query: string, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
+new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, limit: number | null, } } | { "method": "search_marks", "params": { query: string, source: SearchSourceDto | null, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
 /**
  * Import only these calibre rows. Empty — and so an absent field — is
  * the whole library, which is what keeps an older client's request
@@ -777,7 +787,25 @@ only: Array<number>, } } | { "method": "link_calibre_book", "params": { uuid: st
 /**
  * What came back, by shape. See [`Request`] on the size of these variants.
  */
-export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "note_hits", "value": Array<NoteSearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
+export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "search_hits", "value": Array<SearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
+
+/**
+ * One hit in the one ranked list, carrying whichever row matched.
+ *
+ * Internally tagged on `kind`, the shape [`StatusFilterDto`] already uses, so
+ * a client switches on one string rather than probing for which field is
+ * present. **Not two nullable fields**: exactly one of the two rows exists,
+ * and a shape that can represent neither or both is a shape somebody
+ * eventually reads wrong.
+ *
+ * The order these arrive in is the engine's and is the whole point of the
+ * method — see [`Request::SearchMarks`]. Nothing above this layer re-sorts it.
+ */
+export type SearchHitDto = { "kind": "note", note: NoteDto, 
+/**
+ * The matching text with `>>` and `<<` around the terms.
+ */
+snippet: string, } | { "kind": "highlight", highlight: HighlightDto, snippet: string, };
 
 export type SearchOutcomeDto = { results: Array<RankedResultDto>, 
 /**
@@ -787,6 +815,22 @@ export type SearchOutcomeDto = { results: Array<RankedResultDto>,
 warnings: Array<DiagnosticDto>, };
 
 export type SearchRequestDto = { query: string | null, title: string | null, author: string | null, publisher: string | null, translator: string | null, language: string | null, year: number | null, isbn: string | null, limit: number, };
+
+/**
+ * Which index a search is about, or `null` for both.
+ *
+ * A **filter**, in `BookFilterDto`'s idiom rather than a second method:
+ * `null` is not asking, and naming one narrows what is in the list without
+ * touching how the list is ordered. It exists because "search my notes" is a
+ * real question — `rb notes --search` has asked it since item 7 — while the
+ * ordering never belongs to the caller.
+ *
+ * It is emphatically **not** a way to fetch the two halves separately and
+ * interleave them above the seam. Two calls give a client two rankings and no
+ * rule for merging them, which is the thing [`Request::SearchMarks`] exists to
+ * make unnecessary.
+ */
+export type SearchSourceDto = "note" | "highlight";
 
 export type SeverityDto = "warning" | "error";
 

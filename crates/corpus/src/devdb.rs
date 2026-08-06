@@ -400,6 +400,14 @@ impl Book {
                 );
                 let mut hasher = Sha256::new();
                 hasher.update(format!("{}|{datetime}||{text}", self.id));
+                // No `highlights_fts` row here, and that is the opposite of the
+                // note above about `notes_fts` rather than an oversight.
+                // Migration `0015` indexes highlights with triggers over an
+                // external-content table, so this INSERT fills the index on its
+                // way past — the seed is applied to an already-migrated
+                // database. It is also the reason triggers were chosen: this
+                // generator does not link the engine, so a hand-written Rust
+                // writer would have had to be re-implemented right here.
                 format!(
                     "INSERT INTO highlights (id, book_id, text, chapter, page, ko_datetime, color, \
                      ko_note, annotation, source, identity_hash, created_at) VALUES \

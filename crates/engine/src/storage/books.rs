@@ -2901,6 +2901,14 @@ mod tests {
                 ..Default::default()
             },
             BookFilter {
+                title: Some("dun".into()),
+                ..Default::default()
+            },
+            BookFilter {
+                title: Some("nothing here".into()),
+                ..Default::default()
+            },
+            BookFilter {
                 author: Some("herbert".into()),
                 ..Default::default()
             },
@@ -2926,6 +2934,14 @@ mod tests {
                 language: Some("en".into()),
                 ..Default::default()
             },
+            // `title` joining the others rather than replacing them is the
+            // whole reason it is a predicate here and not a seventh endpoint.
+            BookFilter {
+                title: Some("dun".into()),
+                author: Some("herbert".into()),
+                year: Some(1965),
+                ..Default::default()
+            },
         ] {
             let count = s.count_books(&filter).await.unwrap();
             for sort in EVERY_SORT {
@@ -2941,6 +2957,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `title` is a predicate and not a seventh endpoint, which means it has to
+    /// survive the three things an endpoint would have had to reimplement: the
+    /// shared count, the offset paging, and case.
+    #[tokio::test]
+    async fn a_title_filter_pages_and_counts_like_every_other_predicate() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        shelf(&s).await;
+
+        let dunes = BookFilter {
+            // `Dune` and `dune` are both on the shelf: LIKE is
+            // case-insensitive for ASCII, exactly as `author` relies on.
+            title: Some("DUNE".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.count_books(&dunes).await.unwrap(), 2);
+
+        let query = BookQuery::new(1, BookSort::Title).with_filter(dunes.clone());
+        let first = s.list_books(&query).await.unwrap();
+        let second = s.list_books(&query.clone().at_offset(1)).await.unwrap();
+        let third = s.list_books(&query.at_offset(2)).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert!(third.is_empty(), "there is no third page of two books");
+        assert_ne!(first[0].id, second[0].id, "the pages partition the answer");
+
+        // A search with no hits is an answer, not an error and not a badge.
+        let none = BookFilter {
+            title: Some("thermodynamics".into()),
+            ..Default::default()
+        };
+        assert_eq!(s.count_books(&none).await.unwrap(), 0);
+        assert!(
+            s.list_books(&BookQuery::default().with_filter(none))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // LIKE's own wildcards are literals — a filter for `%` is not a filter
+        // for everything.
+        assert_eq!(
+            s.count_books(&BookFilter {
+                title: Some("%".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap(),
+            0
+        );
     }
 
     /// The four status cases, and the one that is absence.

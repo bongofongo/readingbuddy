@@ -1168,11 +1168,12 @@ mod vault_tests {
 
         async fn finds(&self, query: &str) -> Vec<i64> {
             self.storage
-                .search_notes(query, 10)
+                .search_marks(query, Some(crate::SearchSource::Note), 10)
                 .await
                 .unwrap()
-                .into_iter()
-                .map(|h| h.note.id)
+                .iter()
+                .filter_map(|h| h.as_note())
+                .map(|n| n.id)
                 .collect()
         }
     }
