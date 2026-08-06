@@ -110,21 +110,70 @@ label on a document. `new-wave-item`'s step 2a now says so.
 
 ## What is next
 
-Numbered from **39**. Nothing here is started.
+**Next free number is 47.** The register is
+`grep '^[0-9]\+\. \*\*' docs/decisions.md`, and it is the register because
+`docs/prompts/` under-reports permanently — an item minted mid-session gets a
+`decisions.md` entry and no prompt file. Items **40–46** below are *allocated
+from an audit but mostly unbuilt*, which is a state this file has not had
+before: check `decisions.md` for an entry before assuming one is open.
 
-1. **The GUI half — items 26, 27, 28, then 23, in sequence.** This is the work.
-   `docs/gui/spec-gui-17-28.md` has the items and
-   [`gui/gui-vision.md`](gui/gui-vision.md) has the argument. **They must not run
-   in parallel**: three agents on 26/27/28 produce three dialects of one app, and
-   whether a shelf reads as *a place* is the user's call rather than an agent's.
-   Item 23 (moments) owns migration **`0017`**.
+### Landed this session
 
-   The API is ready for them. Item 34 gave 27 its search, item 36 gave every
-   chooser its author, and item 38 gave 26 a fixture that finally exercises the
-   cover-bearing branch — `cover_shelf_path`, `cover_aspect` and `cover_accent`
-   now cross into layers 1 and 2 and are asserted there. Run the
-   **`api-surface-auditor`** agent before building any of them anyway: a missing
-   request is an engine item, never a frontend workaround.
+Items **26** (the shelf), **39** (the accent) and **23** (moments, migration
+`0017`) are merged, and `make ci` is exit 0 on `main`. Items **40** (scoped
+search) and **27** (the book and the notes) are **in flight** in worktrees as
+this is written — check `git branch` before starting either.
+
+The WebGL spine shelf was **deferred as cosmetic** by the user and item 26 was
+rebuilt around that: the shelf's arrangement is now a seam
+(`gui/src/lib/shelf/layouts.ts`) with two implementations, and the spine shelf is
+a third entry in it. `docs/decisions.md` entry 26 has the argument.
+
+### The remaining GUI work
+
+1. **Item 28 — the chain, and the reading-life page.** The last GUI item.
+   Item 23 gave it `PendingMoments`/`AcknowledgeMoment` with `reading_id` on the
+   moment, so the first link of the chain exists.
+
+   **The card is per-book, reached by selecting a book** — decided by the user
+   this session. `ListReadings { book_id }` already serves that. **The wall of
+   cards across the whole library, with a year filter** (`gui-vision.md:151`) is
+   deliberately *later*, and it needs item 43 first: nothing in the engine can
+   list finished readings across books at any layer, and `BookFilterDto.year` is
+   the *publish* year, not the year finished.
+
+   Two traps an audit named in advance. `ActivitySummaryDto.activity_days` **must
+   not become a streak** — it is a count of days in a range you asked for, past
+   tense, and a "current streak" rendered from it is a threshold in a costume.
+   And bucketing `ActivityByDay` to months in TypeScript **collapses `null` to
+   `0`** on the first `reduce`, which is exactly the lie the page exists to
+   avoid; that is what item 42 is for.
+
+### Items minted by the audit, and not yet built
+
+Numbers are allocated. None has a prompt file; all are additive with
+`#[serde(default)]`, so **`API_VERSION` stays at 2** and none needs a migration.
+
+- **40 — a search that can be scoped.** *In flight.* `book_id` on `SearchMarks`,
+  `reading_id` on `ListNotes`. Blocks item 27's search box.
+- **41 — the read number crosses.** `ReadNumbering` is the engine's (item 17c)
+  and crosses no DTO, so a frontend showing which read a passage came from would
+  compute `readings.indexOf(id) + 1` and silently depend on list ordering.
+  Prefer `ReadingDto.ordinal` over a field on every highlight.
+- **42 — the month is a period too.** `activity_by_month`, `GROUP BY
+  substr(day,1,7)`, only months carrying an event. See the trap above.
+- **43 — readings across the library.** The rows behind
+  `ActivitySummary::books_finished`. **This is the wall's blocker.**
+- **44 — the card's passage, chosen once.** "One passage pulled from the
+  highlights" is a selection predicate and those are the engine's; `highlights[0]`
+  in TypeScript is a frontend inventing one, and the TUI would then disagree.
+  Which rule — longest, first, most-annotated, cited — is a product decision.
+- **45 — a flashcard can be made.** `Storage::insert_flashcard` has had no
+  `Engine` wrapper and no request since it was written. `FlashcardDto` also
+  carries no `book_id`/`highlight_id`, so a card cannot be shown beside its
+  passage.
+- **46 — which passages are already cited.** Today that is one `CitationsFor`
+  per note — an N+1 on a list, which is the pathology item 18 exists to remove.
 
 2. ~~**The duplicated border-median accent arithmetic**~~ — **settled by item
    39.** The renderer reads `books.cover_accent` and its own loop is gone.
