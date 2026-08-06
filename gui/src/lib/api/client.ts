@@ -175,8 +175,23 @@ export class TauriClient implements LibraryClient {
    * the scheme differs by platform (`http://asset.localhost` on Windows) and a
    * literal here would be a second copy of Tauri's own rule.
    */
+  /**
+   * **`cover_shelf_path`, not `cover_path`** (item 20c, corrected in item 38).
+   *
+   * Providers are now asked for the largest jacket they publish, so `cover_path`
+   * is a hero shot and a shelf of sixty tiles would load sixty of them. The
+   * shelf tier is the downscaled sibling where one exists and the original where
+   * it does not, and **the engine decides which** — a frontend that picked would
+   * have to know `THUMB_MAX`, and one reading `cover_thumb_path` itself shows
+   * nothing for every cover small enough to have no tier. `make dev-db`'s covers
+   * are 240×360, i.e. exactly that case, so this is the ordinary path and not
+   * the exotic one.
+   *
+   * This read `cover_path` from the scaffold until item 38, which is a bug no
+   * screenshot could show: with a dev library it renders the identical file.
+   */
   coverSrc(book: BookDto): string | null {
-    return book.cover_path ? convertFileSrc(book.cover_path) : null;
+    return book.cover_shelf_path ? convertFileSrc(book.cover_shelf_path) : null;
   }
 }
 

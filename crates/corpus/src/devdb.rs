@@ -93,6 +93,17 @@ pub fn default_data_dir() -> PathBuf {
         .join("dev-data")
 }
 
+/// How many of the generated books are deliberate hostilities.
+///
+/// Exposed so the one line that reports it reads the number rather than
+/// restating it. `make dev-db` printed a hand-written "220 books, 20 of them"
+/// until item 38, which went stale the moment a case was added — a fixture
+/// disagreeing with a claim about it, which is the whole subject of that item
+/// arriving one line away from itself.
+pub fn edge_case_count() -> usize {
+    edge_cases().len()
+}
+
 pub fn generate(
     root: &Path,
     data_dir: &Path,
@@ -279,6 +290,18 @@ enum State {
     /// Two readings: one finished, one open. A reread mints a second card
     /// beside the first (item 28), so it must be possible to have two.
     Reread,
+    /// A status word this build does not know, written straight into
+    /// `readings.status`.
+    ///
+    /// `readings.status` has **no `CHECK` constraint** — the column comment in
+    /// `0005_readings.sql` names three words and the schema permits any — so
+    /// this is a state a real database can hold, not one invented for a
+    /// fixture. It is how a newer importer's vocabulary arrives, and the engine
+    /// answers it with `ReadingState::Other { raw }` rather than failing to
+    /// parse. `fake.ts` has had this case since the scaffold and the real
+    /// library had no counterpart, which is exactly the drift item 38 exists to
+    /// make loud.
+    Unknown,
 }
 
 impl Book {
@@ -378,6 +401,15 @@ impl Book {
                     Some(self.page_count.unwrap_or(0) / 2),
                 );
             }
+            // Open-shaped — no `finished_at` — because that is what makes it
+            // reach `ReadingState::Other` rather than being read as a closed
+            // reading with an odd label.
+            State::Unknown => push(
+                "paused",
+                start,
+                None,
+                Some(self.page_count.unwrap_or(0) / 4),
+            ),
         }
         out
     }
@@ -631,6 +663,15 @@ fn edge_cases() -> Vec<Book> {
                 "Provider subjects beside minted shelves — two different things that look alike.",
             )
         },
+        Book {
+            state: State::Unknown,
+            ..base(
+                "A Book Some Other App Touched",
+                "A reading whose status is a word this build does not know. `readings.status` has \
+                 no CHECK constraint, so this is reachable; the engine answers it with \
+                 `ReadingState::Other` rather than failing to parse.",
+            )
+        },
     ]
 }
 
@@ -846,3 +887,134 @@ const PHRASES: &[&str] = &[
     "She counted the bells and then stopped counting",
     "What survives is not what was meant to",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The declaration both fixtures answer to.
+    ///
+    /// Read as text and parsed, rather than `include!`d as Rust, because the
+    /// other consumer is TypeScript: a shared declaration only shares anything
+    /// if neither side owns its syntax.
+    const DECLARED: &str = include_str!("../edge-cases.json");
+
+    fn declared() -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(DECLARED).expect("edge-cases.json parses");
+        v["cases"].as_array().expect("a `cases` array").clone()
+    }
+
+    fn series_kind(b: &Book) -> &'static str {
+        match &b.series {
+            None => "none",
+            Some((_, Some(_))) => "indexed",
+            Some((_, None)) => "unnumbered",
+        }
+    }
+
+    fn state_name(s: State) -> &'static str {
+        match s {
+            State::Unread => "unread",
+            State::Reading => "reading",
+            State::Finished => "finished",
+            State::Abandoned => "abandoned",
+            State::Reread => "reread",
+            State::Unknown => "other",
+        }
+    }
+
+    /// Half of item 38. The other half is `gui/src/lib/api/fake.test.ts`,
+    /// asserting the **same file** against the frontend's fixture.
+    ///
+    /// This is what makes adding a hostile case to one fixture and not the
+    /// other a failure rather than a silence. It compares length first, so a
+    /// case *removed* fails as loudly as one added — the direction a per-case
+    /// loop misses.
+    #[test]
+    fn the_edge_cases_are_the_declared_ones() {
+        let cases = declared();
+        let ours = edge_cases();
+        assert_eq!(
+            ours.len(),
+            cases.len(),
+            "edge-cases.json declares {} cases and gen-devdb builds {}",
+            cases.len(),
+            ours.len()
+        );
+
+        for (i, (book, want)) in ours.iter().zip(cases.iter()).enumerate() {
+            // `id` is positional: `generate` numbers the hostile set 1..=n ahead
+            // of the ordinary books, so the declaration's id *is* the index, and
+            // asserting it keeps the two orders locked together.
+            let id = i as i64 + 1;
+            assert_eq!(want["id"].as_i64(), Some(id), "case {i} is out of order");
+            let at = format!("case {id} ({})", want["title"].as_str().unwrap_or(""));
+
+            assert_eq!(
+                Some(book.title.as_str()),
+                want["title"].as_str(),
+                "{at}: title"
+            );
+            let authors: Vec<&str> = want["authors"]
+                .as_array()
+                .expect("authors is an array")
+                .iter()
+                .map(|a| a.as_str().expect("an author is a string"))
+                .collect();
+            assert_eq!(book.authors, authors, "{at}: authors");
+            assert_eq!(
+                book.page_count,
+                want["page_count"].as_i64(),
+                "{at}: page_count"
+            );
+            assert_eq!(Some(book.cover), want["cover"].as_bool(), "{at}: cover");
+            assert_eq!(
+                Some(state_name(book.state)),
+                want["state"].as_str(),
+                "{at}: state"
+            );
+            assert_eq!(
+                Some(series_kind(book)),
+                want["series"].as_str(),
+                "{at}: series"
+            );
+            assert_eq!(
+                Some(book.subjects.len() as u64),
+                want["subjects"].as_u64(),
+                "{at}: subjects"
+            );
+        }
+    }
+
+    /// Exactly one declared case has no cover, and it is the one named for it.
+    ///
+    /// Asserted as a **partition** rather than by looking the title up, because
+    /// the value of the no-cover case is that it is alone: every cover-bearing
+    /// rule on the frontend's side is only assertable while exactly one row is
+    /// missing a jacket.
+    #[test]
+    fn exactly_one_declared_case_has_no_cover() {
+        let cases = declared();
+        let without: Vec<&str> = cases
+            .iter()
+            .filter(|c| c["cover"].as_bool() == Some(false))
+            .map(|c| c["title"].as_str().expect("a title"))
+            .collect();
+        assert_eq!(without, ["A Book With No Cover At All"]);
+    }
+
+    /// A stored title is never NULL, so the untitled case is the empty *string*.
+    ///
+    /// `books.title` is `TEXT NOT NULL DEFAULT ''` (`0001_init.sql`), which makes
+    /// `Some("")` the reachable absence and `None` unreachable for anything that
+    /// came out of the database. `fake.ts` modelled `null` here until item 38 —
+    /// a state no library can produce.
+    #[test]
+    fn the_untitled_case_is_an_empty_string_and_not_an_absence() {
+        let untitled = declared()
+            .into_iter()
+            .filter(|c| c["title"].as_str() == Some(""))
+            .count();
+        assert_eq!(untitled, 1, "one untitled case, and its title is a string");
+    }
+}

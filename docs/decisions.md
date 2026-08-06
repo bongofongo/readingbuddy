@@ -1606,3 +1606,83 @@ because item 31 needed somewhere to put reading time.
       only a title, because a title is all it had. The N+1 was what the *next*
       screen would have had to pay, and the two items that reported it are the
       two that went looking.
+
+38. **One fixture, two consumers.** No migration; one declaration file, two tests
+    that read it, and the four cover fields the frontend's fixture had never
+    carried. Its subject is the one class of defect this repo keeps finding the
+    expensive way: **a fixture can disagree with the engine about a column and
+    nothing notices**, because a fixture is what the tests are written against.
+    - **The declaration is neither fixture.** `crates/corpus/edge-cases.json`
+      states the hostile set once — id, title, authors, page count, cover, state,
+      series, subject count — and `gen-devdb` and `gui/src/lib/api/fake.ts` are
+      both asserted against it, from Rust and from vitest. **Nothing generates
+      it**, deliberately: a declaration generated from one of the two things it
+      governs would agree with that one however wrong it was, which is
+      `crates/corpus`' own rule about oracles restated one level up. Hand-edited
+      is the point, not a shortcut.
+    - **It was mutation-tested rather than assumed.** The bar the item set was "a
+      test fails when an edge case exists in one fixture and not the other", and
+      a suite that merely enumerates both passes that bar while asserting
+      nothing. So the guard was run against a case added to the declaration and
+      absent from the generator (`declares 22 cases and gen-devdb builds 21`) and
+      against a shape disagreement on a case both have
+      (`case 3 (The Doorstop): page_count`) before being believed. Both halves
+      compare **lengths first**, so a case *removed* fails as loudly as one added
+      — the direction a per-case loop misses, and the direction two fixtures
+      actually drift apart in.
+    - **It found four real disagreements on the first run**, which is the
+      argument for the item. `fake.ts` gave every book `subjects: []` where the
+      seed gives each edge case one; `The Claw Of The Conciliator` was *unread*
+      in one and *reading* in the other, so the case where a shelf shows a series
+      label and progress together had never been rendered anywhere; the
+      twenty-first case (`reading_state: other`) existed only in the frontend's
+      fixture; and the untitled case was modelled as `null`.
+    - **`books.title` is `TEXT NOT NULL DEFAULT ''`, so a stored title is never
+      NULL.** The fixture had been modelling a state no library can produce. Both
+      now use the empty string — and the engine's own `Book::display_title` is
+      `self.title.as_deref().unwrap_or("(untitled)")`, which catches the
+      unreachable absence and lets the reachable one through as a **blank**. That
+      is a real defect with 76 call sites and three sibling copies for foreign
+      records (`goodreads.rs`, `calibre.rs`, `ko_statistics.rs`) where `None` is
+      genuinely reachable, so it is **recorded here rather than patched inside a
+      fixture item**. `titleLabel` in the GUI already handles both.
+    - **The cast was the mechanism.** `fake.ts`'s header claims a drifted or
+      renamed DTO field is a `tsc` error there, and `book()` ended in
+      `as StoredBook`, which makes that true for renamed fields and false for
+      **added** ones. Three fields had been missing since item 20 landed —
+      `cover_shelf_path`, `cover_aspect`, `cover_accent` — so every tile in
+      layers 1 and 2 exercised the no-cover branch and the cover-bearing branch,
+      the one item 26 is about to build on, was exercised nowhere. Removing the
+      cast also surfaced a live hazard it had been hiding: `BookDto.id` is
+      `number | null` while `StoredBook.id` is `number`, so an `over` naming an
+      id could put a null in the field every route keys on. `id` is now applied
+      **after** the spread and tsc proves the invariant a cast had been
+      asserting.
+    - **The shape crosses; only the bytes are withheld.** `FakeClient::coverSrc`
+      still returns `null` — layer 2 has no asset protocol and a URL would render
+      as a broken image, which was always the right call. What was wrong was
+      inferring from it that the *fields* should be absent too. A component
+      asking "what box does this tile reserve" now gets a real answer in a bare
+      browser.
+    - **The shelf-path fallback is asserted as a rule, never as a fixture.**
+      `make dev-db` writes 240×360 covers, both dimensions under
+      `images::THUMB_MAX` (400), so no tier is written and
+      `Book::shelf_cover_path` yields the original — which means
+      `cover_shelf_path == cover_path` for all 203 of them. A test asserting a
+      thumb *exists* would be asserting the fixture and would go red the day the
+      seed's covers changed size for an unrelated reason. `width_source` is tied
+      to `cover_aspect` in the same spirit: `EditionShape` reads
+      `Some(aspect) => Recorded`, `None => (PAPERBACK_ASPECT, Assumed)`, so the
+      pair cannot disagree in the engine and is asserted not to here.
+    - **`TauriClient::coverSrc` was reading `cover_path`**, though `gui/CLAUDE.md`
+      has said since item 20c that a grid loads `cover_shelf_path`. It now does.
+      No screenshot could have caught this: against a dev library the two paths
+      name the identical file, and they diverge only for a cover large enough to
+      have a tier — i.e. on a real library, on the shelf, at sixty hero shots a
+      screen.
+    - **A number in a Makefile echo is a claim nothing checks.** `make dev-db`
+      printed a hand-written "220 books, 20 of them deliberate edge cases", which
+      went stale the moment this item added a case. The generator is the only
+      thing that knows, so it prints both counts and the Makefile states none —
+      rather than adding `python3` or `jq` to a build that has neither, to parse
+      a manifest for a line of prose.

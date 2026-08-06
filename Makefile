@@ -170,7 +170,10 @@ dev-db: ## Build a seeded library at $(DEV_DB_DIR) — ~200 books, covers, a vau
 	@# asserting item 21's arithmetic instead of exercising it.
 	cargo run -q -p readingbuddy-cli -- --data-dir "$(DEV_DB_DIR)" activity --refill
 	@echo ""
-	@echo "dev library at $(DEV_DB_DIR) — 220 books, 20 of them deliberate edge cases."
+	@# No counts here on purpose: `gen-devdb` prints them above and is the only
+	@# thing that knows them. The hand-written "220 books, 20 of them" this
+	@# replaced was stale the moment item 38 added a case, and nothing said so.
+	@echo "dev library at $(DEV_DB_DIR) — counts above, from the generator."
 	@echo "What each edge case is for: $(DEV_DB_SRC)/manifest.json"
 
 ts: ## Regenerate gui/src/lib/api/bindings.ts from the API crate's own types

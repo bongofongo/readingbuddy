@@ -41,9 +41,24 @@ import type { LibraryClient, StoredBook } from './client';
  * agreed with itself no matter how wrong it was. Spelling them out is the point:
  * each one below states what the engine *should* say about that row.
  */
+/**
+ * An invented jacket colour, and deliberately **not** a measurement.
+ *
+ * The engine's `cover_accent` is the median of a 2px border around a real PNG.
+ * There is no PNG here, so this is fixture *data* rather than a re-derivation of
+ * an engine rule — the thing this file must never do is recompute `progress` or
+ * `series_label`, not invent a colour for a file that does not exist.
+ *
+ * It varies per id for `gen-devdb`'s reason: two hundred identical accents make
+ * "every tile drew the same placeholder" and "the tiles are off by one"
+ * invisible, which is exactly the class of bug a placeholder colour is for.
+ */
+function accent(id: number): { r: number; g: number; b: number } {
+  return { r: (id * 37) % 256, g: (id * 89) % 256, b: (id * 151) % 256 };
+}
+
 function book(id: number, over: Partial<BookDto>): StoredBook {
   return {
-    id,
     title: `Book ${id}`,
     sort_title: null,
     authors: ['Ada Ordinary'],
@@ -56,11 +71,29 @@ function book(id: number, over: Partial<BookDto>): StoredBook {
     openlibrary_key: null,
     googlebooks_id: null,
     cover_url: null,
-    cover_path: null,
+    // Cover-bearing by default, because twenty of the twenty-one declared cases
+    // are — `A Book With No Cover At All` is the one that overrides these four
+    // to null, and its value is that it is *alone*.
+    //
+    // `cover_shelf_path` equals `cover_path` here, and that is the **rule** and
+    // not a coincidence: `make dev-db` writes 240×360 covers, both dimensions
+    // under `images::THUMB_MAX` (400), so no shelf tier is written and
+    // `Book::shelf_cover_path` falls back to the original. A fixture asserting a
+    // thumb *exists* would be asserting itself rather than the rule.
+    cover_path: `/fake/database/images/dev-${String(id).padStart(4, '0')}.png`,
+    cover_shelf_path: `/fake/database/images/dev-${String(id).padStart(4, '0')}.png`,
+    // 240/360 as an f32 widened to f64 — the same bytes `PAPERBACK_ASPECT`
+    // carries, which is why `width_over_height` below does not move when this
+    // goes from absent to present. Only `width_source` does.
+    cover_aspect: 0.6666666865348816,
+    cover_accent: accent(id),
     page_count: 300,
     description: null,
     first_sentence: null,
-    subjects: [],
+    // One provider subject, which is what `gen-devdb`'s own `base()` gives every
+    // edge case. It was `[]` here until item 38 — the two fixtures disagreeing
+    // about a column with nothing to say so.
+    subjects: ['Fiction'],
     series: null,
     series_index: null,
     current_page: null,
@@ -71,20 +104,34 @@ function book(id: number, over: Partial<BookDto>): StoredBook {
     progress: { progress: 'untouched' },
     series_label: null,
     authors_display: ['Ada Ordinary'],
-    // Item 19's arithmetic over the fields above: 300 recorded pages, no
+    // Item 19's arithmetic over the fields above: 300 recorded pages and a
     // measured cover. Stated rather than computed, for this file's own reason —
     // a fixture that ran the rule would agree with the engine no matter how
     // wrong either of them was.
+    //
+    // `width_source` is `recorded` because `cover_aspect` is present, and those
+    // two move together by `EditionShape`'s own definition: it reads
+    // `Some(aspect) => Recorded`, `None => (PAPERBACK_ASPECT, Assumed)`. The
+    // book that overrides `cover_aspect` to null owes an `assumed` here, and
+    // `fake.test.ts` asserts the pair rather than trusting it.
     shape: {
       width_over_height: 0.6666666865348816,
-      width_source: 'assumed',
+      width_source: 'recorded',
       thickness_over_height: 0.10444444417953491,
       thickness_source: 'recorded',
     },
     created_at: 1735689600,
     last_modified: 1735689600 + id,
     ...over,
-  } as StoredBook;
+    // **After** the spread, and that is the point rather than a style choice.
+    // `BookDto.id` is `number | null` while `StoredBook`'s is `number` — the
+    // whole reason `StoredBook` exists — so an `over` naming an id could put a
+    // null in the one field every route uses as a key. `as StoredBook` hid
+    // exactly this until item 38 removed it; now the id this function was
+    // *called* with always wins, and tsc proves the invariant instead of a cast
+    // asserting it.
+    id,
+  };
 }
 
 /**
@@ -131,7 +178,25 @@ const BOOKS: StoredBook[] = [
   // And the thin end, where a spine has no room for a title.
   book(4, { title: 'A Pamphlet', page_count: 48 }),
   // No cover. Not a broken image and not an apology.
-  book(5, { title: 'A Book With No Cover At All', cover_path: null }),
+  //
+  // All four cover fields go, not just the path: `cover_shelf_path` is derived
+  // from a cover that is not there, `cover_aspect` is a measurement of it, and
+  // `cover_accent` is its border. And `width_source` drops back to `assumed`,
+  // which is the pair `EditionShape` defines — a null aspect with a `recorded`
+  // width would be the fixture claiming a measurement of nothing.
+  book(5, {
+    title: 'A Book With No Cover At All',
+    cover_path: null,
+    cover_shelf_path: null,
+    cover_aspect: null,
+    cover_accent: null,
+    shape: {
+      width_over_height: 0.6666666865348816,
+      width_source: 'assumed',
+      thickness_over_height: 0.10444444417953491,
+      thickness_source: 'recorded',
+    },
+  }),
   // 220 characters. Clipping, wrapping, and the whole title on the detail page.
   book(6, {
     title:
@@ -192,7 +257,15 @@ const BOOKS: StoredBook[] = [
   book(16, { title: "Ærøskøbing: Ångström's Œuvre — a Naïve Façade" }),
   // An empty title — the schema's own default, reachable from a sidecar with no
   // doc_props. `titleLabel` is what stops this rendering as a blank line.
-  book(17, { title: null }),
+  //
+  // The empty **string**, not null, and item 38 changed it: `books.title` is
+  // `TEXT NOT NULL DEFAULT ''`, so no stored book's title is ever null however
+  // `Option`-shaped the DTO is, and this fixture had been modelling a state the
+  // database cannot produce. `titleLabel` handles both — but the engine's own
+  // `Book::display_title` is `unwrap_or("(untitled)")`, which catches the
+  // unreachable one and lets the reachable one through as a blank. That is an
+  // engine item, recorded in `docs/decisions.md` rather than patched here.
+  book(17, { title: '' }),
   // `series_index` is a REAL and must print as `#2`, never `#2.0`. The label is
   // the engine's since item 17; the frontend no longer builds it.
   book(18, {
@@ -200,6 +273,21 @@ const BOOKS: StoredBook[] = [
     series: 'The Book Of The New Sun',
     series_index: 2,
     series_label: 'The Book Of The New Sun #2',
+    // Open, as it is in `gen-devdb` — a series book is the case where a shelf
+    // shows a label *and* progress together, and this fixture had it unread
+    // until item 38, so that pairing was never rendered anywhere.
+    reading_state: { state: 'reading' },
+    current_page: 100,
+    // `percent` is integer division (100 * 100 / 300 = 33), not
+    // `Math.floor(fraction * 100)` — see `ProgressDto`.
+    progress: {
+      progress: 'started',
+      page: 100,
+      of: 300,
+      fraction: 100 / 300,
+      percent: 33,
+      source: 'pages',
+    },
   }),
   // A series naming no index. The pair moves together or not at all, and nothing
   // is invented to fill the gap.
@@ -350,11 +438,21 @@ export class FakeClient implements LibraryClient {
   }
 
   /**
-   * No cover in the fake, ever, and that is the honest answer rather than a gap:
-   * layer 2 runs in a bare browser with no asset protocol, so any URL here would
-   * render as a broken image. Every tile therefore exercises the **no cover**
-   * path, which is the one that has to be a designed empty state — and the
-   * covers themselves are checked in the real app, against `make dev-db`.
+   * No cover **bytes** in the fake, ever. Layer 2 runs in a bare browser with no
+   * asset protocol, so any URL returned here would render as a broken image.
+   *
+   * That was the whole story until item 38, and it hid something: the *shape* a
+   * cover-bearing row carries — `cover_shelf_path`, `cover_aspect`,
+   * `cover_accent` — was missing from this file entirely, so every tile
+   * exercised the no-cover branch and the branch item 26 is about to build on
+   * was exercised nowhere. `as StoredBook` is why nothing said so: a cast makes
+   * an *added* DTO field silently absent, which is precisely the drift this
+   * file's header claims `tsc` catches.
+   *
+   * So the fields are stated now and only the bytes are withheld. A component
+   * asking "what box does this tile reserve" gets a real answer here; a
+   * component asking for pixels gets `null` and has to have a designed empty
+   * state, which is still the case worth forcing.
    */
   coverSrc(): string | null {
     return null;

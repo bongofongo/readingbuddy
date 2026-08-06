@@ -157,7 +157,8 @@ fn main() -> std::io::Result<()> {
             let data_dir = data_dir.unwrap_or_else(devdb::default_data_dir);
             let n = devdb::generate(&out, &data_dir, seed, books)?;
             println!(
-                "wrote {n} books (v{}, seed {seed}) to {}/seed.sql",
+                "wrote {n} books, {} of them deliberate edge cases (v{}, seed {seed}) to {}/seed.sql",
+                devdb::edge_case_count(),
                 devdb::GENERATOR_VERSION,
                 out.display()
             );
