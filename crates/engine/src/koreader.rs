@@ -495,10 +495,50 @@ impl std::fmt::Display for MatchMethod {
 
 /// A library book that looks like it might be this sidecar's, but not enough to
 /// link without asking.
+///
+/// **A row to show, not a record to write** — which is what decides every field
+/// on it. The only thing a caller ever does with one is hand [`book_id`] back
+/// to `link_sidecar`/`link_calibre_book`/`link_goodreads_row`, so nothing here
+/// needs to round-trip; what it needs is to answer *which* of these is the book
+/// in my hand, in the one screen a refusal leads to.
+///
+/// It carried a title and a score until item 36, and [`band`] has always been
+/// holding the whole [`Book`] it threw away. Two Dunes with the same title and
+/// different authors were indistinguishable in the list that exists to
+/// distinguish them, and the only way to tell them apart was a `get_book` per
+/// row — an N+1 against a list that is per *row* of a calibre or Goodreads
+/// import, so a four-hundred-book library with five near-misses a row is two
+/// thousand extra reads.
+///
+/// [`book_id`]: MatchCandidate::book_id
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchCandidate {
     pub book_id: i64,
     pub title: String,
+    /// The authors, each written the way a person says it — `Frank Herbert`,
+    /// never `Herbert, Frank`.
+    ///
+    /// **Display order, and there is deliberately no raw `authors` beside it.**
+    /// The order *within* a name is a parse and is the engine's ([`crate::names`]),
+    /// and the GUI links `readingbuddy-api` and not the engine, so a raw list
+    /// here would be a name parse re-implemented in TypeScript — the exact
+    /// re-derivation item 17 exists to prevent. `Book::authors` is the record
+    /// and stays what the origin spelled; this is the row. Named for
+    /// `BookDto::authors_display`, which is the same fact under the same word:
+    /// one idea spelled two ways is how two frontends end up disagreeing.
+    ///
+    /// The **join** between names is still wording and still a frontend's,
+    /// which is why this is a list and not a sentence.
+    pub authors_display: Vec<String>,
+    /// The year, where the record has one.
+    ///
+    /// Here because title-and-author is exactly the pair that *ties* in the case
+    /// this band exists for: a variant title of a book already on the shelf is
+    /// usually the same author, so the year is what is left to choose by — a
+    /// 1965 Dune against a 2005 reissue, or one translation against another.
+    /// An `Option<i64>` costs a fixed eight bytes and no allocation, which is a
+    /// different bargain from a string nobody draws.
+    pub publish_year: Option<i64>,
     /// Jaro-winkler similarity of the normalized titles, in
     /// `CANDIDATE_MIN..AUTO_MATCH`.
     pub score: f64,
@@ -742,6 +782,15 @@ pub(crate) async fn scores_for(storage: &Storage, query: &Query<'_>) -> Result<V
 /// for **one** pass over the library rather than two. `calibre.rs` used to run
 /// the scan twice per row, which on a four-hundred-book library is eight
 /// hundred loads of the whole shelf.
+///
+/// **The only place a [`MatchCandidate`] is minted**, and structurally so
+/// rather than by convention: the input is a [`Scored`], which is `pub(crate)`
+/// and built in exactly one place ([`scores_for`]). Every candidate-producing
+/// surface — `match_candidates`/`Engine::sidecar_candidates`, `files::identify`
+/// and `import_file`, `import_calibre_library`, `import_goodreads` — reaches the
+/// band through here, so a field added to a candidate is filled once rather
+/// than in five places, four of which will be updated and one of which will
+/// not.
 pub(crate) fn band(scored: Vec<Scored>) -> Vec<MatchCandidate> {
     scored
         .into_iter()
@@ -750,6 +799,8 @@ pub(crate) fn band(scored: Vec<Scored>) -> Vec<MatchCandidate> {
             Some(MatchCandidate {
                 book_id: s.book.id?,
                 title: s.book.display_title().to_string(),
+                authors_display: s.book.authors_in_display_order(),
+                publish_year: s.book.publish_year,
                 score: s.score,
             })
         })
@@ -2091,6 +2142,58 @@ return {{
         let titles: Vec<&str> = got.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(titles, ["Pachinko: A Novel of Korea and Japan"]);
         assert!(got[0].score >= CANDIDATE_MIN && got[0].score < AUTO_MATCH);
+    }
+
+    /// A candidate answers *which* of these it is, out of the scan that already
+    /// read the book — no `get_book` per row (item 36).
+    ///
+    /// The two assertions that matter are about **spelling** and about
+    /// **absence**. The library stores `Lee, Min Jin`, because that is how the
+    /// origin spelled it, and the row says `Min Jin Lee`: the order within a
+    /// name is a parse, it is the engine's, and a candidate is a row rather than
+    /// a record, so it carries the parsed form and no raw one beside it. And a
+    /// book the library holds no author or year for still produces a candidate —
+    /// an empty list and a `None`, never a placeholder, since the chooser draws
+    /// what is missing and inventing a word for it here would spend the one
+    /// distinction the screen has.
+    #[tokio::test]
+    async fn a_candidate_carries_who_wrote_it_and_when() {
+        use crate::book::Book;
+
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        s.upsert_book(
+            &Book {
+                title: Some("Pachinko: A Novel of Korea and Japan".into()),
+                authors: vec!["Lee, Min Jin".into()],
+                publish_year: Some(2017),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let sc = parse_sidecar(MODERN).unwrap();
+        let got = match_candidates(&s, &sc).await.unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].authors_display, ["Min Jin Lee"]);
+        assert_eq!(got[0].publish_year, Some(2017));
+
+        // The same band over a book the library knows nothing else about.
+        let bare = Storage::connect("sqlite::memory:").await.unwrap();
+        bare.upsert_book(
+            &Book {
+                title: Some("Pachinko: A Novel of Korea and Japan".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let got = match_candidates(&bare, &sc).await.unwrap();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(got[0].authors_display.is_empty());
+        assert_eq!(got[0].publish_year, None);
     }
 
     /// A recorded link is a decision, so `match_book` must honour it and the

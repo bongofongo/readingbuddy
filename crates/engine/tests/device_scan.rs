@@ -460,13 +460,30 @@ async fn a_new_row_carries_the_books_it_might_already_be() {
     let s = Storage::connect("sqlite::memory:").await.unwrap();
     // A subtitle the device's copy does not carry: too weak to link silently,
     // too strong to throw away.
-    let close = seed(&s, "Pachinko: A Novel of Korea and Japan").await;
+    let close = s
+        .upsert_book(
+            &Book {
+                title: Some("Pachinko: A Novel of Korea and Japan".into()),
+                // Stored the way the origin spelled it; the row the user reads
+                // must not be.
+                authors: vec!["Lee, Min Jin".into()],
+                publish_year: Some(2017),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
 
     let scan = device::scan_device(&s, &root).await.unwrap();
     match &scan.books[0].state {
         DeviceState::New { candidates } => {
             assert_eq!(candidates.len(), 1);
             assert_eq!(candidates[0].book_id, close);
+            // Item 36: the scan row answers *which* of these it is without a
+            // `get_book` per candidate.
+            assert_eq!(candidates[0].authors_display, ["Min Jin Lee"]);
+            assert_eq!(candidates[0].publish_year, Some(2017));
         }
         other => panic!("expected New with a candidate, got {other:?}"),
     }

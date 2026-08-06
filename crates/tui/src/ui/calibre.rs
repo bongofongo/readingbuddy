@@ -227,6 +227,8 @@ mod tests {
             CalibreRowState::Candidates(vec![MatchCandidate {
                 book_id: 3,
                 title: "Pachinko: A Novel".into(),
+                authors_display: vec!["Min Jin Lee".into()],
+                publish_year: Some(2017),
                 score: 0.72,
             }]),
             CalibreRowState::Candidates(Vec::new()),
@@ -250,6 +252,8 @@ mod tests {
         let r = calibre_row(CalibreRowState::Candidates(vec![MatchCandidate {
             book_id: 3,
             title: "Pachinko: A Novel".into(),
+            authors_display: vec!["Min Jin Lee".into()],
+            publish_year: Some(2017),
             score: 0.72,
         }]));
         let detail = detail(&r);

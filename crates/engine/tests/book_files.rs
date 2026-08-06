@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use readingbuddy::{Book, Engine, FileImportOptions, FileMatch, FileOutcome};
 
 mod common;
-use common::{engine, write_isbnless_epub};
+use common::{engine, write_isbnless_epub, write_isbnless_epub_by};
 
 /// The committed epub whose OPF carries a real ISBN.
 fn isbn_fixture() -> PathBuf {
@@ -345,12 +345,16 @@ async fn level_3_refuses_to_create_over_a_candidate_and_writes_nothing() {
     let near = engine
         .save_book(&Book {
             title: Some("Pachinko: A Novel of Korea and Japan".into()),
+            // Stored the way the origin spelled it; the row the user reads must
+            // not be.
+            authors: vec!["Lee, Min Jin".into()],
+            publish_year: Some(2017),
             ..Default::default()
         })
         .await
         .unwrap();
     let src = tmp.path().join("Pachinko.epub");
-    write_isbnless_epub(&src, "Pachinko");
+    write_isbnless_epub_by(&src, "Pachinko", "Min Jin Lee");
 
     let report = engine
         .import_file(&src, FileImportOptions::default())
@@ -360,6 +364,10 @@ async fn level_3_refuses_to_create_over_a_candidate_and_writes_nothing() {
     assert_eq!(report.book_id, None);
     assert_eq!(report.candidates.len(), 1);
     assert_eq!(report.candidates[0].book_id, near.id.unwrap());
+    // Item 36: the refusal names what it might be, whole, out of the scan it
+    // already ran — no `get_book` per row.
+    assert_eq!(report.candidates[0].authors_display, ["Min Jin Lee"]);
+    assert_eq!(report.candidates[0].publish_year, Some(2017));
     assert!(
         (0.60..0.85).contains(&report.candidates[0].score),
         "the pair has drifted out of the candidate band: {}",

@@ -446,6 +446,10 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
     engine
         .save_book(&Book {
             title: Some("Station Eleven: A Novel of Survival and the Travelling Symphony".into()),
+            // Stored the way the origin spelled it; the row the user reads must
+            // not be.
+            authors: vec!["Mandel, Emily St. John".into()],
+            publish_year: Some(2014),
             ..Default::default()
         })
         .await
@@ -465,6 +469,13 @@ async fn a_near_miss_is_offered_rather_than_duplicated_unless_asked() {
         !offered.candidates.is_empty(),
         "and it says what it probably is"
     );
+    // Item 36: and says it in full. Two editions of one title tie on the title
+    // alone, which is the whole reason a chooser exists.
+    assert_eq!(
+        offered.candidates[0].authors_display,
+        ["Emily St. John Mandel"]
+    );
+    assert_eq!(offered.candidates[0].publish_year, Some(2014));
     assert!(offered.uuid.is_some());
 
     // Told to, it creates it anyway.

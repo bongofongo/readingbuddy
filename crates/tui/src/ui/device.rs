@@ -225,6 +225,8 @@ mod tests {
                 candidates: vec![MatchCandidate {
                     book_id: 1,
                     title: "Pachinko".into(),
+                    authors_display: vec!["Min Jin Lee".into()],
+                    publish_year: Some(2017),
                     score: 0.72,
                 }],
             }))
