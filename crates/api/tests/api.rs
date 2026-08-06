@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use readingbuddy::{Engine, EngineConfig};
 use readingbuddy_api::{
-    Api, ApiError, BookDto, BookFilterDto, BookQueryDto, ErrorCode, NewNoteDto, NoteKindDto,
-    Outcome, ReadingStateDto, Request, Response, SearchHitDto, SearchSourceDto, ShapeSourceDto,
-    StatusFilterDto,
+    Api, ApiError, BookDto, BookFilterDto, BookQueryDto, ErrorCode, MomentKindDto, NewNoteDto,
+    NoteKindDto, Outcome, ReadingStateDto, Request, Response, SearchHitDto, SearchSourceDto,
+    ShapeSourceDto, StatusFilterDto,
 };
 
 /// A library in a tempdir with an in-memory database, like every other suite
@@ -862,4 +862,149 @@ async fn a_title_filter_crosses_the_seam_as_a_predicate() {
         ..Default::default()
     };
     assert_eq!(api.count_books(Some(none)).await.unwrap(), 0);
+}
+
+// ---- item 23: moments ------------------------------------------------------
+
+/// A moment crosses whole, is **polled** rather than pushed, and carries the
+/// read it belongs to.
+///
+/// `reading_id` is the field this test exists for. Item 28 mints a card per
+/// *reading* and a reread mints a second one beside the first, so a moment
+/// naming only its book cannot select the right card — and that is the shape
+/// that is expensive to change later, because it is what the moment *is*
+/// rather than what it carries.
+#[tokio::test]
+async fn a_closed_reading_crosses_as_a_moment_naming_its_read() {
+    let (api, _tmp) = api().await;
+    let book = seed(&api).await;
+
+    // Nothing has happened yet, and that is an empty list rather than an error.
+    assert_eq!(api.pending_moments(None).await.unwrap(), vec![]);
+
+    api.update_progress(book, Some(333), Some(true))
+        .await
+        .unwrap();
+
+    let typed = api.pending_moments(None).await.unwrap();
+    let closed: Vec<_> = typed
+        .iter()
+        .filter(|m| m.kind == MomentKindDto::ReadingClosed)
+        .collect();
+    assert_eq!(closed.len(), 1, "one read ended: {typed:?}");
+    assert_eq!(closed[0].book_id, Some(book));
+    assert!(
+        closed[0].reading_id.is_some(),
+        "a card is minted per reading, so the moment has to name one"
+    );
+
+    match ok(api.dispatch(Request::PendingMoments { limit: None }).await) {
+        Response::Moments(ms) => assert_eq!(ms, typed),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Acknowledging is what makes it fire once, and it is **idempotent** — a
+/// client that acknowledges twice, or two clients that acknowledge the same
+/// moment, must not be able to break the ceremony or resurrect it.
+#[tokio::test]
+async fn acknowledging_a_moment_retires_it_and_repeating_it_changes_nothing() {
+    let (api, _tmp) = api().await;
+    let book = seed(&api).await;
+    api.update_progress(book, Some(333), Some(true))
+        .await
+        .unwrap();
+
+    let id = api.pending_moments(None).await.unwrap()[0].id.clone();
+    ok(api
+        .dispatch(Request::AcknowledgeMoment { id: id.clone() })
+        .await);
+    assert!(
+        api.pending_moments(None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| m.id != id)
+    );
+
+    // Twice, through both doors, and neither brings it back.
+    api.acknowledge_moment(&id).await.unwrap();
+    ok(api
+        .dispatch(Request::AcknowledgeMoment { id: id.clone() })
+        .await);
+    assert!(
+        api.pending_moments(None)
+            .await
+            .unwrap()
+            .iter()
+            .all(|m| m.id != id)
+    );
+}
+
+/// An id this build knows no kind for is a typed error rather than a row.
+#[tokio::test]
+async fn an_invented_moment_id_is_refused() {
+    let (api, _tmp) = api().await;
+    let err = api
+        .acknowledge_moment("something_i_made_up:1")
+        .await
+        .expect_err("a moment id is not a string a client composes");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+}
+
+/// **Nothing on this surface counts.** `docs/decisions.md` forbids a badge
+/// counting what you have not done, and the cheap version of that is a
+/// `pending: 3` beside the rows — so the reply is a bare array and there is no
+/// count method to reach for. Asserted rather than trusted, because the next
+/// person to want it will want it for a good reason.
+#[test]
+fn the_wire_states_no_number_of_moments() {
+    let json = serde_json::to_string(&Response::Moments(vec![])).unwrap();
+    assert_eq!(
+        json, r#"{"shape":"moments","value":[]}"#,
+        "a bare array, with no number beside it"
+    );
+
+    for name in ["count_moments", "pending_moment_count", "moment_count"] {
+        let call = format!(r#"{{"method":"{name}","params":{{}}}}"#);
+        assert!(
+            serde_json::from_str::<Request>(&call).is_err(),
+            "{name} must not exist: a number waiting is a badge"
+        );
+    }
+}
+
+/// `limit` takes from the newest end, and the two doors agree about it.
+#[tokio::test]
+async fn a_limit_takes_the_newest_moments() {
+    let (api, _tmp) = api().await;
+    let a = seed(&api).await;
+    let b = api
+        .save_book(BookDto {
+            title: Some("Middlemarch".into()),
+            isbn_13: Some("9780141439549".into()),
+            page_count: Some(880),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    api.update_progress(a, Some(333), Some(true)).await.unwrap();
+    api.update_progress(b, Some(880), Some(true)).await.unwrap();
+
+    let all = api.pending_moments(None).await.unwrap();
+    assert!(all.len() >= 2);
+    assert!(all.windows(2).all(|w| w[0].occurred_at >= w[1].occurred_at));
+
+    match ok(api
+        .dispatch(Request::PendingMoments { limit: Some(1) })
+        .await)
+    {
+        Response::Moments(ms) => {
+            assert_eq!(ms.len(), 1);
+            assert_eq!(ms[0], all[0]);
+        }
+        other => panic!("{other:?}"),
+    }
 }

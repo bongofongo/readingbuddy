@@ -18,6 +18,7 @@ const REFLECTION: i64 = 7;
 const NOTE_LINK_INDEX: i64 = 8;
 const GOODREADS: i64 = 9;
 const SORT_KEY_INDEXES: i64 = 16;
+const MOMENTS: i64 = 17;
 
 /// A connection migrated up to (but not including) `version`.
 async fn migrated_below(version: i64) -> SqliteConnection {
@@ -520,6 +521,39 @@ async fn a_second_default_scale_is_refused() {
     assert!(
         matches!(&err, sqlx::Error::Database(db) if db.is_unique_violation()),
         "expected a unique violation, got {err}"
+    );
+}
+
+/// The moments epoch is a **singleton written by the migration itself**, and
+/// both halves of that are load-bearing (item 23).
+///
+/// Its value is what stops the first launch after `0017` replaying an entire
+/// reading history as a ceremony, so a database where the row is missing has no
+/// answer to "is this news or is this history" — and a database with two has
+/// whichever answer a query happened to read. `CHECK (id = 1)` is the same
+/// device `idx_readings_one_open` and `idx_one_reflection` are: an invariant a
+/// table holds rather than a convention code defends.
+#[tokio::test]
+async fn the_moments_epoch_is_one_row_and_the_migration_wrote_it() {
+    let mut conn = migrated_below(MOMENTS).await;
+    apply(&mut conn, MOMENTS).await;
+
+    let began: i64 = sqlx::query_scalar("SELECT began_at FROM moment_epoch")
+        .fetch_one(&mut conn)
+        .await
+        .expect("the migration writes its own epoch");
+    assert!(
+        began > 1_700_000_000,
+        "the epoch is the instant the schema learned about moments, not zero: {began}"
+    );
+
+    let err = sqlx::query("INSERT INTO moment_epoch (id, began_at) VALUES (2, 0)")
+        .execute(&mut conn)
+        .await
+        .expect_err("a second epoch must be refused");
+    assert!(
+        matches!(&err, sqlx::Error::Database(db) if db.message().contains("CHECK")),
+        "expected the CHECK to refuse it, got {err}"
     );
 }
 

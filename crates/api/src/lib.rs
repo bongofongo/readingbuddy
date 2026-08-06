@@ -456,6 +456,23 @@ impl Api {
         Ok(map(self.engine.activity_by_day(&range).await?))
     }
 
+    // ---- moments -----------------------------------------------------------
+
+    /// What is worth noticing and has not been shown yet, newest first.
+    ///
+    /// Derived on every call and stored nowhere, so this is safe to poll — and
+    /// polling is the only way to read it, because this protocol has no push
+    /// channel and a moment stream would reopen the argument
+    /// [`protocol`]'s module doc settles about the mount watcher.
+    pub async fn pending_moments(&self, limit: Option<i64>) -> ApiResult<Vec<MomentDto>> {
+        Ok(map(self.engine.pending_moments(limit).await?))
+    }
+
+    /// Record that a moment was surfaced. Idempotent.
+    pub async fn acknowledge_moment(&self, id: &str) -> ApiResult<()> {
+        Ok(self.engine.acknowledge_moment(id).await?)
+    }
+
     // ---- notes -------------------------------------------------------------
 
     pub async fn create_note(&self, note: NewNoteDto) -> ApiResult<CreatedNoteDto> {
@@ -915,6 +932,11 @@ impl Api {
             R::RefillReadingEvents => Response::RefillReport(self.refill_reading_events().await?),
             R::ReadingEvents { book_id } => {
                 Response::ReadingEvents(self.reading_events(book_id).await?)
+            }
+            R::PendingMoments { limit } => Response::Moments(self.pending_moments(limit).await?),
+            R::AcknowledgeMoment { id } => {
+                self.acknowledge_moment(&id).await?;
+                Response::Unit
             }
             R::ActivitySummary { from, to } => {
                 Response::ActivitySummary(self.activity_summary(&from, &to).await?)

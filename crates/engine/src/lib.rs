@@ -86,9 +86,10 @@ pub use providers::{ProviderId, SearchRequest};
 pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
-    DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport,
-    NewHighlight, NewReadingEvent, NoteRecord, OutgoingLink, Rating, RatingScale, ReadNumbering,
-    Reading, ReadingEvent, RefillReport, SearchHit, SearchSource, Source, StatusFilter, Storage,
+    DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
+    MomentKind, NewHighlight, NewReadingEvent, NoteRecord, OutgoingLink, RUN_MIN_DAYS, Rating,
+    RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport, SearchHit, SearchSource,
+    Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -798,6 +799,37 @@ impl Engine {
     /// `ActivitySummary::activity_days`, for a caller that wants to show them.
     pub async fn activity_by_day(&self, range: &DayRange) -> Result<Vec<DayActivity>> {
         self.storage.activity_by_day(range).await
+    }
+
+    // ---- moments -----------------------------------------------------------
+
+    /// Everything worth noticing that has not been shown yet, newest first
+    /// (item 23).
+    ///
+    /// Derived on every call from rows other features wrote — a reading that
+    /// closed, the first mark on a book, a reflection that reached across, a
+    /// run of days that ended. **Nothing about a moment is stored**, so this
+    /// cannot go stale and there is nothing here to accumulate.
+    ///
+    /// Two things a caller has to know. There is **no push channel** in this
+    /// codebase and this is not one: poll it on launch and after a write that
+    /// could mint one. And there is deliberately **no count** — not here, not
+    /// on the wire — because a number of things waiting is a badge, which
+    /// `docs/decisions.md` forbids by name. `limit` is the only lever, and it
+    /// takes from the newest end.
+    pub async fn pending_moments(&self, limit: Option<i64>) -> Result<Vec<Moment>> {
+        self.storage
+            .pending_moments(storage::now_unix(), limit)
+            .await
+    }
+
+    /// Record that a moment was surfaced, so the ceremony does not replay.
+    ///
+    /// Idempotent — acknowledging twice, or from two frontends, writes one row
+    /// and keeps the first time. The id is a [`Moment::id`] and is opaque: a
+    /// frontend hands back what it was given and never builds one.
+    pub async fn acknowledge_moment(&self, id: &str) -> Result<()> {
+        self.storage.acknowledge_moment(id).await
     }
 
     // ---- highlights --------------------------------------------------------

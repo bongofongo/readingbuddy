@@ -316,6 +316,33 @@ pub enum Request {
         to: String,
     },
 
+    // ---- moments ----
+    /// What is worth noticing and has not been shown yet, newest first
+    /// (item 23).
+    ///
+    /// **Poll this.** There is no push channel in this protocol — every reply
+    /// carries the id it answers — and a moment stream would reopen the
+    /// argument the mount watcher was deliberately left outside this
+    /// vocabulary to avoid (see the module doc). A client asks on launch and
+    /// after a write that could mint one.
+    ///
+    /// `limit` is absent for everything. It takes from the **newest** end, and
+    /// it is the only lever a client gets: there is no count of what is
+    /// pending, here or anywhere, because that is a badge.
+    PendingMoments {
+        #[serde(default)]
+        limit: Option<i64>,
+    },
+    /// Record that a moment was surfaced, so the ceremony does not replay.
+    ///
+    /// **Idempotent** — acknowledging twice, or from two clients, writes one
+    /// row and keeps the first time. `id` is a `MomentDto::id` handed straight
+    /// back; a string that names no kind this build knows is an
+    /// [`crate::error::ErrorCode::InvalidInput`] rather than a silent row.
+    AcknowledgeMoment {
+        id: String,
+    },
+
     // ---- notes ----
     CreateNote {
         note: NewNoteDto,
@@ -566,6 +593,9 @@ pub enum Response {
     FieldProvenance(Vec<FieldSourceDto>),
 
     ReadingEvents(Vec<ReadingEventDto>),
+    /// Newest first. Its **length is not a fact the protocol states** — there
+    /// is no count field here and no count endpoint beside it.
+    Moments(Vec<MomentDto>),
     RefillReport(RefillReportDto),
     ActivitySummary(ActivitySummaryDto),
     ActivityByDay(Vec<DayActivityDto>),

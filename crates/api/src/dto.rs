@@ -47,11 +47,11 @@ use readingbuddy::{
     EditionShape, EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, ErrorClass,
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
-    ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, NewNoteInput, NoteKind,
-    NoteRecord, OutgoingLink, Progress, PullReport, RankedResult, Rating, RatingScale, Reading,
-    ReadingEvent, ReadingState, RefillReport, SearchHit, SearchOutcome, SearchRequest,
-    SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents,
-    TextOutcome, TocEntry, UnmatchedRow,
+    ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
+    NewNoteInput, NoteKind, NoteRecord, OutgoingLink, Progress, PullReport, RankedResult, Rating,
+    RatingScale, Reading, ReadingEvent, ReadingState, RefillReport, SearchHit, SearchOutcome,
+    SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter,
+    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -2903,6 +2903,115 @@ impl From<DayActivity> for DayActivityDto {
             books: d.books,
             minutes: d.minutes,
             pages: d.pages,
+        }
+    }
+}
+
+// ---- moments (item 23) -----------------------------------------------------
+
+/// What happened, and whatever the phrasing needs beyond the ids.
+///
+/// Adjacently tagged on `kind`, the shape `DeviceStateDto` already uses, so a
+/// client switches on one field and a payload that grows a member does not
+/// change how the others read.
+///
+/// **The wording is a frontend's and the fact is the engine's**, which is item
+/// 17's line applied here: `run_ended` carries a span and a number of days, and
+/// the sentence built out of them — including whether "3" is spelled *three* —
+/// belongs to whoever is drawing.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MomentKindDto {
+    /// A read ended. `MomentDto::reading_id` is that read.
+    ReadingClosed,
+    /// The first mark of the reader's own on a book that carried none.
+    FirstAnnotation,
+    /// A reflection reached a book it had not reached before.
+    /// `MomentDto::book_id` is the reflection's own book; `reached_book_id` is
+    /// the far side.
+    ReflectionReached { note_id: i64, reached_book_id: i64 },
+    /// A run of consecutive days with activity, **which has already ended**.
+    /// There is no variant for a run in progress, and that is deliberate — a
+    /// run visible while it runs is a streak.
+    RunEnded {
+        from: String,
+        to: String,
+        /// How many days it held. Past tense, like a count of your own
+        /// highlights; never a target and never compared with anything.
+        days: i64,
+    },
+}
+
+impl From<MomentKind> for MomentKindDto {
+    fn from(k: MomentKind) -> Self {
+        match k {
+            MomentKind::ReadingClosed => MomentKindDto::ReadingClosed,
+            MomentKind::FirstAnnotation => MomentKindDto::FirstAnnotation,
+            MomentKind::ReflectionReached {
+                note_id,
+                reached_book_id,
+            } => MomentKindDto::ReflectionReached {
+                note_id,
+                reached_book_id,
+            },
+            MomentKind::RunEnded { from, to, days } => MomentKindDto::RunEnded { from, to, days },
+        }
+    }
+}
+
+/// One thing worth noticing, derived on every ask and stored nowhere.
+///
+/// **`reading_id` is here beside `book_id` and is not decoration.** A reread is
+/// a second read of one book, so anything minted per reading — item 28's cards
+/// — cannot be selected by the book alone. It is absent where the evidence does
+/// not settle on one read, which is the same call `ReadingEventDto::reading_id`
+/// makes and for the same reason.
+///
+/// **`id` is opaque.** It is built by the engine out of the rows the moment is
+/// made of; hand it back to `acknowledge_moment` and never parse it. Its format
+/// is not part of this vocabulary and may gain a kind without a version bump.
+///
+/// **There is no count anywhere on this surface** — no total, no unread, no
+/// remaining. The length of the list is the frontend's business and nothing
+/// else's; `docs/decisions.md` forbids a badge counting what you have not done,
+/// and a `pending: 3` on a reply is exactly that with a different name.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MomentDto {
+    /// Opaque. Give it back to acknowledge; do not read it.
+    pub id: String,
+    pub kind: MomentKindDto,
+    /// Absent only for `run_ended`, which is about the library rather than a
+    /// book.
+    #[serde(default)]
+    pub book_id: Option<i64>,
+    /// Which read this belongs to, where the evidence settles on one.
+    #[serde(default)]
+    pub reading_id: Option<i64>,
+    /// `YYYY-MM-DD`, UTC — the same day convention as the activity log.
+    pub day: String,
+    /// Unix seconds. The list arrives newest first by this.
+    pub occurred_at: i64,
+}
+
+impl From<Moment> for MomentDto {
+    fn from(m: Moment) -> Self {
+        MomentDto {
+            id: m.id,
+            kind: m.kind.into(),
+            book_id: m.book_id,
+            reading_id: m.reading_id,
+            day: m.day,
+            occurred_at: m.occurred_at,
         }
     }
 }
