@@ -1,18 +1,45 @@
 <script lang="ts">
+  /**
+   * The shelf — the home surface (item 26).
+   *
+   * Two bands: what you are reading, pulled proud, and everything else in
+   * whichever arrangement you left it in. The arrangement is a value from
+   * `$lib/shelf/layouts`, not a shape baked into this file — see that module
+   * for why, and for where the deferred spine shelf plugs in.
+   */
   import BookTile from '$lib/components/BookTile.svelte';
-  import { client, type StoredBook } from '$lib/api/client';
+  import { client, type OpenReading, type StoredBook } from '$lib/api/client';
+  import ShelfSwitch from '$lib/shelf/ShelfSwitch.svelte';
+  import { layoutById, recallLayout, rememberLayout, type ShelfLayoutId } from '$lib/shelf/layouts';
 
   let books = $state<StoredBook[] | null>(null);
+  let reading = $state<OpenReading[]>([]);
   let failure = $state<string | null>(null);
+
+  let layoutId = $state<ShelfLayoutId>(recallLayout());
+  // Capitalised, because that is what marks it a component rather than an HTML
+  // element at the call site — `<layout.component />` would be parsed as a tag.
+  const Layout = $derived(layoutById(layoutId).component);
+
+  function pick(id: ShelfLayoutId) {
+    layoutId = id;
+    rememberLayout(id);
+  }
 
   // `$effect` rather than a `+page.ts` load: the data comes from an in-process
   // engine over Tauri's IPC, which does not exist during `vite build`, and a load
   // function is the one place SvelteKit might try to run it there.
   $effect(() => {
-    client()
-      .listBooks()
+    const c = client();
+    c.listBooks()
       .then((b) => (books = b))
       .catch((e) => (failure = e instanceof Error ? e.message : String(e)));
+    // Its own call, and its failure is not the shelf's. The strip is an
+    // ornament on the library; a library that loaded must not be replaced by an
+    // error because the thing above it did not.
+    c.currentlyReading()
+      .then((r) => (reading = r))
+      .catch(() => (reading = []));
   });
 </script>
 
@@ -41,13 +68,31 @@
     <code>rb ko pull</code> takes what is on a connected reader.
   </p>
 {:else}
-  <!-- No count. Not here, and not in the header: this is the surface you land on,
-       and a number on it is the completion framing `docs/decisions.md` bans. -->
-  <div class="grid">
-    {#each books as book (book.id)}
-      <BookTile {book} />
-    {/each}
-  </div>
+  {#if reading.length > 0}
+    <!-- Pulled proud. Which books these are is the engine's answer
+         (`currently_reading`), not a filter spelled a second time here. -->
+    <section class="band reading-band">
+      <h2>Reading</h2>
+      <div class="proud">
+        {#each reading as { book, reading: r } (r.id)}
+          <BookTile {book} proud />
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  <section class="band">
+    <div class="band-head">
+      <h2>On the shelf</h2>
+      <ShelfSwitch current={layoutId} onpick={pick} />
+    </div>
+    <!-- No count. Not here and not in the header: this is the surface you land
+         on, and a number on it is the completion framing `docs/decisions.md`
+         bans. The switch says which arrangement is on and nothing about size. -->
+    {#key layoutId}
+      <Layout {books} />
+    {/key}
+  </section>
 {/if}
 
 <style>
@@ -55,12 +100,71 @@
     font-size: 1.05rem;
     color: var(--ink-dim);
     font-weight: 500;
+    margin-bottom: 1.4rem;
+  }
+  .band + .band {
+    margin-top: 2.2rem;
+  }
+  .band-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
     margin-bottom: 1rem;
   }
-  .grid {
+  h2 {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin-bottom: 1rem;
+  }
+  .band-head h2 {
+    margin-bottom: 0;
+  }
+  /*
+   * A strip, not a grid — and a different *kind* of object, not a bigger tile.
+   *
+   * Size alone does not carry hierarchy: at 13% larger it read as a second grid
+   * that happened to be above the first, and at 720px the two sizing laws
+   * crossed over and the "proud" band rendered *smaller* than the shelf below
+   * it. So the strip now sits on its own ground with a shelf rule under it, and
+   * its track is a clamp that is wider than the grid's column at every width
+   * rather than a `minmax` that competes with it for space.
+   */
+  .reading-band {
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--line);
+    /* Bleeds to the window edge, which is what makes it a ground rather than a
+       card. `main` has 1.25rem of padding; this cancels and reapplies it. */
+    margin-inline: -1.25rem;
+    padding: 0 1.25rem 1.1rem;
+  }
+  .reading-band h2 {
+    padding-top: 1.1rem;
+  }
+  .proud {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
-    gap: 1.4rem 1rem;
+    grid-auto-flow: column;
+    /* Never narrower than a shelf column at the same width. The floor is what
+       stops the inversion; the ceiling stops one book filling the window. */
+    grid-auto-columns: clamp(150px, 42vw, 200px);
+    gap: 1.2rem;
+    overflow-x: auto;
+    padding-bottom: 0.3rem;
+    scrollbar-width: thin;
+    /* The clip has to look deliberate. Snapping lands a tile at the gutter
+       rather than mid-word, the padding keeps that landing off the edge, and
+       the mask says "there is more" where a hard cut said "bug". */
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: 0 1.25rem;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+  }
+  .proud > :global(a) {
+    scroll-snap-align: start;
   }
   .note {
     max-width: var(--measure);
@@ -72,6 +176,6 @@
   code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.85em;
-    color: var(--accent);
+    color: var(--accent-text);
   }
 </style>

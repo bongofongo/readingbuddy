@@ -29,7 +29,7 @@ import type {
   PathsDto,
   ReadingDto,
 } from './bindings';
-import type { LibraryClient, StoredBook } from './client';
+import type { LibraryClient, OpenReading, StoredBook } from './client';
 
 /**
  * Every field, so a new DTO column shows up here as a type error.
@@ -414,6 +414,26 @@ export class FakeClient implements LibraryClient {
     // — and a fake that sorted would be a place that rule could be broken and
     // still look tested.
     return BOOKS.slice(0, limit);
+  }
+
+  /**
+   * Every book whose state is `reading`, paired with the reading `listReadings`
+   * would hand back for it — so the two answers cannot disagree here the way
+   * two independent fixtures would.
+   *
+   * Book 12 is the case worth having: it holds a *closed* reading beside an
+   * open one, and only the open one may appear. A fake that returned the first
+   * reading of each book would pass every test written against the other
+   * twenty and be wrong about the one reread in the set.
+   */
+  async currentlyReading(limit = 12): Promise<OpenReading[]> {
+    const open: OpenReading[] = [];
+    for (const book of BOOKS) {
+      if (book.reading_state?.state !== 'reading') continue;
+      const r = (await this.listReadings(book.id)).find((x) => x.status.state === 'reading');
+      if (r) open.push({ book, reading: r });
+    }
+    return open.slice(0, limit);
   }
 
   async getBook(id: number): Promise<StoredBook | null> {

@@ -158,3 +158,33 @@ describe('the untitled case', () => {
     expect(all.some((b) => b.title === null)).toBe(false);
   });
 });
+
+describe('what the shelf pulls proud', () => {
+  it('is every book with an open reading, and only those', async () => {
+    const open = await new FakeClient().currentlyReading();
+    const states = await books();
+
+    const expected = states.filter((b) => b.reading_state?.state === 'reading').map((b) => b.id);
+    expect(open.map((r) => r.book.id).sort()).toEqual(expected.sort());
+    // Nothing finished, abandoned, foreign-stated or unread reaches the strip.
+    expect(open.every((r) => r.reading.status.state === 'reading')).toBe(true);
+  });
+
+  it('takes the open reading of a reread, not its first one', async () => {
+    // Book 12 holds a closed reading beside an open one. A fake that returned
+    // the *first* reading of each book would pass every assertion written
+    // against the other twenty rows and be wrong about the only reread in the
+    // set — and item 28's card is minted per reading, so this is the row that
+    // matters most later.
+    const twelve = (await new FakeClient().currentlyReading()).find((r) => r.book.id === 12);
+    expect(twelve, 'the reread must be on the strip').toBeDefined();
+    expect(twelve!.reading.status.state).toBe('reading');
+    expect(twelve!.reading.finished_at).toBeNull();
+  });
+
+  it('caps the strip without reordering it', async () => {
+    const all = await new FakeClient().currentlyReading();
+    const capped = await new FakeClient().currentlyReading(2);
+    expect(capped).toEqual(all.slice(0, 2));
+  });
+});

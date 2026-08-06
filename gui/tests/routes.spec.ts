@@ -51,6 +51,41 @@ for (const route of ROUTES) {
 }
 
 /**
+ * The shelf's arrangements — every one of them, rendered.
+ *
+ * Item 26 shipped the cover grid and deferred the spine shelf, so the layout is
+ * a **seam** rather than a shape (`src/lib/shelf/layouts.ts`). The failure that
+ * seam invites is a second arrangement that compiles, is never looked at, and
+ * rots — which is this repo's standing complaint about a guard that cannot
+ * fail, one layer up. So the alternate layout is screenshotted like a route.
+ *
+ * It also drives the switch rather than seeding `localStorage`, which makes the
+ * persistence real: pick, reload, and the shelf is still how you left it. State
+ * persists and is visible is the axiom's first clause, and this is it asserted.
+ */
+test('the shelf renders in the arrangement you pick, and remembers it', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/');
+  await expect(page.locator('main')).not.toContainText('Reading the shelf…');
+
+  const list = page.getByRole('button', { name: 'List' });
+  await list.click();
+  await expect(list).toHaveAttribute('aria-pressed', 'true');
+  await expect(page).toHaveScreenshot('library-list.png', { fullPage: true });
+
+  // The preference survives the window closing, which is the only thing that
+  // makes it a preference rather than a toggle.
+  await page.reload();
+  await expect(page.locator('main')).not.toContainText('Reading the shelf…');
+  await expect(page.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
  * The axiom, asserted rather than reviewed.
  *
  * `gui/CLAUDE.md`: *"No number on a home surface. Ever."* The TUI asserts this

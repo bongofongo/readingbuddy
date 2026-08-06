@@ -52,6 +52,15 @@ export function readingStateLabel(state: ReadingStateDto | null): string | null 
       // A status this build does not know. An importer can write one, which is
       // why the engine keeps the raw word — showing it verbatim beats inventing
       // one for it.
+      //
+      // Item 26's screenshot review reported the lowercase `paused` sitting in
+      // a column of `Read` and `Put down` as a defect — an enum value leaking
+      // to the user. Considered and **declined**. `raw` is another application's
+      // word, not ours to restyle, and the case is part of what it said; the
+      // rule that the frontend words a value covers *our* vocabulary, and this
+      // is the one label that is deliberately not in it. Title-casing also only
+      // flatters the single-word case — the fixture's real shape is
+      // `paused-by-some-other-app`, which capitalises into something worse.
       return state.raw;
     default:
       // ts-rs drops `#[serde(other)]`, so this union is exhaustive over *today's*

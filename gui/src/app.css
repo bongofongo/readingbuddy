@@ -10,9 +10,11 @@
  * Here it is a CSS custom property for the same reason: when the GUI grows a
  * settings surface it sets one variable, not a stylesheet.
  *
- * Everything else is deliberately restrained. The visual design of the shelf is
- * item 26 and is a human decision — this is what a list looks like before anyone
- * has designed it, not a guess at what it should become.
+ * Everything else is deliberately restrained, and item 26 did not change that.
+ * The shelf's design lives in the components — the plate, the tile's lift, the
+ * band headings — rather than in new tokens here, because a token is a promise
+ * that every screen will use it and only one screen exists so far. Item 27 is
+ * the right time to promote what turns out to be shared.
  */
 :root {
   --accent: #c48b3f; /* theme.rs DEFAULT_ACCENT */
@@ -29,6 +31,25 @@
   --line: #2e2c38;
   --ink: #e8e4dc;
   --ink-dim: #9b96a5;
+
+  /*
+   * The accent as *text*, which is not the same value as the accent as a
+   * surface — and is this frontend's to decide.
+   *
+   * `--accent` is brass, `theme.rs`'s, and stays exactly what that file says.
+   * But brass was chosen against a terminal's background, and on this app's
+   * light theme `#c48b3f` on `#faf8f4` measures 2.78:1 — under the 4.5:1 body
+   * text needs. Every state label on the shelf is that colour.
+   *
+   * So the *rendering* of the accent is bounded here, for the same reason
+   * `src/lib/accent.ts` bounds a jacket's: a renderer owes its own legibility
+   * against its own background, and neither the palette nor the measurement is
+   * the thing being changed. On the dark theme brass already clears it and the
+   * two are the same value.
+   */
+  --accent-text: #c48b3f;
+  /* A label on top of an accent fill. Dark, because the fill is mid-luma. */
+  --accent-on: #1a1206;
 
   --radius: 3px;
   --gap: 0.75rem;
@@ -47,6 +68,9 @@
     --line: #e2ddd2;
     --ink: #21202a;
     --ink-dim: #6a6577;
+    /* Brass darkened until it clears 4.5:1 on this background. Same hue —
+       it is the same accent, lit for a page instead of for a terminal. */
+    --accent-text: #8f6114;
     color-scheme: light;
   }
 }

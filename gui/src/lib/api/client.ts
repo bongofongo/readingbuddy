@@ -48,6 +48,17 @@ import type {
 export type StoredBook = BookDto & { id: number };
 
 /**
+ * An open reading, with the book it is of.
+ *
+ * `OpenReadingDto` narrowed the way [`StoredBook`] narrows `BookDto`: anything
+ * the library hands back has an id. The **reading** travels beside the book on
+ * purpose and this is not redundancy — a reread has two readings of one book,
+ * so "which read is this" is a question the book alone cannot answer, and item
+ * 28's card is minted per *reading*.
+ */
+export type OpenReading = { book: StoredBook; reading: ReadingDto };
+
+/**
  * Everything a screen may ask for.
  *
  * Grows one method per thing a screen needs — not one per API request. A request
@@ -58,6 +69,15 @@ export type StoredBook = BookDto & { id: number };
 export interface LibraryClient {
   paths(): Promise<PathsDto>;
   listBooks(limit?: number, sort?: BookSortDto): Promise<StoredBook[]>;
+  /**
+   * The books with an open reading — what the shelf pulls proud (item 26).
+   *
+   * A **request**, not a filter over `listBooks`. The engine owns selection
+   * predicates (item 17), and the two spellings are not equivalent: this
+   * returns the reading, and `reading_state` on a book row cannot say *which*
+   * of a reread's two readings is the open one.
+   */
+  currentlyReading(limit?: number): Promise<OpenReading[]>;
   getBook(id: number): Promise<StoredBook | null>;
   listHighlights(bookId: number): Promise<HighlightDto[]>;
   listNotes(bookId: number | null): Promise<NoteDto[]>;
@@ -131,6 +151,19 @@ export class TauriClient implements LibraryClient {
     );
     // Every row from the library has an id. Narrowed once, here.
     return r.value as StoredBook[];
+  }
+
+  /**
+   * `limit` is a cap on a strip, not a page of one. A shelf pulls a handful of
+   * books proud; a user reading forty at once gets the first twelve and the
+   * rest stay in the shelf below, which is where they already were.
+   */
+  async currentlyReading(limit = 12): Promise<OpenReading[]> {
+    const r = expect(
+      await this.#call({ method: 'currently_reading', params: { limit } }),
+      'open_readings',
+    );
+    return r.value as OpenReading[];
   }
 
   async getBook(id: number): Promise<StoredBook | null> {

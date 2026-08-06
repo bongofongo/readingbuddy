@@ -795,6 +795,11 @@ because item 31 needed somewhere to put reading time.
       the same line item 17 drew. The border-median arithmetic is briefly
       **duplicated** between `images.rs` and `render3d/texture.rs`; item 19 owns
       the renderer and deletes its copy when it rewires onto the column.
+      *(Superseded by entry 39. Item 19 shipped and did not delete it; the copy
+      survived three handoffs on a second justification — that the two measure
+      different images — which was also false. The sentence is left as written
+      because this file is a build-order record rather than a live spec, and a
+      claim quietly edited to be true is a claim nobody learns from.)*
     - **Both halves of 20c are one change.** OpenLibrary `-M` → `-L`, Google
       Books reads all six documented `imageLinks` sizes largest-first — and a
       shelf tier is generated locally, because asking for the large size
@@ -1686,3 +1691,96 @@ because item 31 needed somewhere to put reading time.
       thing that knows, so it prints both counts and the Makefile states none —
       rather than adding `python3` or `jq` to a build that has neither, to parse
       a manifest for a line of prose.
+
+26. **The shelf.** No migration; one home surface, a layout seam with two
+    implementations, and a luma band this frontend had been missing. Specified
+    as a WebGL spine shelf and **deliberately not built as one** — the user
+    ruled the 3D renderer a cosmetic decision that can come later, and the item
+    was rebuilt around that rather than half-built toward it.
+    - **The arrangement is a value, not a shape of the page.** Deferring the
+      spine shelf badly would mean welding a grid into `+page.svelte`, so that
+      whoever builds spines later is unpicking a layout rather than adding one.
+      `gui/src/lib/shelf/layouts.ts` is the only file that knows what
+      arrangements exist; a layout is a component plus a name, and the spine
+      shelf is a third entry that should need no change to it.
+    - **Two implementations, because one is a guess.** `CoverGrid` is the
+      default and `Rows` is not decoration: a seam nothing has ever been swapped
+      through is this repo's standing complaint about a guard that cannot fail,
+      one layer up. `Rows` wants a fixed box rather than a reserved aspect and
+      puts the title where the grid puts a cover, which is what makes the
+      one-field contract known to be sufficient rather than believed to be. The
+      route suite screenshots **both** — a layout nobody renders is a layout
+      nobody reviews.
+    - **`currently_reading` is a request, not a filter spelled again.** "Pulled
+      proud" is a selection predicate and those are the engine's under item 17.
+      It also returns the *reading*, which `reading_state` on a book row cannot:
+      a reread has two, and item 28's card is minted per reading. The strip's
+      failure is caught separately from the shelf's, because a library that
+      loaded must not be replaced by an error thrown by the ornament above it.
+    - **The GUI owed a luma band and did not have one.** `images.rs` stores
+      `cover_accent` unclamped and says why — the clamp is *a renderer's policy
+      about its own lighting, not a fact about the file*. The TUI has such a
+      policy; this frontend was painting the raw measurement, so a plate could
+      be near-white or near-black and carry no inset panel at all. The hostile
+      fixture is what exposed it: `fake.ts` invents full-gamut accents on
+      purpose, and the defect was invisible against any library of real jackets.
+      `src/lib/accent.ts` is the band, and **its constants deliberately differ
+      from `texture.rs`'s** — a terminal's background is unknown and a webview's
+      is its own `--bg`. Copying them across would be item 39's duplication in
+      reverse.
+    - **The band's floor is not always reachable, and that is asserted rather
+      than papered over.** Scaling a colour toward the band preserves hue where
+      clipping each channel would not, but a saturated blue is already at
+      maximum on its one bright channel, so it cannot be lifted to the floor.
+      The property asserts the ceiling unconditionally, asserts only that a dark
+      colour never gets *darker*, and pins pure blue as the known limit — on the
+      engine's own rule that asserting something false and weakening it later is
+      worse than asserting less. Tolerances are one byte, because the output is
+      three integers and a finer claim is about arithmetic that never reaches a
+      screen.
+    - **A book with no measurement gets no colour at all.** Not a grey: a
+      fallback colour would make "never measured" and "this jacket is grey" the
+      same picture. It gets the hatch, which is a composed empty state rather
+      than an apology.
+    - **No token was promoted to `app.css`.** A token is a promise that every
+      screen will use it, and one screen exists. Item 27 is when what is
+      genuinely shared becomes visible.
+    - **The screenshot review found three axiom defects, not three taste
+      defects**, which is the argument for rendering a screen rather than
+      reasoning about it. `Rows` **hid the state label** below 420px — and the
+      state is *what you did*, the one thing this surface exists to say and the
+      only number it is allowed to carry, so a phone was shown a shelf that said
+      what you own and nothing about your reading. It now moves to a third line.
+      `Rows` also gave an unmeasured cover a **flat pale chip**, indistinguishable
+      from a genuinely pale jacket, breaking the rule the grid honoured two files
+      away. And the accent measured **2.78:1** on the light theme while carrying
+      every state label, with the segmented switch's *selected* segment at 2.95:1
+      against its unselected sibling's 5.61 — the control whose only job is
+      showing which state is on had the on state as the harder one to read.
+    - **`--accent-text` is a rendering of the palette, not a second palette.**
+      `theme.rs` owns brass and still does; what is bounded here is its
+      legibility against *this* app's background, which is the same argument
+      `accent.ts` makes about a jacket and the same one `images.rs` makes about
+      where a luma clamp lives. On the dark theme the two values are identical.
+    - **Size alone does not carry hierarchy.** The Reading strip was the shelf's
+      tile 13% larger, and at 720px the two sizing laws crossed and the band
+      pulled *proud* rendered a third **smaller** than the shelf beneath it. It
+      is now a different kind of object — its own ground, a rule beneath it, and
+      a track clamped wider than the grid's column at every width. The
+      duplication between the bands was kept: a shelf is your whole library, and
+      pulling a book out of it while you read would be the app maintaining a
+      queue with an outstanding state, which is the framing this product forbids.
+    - **A step away from a colour cannot be a `color-mix`.** The plate's inset
+      panel mixed toward white, which is crisp on a dark jacket and invisible on
+      a pale one; mixing toward the ink instead did the same thing mirrored.
+      Neither is wrong about one book and both are wrong about a shelf, which
+      owes every jacket the same amount of design. `plateShades` steps toward
+      whichever pole is near, in TypeScript, because a stylesheet can only mix
+      toward a colour named at author time.
+    - **One reported defect was declined.** The review flagged the lowercase
+      `paused` — `ReadingStateDto`'s `other` arm — as an enum value leaking to
+      the user. It is another application's word, kept verbatim by a decision
+      item 17 made and `phrasing.test.ts` pins, and title-casing only flatters
+      the single-word case: the fixture's real shape is
+      `paused-by-some-other-app`. The rule that a frontend words a value covers
+      *our* vocabulary, and this is the one label deliberately outside it.

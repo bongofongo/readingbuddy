@@ -1,9 +1,11 @@
 # gui/ — Tauri + Svelte 5
 
 **The scaffold has landed** (spec item 25) as a thin vertical slice: two screens,
-the generated type seam, and the four checks. Items 26–28 — the WebGL shelf, the
-book-and-notes view, the chain — are what remains, and they must run **in
-sequence**: three agents there produce three dialects of one app.
+the generated type seam, and the four checks. **Item 26 has landed** — the shelf,
+as a cover grid behind a layout seam. Items 27 (the book and the notes) and 28
+(the chain) are what remains, and they inherit item 26's dialect: the tile, the
+plate, the band headings and the switch are the vocabulary, and a screen that
+invents a second one is the failure mode to watch for.
 
 Read first: [`../docs/gui/gui-vision.md`](../docs/gui/gui-vision.md) (what the
 product is), [`../docs/gui/spec-gui-17-28.md`](../docs/gui/spec-gui-17-28.md)
@@ -166,17 +168,48 @@ accident:
 
 ## The shelf
 
-Home surface, and the product's signature. Not built — the current `+page.svelte`
-is a plain grid, deliberately *not* a half-built item 26 in the wrong dialect.
+Home surface. Two bands: **Reading**, the books with an open reading pulled
+proud, and **On the shelf**, everything, in a swappable arrangement.
 
-**Render it in WebGL** — the Rust ray tracer does not cross. What crosses is
-`Model`'s derivation of an edition's shape (four lines of arithmetic), which spec
-item 19 moves into the engine so a WebGL shelf and a Unicode-glyph book agree
-about how fat *Infinite Jest* is. `make dev-db` has a 1,408-page doorstop beside
-a 48-page pamphlet for exactly this.
+**The WebGL spine shelf was deferred, not abandoned.** It is a cosmetic decision
+and the user took it as one — see `docs/decisions.md` entry 26. What shipped is
+a cover grid, and the important half of the item is that the arrangement is a
+**value rather than a shape of the page**.
 
-Keep it as **one self-contained island with a narrow interface**: a list of
-books in, an event out. Not a per-frame boundary.
+`src/lib/shelf/layouts.ts` is the seam and the only file that knows what
+arrangements exist. A layout is a component plus a name; adding one is appending
+to `LAYOUTS`. **Two ship today** — `CoverGrid` and `Rows` — and the second is
+not decoration: a seam with one implementation is a guess about what varies,
+which is this repo's complaint about a guard that cannot fail wearing a
+different hat. `Rows` needs a fixed box rather than a reserved aspect and puts
+the title where the grid puts a cover, so it is what makes the contract known to
+be sufficient. `tests/routes.spec.ts` screenshots **both**, because a layout
+nobody renders is a layout nobody reviews.
+
+**A layout may not decide which books it shows, or in what order.** It receives
+a list and renders it. `currently_reading` is a request, not a filter spelled
+again in Svelte, and sorting is the engine's (item 17).
+
+When the spine shelf does land: it is a third entry in `LAYOUTS` and should need
+no change to that file. The Rust ray tracer still does not cross — what crosses
+is `readingbuddy::edition`'s shape derivation (item 19), which `make dev-db`'s
+1,408-page doorstop beside a 48-page pamphlet exists to exercise. Keep it as one
+self-contained island with a narrow interface: books in, an event out, not a
+per-frame boundary.
+
+### The plate
+
+`cover_accent` is stored **unclamped** — `crates/engine/src/images.rs` says so
+and gives the reason: a luma clamp is *a renderer's policy about its own
+lighting, not a fact about the file*. The terminal frontend has such a policy;
+this one now does too, in `src/lib/accent.ts`, and **the two bands differ on
+purpose**. A terminal's background is unknown so the TUI's band is defensive at
+both ends; a webview knows its own `--bg`. Copying the constants across would be
+the duplication item 39 exists to delete, in reverse.
+
+A book with no measurement at all does **not** get a fallback colour — it gets a
+different empty state, so that "never measured" and "this jacket is grey" stay
+different pictures.
 
 ## The axiom, in markup
 
