@@ -48,10 +48,10 @@ use readingbuddy::{
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
     ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
-    NewNoteInput, NoteKind, NoteRecord, OutgoingLink, Progress, PullReport, RankedResult, Rating,
-    RatingScale, Reading, ReadingEvent, ReadingState, RefillReport, SearchHit, SearchOutcome,
-    SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter,
-    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    MonthActivity, NewNoteInput, NoteKind, NoteRecord, OutgoingLink, Progress, PullReport,
+    RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingState, RefillReport,
+    SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, Source,
+    StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -2903,6 +2903,47 @@ impl From<DayActivity> for DayActivityDto {
             books: d.books,
             minutes: d.minutes,
             pages: d.pages,
+        }
+    }
+}
+
+/// One month of a period (item 42). **Only months carrying an event appear**,
+/// the same rule and the same reason as [`DayActivityDto`].
+///
+/// This is not a client's bucketing of [`DayActivityDto`] and could not be.
+/// `minutes: null` collapses to `0` the first time a client reduces over it,
+/// which is precisely the lie the nullability exists to prevent — spread over a
+/// calendar, where a month the device never measured becomes a month you read
+/// for zero minutes. And `books` is **distinct over the whole month**, so it
+/// cannot be recovered from the days at all: a reader who opened the same two
+/// books on twelve days read two books that month, not twenty-four.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonthActivityDto {
+    /// `YYYY-MM`.
+    pub month: String,
+    /// Distinct books with an event anywhere in the month.
+    pub books: i64,
+    /// Days of this month that carry an event.
+    pub activity_days: i64,
+    #[serde(default)]
+    pub minutes: Option<i64>,
+    #[serde(default)]
+    pub pages: Option<i64>,
+}
+
+impl From<MonthActivity> for MonthActivityDto {
+    fn from(m: MonthActivity) -> Self {
+        MonthActivityDto {
+            month: m.month,
+            books: m.books,
+            activity_days: m.activity_days,
+            minutes: m.minutes,
+            pages: m.pages,
         }
     }
 }

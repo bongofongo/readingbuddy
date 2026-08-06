@@ -425,6 +425,77 @@ impl Storage {
             .await?;
         Ok(rows.iter().map(row_to_highlight).collect())
     }
+
+    /// The one passage a card shows for a reading (item 44), or `None`.
+    ///
+    /// **The rule is the longest passage of the reading, ties broken by the
+    /// lowest `id`.** That is a *selection predicate*, which item 17 puts in
+    /// the engine and not in a frontend: `highlights[0]` in TypeScript is a
+    /// frontend inventing a rule, and the day the TUI grows a card the two apps
+    /// show a different passage for the same reading with neither looking
+    /// wrong.
+    ///
+    /// Why length, when "the first one" and "the one you annotated" were both
+    /// on the table:
+    ///
+    /// - **This database already treats a short highlight as not-a-passage.**
+    ///   `koreader.rs` turns single-word highlights into flashcard candidates,
+    ///   because a one-word mark on a reader is a dictionary lookup rather than
+    ///   something the reader wanted to keep. Ordering by length is the cheapest
+    ///   rule that lands on the other kind, and any rule keyed on *position*
+    ///   (first marked, lowest page) picks those vocabulary marks constantly —
+    ///   they are scattered through a book and one of them is usually near the
+    ///   front.
+    /// - **It needs nothing that is usually missing.** `annotation`, `ko_note`
+    ///   and a citation are all better signals of "the passage that mattered"
+    ///   and all three are absent for most readings, so a rule resting on them
+    ///   makes the ordinary card the empty one.
+    /// - **It is stable across a device re-import**, which the alternatives are
+    ///   not obviously. `refresh_device_fields` rewrites `ko_note`, `color`,
+    ///   `chapter` and `page` in place and never `text`, and highlight ids are
+    ///   asserted stable across that refresh
+    ///   (`highlight_ids_are_stable_across_refresh`), so both the key and the
+    ///   tie-break survive a sync. A rule ordering by `page` would be reordered
+    ///   by one, since a re-render moves page numbers.
+    ///
+    /// **What it costs, plainly: it selects for the longest drag, not the best
+    /// passage.** A mis-drag that grabbed half a screen outranks the sentence
+    /// the reader actually loved, and a reading whose marks are all one
+    /// sentence long is decided by a few characters. A length *cap* would only
+    /// trade that for a magic number making a claim about how long a passage is
+    /// allowed to be, so the cost is stated rather than papered over.
+    ///
+    /// `length()` counts **characters**, not bytes, which is the honest measure
+    /// of how much was dragged: on bytes a CJK passage would score three times a
+    /// Latin one of the same length and win every card in a mixed library.
+    ///
+    /// **Scoped to the reading, exactly like [`Storage::highlights_for_reading`]
+    /// and for the card's own reason** — the card is per reading, so two reads
+    /// of one book must be able to show different passages, which is the
+    /// comparison the card exists to make. It follows that a reading whose
+    /// highlights are all unattributed has no card passage: `reading_id` is
+    /// `None` for an ordinary and well-understood set of highlights, so this
+    /// returns `None` the same way `highlights_for_reading` returns an empty
+    /// list, and a card drawing that absence *as* an absence is right.
+    ///
+    /// The order is **total** — `id` is the primary key, so no two rows tie all
+    /// the way down — which is what makes "stable across calls" a property of
+    /// the statement rather than of SQLite's query plan. `storage/CLAUDE.md`
+    /// records the same requirement for the paged list arms, and for the same
+    /// reason: a partial order is deterministic in testing right up until the
+    /// plan changes.
+    pub async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
+        let sql = format!(
+            "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE reading_id = ?
+             ORDER BY length(text) DESC, id ASC
+             LIMIT 1"
+        );
+        let row = sqlx::query(&sql)
+            .bind(reading_id)
+            .fetch_optional(self.pool())
+            .await?;
+        Ok(row.as_ref().map(row_to_highlight))
+    }
 }
 
 #[cfg(test)]
@@ -793,5 +864,113 @@ mod tests {
         mine.source = "manual".into();
         s.insert_highlight(book, &mine).await.unwrap();
         assert_eq!(s.device_highlight_digest(book).await.unwrap(), before);
+    }
+}
+
+/// Properties of the card's passage rule (item 44).
+///
+/// The rule is *an ordering*, and an ordering is the kind of claim more examples
+/// cover badly: whether the right row wins depends on how the lengths happen to
+/// be arranged, and a hand-written case is arranged by whoever wrote the
+/// implementation. Ties are generated deliberately dense here, since a tie is
+/// where "deterministic" stops being free.
+#[cfg(test)]
+mod props {
+    use super::*;
+    use crate::book::Book;
+    use proptest::prelude::*;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// A mark of `n + 1` characters, in one of two scripts, with an anchor that
+    /// makes it its own row. The scripts differ in bytes per character, so a
+    /// rule that measured bytes disagrees with the expected answer here rather
+    /// than only in a fixture somebody remembered to write.
+    fn mark(n: usize, cjk: bool, seq: usize) -> NewHighlight {
+        let text = if cjk { "極" } else { "x" }.repeat(n + 1);
+        NewHighlight {
+            text,
+            chapter: None,
+            page: Some(1),
+            pos0: Some(format!("/body/p[{seq}]/text().0")),
+            pos1: None,
+            ko_datetime: Some("2026-01-05 12:00:00".into()),
+            ko_datetime_updated: None,
+            color: None,
+            note: None,
+            source: "koreader".into(),
+        }
+    }
+
+    proptest! {
+        /// The card's passage is always a mark of that reading, and always the
+        /// longest of them in characters — ties going to the lowest id, which
+        /// is what makes the answer the same on every call.
+        ///
+        /// The expected value is computed in Rust from what was inserted, never
+        /// by a second query, so it cannot agree with the implementation by
+        /// sharing its mistake.
+        #[test]
+        fn the_card_passage_is_the_longest_mark_of_its_reading(
+            marks in proptest::collection::vec((0usize..6, any::<bool>()), 0..9),
+        ) {
+            rt().block_on(async {
+                let s = Storage::connect("sqlite::memory:").await.unwrap();
+                let book = s.upsert_book(
+                    &Book { title: Some("C".into()), ..Default::default() },
+                    None,
+                ).await.unwrap();
+                let reading = s
+                    .record_reading(book, Some(1_767_225_600), None, "reading", "manual")
+                    .await
+                    .unwrap();
+
+                for (seq, &(n, cjk)) in marks.iter().enumerate() {
+                    let id = s.insert_highlight(book, &mark(n, cjk, seq)).await.unwrap()
+                        .expect("every anchor here is distinct, so every insert is a row");
+                    sqlx::query("UPDATE highlights SET reading_id = ? WHERE id = ?")
+                        .bind(reading)
+                        .bind(id)
+                        .execute(s.pool())
+                        .await
+                        .unwrap();
+                }
+
+                let listed = s.highlights_for_reading(reading).await.unwrap();
+                prop_assert_eq!(listed.len(), marks.len());
+
+                let got = s.card_passage(reading).await.unwrap();
+
+                // Absence is exactly absence of marks, and nothing else.
+                prop_assert_eq!(got.is_none(), marks.is_empty());
+                let Some(got) = got else { return Ok(()); };
+
+                // It is one of the reading's own marks — a card and the full
+                // list can never disagree about what was marked.
+                prop_assert!(
+                    listed.iter().any(|h| h.id == got.id),
+                    "the card showed a passage the reading does not hold"
+                );
+
+                // And it is *the* maximum, by characters then by lowest id.
+                let want = listed
+                    .iter()
+                    .min_by_key(|h| (std::cmp::Reverse(h.text.chars().count()), h.id))
+                    .unwrap();
+                prop_assert_eq!(got.id, want.id);
+                prop_assert_eq!(&got.text, &want.text);
+
+                // Asked again, the same answer. The order is total — `id` is a
+                // primary key — so this holds however SQLite plans the query.
+                let again = s.card_passage(reading).await.unwrap().unwrap();
+                prop_assert_eq!(again.id, got.id);
+                Ok(())
+            })?;
+        }
     }
 }

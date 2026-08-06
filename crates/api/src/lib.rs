@@ -306,6 +306,16 @@ impl Api {
         Ok(map(self.engine.highlights_for_reading(reading_id).await?))
     }
 
+    /// The one passage a card shows for this reading (item 44), or `None`.
+    ///
+    /// Which passage is the engine's rule, not this layer's and not a client's;
+    /// `Engine::card_passage` carries the argument. Served as its own method
+    /// rather than a field on `ReadingDto` so that the reader's highlight text
+    /// does not ride along on every row of every reading list.
+    pub async fn card_passage(&self, reading_id: i64) -> ApiResult<Option<HighlightDto>> {
+        Ok(self.engine.card_passage(reading_id).await?.map(Into::into))
+    }
+
     pub async fn set_annotation(
         &self,
         highlight_id: i64,
@@ -454,6 +464,19 @@ impl Api {
     pub async fn activity_by_day(&self, from: &str, to: &str) -> ApiResult<Vec<DayActivityDto>> {
         let range = DayRange::new(from, to)?;
         Ok(map(self.engine.activity_by_day(&range).await?))
+    }
+
+    /// The months of a period that carry an event, oldest first (item 42).
+    ///
+    /// Validated through the engine's own `DayRange` like its two siblings, so
+    /// an inverted span is refused here too rather than becoming an empty year.
+    pub async fn activity_by_month(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> ApiResult<Vec<MonthActivityDto>> {
+        let range = DayRange::new(from, to)?;
+        Ok(map(self.engine.activity_by_month(&range).await?))
     }
 
     // ---- moments -----------------------------------------------------------
@@ -896,6 +919,9 @@ impl Api {
             R::HighlightsForReading { reading_id } => {
                 Response::Highlights(self.highlights_for_reading(reading_id).await?)
             }
+            R::CardPassage { reading_id } => {
+                Response::Highlight(self.card_passage(reading_id).await?)
+            }
             R::SetAnnotation {
                 highlight_id,
                 annotation,
@@ -964,6 +990,9 @@ impl Api {
             }
             R::ActivityByDay { from, to } => {
                 Response::ActivityByDay(self.activity_by_day(&from, &to).await?)
+            }
+            R::ActivityByMonth { from, to } => {
+                Response::ActivityByMonth(self.activity_by_month(&from, &to).await?)
             }
 
             R::CreateNote { note } => Response::CreatedNote(self.create_note(note).await?),
