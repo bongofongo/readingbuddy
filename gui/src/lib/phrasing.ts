@@ -31,6 +31,7 @@ import type {
   ProgressDto,
   RatingDto,
   ReadingDto,
+  ReadingSortDto,
   ReadingStateDto,
 } from '$lib/api/bindings';
 
@@ -186,6 +187,88 @@ export function readingSpan(r: ReadingDto): string | null {
   if (from) return `from ${from}`;
   if (to) return `to ${to}`;
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Item 47's words. The read ordinal and the wall's three orders — both of them
+// phrasings of values items 41 and 43 put on the wire.
+// ---------------------------------------------------------------------------
+
+const ORDINALS = [
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'sixth',
+  'seventh',
+  'eighth',
+  'ninth',
+  'tenth',
+];
+
+/**
+ * Which read this is — *your second read* — or `null` for a book read once.
+ *
+ * **The number is the engine's** (item 41). `read_number` and `of_reads` come
+ * off `ReadingRowDto`, counted over every reading of the book by two correlated
+ * subqueries so that a wall filtered to one year still calls a reread's second
+ * read the second. `readings.indexOf(id) + 1` is what this replaces, and it was
+ * wrong twice over: it re-implemented a domain rule *and* silently re-acquired a
+ * dependency on `list_readings`' oldest-first ordering, which is stated nowhere
+ * on the wire — with nothing on the screen looking wrong.
+ *
+ * `of_reads > 1` is the whole of the frontend's half, and it is the **same test
+ * the TUI's gutter makes**: `ReadCount::ordinal` is "a lone read has no number",
+ * so a book read once gets no ordinal here rather than a lonely *your first
+ * read*. Neither field is an `Option`, so there is no third case to word.
+ *
+ * Past tense, about one book, on a page you chose to open — which is the three
+ * things that make a number allowed at all.
+ */
+export function readOrdinalLabel(readNumber: number, ofReads: number): string | null {
+  if (ofReads <= 1) return null;
+  const name = ORDINALS[readNumber - 1];
+  return `Your ${name ?? `${readNumber}${ordinalSuffix(readNumber)}`} read`;
+}
+
+/** `1st`, `2nd`, `3rd`, `4th` — and `11th`/`12th`/`13th`, which the teens break. */
+function ordinalSuffix(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return 'th';
+  switch (n % 10) {
+    case 1:
+      return 'st';
+    case 2:
+      return 'nd';
+    case 3:
+      return 'rd';
+    default:
+      return 'th';
+  }
+}
+
+/**
+ * What one of the wall's three orders is called.
+ *
+ * All three are descending — most recent first — so the labels name the *event*
+ * rather than the direction: the engine has no ascending arm and a label saying
+ * "newest" would be describing a choice nobody made. There are three and there
+ * is deliberately no fourth: a title sort would order the list by a `books`
+ * column no index on `readings` can serve, and sorting is the engine's anyway.
+ */
+export function readingSortLabel(sort: ReadingSortDto): string {
+  switch (sort) {
+    case 'finished':
+      return 'Finished';
+    case 'started':
+      return 'Started';
+    case 'last_modified':
+      return 'Touched';
+    default:
+      // Exhaustive in TypeScript, open on the wire — see `readingStateLabel`.
+      return sort;
+  }
 }
 
 /**

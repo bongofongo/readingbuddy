@@ -137,6 +137,11 @@ describe('the reading life', () => {
     const c = new FakeClient();
     const ms = await c.activityByMonth('1970-01-01', '2025-05-14');
     expect(ms.map((m) => m.month)).toEqual([
+      // Seventeen empty months follow this one, which is the widest gap in the
+      // fixture — only months carrying an event come back, and the ones between
+      // are the client's to draw or to leave out. It arrived with item 47: it is
+      // the year the wall's picker offers with no card behind it.
+      '2023-06',
       '2024-11',
       '2024-12',
       '2025-01',

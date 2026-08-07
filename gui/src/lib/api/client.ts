@@ -51,6 +51,9 @@ import type {
   RatingDto,
   RatingScaleDto,
   ReadingDto,
+  ReadingFilterDto,
+  ReadingRowDto,
+  ReadingSortDto,
   Reply,
   Request,
   Response,
@@ -70,6 +73,41 @@ export type StoredBook = BookDto & { id: number };
  * 28's card is minted per *reading*.
  */
 export type OpenReading = { book: StoredBook; reading: ReadingDto };
+
+/**
+ * One row of the library's readings, with its book narrowed (item 43).
+ *
+ * [`StoredBook`]'s narrowing applied to `ReadingRowDto.book` for
+ * [`OpenReading`]'s reason: anything the library hands back has an id, and
+ * `book.id!` in a card's `href` is the alternative. Done once, in
+ * [`TauriClient.listReadingRows`], rather than at every call site.
+ *
+ * Everything else is the DTO's own: `read_number` and `of_reads` are `i64` and
+ * **neither is an `Option`** (item 41 has the argument), and `passage` is item
+ * 44's chosen highlight or `null` for a read whose marks are all unattributed.
+ */
+export type ReadingRow = Omit<ReadingRowDto, 'book'> & { book: StoredBook };
+
+/**
+ * Which page of which readings, in what order.
+ *
+ * **An object rather than four positional arguments, and the API's own doc
+ * gives the reason**: `ReadingQueryDto` says `limit` and `offset` "are both
+ * `i64` and adjacent, which is a swap no type checker catches". Naming them at
+ * the call site is what makes that swap impossible here too.
+ *
+ * The defaults are the do-nothing ones except `limit`, which has **no** default
+ * on the wire on purpose — `0` is a real limit meaning a page of nothing, and
+ * an omitted one would silently be that. A caller wanting everything says `-1`,
+ * which is SQLite's own reading of `LIMIT -1`; this interface repeats that
+ * rather than inventing a friendlier spelling of it.
+ */
+export type ReadingPage = {
+  limit: number;
+  sort?: ReadingSortDto;
+  offset?: number;
+  filter?: ReadingFilterDto | null;
+};
 
 /**
  * Everything a screen may ask for.
@@ -134,6 +172,51 @@ export interface LibraryClient {
    * rather than merely refused after it.
    */
   notesForReading(readingId: number): Promise<NoteDto[]>;
+
+  // ---- the wall of cards (items 43, 41, 47) -------------------------------
+
+  /**
+   * A page of the library's readings, each row carrying what one card draws.
+   *
+   * **This is the call that retires [`cardPassage`]'s N+1.** Entry 44 wrote the
+   * pathology down in advance — one `CardPassage` per card is right for a card
+   * reached by selecting a book and wrong for a wall across the library — and
+   * item 43 minted this row so the passage rides the list instead. The engine
+   * issues two statements per page whatever the page size, and the passage it
+   * picks comes from the same `card_passage_order` a single `cardPassage` uses,
+   * so the wall and one card cannot show different sentences for one reading.
+   *
+   * **It is not a card**, and the test of that is what would be added next: a
+   * card would grow the rating and this will not (item 43). So a card drawn
+   * from a row alone carries no rating and no note list — see `Card.svelte`'s
+   * `detail` prop, and `docs/decisions.md` entry 47 for why that is the right
+   * side of the trade rather than a shortfall.
+   *
+   * **`read_number` counts over every reading of the book, never over the
+   * page.** A wall filtered to one year holds a reread's second read without
+   * its first and still calls it the second — the engine uses correlated
+   * subqueries rather than a window function precisely so that holds.
+   *
+   * Fallible where the other list calls are not: `filter.finished_in` is a
+   * `DayRangeDto` the engine validates, so an inverted span is an
+   * `InvalidInput` from **both** doors rather than a confident empty wall. A
+   * year picker cannot produce one, which is exactly why there is no second
+   * validation dialect above this seam.
+   */
+  listReadingRows(page: ReadingPage): Promise<ReadingRow[]>;
+  /**
+   * How many readings a filter matched — **its own request** (item 18).
+   *
+   * Not a field beside the rows, and a wall is the case that ruling was made
+   * for: a count is a property of the *filter*, asked once when the reader
+   * picks a year, while the page is asked again on every move through it.
+   *
+   * It takes the filter and deliberately not the query — a count has no page
+   * and no order. Hand it the **same object** the page was asked with; the
+   * engine builds both clauses from one `ReadingFilter::predicate`, so any
+   * disagreement between the two numbers would be the caller's.
+   */
+  countReadings(filter: ReadingFilterDto | null): Promise<number>;
 
   // ---- moments (item 23) --------------------------------------------------
 
@@ -456,6 +539,32 @@ export class TauriClient implements LibraryClient {
       }),
       'notes',
     ).value;
+  }
+
+  // ---- the wall of cards (items 43, 41, 47) -------------------------------
+
+  /**
+   * All four params are stated, because ts-rs emits every one as required
+   * however `#[serde(default)]` the Rust is — and for `limit` that is not a
+   * quirk but the design: an omitted limit would be a page of nothing.
+   */
+  async listReadingRows({
+    limit,
+    sort = 'finished',
+    offset = 0,
+    filter = null,
+  }: ReadingPage): Promise<ReadingRow[]> {
+    const r = expect(
+      await this.#call({ method: 'list_reading_rows', params: { limit, sort, offset, filter } }),
+      'reading_rows',
+    );
+    // Every book out of the library has an id. Narrowed once, here — the same
+    // move `listBooks` makes, for the same reason.
+    return r.value as ReadingRow[];
+  }
+
+  async countReadings(filter: ReadingFilterDto | null): Promise<number> {
+    return expect(await this.#call({ method: 'count_readings', params: { filter } }), 'count').value;
   }
 
   async pendingMoments(limit = 1): Promise<MomentDto[]> {

@@ -15,8 +15,15 @@
          and it is what makes that page "somewhere you chose to go" rather than
          somewhere the app pushed a figure at you — the whole distinction the
          home-surface rule rests on. It says *reading life*, never *stats*: the
-         page is what you did, not a dashboard measuring you. -->
-    <nav><a href="/life">Reading life</a></nav>
+         page is what you did, not a dashboard measuring you.
+
+         Item 47 added the second door on the same terms. It says *cards* — the
+         object — and never *finished*, which would make it a tally of a thing
+         with an implied other half. -->
+    <nav>
+      <a href="/cards">Cards</a>
+      <a href="/life">Reading life</a>
+    </nav>
   </header>
   <main>
     {@render children()}
@@ -39,10 +46,16 @@
   .mark {
     font-weight: 600;
     letter-spacing: 0.01em;
-    color: var(--accent);
+    /* **`--accent-text`, not `--accent`.** `app.css` states this exact pair and
+       this exact number as the whole reason the second token exists: `--accent`
+       on `--bg` measures 2.78:1, and the wordmark was the one string in the app
+       still using it. Found by item 47's screenshot review, in every shot. */
+    color: var(--accent-text);
   }
   header nav {
     margin-left: auto;
+    display: flex;
+    gap: 1rem;
     font-size: 0.85rem;
     color: var(--ink-dim);
   }
