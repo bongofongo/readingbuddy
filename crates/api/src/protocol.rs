@@ -235,6 +235,42 @@ pub enum Request {
         #[serde(default)]
         filter: Option<ReadingFilterDto>,
     },
+    /// Which years the readings a filter matches actually **ended** in, newest
+    /// first, and whether any of them has not ended (item 51).
+    ///
+    /// The question behind a year picker, and until this there was no way to
+    /// ask it. `ActivityByMonth` is what a wall had to use, and it is a **proxy
+    /// in five directions**: `reading_events` gets a row when a read *started*,
+    /// when a note was written, when a highlight carries a device date, when a
+    /// device measured minutes, and it keeps the days a since-deleted reading
+    /// explained — and it holds nothing at all until `RefillReadingEvents` has
+    /// run, so a library that never refilled offers no years while plainly
+    /// having read something. It also takes no [`ReadingFilterDto`], so it can
+    /// never answer for one book.
+    ///
+    /// A **new method rather than a field on `CountReadings`**: it answers a
+    /// different question, returns a different shape, and a new field on an
+    /// existing request is a breaking change in the generated TypeScript
+    /// however `#[serde(default)]` the Rust is.
+    ///
+    /// It takes the same `filter` the page and the count take, and the engine
+    /// builds all three clauses from one predicate — so every year offered has
+    /// rows behind it under the filter the wall will draw with, by construction
+    /// rather than by coincidence.
+    ///
+    /// **Deriving this above the seam is refused for three reasons**, not one:
+    /// `ListReadingRows { limit: -1 }` puts the whole library on the wire —
+    /// a book and the reader's private passage per row — to draw six controls;
+    /// it re-derives a fact below the seam's own rule (item 17); and
+    /// `getFullYear` and `getUTCFullYear` differ by three characters while
+    /// `finished_in` is UTC, so a read closed on New Year's Eve files under one
+    /// year in the picker and the other in the wall for every reader west of
+    /// Greenwich.
+    ReadingYears {
+        /// Absent is every reading.
+        #[serde(default)]
+        filter: Option<ReadingFilterDto>,
+    },
     GetReading {
         id: i64,
     },
@@ -723,6 +759,11 @@ pub enum Response {
     /// `Readings`, because a row here carries a book and a passage beside the
     /// reading and a client reading one as the other would find neither.
     ReadingRows(Vec<ReadingRowDto>),
+    /// The years a filter's readings ended in, and whether any is still open
+    /// (item 51). Its own shape and not `Count`: this measures nothing, it
+    /// enumerates — and the open bucket rides with the years because without it
+    /// they do not add up to the wall.
+    ReadingYears(ReadingYearsDto),
 
     Highlights(Vec<HighlightDto>),
     /// One passage, or `null` because this reading has none attributed to it —

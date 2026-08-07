@@ -97,7 +97,7 @@
     happened" and "nobody has built it yet". Naming the move is what stops it
     being a dead end, and it is the same sentence `rb activity` prints.
   -->
-  <p class="note">Nothing recorded here yet.</p>
+  <p class="note">Nothing recorded here.</p>
   <p class="hint">
     <code>rb activity --refill</code> builds the log from what you already have — your highlights,
     your notes and the days your reads began and ended.

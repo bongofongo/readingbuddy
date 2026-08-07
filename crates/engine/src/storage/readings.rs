@@ -379,6 +379,51 @@ fn reading_rows_sql(sort: ReadingSort, predicate: &Predicate) -> String {
     )
 }
 
+/// The exact statement [`Storage::reading_years`] issues, minus its binds.
+///
+/// A function for [`reading_rows_sql`]'s reason — the plan test must read the
+/// real thing — and here it guards a specific, silent mistake. `count_readings`
+/// keeps `JOIN books ON books.id = readings.book_id` on purpose, so that it and
+/// the page differ in exactly one clause; copying that join here **destroys the
+/// plan**. `FROM readings` alone is served by `idx_readings_finished_at` as a
+/// *covering* index and the table is never touched; with the join the planner
+/// scans `books` and searches `readings` per book, which is a 500-book scan to
+/// draw six pills. The join cannot change the answer (`readings.book_id` is a
+/// NOT NULL foreign key) and `ReadingFilter::predicate` names only `readings`,
+/// so dropping it is safe for every filter.
+///
+/// `strftime` is in the **projection and never in the `WHERE`** — an expression
+/// over the column is what `0018`'s own control test shows the index declining
+/// in silence. The year filter still binds the bare column; only the grouping
+/// converts.
+fn reading_years_sql(predicate: &Predicate) -> String {
+    let where_sql = &predicate.sql;
+    format!(
+        "SELECT CAST(strftime('%Y', readings.finished_at, 'unixepoch') AS INTEGER) AS year
+           FROM readings {where_sql}
+          GROUP BY year ORDER BY year DESC"
+    )
+}
+
+/// The years a filter's readings ended in, and whether any of them is still
+/// open (item 51).
+///
+/// **No count per year.** The wall asks `count_readings` for the year it is
+/// drawing, and a second number arriving here would be a number nobody asked
+/// for and nobody can be shown to have got right — while a row of years each
+/// carrying a figure is a scoreboard, which is the framing the axiom bans by
+/// name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadingYears {
+    /// Newest first. A year is here iff at least one matching reading closed in
+    /// it — never because a note, a highlight or a device measurement is dated
+    /// in it.
+    pub years: Vec<i32>,
+    /// Whether any matching reading has **not** ended. Those rows are in no
+    /// year, and without this the years do not partition the wall.
+    pub open: bool,
+}
+
 /// One row of the library-wide readings list (item 43): a reading, the book it
 /// is of, and the two things a card needs that a `Reading` cannot answer.
 ///
@@ -632,6 +677,61 @@ impl Storage {
             .fetch_one(self.pool())
             .await?;
         Ok(row.try_get::<i64, _>(0)?)
+    }
+
+    /// Which years the readings a filter matches actually **ended** in, newest
+    /// first, and whether any of them has not ended (item 51).
+    ///
+    /// The question a year picker asks, and until this existed the only thing
+    /// that could answer it was `activity_by_month` — which is a proxy and is
+    /// wrong in five independent directions. `reading_events` gets a row when a
+    /// read *started*, when a note was written, when a highlight carries a
+    /// device date, when a device measured minutes, and it keeps the days a
+    /// since-deleted reading explained; and it holds nothing at all until
+    /// `rb activity --refill` has run. So a picker built on it offers a year in
+    /// which nothing was finished, offers nothing on a library that never
+    /// refilled, and cannot be narrowed to a book at all.
+    ///
+    /// It shares [`ReadingFilter::predicate`](super::ReadingFilter) with the
+    /// page and the count **and nothing else**, which is what makes the picker
+    /// and the wall agree by construction rather than by coincidence: every
+    /// year offered has at least one row behind it under the same clause the
+    /// wall will draw with.
+    ///
+    /// ## The open reading is a bucket, not a year
+    ///
+    /// A wall under `ReadingFilter::default()` holds open readings — deliberately,
+    /// since gating on `finished_at` would tell a reader the book they are in
+    /// has no card. Those rows are in no year, so a bare list of years does not
+    /// partition the wall: picking every year in turn would never show them
+    /// again with nothing on screen to say where they went. `strftime` of NULL
+    /// is NULL, so they fall out of the same `GROUP BY` and come back as
+    /// [`ReadingYears::open`] — a bool, because the picker needs to know
+    /// whether the chip *exists*, and a number of books-in-progress sitting on
+    /// a control is one decision away from the framing the axiom bans. The
+    /// count for the chip is the same `count_readings` every other chip asks
+    /// for, with `open: Some(true)`.
+    ///
+    /// Two degenerate cases follow and are worth stating rather than
+    /// rediscovering: with `finished_in` set `open` is always false (a NULL
+    /// fails both bare-column comparisons), and with `open: Some(true)` set
+    /// `years` is always empty.
+    pub async fn reading_years(&self, filter: &ReadingFilter) -> Result<ReadingYears> {
+        let predicate = filter.predicate();
+        let sql = reading_years_sql(&predicate);
+        let rows = bind_all(sqlx::query(&sql), &predicate.binds)
+            .fetch_all(self.pool())
+            .await?;
+
+        let mut years = Vec::with_capacity(rows.len());
+        let mut open = false;
+        for row in &rows {
+            match row.try_get::<Option<i64>, _>("year")? {
+                Some(y) => years.push(y as i32),
+                None => open = true,
+            }
+        }
+        Ok(ReadingYears { years, open })
     }
 
     /// Open a reading. Returns its id.
@@ -2237,6 +2337,183 @@ mod tests {
         h.ko_datetime = None;
         s.insert_highlight(id, &h).await.unwrap();
         assert_eq!(s.attribute_highlights(id).await.unwrap(), 0);
+    }
+
+    // ---- the years the wall has (item 51) -----------------------------------
+
+    /// The picker's whole claim: a year is offered because a read **ended** in
+    /// it, and the open read is a bucket beside the years rather than one of
+    /// them.
+    #[tokio::test]
+    async fn the_years_are_the_years_reads_ended_in_newest_first() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        wall(&s).await;
+        let y = s.reading_years(&ReadingFilter::default()).await.unwrap();
+        assert_eq!(y.years, vec![2025, 2024], "newest first, one entry a year");
+        assert!(
+            y.open,
+            "an open read is in no year, and a picker that did not say so \
+             would offer years that do not add up to the wall"
+        );
+    }
+
+    /// **The years and the wall are the same set, filter by filter.**
+    ///
+    /// This is what "agree by construction" has to mean in a test: every year
+    /// the picker offers, asked for as a `finished_in`, returns rows — and the
+    /// years plus the open bucket account for **every** row the unfiltered wall
+    /// holds. A picker derived from `activity_by_month` fails the second half
+    /// on any library where a note was written in a year nothing was finished.
+    #[tokio::test]
+    async fn every_year_offered_has_rows_and_together_they_are_the_whole_wall() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let (a, _, _) = wall(&s).await;
+
+        for filter in [
+            ReadingFilter::default(),
+            ReadingFilter {
+                book_id: Some(a),
+                ..Default::default()
+            },
+            ReadingFilter {
+                status: Some(ReadingState::Finished),
+                ..Default::default()
+            },
+        ] {
+            let years = s.reading_years(&filter).await.unwrap();
+            let total = s.count_readings(&filter).await.unwrap();
+
+            let mut counted = 0;
+            for y in &years.years {
+                let scoped = ReadingFilter {
+                    finished_in: Some(year(&y.to_string())),
+                    ..filter.clone()
+                };
+                let n = s.count_readings(&scoped).await.unwrap();
+                assert!(n > 0, "{y} was offered and holds nothing under {filter:?}");
+                counted += n;
+            }
+            if years.open {
+                counted += s
+                    .count_readings(&ReadingFilter {
+                        open: Some(true),
+                        ..filter.clone()
+                    })
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                counted, total,
+                "the picker must partition the wall under {filter:?}"
+            );
+        }
+    }
+
+    /// The two degenerate cases, stated so neither is rediscovered as a bug.
+    #[tokio::test]
+    async fn a_year_filter_answers_no_open_and_an_open_filter_answers_no_years() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        wall(&s).await;
+
+        // A NULL `finished_at` fails both bare-column comparisons, so a year
+        // can never contain the open read.
+        let in_2025 = s
+            .reading_years(&ReadingFilter {
+                finished_in: Some(year("2025")),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(in_2025.years, vec![2025]);
+        assert!(!in_2025.open);
+
+        let open = s
+            .reading_years(&ReadingFilter {
+                open: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(open.years.is_empty());
+        assert!(open.open);
+    }
+
+    /// An empty library offers nothing, and that is an empty answer rather than
+    /// a year of zero.
+    #[tokio::test]
+    async fn a_library_with_no_readings_offers_no_years() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        add(&s, "Unread").await;
+        assert_eq!(
+            s.reading_years(&ReadingFilter::default()).await.unwrap(),
+            ReadingYears::default()
+        );
+    }
+
+    /// **The year is UTC, and the boundary is the same instant `finished_in`
+    /// binds.**
+    ///
+    /// `strftime('%Y', …, 'unixepoch')` and `DayRange::unix_bounds` are two
+    /// different conversions of one idea, and a disagreement of one second at
+    /// New Year would file a read under one year in the picker and the other in
+    /// the wall. Asserted on the second either side of a boundary rather than
+    /// on a comfortable date in June.
+    #[tokio::test]
+    async fn the_year_boundary_is_the_instant_the_year_filter_binds() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let b = add(&s, "New Year").await;
+        // 2025-12-31T23:59:59Z and 2026-01-01T00:00:00Z.
+        s.record_reading(b, None, Some(1_767_225_599), STATUS_FINISHED, "manual")
+            .await
+            .unwrap();
+        let c = add(&s, "New Year, Later").await;
+        s.record_reading(c, None, Some(1_767_225_600), STATUS_FINISHED, "manual")
+            .await
+            .unwrap();
+
+        let y = s.reading_years(&ReadingFilter::default()).await.unwrap();
+        assert_eq!(y.years, vec![2026, 2025]);
+        for (year_of, expected) in [("2025", 1), ("2026", 1)] {
+            let n = s
+                .count_readings(&ReadingFilter {
+                    finished_in: Some(year(year_of)),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(n, expected, "{year_of} must hold what the picker offered");
+        }
+    }
+
+    /// **Migration `0018`'s index has a fourth job, and the join that would
+    /// lose it is the control.**
+    ///
+    /// `count_readings` keeps `JOIN books` deliberately, so that it and the
+    /// page differ in one clause. Copying that here reads correctly, runs, and
+    /// silently turns a covering-index scan into a scan of `books` — `0008`'s
+    /// genre of failure, which is why the control is spelled out rather than
+    /// trusted to review.
+    #[tokio::test]
+    async fn the_year_list_is_covered_by_the_finished_index() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let sql = reading_years_sql(&ReadingFilter::default().predicate());
+        let plan = outer_plan(&s, &sql).await.join("; ");
+        assert!(
+            plan.contains("COVERING INDEX idx_readings_finished_at"),
+            "the year list must never touch the table: {plan}"
+        );
+
+        // The control: the same question with `count_readings`' join.
+        let joined = sql.replace(
+            "FROM readings ",
+            "FROM readings JOIN books ON books.id = readings.book_id ",
+        );
+        assert_ne!(joined, sql, "the substitution must have bitten");
+        let plan = outer_plan(&s, &joined).await.join("; ");
+        assert!(
+            !plan.contains("COVERING INDEX idx_readings_finished_at"),
+            "if the join is free, this assertion is measuring nothing: {plan}"
+        );
     }
 }
 

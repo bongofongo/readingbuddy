@@ -7,7 +7,6 @@
  * because the page size is.
  */
 import type { DayRangeDto, ReadingFilterDto, ReadingSortDto } from '$lib/api/bindings';
-import { yearRange } from '$lib/life/period';
 
 /**
  * How many cards a page holds.
@@ -34,23 +33,42 @@ export const PAGE = 24;
 export const SORTS: ReadingSortDto[] = ['finished', 'started', 'last_modified'];
 
 /**
- * One year, as the span the engine's `finished_in` wants.
+ * One year, as the span the engine's `finished_in` wants — **the whole year**.
  *
- * **`yearRange` from `$lib/life/period`, not a second spelling of it.** A year is
- * two days, and the reading-life page already had to decide which two — including
- * the clamp to today, which is not defensive coding: it keeps the current year a
- * genuine subset of the span it sits inside. `finished_in` matches `finished_at`
- * and nothing finishes in the future, so the clamp is free here and the shared
- * spelling is the point.
+ * It used to be `/life`'s `yearRange`, clamped to today, and the shared spelling
+ * was the argument: a year is two days and that page had already decided which
+ * two. The clamp belongs to `/life` and not here, though, and item 51 is what
+ * made the difference reachable. `/life`'s year is a subset of the
+ * `activityByMonth` span it was grouped out of, so ending the current year at
+ * today keeps the two calls talking about the same days. This span is matched
+ * against `finished_at` and the years now come from `readings` themselves, so a
+ * `finished_at` in the future — a Goodreads `Date Read`, a device clock ahead of
+ * this machine — puts a year in the picker that `yearRange` then clamps into an
+ * **inverted** span (`2027-01-01` … today), which `DayRange` refuses and which
+ * would replace the wall with an error. *Nothing finishes in the future* was
+ * true of the proxy and is not true of the column.
  *
  * The span is sent as-is. **There is deliberately no validation above this
- * seam**: `DayRange` refuses an inverted range at both doors, a year picker
- * cannot construct one, and a second dialect of the rule up here would be a copy
- * that can only drift.
+ * seam**: `DayRange` refuses an inverted range at both doors, this cannot
+ * construct one, and a second dialect of the rule up here would be a copy that
+ * can only drift.
  */
-export function yearSpan(year: number, today: Date): DayRangeDto {
-  return yearRange(year, today);
+export function yearSpan(year: number): DayRangeDto {
+  return { from: `${year}-01-01`, to: `${year}-12-31` };
 }
+
+/**
+ * What a reader is looking at: the whole wall, one year, or the reads that have
+ * not ended.
+ *
+ * Three cases and **not a nullable year**, because *still reading* is not a
+ * year and cannot be spelled as one — an open reading has no `finished_at`, so
+ * it is in no year at all, which is the fact `ReadingYearsDto.open` crosses the
+ * seam to state. A picker that offered only years would leave those cards
+ * reachable from *All* and from nowhere else, and a reader who visited every
+ * year in turn would never see the book they are in the middle of.
+ */
+export type WallScope = { kind: 'all' } | { kind: 'year'; year: number } | { kind: 'open' };
 
 /**
  * What the wall is asking for — `null` for the whole library.
@@ -58,10 +76,23 @@ export function yearSpan(year: number, today: Date): DayRangeDto {
  * `null` rather than a filter with four nulls in it, because that is the shape
  * the wire calls *every reading* and it is what makes the filtered and
  * unfiltered call sites one code path.
+ *
+ * **The same object goes to the page, the count and the year list**, which is
+ * how the three agree: the engine builds all three clauses from one predicate,
+ * so a disagreement could only be a caller sending three different filters.
  */
-export function wallFilter(year: number | null, today: Date): ReadingFilterDto | null {
-  if (year === null) return null;
-  return { book_id: null, status: null, open: null, finished_in: yearSpan(year, today) };
+export function wallFilter(scope: WallScope): ReadingFilterDto | null {
+  switch (scope.kind) {
+    case 'all':
+      return null;
+    case 'year':
+      return { book_id: null, status: null, open: null, finished_in: yearSpan(scope.year) };
+    case 'open':
+      // `open: true` is `finished_at IS NULL`, which is what open *means* — not
+      // a status word. `abandon_reading` leaves a reading open deliberately, so
+      // `status: 'reading'` would be a different and narrower question.
+      return { book_id: null, status: null, open: true, finished_in: null };
+  }
 }
 
 /**

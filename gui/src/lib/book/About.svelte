@@ -145,7 +145,7 @@
     {:else if contents === null}
       <!-- No file, which is not the same as a file with no contents. -->
       <p class="hint">
-        No readable file for this book yet. <code>rb epub &lt;file&gt;</code> attaches one.
+        No readable file for this book. <code>rb epub &lt;file&gt;</code> attaches one.
       </p>
     {:else if contents.entries.length === 0}
       <!-- A file, and it carries no table of contents. Ordinary. -->

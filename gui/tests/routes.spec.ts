@@ -135,8 +135,21 @@ test('the library surface greets you with no numbers', async ({ page }) => {
   expect(heading, 'a count beside the heading is the framing decisions.md bans').not.toMatch(/\d/);
 
   // And none of the words that carry completion framing, wherever they appear.
+  //
+  // `yet` joined the list with item 52, and it is the one word here that this
+  // assertion **cannot** be trusted to find: six of the seven it was added for
+  // lived in empty states, and this fixture is a library with books in it, so
+  // the branch that says them never renders. `src/lib/axiom.test.ts` scans the
+  // markup for exactly that reason. This row guards the surfaces that do draw.
   const all = await page.locator('body').innerText();
-  for (const banned of [/\bunread\b/i, /\bstreak\b/i, /\bgoal\b/i, /\bto[- ]read\b/i, /\bremaining\b/i]) {
+  for (const banned of [
+    /\bunread\b/i,
+    /\bstreak\b/i,
+    /\bgoal\b/i,
+    /\bto[- ]read\b/i,
+    /\bremaining\b/i,
+    /\byet\b/i,
+  ]) {
     expect(all, `"${banned}" is task-completion framing`).not.toMatch(banned);
   }
 });
@@ -192,7 +205,10 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   await expect(page).toHaveScreenshot('book-note-open.png', { fullPage: true });
 
   // Cite a second passage. Round trip through the pane, not through the fake.
-  await page.getByRole('button', { name: /Cite into/ }).first().click();
+  await page
+    .getByRole('button', { name: /Cite into/ })
+    .first()
+    .click();
   await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(2);
 
   await page.getByRole('button', { name: 'Links', exact: true }).click();
@@ -201,7 +217,9 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   // A wikilink naming a note nobody has written is kept as text, and says so.
   // It is a forward reference, and it resolves itself the day that note exists.
   await expect(page.locator('main')).toContainText('The Long Eighteenth Century');
-  await expect(page.locator('main')).toContainText('no note yet');
+  // *no note*, not *no note yet* — item 52 cut the word that turns a note
+  // nobody has written into a note somebody owes.
+  await expect(page.locator('main')).toContainText('no note');
   await expect(page).toHaveScreenshot('book-note-links.png', { fullPage: true });
 
   // Nothing is a dead end, at any of the three depths: the way back is in the
@@ -209,6 +227,63 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   await page.getByRole('button', { name: '‹ Note' }).click();
   await page.getByRole('button', { name: '‹ Notes' }).click();
   await expect(page.getByRole('button', { name: 'Write a note' })).toBeVisible();
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The search over one book's marks, driven (item 50).
+ *
+ * Typed rather than described, for the reason the note-pane test above exists:
+ * every state worth reviewing here is behind an input, so a route screenshot
+ * would have shown an empty box and nothing else. What it pins is the three
+ * claims the item makes — one list holding both kinds, a hit that is a move
+ * into the page rather than a fourth place to read something, and an absence
+ * stated in words with no number anywhere near it.
+ */
+test('a search over one book answers with notes and passages together', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/book/3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  const box = page.getByRole('searchbox', { name: 'Search this book' });
+  await box.fill('the');
+
+  // Both kinds, in one list. The counts are the fixture's; what matters is that
+  // neither is zero, because a list that could only ever hold one kind is the
+  // notes-only search item 34 deleted.
+  const hits = page.locator('.search li button');
+  await expect(hits.filter({ hasText: 'Passage' }).first()).toBeVisible();
+  await expect(hits.filter({ hasText: 'Note' }).first()).toBeVisible();
+  await expect(page).toHaveScreenshot('book-search.png', { fullPage: true });
+
+  // A passage hit takes the reader to the passage in the band below and marks
+  // it — it does not filter the band down to one row, which would throw away
+  // where the passage sits.
+  await hits.filter({ hasText: 'Passage' }).first().click();
+  await expect(page.locator('li.found')).toHaveCount(1);
+  await expect(page.locator('.band').filter({ hasText: 'Highlights' }).locator('li')).toHaveCount(
+    3,
+  );
+
+  // A note hit opens the pane that already exists, at its note depth.
+  await hits.filter({ hasText: 'Note' }).first().click();
+  await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveCount(1);
+
+  // Nothing matched is a sentence, not a zero. No digit may appear in it.
+  await box.fill('zzzznothing');
+  const none = page.locator('.search p');
+  await expect(none).toContainText('Nothing here matches');
+  expect(await none.innerText()).not.toMatch(/\d/);
+
+  // And clearing the box puts the page back rather than leaving the last
+  // answer under an empty question.
+  await box.fill('');
+  await expect(page.locator('.search li')).toHaveCount(0);
+  await expect(page.locator('.search p')).toHaveCount(0);
 
   expect(problems, 'the console must be clean').toEqual([]);
 });
@@ -513,7 +588,9 @@ test('a moment is shown once and is never counted', async ({ page }) => {
 
   await expect(page.locator('section').filter({ hasText: 'You finished' })).toHaveCount(0);
   // The next one, not the same one — and still exactly one at a time.
-  await expect(page.locator('main')).toContainText('You marked your first passage in The Doorstop.');
+  await expect(page.locator('main')).toContainText(
+    'You marked your first passage in The Doorstop.',
+  );
 });
 
 /**
@@ -595,11 +672,14 @@ test('a card names its read by the engine’s number, and only on a reread', asy
  * year that matched nothing — would have been reviewed by nobody. The shelf's
  * arrangement test set the precedent: drive the thing, then take the picture.
  *
- * 2023 is in the fixture's activity log with no read closed in it, which is a
- * real shape (the log is filled by highlights and notes as well as by closed
- * reads) and is the one state the empty wall has to word without apologising.
+ * **2023 is the assertion item 51 turned around.** It is in the fixture's
+ * activity log with no read closed in it, and under the old `activityByMonth`
+ * proxy the picker offered it — this test used to click it and check that the
+ * empty wall did not apologise. The years now come from `readings.finished_at`,
+ * so a year with no closed read is not offered at all, and the *absence of the
+ * pill* is what proves the proxy is gone.
  */
-test('the wall filters by year, and an empty year is not a failure', async ({ page }) => {
+test('the wall filters by year, and offers no year it has nothing for', async ({ page }) => {
   const problems: string[] = [];
   page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
   page.on('pageerror', (e) => problems.push(e.message));
@@ -617,17 +697,51 @@ test('the wall filters by year, and an empty year is not a failure', async ({ pa
   await expect(page.locator('main')).not.toContainText('Your second read');
   await expect(page).toHaveScreenshot('cards-wall-year.png', { fullPage: true });
 
-  await page.getByRole('button', { name: '2023', exact: true }).click();
-  await expect(page.locator('main')).toContainText('No cards from 2023');
-  const empty = await page.locator('main').innerText();
-  // Not an apology, not a task, and **no "yet"** — that one word turns an
-  // absence into something outstanding.
-  for (const banned of [/\byet\b/i, /\bfail/i, /\bmissing\b/i, /\bsorry\b/i, /\bno data\b/i]) {
-    expect(empty, `"${banned}" frames an ordinary year as a shortfall`).not.toMatch(banned);
+  // The ghost year. It has notes and highlights in the activity log and no read
+  // that ended, so it is not a year of cards and is not offered as one.
+  await expect(page.getByRole('button', { name: '2023', exact: true })).toHaveCount(0);
+
+  // Every year that *is* offered has cards behind it — the picker and the wall
+  // agree by construction now, and this is that claim on a screen.
+  const pills = page.getByRole('navigation', { name: 'Which cards' }).getByRole('button');
+  for (const label of await pills.allInnerTexts()) {
+    if (!/^\d{4}$/.test(label)) continue;
+    await page.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.locator('main'), `${label} was offered and holds nothing`).not.toContainText(
+      `No cards from ${label}`,
+    );
   }
-  await expect(page).toHaveScreenshot('cards-wall-empty-year.png', { fullPage: true });
 
   expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The read you are in the middle of is reachable, and is not a year (item 51).
+ *
+ * An open reading has no `finished_at`, so it belongs to no year — and before
+ * this chip existed those cards were reachable from *All* and from nowhere
+ * else, so a reader visiting every year in turn never saw the book they were
+ * reading. `ReadingYearsDto.open` is what says the chip exists, and it is a
+ * bool: nothing here may say how many.
+ */
+test('the wall reaches the read you have not finished, without counting it', async ({ page }) => {
+  await page.goto('/cards');
+  await expect(page.locator('main')).not.toContainText('Reading the wall…');
+
+  const chip = page.getByRole('button', { name: 'Still reading' });
+  await expect(chip).toHaveCount(1);
+  // The control names a state, not a number and not a shortfall.
+  const controls = await page.getByRole('navigation', { name: 'Which cards' }).innerText();
+  expect(controls, 'a figure on the chip is the badge the axiom bans').not.toMatch(
+    /still reading\s*\(?\d/i,
+  );
+
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+  // Every card under it is a read that has not ended.
+  const cards = page.locator('article');
+  await expect(cards.first()).toBeVisible();
+  await expect(page).toHaveScreenshot('cards-wall-open.png', { fullPage: true });
 });
 
 /**

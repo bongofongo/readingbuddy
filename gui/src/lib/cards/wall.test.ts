@@ -9,39 +9,27 @@ import { describe, expect, it } from 'vitest';
 
 import { PAGE, offsetOf, pageCount, wallFilter, yearSpan } from './wall';
 
-const TODAY = new Date('2025-08-07T00:00:00Z');
-
 describe('the year, as a span', () => {
-  it('is the whole of a year that has finished', () => {
-    expect(yearSpan(2024, TODAY)).toEqual({ from: '2024-01-01', to: '2024-12-31' });
-  });
-
-  it('stops at today in the year that has not', () => {
-    // Not defensive coding: it is `$lib/life/period`'s clamp, borrowed rather
-    // than respelled, and it keeps the current year a genuine subset of the span
-    // the years themselves came from.
-    expect(yearSpan(2025, TODAY)).toEqual({ from: '2025-01-01', to: '2025-08-07' });
+  it('is the whole year, both ends', () => {
+    expect(yearSpan(2024)).toEqual({ from: '2024-01-01', to: '2024-12-31' });
+    expect(yearSpan(2025)).toEqual({ from: '2025-01-01', to: '2025-12-31' });
   });
 
   /**
-   * Every year a picker can offer produces a span the engine will accept.
+   * **The clamp is gone, and item 51 is why.**
    *
-   * The one refusal lives at the seam — `DayRange` rejects an inverted span from
-   * both doors — and this is why there is no second copy of it up here: the
-   * picker cannot construct one.
-   *
-   * **A year in the future can**, and that is a finding rather than a hole.
-   * `yearRange` clamps only the `to` end, so `yearRange(2030, today)` is
-   * `2030-01-01 … today` — backwards. It is unreachable from either screen: the
-   * years come from `activityByMonth`, a log of what has happened, so a future
-   * year is not in the list. Guarding it here would be a guard that cannot fire,
-   * which is this repo's own complaint; and if a wrong clock ever produced one,
-   * the engine refuses it and the wall renders its failure state, which names
-   * the move. So this asserts the reachable range and says the rest out loud.
+   * This used to be `/life`'s `yearRange`, which ends the current year at today
+   * — right there, where a year has to stay a subset of the `activityByMonth`
+   * span it was grouped out of, and wrong here. The years now come from
+   * `readings.finished_at`, and a `finished_at` in the future is reachable: a
+   * Goodreads `Date Read`, or a device clock ahead of this machine. Clamped,
+   * such a year produced `2027-01-01 … today` — **inverted**, which `DayRange`
+   * refuses at the seam, so the picker would offer a year that replaced the wall
+   * with an error. The whole year is both correct and un-invertible.
    */
-  it('is never inverted for a year that has begun', () => {
-    for (const y of [1970, 1999, 2024, 2025]) {
-      const span = yearSpan(y, TODAY);
+  it('is never inverted, for any year a reading can name', () => {
+    for (const y of [1970, 1999, 2024, 2025, 2027]) {
+      const span = yearSpan(y);
       expect(span.from <= span.to, `${y} produced an inverted span`).toBe(true);
     }
   });
@@ -51,11 +39,11 @@ describe('the filter', () => {
   it('is absent for the whole library, not four nulls', () => {
     // `null` is the shape the wire calls *every reading*, and it is what makes
     // the filtered and unfiltered call sites one code path.
-    expect(wallFilter(null, TODAY)).toBeNull();
+    expect(wallFilter({ kind: 'all' })).toBeNull();
   });
 
   it('names only the year, and asks nothing else', () => {
-    expect(wallFilter(2024, TODAY)).toEqual({
+    expect(wallFilter({ kind: 'year', year: 2024 })).toEqual({
       book_id: null,
       status: null,
       // Deliberately **not** `open: false` beside the year: an open reading has
@@ -63,6 +51,18 @@ describe('the filter', () => {
       // twice would be a second spelling of the same predicate.
       open: null,
       finished_in: { from: '2024-01-01', to: '2024-12-31' },
+    });
+  });
+
+  it('asks for the open reads as open, never as a status', () => {
+    // `abandon_reading` leaves a reading open on purpose, so `status: 'reading'`
+    // is a narrower question than *has not ended* — and the cards a reader is
+    // looking for under this chip include the book they put down.
+    expect(wallFilter({ kind: 'open' })).toEqual({
+      book_id: null,
+      status: null,
+      open: true,
+      finished_in: null,
     });
   });
 });

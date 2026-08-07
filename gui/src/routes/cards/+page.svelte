@@ -18,8 +18,14 @@
    * row rather than of the page size, which is what "bounded" has to mean before
    * it stops being the argument every N+1 makes.
    *
-   * A third request, `activityByMonth`, runs once to find the years. It is a
-   * proxy and `WallControls` says so.
+   * A third request, `readingYears`, runs once per filter to find the years
+   * (item 51). It used to be `activityByMonth`, which was a **proxy**: the
+   * activity log is filled by `rb activity --refill` and by nothing
+   * automatically, so a library that had never refilled offered no years at all
+   * while plainly having finished books, and a year could be offered because a
+   * note was written in it while no read ended. The years now come from
+   * `readings.finished_at` under the wall's own filter, so the picker and the
+   * wall agree by construction.
    *
    * ## The cards here carry no rating and no note list
    *
@@ -42,46 +48,55 @@
   import { client, type ReadingRow } from '$lib/api/client';
   import Card from '$lib/card/Card.svelte';
   import WallControls from '$lib/cards/WallControls.svelte';
-  import { PAGE, offsetOf, pageCount, wallFilter } from '$lib/cards/wall';
-  import { wholeLife, yearsOf } from '$lib/life/period';
+  import { PAGE, offsetOf, pageCount, wallFilter, type WallScope } from '$lib/cards/wall';
   import { countLabel } from '$lib/phrasing';
 
   let rows = $state<ReadingRow[]>([]);
   let total = $state(0);
   let years = $state<number[]>([]);
+  /** Whether any reading has not ended — the *Still reading* chip, never a count. */
+  let anyOpen = $state(false);
   /** Three states, not a nullable: not asked, asked, answered (item 27's finding). */
   let loaded = $state(false);
   let failure = $state<string | null>(null);
 
-  /** `null` is the whole library, which is what the wall opens on. */
-  let year = $state<number | null>(null);
+  /** The whole wall is what it opens on. */
+  let scope = $state<WallScope>({ kind: 'all' });
   let sort = $state<ReadingSortDto>('finished');
   let offset = $state(0);
 
   const pages = $derived(pageCount(total));
   const page = $derived(Math.floor(offset / PAGE));
+  /** The year in force, or `null` — narrowed here rather than in the markup. */
+  const yearShown = $derived(scope.kind === 'year' ? scope.year : null);
 
   $effect(() => {
-    // Read once, so the year span and anything else asking about "today" cannot
-    // straddle midnight and disagree — `/life`'s rule, and its reason.
-    const today = new Date();
-    const life = wholeLife(today);
     client()
-      .activityByMonth(life.from, life.to)
-      .then((ms) => (years = yearsOf(ms).map((y) => y.year)))
+      // Asked over the **whole** wall rather than over the scope in force: the
+      // picker's own job is to offer the other scopes, and asking it under the
+      // current one would leave a reader who picked 2024 with only 2024 to pick
+      // from — a control that removes its own alternatives.
+      .readingYears(null)
+      .then((y) => {
+        years = y.years;
+        anyOpen = y.open;
+      })
       // The years are an ornament on the wall. A wall that loaded must not be
       // replaced by an error because the picker above it did not — the shelf's
       // ruling about its reading strip, one screen over.
-      .catch(() => (years = []));
+      .catch(() => {
+        years = [];
+        anyOpen = false;
+      });
   });
 
   $effect(() => {
     // Named locally so the effect tracks exactly these three and the fetch below
     // reads the values it was scheduled for.
-    const which = year;
+    const which = scope;
     const order = sort;
     const from = offset;
-    const filter = wallFilter(which, new Date());
+    const filter = wallFilter(which);
     const api = client();
     loaded = false;
     // The **same filter object** goes to both. The engine builds the page's
@@ -99,8 +114,8 @@
       .finally(() => (loaded = true));
   });
 
-  function pickYear(next: number | null) {
-    year = next;
+  function pickScope(next: WallScope) {
+    scope = next;
     // Back to the first page. Staying on page four of a year that has three
     // cards asks for offset 72 and gets nothing, which reads as *this year is
     // empty* and is a lie about the filter rather than about the year.
@@ -135,20 +150,28 @@
     Every card is also on the book that minted it — the <a href="/">library</a> is the way there.
   </p>
 {:else}
-  <WallControls {years} {year} {sort} onyear={pickYear} onsort={pickSort} />
+  <WallControls {years} {anyOpen} {scope} {sort} onscope={pickScope} onsort={pickSort} />
 
   {#if !loaded && rows.length === 0}
     <p class="hint">Reading the wall…</p>
-  {:else if total === 0 && year !== null}
+  {:else if total === 0 && scope.kind === 'open'}
+    <!-- The chip exists because a read is open, so this is only reachable if
+         one closed between the picker's answer and the wall's. Ordinary, and it
+         names where those cards went. -->
+    <p class="note">Nothing open right now.</p>
+    <p class="hint">Every read that has ended is under a year above, and All is the whole wall.</p>
+  {:else if total === 0 && yearShown !== null}
     <!--
       A year the picker offered and no card belongs to.
 
-      **Not a failure and never styled as one**, and no *yet*: that one word
-      turns an absence into something outstanding. A year you read in and closed
-      nothing in is an ordinary year, and saying which years did close something
-      is the move — the switch above is where it is taken.
+      **Item 51 made this nearly unreachable and it is kept anyway.** The years
+      come from `readings.finished_at` under this wall's own filter now, so an
+      offered year has rows by construction — where the old `activityByMonth`
+      proxy offered a year because a *note* was written in it. What is left is
+      the race: a read closing between the picker's answer and the wall's. Still
+      not a failure, still no *yet*.
     -->
-    <p class="note">No cards from {year}.</p>
+    <p class="note">No cards from {yearShown}.</p>
     <!-- The move is named in plain text and **nothing is bolded**: a review read
          an emphasised `All` as a link, and it is a pill directly above rather
          than something to click here. -->

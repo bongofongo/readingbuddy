@@ -2995,3 +2995,174 @@ because item 31 needed somewhere to put reading time.
       title would move a driven test this thread does not own, and a CSS guard
       nothing renders is the guard-that-cannot-fail this repo complains about.
       It is a real gap, left named rather than half-closed.
+50. **The note search, and the box that could not be where it was specified.**
+    No engine change, no migration and no `API_VERSION` move; one client
+    method, one component, one pure module, two corrected texts. Item 40 put
+    `book_id` on `SearchMarks` in a previous wave and **the GUI never called
+    it** — the request had no consumer at all, and `gui/CLAUDE.md` still said
+    the search was impossible.
+    - **The stale prohibition is the item's real subject.** Under *The book
+      view* that file said, in the present tense, that `SearchMarks` "has no
+      `book_id`" and that narrowing above the seam therefore returns nothing.
+      The second half is true and is why item 40 exists; the first half stopped
+      being true when item 40 landed, and the sentence survived a whole wave in
+      a file every GUI thread is told to read in full. `NotePane.svelte` carried
+      the matching marker comment. A prohibition outlives the reason for it
+      because nothing fails when it does — so **an item that lands corrects the
+      text that said it could not**, and both texts are now rewritten rather
+      than appended to.
+    - **The box is above both bands, and the specification put it beside the
+      Notes heading.** That was written when the plan was to search notes;
+      `SearchMarks` returns **one ranked list over both indexes**, and the two
+      things it ranks are drawn by two different bands. A box inside one band
+      answering about the other is a heading that lies, and scoping it to
+      `source: 'note'` to make the heading true would throw away the passages —
+      the larger half of what a reader keeps and the half a half-remembered
+      phrase is likeliest to be in. So it belongs to the column: a note hit
+      opens the note pane, a passage hit scrolls to the passage and marks it,
+      and neither adds a fourth place to read something.
+    - **The two sections a reviewer will ask for are refused in advance.**
+      Splitting the results into *Notes* and *Passages* means two
+      `source`-scoped calls, each with its own `limit` — which spends one page
+      size across two lists whose lengths then vary with the query — or one call
+      re-grouped above the seam, which is the ranking the single method exists
+      to make unnecessary. One call, one list, the engine's order.
+    - **The snippet is text with markers in it, and the markers are
+      ambiguous.** `snippet(…, -1, '>>', '<<', '…', 12)` produces the reader's
+      own prose, unescaped, from *whichever indexed column matched* — so a
+      highlight's snippet may be its `ko_note` or its `annotation` rather than
+      its text, and `>>` is an ordinary character in real prose. `book/snippet.ts`
+      is the only parser of them anywhere (the CLI prints them raw) and it
+      **degrades rather than guesses**: an opener with no closer is text, not an
+      emphasis running to the end of the line. The engine fix is a structured
+      snippet carrying offsets; recorded below, not built here.
+    - **Three gaps the audit found, none blocking.** *(a)* `search_marks`' two
+      index queries end `ORDER BY rank` with **no tie-break**, unlike every
+      other list in the repo — harmless for one settled query and wrong the
+      moment a *show more* re-asks with a larger limit, since SQLite's sorter is
+      deterministic per plan and not per schema (item 18's finding, third
+      occurrence). *(b)* A hit does not say **which field matched**, so nothing
+      can label a hit *in your annotation* without testing whether the de-marked
+      snippet is a substring of the row, which is a derivation above the seam
+      and wrong on an elided snippet anyway. *(c)* The in-band markers above.
+      All three are additive and none moves `API_VERSION`.
+    - **`limit` is required at the call site and the reason is a trap.**
+      `listBooks` reads a negative limit as *no limit*, `listNotes` reads an
+      absent one as *every note*, and `searchMarks` returns an **empty list**
+      for `0` or less. Three neighbours, three meanings for a small number — so
+      the client method takes it explicitly rather than defaulting, because a
+      `?? 0` reaching this parameter is a search box that silently never finds
+      anything.
+
+    - **Three things the screenshot review changed, and one of them is a shape
+      the wire cannot state.** A note hit printed itself twice — the marked
+      snippet, then the same title again underneath — because `snippet(…, -1, …)`
+      takes whichever column matched and `notes_fts` indexes the title beside
+      the body, so a title match came back *as* the snippet. The wire does not
+      say which column matched (gap *(b)* above), so the fix compares the text.
+      The scope moved out of the placeholder and into the label, because at
+      phone width the placeholder clipped mid-word and the clipped half was the
+      half that said *and your own notes* — and a `::placeholder` rule replaced
+      WebKit's default `#a9a9a9`, which measured **2.35:1**, the least legible
+      text in the app and the only place the scope was stated. And the box is
+      **not drawn on a book with no marks**: a full-width control above two
+      honest empty states, whose only possible reply is *nothing matches*, is a
+      dead end wearing an input rather than *idle is not blank*.
+
+51. **Which years the wall has.** No migration and no `API_VERSION` move; one
+    request, one DTO, one storage method, and a frontend clamp deleted.
+    `/cards`' year picker had **no request behind it** — the years came from
+    `ActivityByMonth`, which the wall's own controls already admitted was a
+    proxy.
+    - **The proxy was wrong in five directions, not one.** `reading_events`
+      gets a row when a read *started*, when a note was written, when a
+      highlight carries a device date, when a device measured minutes, and it
+      keeps the days a since-deleted reading explained — and it holds nothing at
+      all until `rb activity --refill` has run. So a library that had never
+      refilled offered **no years** while plainly having finished books, and a
+      year could be offered because a note was written in it. The fixture had
+      one: 2023 was a pill on the wall with no read closed in it, and the route
+      suite's assertion was that the resulting empty wall did not apologise.
+      That assertion is now turned around — 2023 is **not offered**, and the
+      absence of the pill is what proves the proxy is gone.
+    - **The open reading is a bucket, not a year, and without it the picker
+      does not partition the wall.** A wall holds open readings deliberately
+      (gating on `finished_at` would tell a reader the book they are in has no
+      card), and those rows are in no year — so a reader who visited every year
+      in turn would never see the book they are reading, with nothing on screen
+      to say where it went. `ReadingYearsDto.open` is a **bool and never a
+      count**: the picker needs to know whether the chip exists, a figure on a
+      control is one decision from the badge the axiom bans, and the chip's own
+      number is the same `CountReadings` every other chip asks. There are no
+      per-year counts either — a row of years each carrying a figure is a
+      scoreboard.
+    - **`FROM readings` with no `JOIN books`, and that is the whole plan.**
+      `count_readings` keeps the join on purpose, so it and the page differ in
+      exactly one clause; copying it here reads correctly, runs, and turns a
+      **covering** scan of `idx_readings_finished_at` into a scan of `books`
+      with a per-book search of `readings` — `0008`'s genre of silent failure,
+      so the plan test asserts `COVERING INDEX` and uses the joined spelling as
+      the control that proves the assertion can fail. `strftime` is in the
+      projection and never in the `WHERE`; the year filter still binds the bare
+      column. Migration `0018` needed no successor.
+    - **The frontend clamp had to go, and it was not tidying.** `wall.ts`
+      borrowed `/life`'s `yearRange`, which ends the current year at *today* —
+      correct there, where a year must stay a subset of the `activityByMonth`
+      span it was grouped out of. With years coming from `readings.finished_at`,
+      a future `finished_at` is reachable (a Goodreads `Date Read`, a device
+      clock ahead of this machine) and the clamp turns that year into
+      `2027-01-01 … today`: an **inverted** span, which `DayRange` refuses at
+      both doors, so the picker would have offered a year that replaced the wall
+      with an error. The masking was total — the proxy is a log of what has
+      happened, so it could not produce a future year at all.
+    - **A new method rather than a field on `CountReadings`.** It answers a
+      different question and returns a different shape, and `ts-rs` emits a new
+      field as *required* in TypeScript however `#[serde(default)]` the Rust is
+      — the trap that would have broken `client.ts` invisibly. It takes the same
+      `Option<ReadingFilterDto>`, so the same picker serves
+      `/book/[id]/cards`, which the proxy could never have narrowed at all.
+
+    - **The review found the last wave's own defect reproduced, and it was the
+      *label* that had gone stale rather than the pills.** `Show` now names the
+      left group. `WallControls` had argued — correctly, then — that a row of
+      years is self-evidently a filter while three bare event-nouns are not, and
+      labelled only the Order group; *Still reading* is a text chip naming a
+      state, so the group ended in exactly the thing that made a lit `Finished`
+      misread the first time. Two brass pills in identical treatment saying
+      opposite things, and at phone width stacked forty pixels apart with only
+      the second labelled. **A mitigation's premise can expire without the
+      mitigation looking wrong.**
+    - **Two findings declined and recorded.** A card's only exit is its title
+      link, drawn as plain bold ink with a hover-only accent — invisible to a
+      keyboard or a touch screen, and drawn in brass on `/book/[id]/cards` for
+      the same destination. It is item 47's control and item 28's component, and
+      the *Still reading* wall exposed it rather than caused it (five of seven
+      cards there carry one line of body and no other move). And **there are
+      still no dark-theme screenshots anywhere in the suite**, so the mark's
+      `color-mix` ground and this wall's chips are unmeasured in the other two
+      of the three states `gui/CLAUDE.md` requires. Both stay on the backlog
+      named rather than half-closed.
+
+52. **The word *yet*, and the assertion that could not have caught it.** No
+    engine change and no request; eight strings and one new guard. The axiom
+    bans task-completion framing by name and *yet* is its smallest form — it
+    turns an absence into something outstanding, so *nothing on the shelf yet*
+    says the shelf is short of where it should be while *nothing on the shelf*
+    is a fact about a library.
+    - **The rule was being taught correctly in new code while older violations
+      sat under it.** Both routes from the last wave carry comments forbidding
+      the word by name; the eight survivors were on the shelf, in four places
+      in the book view, in the links pane and on the reading-life page — none
+      of them new.
+    - **Adding *yet* to `the library surface greets you with no numbers` was the
+      obvious fix and would have caught none of them.** Six of the eight live in
+      **empty states**, and `fake.ts` is deliberately a library with books,
+      notes, highlights and months in it, so the markup that says them is never
+      on screen for the route suite to read. A guard that can only fire on a
+      branch the fixture never takes is the guard this repo keeps writing down
+      as worse than none. `src/lib/axiom.test.ts` scans the **markup** of every
+      component and route instead — script, style and comments stripped first,
+      since two files carry a comment forbidding the word and a scan that fired
+      on those would be deleted within a wave — and it was verified by planting
+      a violation and watching it go red. The word joined the rendered
+      assertion as well, for the surfaces that do draw.

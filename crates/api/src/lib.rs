@@ -286,6 +286,23 @@ impl Api {
         Ok(self.engine.count_readings(&filter).await?)
     }
 
+    /// Which years this filter's readings ended in (item 51).
+    ///
+    /// Fallible for `list_reading_rows`' reason and through the identical
+    /// conversion: `finished_in` is a `DayRange` the engine validates, so an
+    /// inverted span is `InvalidInput` from both doors rather than a picker
+    /// that confidently offers nothing.
+    pub async fn reading_years(
+        &self,
+        filter: Option<ReadingFilterDto>,
+    ) -> ApiResult<ReadingYearsDto> {
+        let filter: ReadingFilter = filter
+            .map(TryInto::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(self.engine.reading_years(&filter).await?.into())
+    }
+
     pub async fn get_reading(&self, id: i64) -> ApiResult<Option<ReadingDto>> {
         Ok(self
             .engine
@@ -969,6 +986,7 @@ impl Api {
                 .await?,
             ),
             R::CountReadings { filter } => Response::Count(self.count_readings(filter).await?),
+            R::ReadingYears { filter } => Response::ReadingYears(self.reading_years(filter).await?),
             R::GetReading { id } => Response::Reading(self.get_reading(id).await?),
             R::ActiveReading { book_id } => Response::Reading(self.active_reading(book_id).await?),
             R::UpdateProgress {

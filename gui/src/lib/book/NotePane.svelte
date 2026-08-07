@@ -13,14 +13,15 @@
    * a tab holding the single reflection is the wrong shape for a thing there is
    * exactly one of. The row says which kind it is instead.
    *
-   * ## Where the note search is going to go
+   * ## Where the search went, and why not here
    *
-   * Nowhere, yet, and deliberately not faked. `SearchMarks` takes no `book_id`
-   * and its `limit` applies to the **global** ranked list, so filtering its
-   * results down to this book above the seam returns nothing whenever the top
-   * hits are in other books — a search box that looks like it works and is
-   * silently wrong. That is item 40, and it is being built as an engine change
-   * rather than papered over here. It belongs beside the band heading below.
+   * This header used to say the search box belonged beside the band heading
+   * below, and that `SearchMarks` took no `book_id` so it could not be built.
+   * **Both halves are now wrong**: item 40 put `book_id` on the request, and
+   * item 50 built the box — `MarkSearch`, above both bands rather than in
+   * either. One ranked list spans this book's notes *and* its passages, so a
+   * box inside the Notes band would be a heading answering about the band
+   * below it. A note hit lands here, at this pane's list depth.
    */
   import type { NoteDto, RatingDto, RatingScaleDto } from '$lib/api/bindings';
   import { client } from '$lib/api/client';
@@ -209,9 +210,8 @@
 <section class="band">
   <div class="band-head">
     <h2 class="band-title">Notes</h2>
-    <!-- Item 40's search box goes here: one input, `SearchMarks` narrowed to
-         this book by the engine. Left empty rather than stubbed — an input that
-         looks like a search and is not one is worse than no input. -->
+    <!-- The search is `MarkSearch`, above this band and not in it: it answers
+         about passages too, and a Notes heading cannot own that list. -->
     {#if open === null && !composing}
       <div class="acts">
         <button type="button" onclick={() => (composing = true)}>Write a note</button>
@@ -259,7 +259,7 @@
           rows="10"
           spellcheck="true"
           aria-label="Note body"
-          placeholder={'Write. A [[wikilink]] makes an edge — even to a note that does not exist yet.'}
+          placeholder={'Write. A [[wikilink]] makes an edge — even to a note that does not exist.'}
         ></textarea>
         <div class="acts">
           <button type="button" class="primary" disabled={!dirty} onclick={save}>
@@ -322,7 +322,7 @@
   {:else if notes.length === 0}
     <!-- Idle is not blank, and this is not an apology or a count of zero. It
          names the three moves that fill it. -->
-    <p class="note">Nothing written against this book yet.</p>
+    <p class="note">Nothing written against this book.</p>
     <p class="hint">
       A note is markdown in your vault. A <strong>reflection</strong> is private and grows as you
       read; a <strong>review</strong> is the one written for other people, and the only one that

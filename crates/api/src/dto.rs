@@ -50,9 +50,9 @@ use readingbuddy::{
     ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
     MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, Progress,
     PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingFilter,
-    ReadingQuery, ReadingRow, ReadingSort, ReadingState, RefillReport, SearchHit, SearchOutcome,
-    SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter,
-    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    ReadingQuery, ReadingRow, ReadingSort, ReadingState, ReadingYears, RefillReport, SearchHit,
+    SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport,
+    StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -1485,6 +1485,46 @@ impl From<ReadingRow> for ReadingRowDto {
             read_number: r.count.number,
             of_reads: r.count.of,
             passage: r.passage.map(Into::into),
+        }
+    }
+}
+
+/// Which years a wall's readings ended in, and whether any is still open
+/// (item 51).
+///
+/// **The open flag is why this is a struct and not a `Vec<i32>`.** A wall under
+/// the default filter holds open readings on purpose — `gui/CLAUDE.md` states
+/// it as a rule, since gating on `finished_at` would tell a reader the book
+/// they are in has no card — and those rows are in no year. A bare list of
+/// years therefore does not partition the wall: picking every year in turn
+/// would never show them again, with nothing on screen to say where they went.
+///
+/// **A bool and never a count.** The picker needs to know whether the chip
+/// exists; a number of books-in-progress sitting on a control is one product
+/// decision away from the framing `docs/decisions.md` bans, and the chip's own
+/// figure is the same `CountReadings` every other chip asks, with
+/// `open: true`. For the same reason there are **no per-year counts** — a row
+/// of years each carrying a number is a scoreboard.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingYearsDto {
+    /// Newest first. A year is here iff at least one matching reading **closed**
+    /// in it — never because a note, a highlight or a device measurement is
+    /// dated in it, which is the whole difference from `ActivityByMonth`.
+    pub years: Vec<i32>,
+    /// Whether any matching reading has not ended.
+    pub open: bool,
+}
+
+impl From<ReadingYears> for ReadingYearsDto {
+    fn from(y: ReadingYears) -> Self {
+        ReadingYearsDto {
+            years: y.years,
+            open: y.open,
         }
     }
 }

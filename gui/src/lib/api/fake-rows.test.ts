@@ -104,9 +104,9 @@ describe('the year filter', () => {
     // rather than from the readings themselves.
     const c = new FakeClient();
     expect(await c.countReadings(filter({ finished_in: YEAR_2023 }))).toBe(0);
-    expect(await c.listReadingRows({ limit: 24, filter: filter({ finished_in: YEAR_2023 }) })).toEqual(
-      [],
-    );
+    expect(
+      await c.listReadingRows({ limit: 24, filter: filter({ finished_in: YEAR_2023 }) }),
+    ).toEqual([]);
   });
 
   it('excludes an open reading from every year', async () => {
@@ -114,7 +114,10 @@ describe('the year filter', () => {
     const all = await c.listReadingRows({ limit: -1, filter: null });
     const open = all.filter((r) => r.reading.finished_at === null);
     expect(open.length, 'the fixture has open reads to exclude').toBeGreaterThan(0);
-    const in2024 = await c.listReadingRows({ limit: -1, filter: filter({ finished_in: YEAR_2024 }) });
+    const in2024 = await c.listReadingRows({
+      limit: -1,
+      filter: filter({ finished_in: YEAR_2024 }),
+    });
     for (const r of in2024) expect(r.reading.finished_at).not.toBeNull();
   });
 
@@ -199,5 +202,79 @@ describe('the count', () => {
       const rows = await c.listReadingRows({ limit: -1, filter: f });
       expect(await c.countReadings(f), JSON.stringify(f)).toBe(rows.length);
     }
+  });
+});
+
+describe('the years the picker offers (item 51)', () => {
+  it('offers a year only when a read ended in it, and every one has cards', async () => {
+    // The whole point of the request. Under the `activityByMonth` proxy this
+    // could not be asserted at all: that log carries a row for a read that
+    // *started*, for a note, for a highlight's device date and for measured
+    // minutes, so a year could be offered with no card behind it.
+    const c = new FakeClient();
+    const { years } = await c.readingYears(null);
+    expect(years.length).toBeGreaterThan(0);
+    for (const y of years) {
+      const scoped = filter({ finished_in: { from: `${y}-01-01`, to: `${y}-12-31` } });
+      expect(await c.countReadings(scoped), `${y} was offered and holds nothing`).toBeGreaterThan(
+        0,
+      );
+    }
+  });
+
+  it('lists them newest first', async () => {
+    const c = new FakeClient();
+    const { years } = await c.readingYears(null);
+    expect([...years].sort((a, b) => b - a)).toEqual(years);
+  });
+
+  it('says an open read is open rather than filing it under a year', async () => {
+    // An open reading has no `finished_at`, so it is in no year — and without
+    // the flag the picker's years would not add up to the wall.
+    const c = new FakeClient();
+    const { open } = await c.readingYears(null);
+    const stillReading = await c.countReadings(filter({ open: true }));
+    expect(open).toBe(stillReading > 0);
+  });
+
+  it('partitions the wall: the years plus the open bucket are every card', async () => {
+    const c = new FakeClient();
+    const { years, open } = await c.readingYears(null);
+    let counted = 0;
+    for (const y of years) {
+      counted += await c.countReadings(
+        filter({ finished_in: { from: `${y}-01-01`, to: `${y}-12-31` } }),
+      );
+    }
+    if (open) counted += await c.countReadings(filter({ open: true }));
+    expect(counted).toBe(await c.countReadings(null));
+  });
+
+  it('answers under a filter with the same clause the wall draws with', async () => {
+    // Scoped to one book, the years are that book's — which is what makes the
+    // same picker usable on `/book/[id]/cards`.
+    const c = new FakeClient();
+    const scoped = await c.readingYears(filter({ book_id: 12 }));
+    for (const y of scoped.years) {
+      const rows = await c.listReadingRows({
+        limit: -1,
+        filter: filter({ book_id: 12, finished_in: { from: `${y}-01-01`, to: `${y}-12-31` } }),
+      });
+      expect(rows.length, `${y} of book 12`).toBeGreaterThan(0);
+      expect(rows.every((r) => r.reading.book_id === 12)).toBe(true);
+    }
+  });
+
+  it('has no years under an open filter, and no open under a year filter', async () => {
+    const c = new FakeClient();
+    expect((await c.readingYears(filter({ open: true }))).years).toEqual([]);
+    expect((await c.readingYears(filter({ finished_in: YEAR_2024 }))).open).toBe(false);
+  });
+
+  it('refuses a backwards span rather than offering nothing', async () => {
+    const c = new FakeClient();
+    await expect(
+      c.readingYears(filter({ finished_in: { from: '2025-12-31', to: '2025-01-01' } })),
+    ).rejects.toThrow();
   });
 });

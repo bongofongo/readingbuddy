@@ -27,7 +27,7 @@
 
 {#if pane.rows.length === 0}
   <p class="hint">
-    Nothing links here yet. A <code>[[wikilink]]</code> in any note's body makes an edge — and it
+    Nothing links here. A <code>[[wikilink]]</code> in any note's body makes an edge — and it
     works before the other note exists.
   </p>
 {:else}
@@ -49,7 +49,7 @@
         {#if isForwardReference(row)}
           <!-- Not an error and not a broken link. It resolves itself the day
                that note is written, which is the vault's best trick. -->
-          <span class="pending">no note yet</span>
+          <span class="pending">no note</span>
         {/if}
       </li>
     {/each}

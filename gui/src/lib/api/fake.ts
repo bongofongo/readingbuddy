@@ -44,6 +44,8 @@ import type {
   ReadingDto,
   ReadingFilterDto,
   ReadingSortDto,
+  ReadingYearsDto,
+  SearchHitDto,
   TableOfContentsDto,
 } from './bindings';
 import type {
@@ -173,7 +175,14 @@ const BOOKS: StoredBook[] = [
     page_count: 0,
     reading_state: { state: 'reading' },
     current_page: 0,
-    progress: { progress: 'started', page: 0, of: null, fraction: null, percent: null, source: null },
+    progress: {
+      progress: 'started',
+      page: 0,
+      of: null,
+      fraction: null,
+      percent: null,
+      source: null,
+    },
   }),
   // page_count NULL — absence, not zero. A progress bar has nothing to draw.
   book(2, {
@@ -181,7 +190,14 @@ const BOOKS: StoredBook[] = [
     page_count: null,
     reading_state: { state: 'reading' },
     current_page: 40,
-    progress: { progress: 'started', page: 40, of: null, fraction: null, percent: null, source: null },
+    progress: {
+      progress: 'started',
+      page: 40,
+      of: null,
+      fraction: null,
+      percent: null,
+      source: null,
+    },
   }),
   // The fat end of item 19's thickness scale, and the ordinary progress case.
   book(3, {
@@ -252,13 +268,27 @@ const BOOKS: StoredBook[] = [
     title: 'A Book I Put Down',
     reading_state: { state: 'abandoned' },
     current_page: 60,
-    progress: { progress: 'started', page: 60, of: 300, fraction: 0.2, percent: 20, source: 'pages' },
+    progress: {
+      progress: 'started',
+      page: 60,
+      of: 300,
+      fraction: 0.2,
+      percent: 20,
+      source: 'pages',
+    },
   }),
   book(12, {
     title: 'A Book I Went Back To',
     reading_state: { state: 'reading' },
     current_page: 150,
-    progress: { progress: 'started', page: 150, of: 300, fraction: 0.5, percent: 50, source: 'pages' },
+    progress: {
+      progress: 'started',
+      page: 150,
+      of: 300,
+      fraction: 0.5,
+      percent: 50,
+      source: 'pages',
+    },
   }),
   book(13, {
     title: 'A Book I Finished',
@@ -345,7 +375,10 @@ const BOOKS: StoredBook[] = [
   // A status this build does not know. The state is typed and still open: ts-rs
   // gives an exhaustive union over today's variants, and `other` is how a word
   // from a newer importer degrades instead of failing to parse.
-  book(21, { title: 'A Book Some Other App Touched', reading_state: { state: 'other', raw: 'paused' } }),
+  book(21, {
+    title: 'A Book Some Other App Touched',
+    reading_state: { state: 'other', raw: 'paused' },
+  }),
 ];
 
 /**
@@ -409,7 +442,12 @@ const HIGHLIGHTS: Record<number, HighlightDto[]> = {
     // must then render as nothing rather than as a stray separator.
     highlight(3, 3, 'She counted the bells and then stopped counting.', { reading_id: 103 }),
   ],
-  11: [highlight(4, 11, 'It is a mistake to read a map as a promise.', { chapter: 'Chapter 2', page: 31 })],
+  11: [
+    highlight(4, 11, 'It is a mistake to read a map as a promise.', {
+      chapter: 'Chapter 2',
+      page: 31,
+    }),
+  ],
   /**
    * The two dated finishes, so the wall is a wall of *cards* and not a wall of
    * absences.
@@ -433,13 +471,16 @@ const HIGHLIGHTS: Record<number, HighlightDto[]> = {
     ),
   ],
   20: [
-    highlight(
-      13,
-      20,
-      'A shelf is an argument about what a person intends to have been.',
-      { chapter: 'On Shelving', page: 44, reading_id: 120 },
-    ),
-    highlight(14, 20, 'Everything else is filing.', { chapter: 'On Shelving', page: 45, reading_id: 120 }),
+    highlight(13, 20, 'A shelf is an argument about what a person intends to have been.', {
+      chapter: 'On Shelving',
+      page: 44,
+      reading_id: 120,
+    }),
+    highlight(14, 20, 'Everything else is filing.', {
+      chapter: 'On Shelving',
+      page: 45,
+      reading_id: 120,
+    }),
   ],
   /**
    * The reread, and the case item 44's `CardPassage` exists for.
@@ -569,6 +610,34 @@ It rhymes with [[On The Doorstop]] more than I expected.`,
 It argues with [[On The Doorstop]].`,
   7: 'The same passage, read the other way round.',
 };
+
+/** Characters that are terms in prose and syntax in a regex — `C++` is both. */
+function escapeRe(t: string): string {
+  return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A snippet in sqlite's own shape: `>>`/`<<` around the terms, `…` where text
+ * was cut, and a window of context rather than the whole field.
+ *
+ * The engine counts **tokens** (`snippet(…, '…', 12)`); this counts characters,
+ * because reproducing fts5's tokenizer here would be a second implementation of
+ * the one thing this fake exists not to have an opinion about. What matters to
+ * a caller — that a long passage arrives elided, and that the markers can
+ * therefore sit anywhere in the string — is the same either way.
+ */
+const CONTEXT = 60;
+
+function mark(field: string, terms: string[]): string {
+  const lower = field.toLowerCase();
+  const first = Math.min(...terms.map((t) => lower.indexOf(t)).filter((i) => i >= 0));
+  const start = Math.max(0, first - CONTEXT);
+  const end = Math.min(field.length, first + CONTEXT * 2);
+  const marked = field
+    .slice(start, end)
+    .replace(new RegExp(`(${terms.map(escapeRe).join('|')})`, 'gi'), '>>$1<<');
+  return `${start > 0 ? '…' : ''}${marked}${end < field.length ? '…' : ''}`;
+}
 
 /**
  * The graph, declared **once** and read in both directions.
@@ -934,7 +1003,14 @@ const READINGS: Record<number, ReadingDto[]> = {
     reading(2, 12, {
       status: { state: 'reading' },
       current_page: 150,
-      progress: { progress: 'started', page: 150, of: 300, fraction: 0.5, percent: 50, source: 'pages' },
+      progress: {
+        progress: 'started',
+        page: 150,
+        of: 300,
+        fraction: 0.5,
+        percent: 50,
+        source: 'pages',
+      },
     }),
   ],
 };
@@ -1127,6 +1203,34 @@ export class FakeClient implements LibraryClient {
     return (await this.#readingRows()).filter((r) => matchesReadingFilter(r, filter)).length;
   }
 
+  /**
+   * The years, off the same rows the wall draws (item 51).
+   *
+   * Built from `#readingRows` through the **same** `matchesReadingFilter` the
+   * page and the count use, which is the fixture's copy of the engine's own
+   * guarantee: the picker offers a year exactly when the wall has rows in it.
+   * A fake that answered from a second list would make the one property this
+   * request exists for untestable at layer 1.
+   *
+   * The year is taken from the UTC day string, never from `getFullYear` — a
+   * local-time year files a New Year's Eve read under the other year for every
+   * reader west of Greenwich, and `finished_in` is UTC.
+   */
+  async readingYears(filter: ReadingFilterDto | null): Promise<ReadingYearsDto> {
+    refuseInvertedSpan(filter);
+    const rows = (await this.#readingRows()).filter((r) => matchesReadingFilter(r, filter));
+    const years = new Set<number>();
+    let open = false;
+    for (const row of rows) {
+      const finished = row.reading.finished_at;
+      // A reading with no `finished_at` is in no year — that is what open means,
+      // and it is why this answer is not a bare list.
+      if (finished === null) open = true;
+      else years.add(Number(dayOfUnix(finished).slice(0, 4)));
+    }
+    return { years: [...years].sort((a, b) => b - a), open };
+  }
+
   // ---- one card, per reading (item 28) ------------------------------------
 
   async highlightsForReading(readingId: number): Promise<HighlightDto[]> {
@@ -1135,7 +1239,9 @@ export class FakeClient implements LibraryClient {
     return Object.values(HIGHLIGHTS)
       .flat()
       .filter((h) => h.reading_id === readingId)
-      .map((h) => (h.id in this.#annotations ? { ...h, annotation: this.#annotations[h.id] ?? null } : h));
+      .map((h) =>
+        h.id in this.#annotations ? { ...h, annotation: this.#annotations[h.id] ?? null } : h,
+      );
   }
 
   /** The engine's stated answer, looked up. See [`CARD_PASSAGE`] for why. */
@@ -1313,7 +1419,9 @@ export class FakeClient implements LibraryClient {
   ): Promise<CreatedNoteDto> {
     const existing = this.#notes.find(
       (n) =>
-        n.book_id === bookId && n.kind === kind && (readingId === null || n.reading_id === readingId),
+        n.book_id === bookId &&
+        n.kind === kind &&
+        (readingId === null || n.reading_id === readingId),
     );
     if (existing) {
       return {
@@ -1408,6 +1516,66 @@ export class FakeClient implements LibraryClient {
     }));
   }
 
+  // ---- searching one book's marks (item 50) -------------------------------
+
+  /**
+   * A book's notes and passages in one list, near enough to draw with.
+   *
+   * **This is not fts5 and does not pretend to be.** It matches every token as
+   * a case-insensitive substring, which is a coarser question than bm25 asks —
+   * so what this fixture can be trusted for is the *shape* of the answer (two
+   * kinds in one list, a snippet with markers around the terms, the scope, the
+   * limit, the empty query) and never the *ranking*. A test asserting a
+   * particular order here would be asserting this file's ordering rule, which
+   * exists nowhere below the seam and is the one thing about the real method
+   * that a frontend must never depend on.
+   *
+   * What it does copy exactly is the arithmetic a caller can get wrong:
+   * `limit` is a hard ceiling and `0` or less is an **empty list**, an empty or
+   * whitespace query is not a search and answers with nothing, and the merge
+   * takes from the two kinds by within-source position so a book with one note
+   * and thirty passages does not show a wall of one kind.
+   */
+  async searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]> {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0 || limit <= 0) return [];
+    const hit = (fields: (string | null)[]): string | null => {
+      // Every term, as fts5's implicit AND has it — and the snippet comes from
+      // whichever field matched, which is `snippet(…, -1, …)`'s own behaviour
+      // and the reason a caller may not assume it is the row's main text.
+      const found = fields.find(
+        (f): f is string => f !== null && terms.every((t) => f.toLowerCase().includes(t)),
+      );
+      return found === undefined ? null : mark(found, terms);
+    };
+
+    const notes = this.#notes
+      .filter((n) => bookId === null || n.book_id === bookId)
+      .map((note) => ({ note, snippet: hit([note.title, BODIES[note.id] ?? null]) }))
+      .filter((x): x is { note: NoteDto; snippet: string } => x.snippet !== null)
+      .map(({ note, snippet }): SearchHitDto => ({ kind: 'note', note, snippet }));
+
+    const marks = (bookId === null ? Object.values(HIGHLIGHTS).flat() : (HIGHLIGHTS[bookId] ?? []))
+      .map((highlight) => ({
+        highlight,
+        snippet: hit([highlight.text, highlight.ko_note, highlight.annotation]),
+      }))
+      .filter((x): x is { highlight: HighlightDto; snippet: string } => x.snippet !== null)
+      .map(({ highlight, snippet }): SearchHitDto => ({ kind: 'highlight', highlight, snippet }));
+
+    const merged: SearchHitDto[] = [];
+    for (let i = 0; i < Math.max(notes.length, marks.length); i++) {
+      // Bound before testing: `noUncheckedIndexedAccess` does not carry a
+      // truthiness check on `notes[i]` across to a second `notes[i]`, because
+      // `i` is a mutable loop variable and the index could have moved.
+      const n = notes[i];
+      const m = marks[i];
+      if (n) merged.push(n);
+      if (m) merged.push(m);
+    }
+    return merged.slice(0, limit);
+  }
+
   // ---- flashcards (items 45, 49) ------------------------------------------
 
   /**
@@ -1439,7 +1607,9 @@ export class FakeClient implements LibraryClient {
         .find((h) => h.id === highlightId);
       if (owner === undefined) throw new Error(`no highlight with id ${highlightId}`);
       if (owner.book_id !== bookId) {
-        throw new Error(`highlight ${highlightId} belongs to book ${owner.book_id}, not book ${bookId}`);
+        throw new Error(
+          `highlight ${highlightId} belongs to book ${owner.book_id}, not book ${bookId}`,
+        );
       }
     }
     if (this.#flashcards.some((c) => c.book_id === bookId && c.word === clean)) return false;

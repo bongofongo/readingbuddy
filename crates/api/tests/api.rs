@@ -1669,6 +1669,129 @@ async fn a_backwards_year_is_refused_by_both_doors() {
     }
 }
 
+// ---- the years the wall has (item 51) --------------------------------------
+
+/// The picker's request, through both doors, and the two facts it carries.
+///
+/// A read finished and a read still open, so the answer has to hold a year
+/// **and** the open bucket — which is the shape's whole reason for existing:
+/// without `open`, the years do not add up to the wall and a reader who picks
+/// each in turn never sees the book they are in.
+#[tokio::test]
+async fn the_year_picker_gets_the_years_and_the_open_bucket() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    api.update_progress(book_id, Some(333), Some(true))
+        .await
+        .unwrap();
+    api.reread(book_id).await.unwrap();
+
+    let typed = api.reading_years(None).await.unwrap();
+    assert_eq!(typed.years.len(), 1, "one read has ended, so one year");
+    assert!(typed.open, "the reread is open and belongs to no year");
+
+    match ok(api.dispatch(Request::ReadingYears { filter: None }).await) {
+        Response::ReadingYears(y) => assert_eq!(y, typed),
+        other => panic!("{other:?}"),
+    }
+
+    // The years the picker offers are the years the wall draws — asked with the
+    // same filter, through the count that shares the engine's predicate.
+    for year in &typed.years {
+        let scoped = ReadingFilterDto {
+            finished_in: Some(DayRangeDto {
+                from: format!("{year}-01-01"),
+                to: format!("{year}-12-31"),
+            }),
+            ..Default::default()
+        };
+        assert!(
+            api.count_readings(Some(scoped)).await.unwrap() > 0,
+            "{year} was offered and the wall has nothing in it"
+        );
+    }
+}
+
+/// The smallest honest payload is the whole-library question, and no existing
+/// request was reshaped to make room for this one.
+#[test]
+fn the_year_request_parses_from_the_smallest_honest_payload() {
+    let years: Request = serde_json::from_str(r#"{"method":"reading_years","params":{}}"#).unwrap();
+    assert_eq!(years, Request::ReadingYears { filter: None });
+
+    // `API_VERSION` stays at 2 because this is additive: the request beside it
+    // still means exactly what it did.
+    let count: Request =
+        serde_json::from_str(r#"{"method":"count_readings","params":{}}"#).unwrap();
+    assert_eq!(count, Request::CountReadings { filter: None });
+    assert_eq!(readingbuddy_api::API_VERSION, 2);
+}
+
+/// A backwards year is refused here too, rather than answering with a confident
+/// empty picker.
+#[tokio::test]
+async fn a_backwards_year_is_refused_by_the_year_list_as_well() {
+    let (api, _tmp) = api().await;
+    let filter = ReadingFilterDto {
+        finished_in: Some(DayRangeDto {
+            from: "2025-12-31".into(),
+            to: "2025-01-01".into(),
+        }),
+        ..Default::default()
+    };
+    let err = api
+        .reading_years(Some(filter.clone()))
+        .await
+        .expect_err("a backwards range is a refusal");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    match api
+        .dispatch(Request::ReadingYears {
+            filter: Some(filter),
+        })
+        .await
+    {
+        Err(e) => assert_eq!(e.code, ErrorCode::InvalidInput),
+        Ok(other) => panic!("{other:?}"),
+    }
+}
+
+/// **No number rides with a year.** The reply enumerates; it does not measure.
+///
+/// A per-year count is the scoreboard `docs/decisions.md` forbids, and it is
+/// the field somebody adds for cheapness — so the absence is asserted over the
+/// serialized reply rather than left to review.
+#[tokio::test]
+async fn the_year_list_puts_no_count_on_the_wire() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    api.update_progress(book_id, Some(333), Some(true))
+        .await
+        .unwrap();
+
+    let json = serde_json::to_string(&api.reading_years(None).await.unwrap()).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        vec!["open", "years"],
+        "two fields, and neither counts"
+    );
+    assert!(
+        value["years"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|y| y.is_i64()),
+        "a year is a number; a year carrying a number is a scoreboard"
+    );
+}
+
 /// The DTO's `Default` and the engine's are the **same query**.
 ///
 /// Two types with one name meaning opposite things by *the whole-library read*

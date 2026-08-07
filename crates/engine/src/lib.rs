@@ -89,8 +89,8 @@ pub use storage::{
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
     MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteCitations, NoteRecord, NoteScope,
     OutgoingLink, RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering, Reading,
-    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, RefillReport, SearchHit,
-    SearchSource, Source, StatusFilter, Storage,
+    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingYears, RefillReport,
+    SearchHit, SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -761,6 +761,20 @@ impl Engine {
 
     /// How many readings match — the number a wall needs before it needs the
     /// rows. Its own call for the reason [`Engine::count_books`] is.
+    /// Which years a filter's readings **ended** in, newest first, and whether
+    /// any of them is still open (item 51).
+    ///
+    /// The question a year picker asks, and the reason it is a request rather
+    /// than a client-side pass over the rows: deriving it above the seam means
+    /// pulling every reading in the library — a book and a private passage per
+    /// row — to draw six controls, and then extracting a year in a second
+    /// dialect. `finished_in` is UTC by [`DayRange`], and a local-time year in
+    /// a frontend files a New Year's Eve read under one year in the picker and
+    /// the other in the wall for every reader west of Greenwich.
+    pub async fn reading_years(&self, filter: &ReadingFilter) -> Result<ReadingYears> {
+        self.storage.reading_years(filter).await
+    }
+
     pub async fn count_readings(&self, filter: &ReadingFilter) -> Result<i64> {
         self.storage.count_readings(filter).await
     }

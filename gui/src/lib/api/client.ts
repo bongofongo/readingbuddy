@@ -56,9 +56,11 @@ import type {
   ReadingFilterDto,
   ReadingRowDto,
   ReadingSortDto,
+  ReadingYearsDto,
   Reply,
   Request,
   Response,
+  SearchHitDto,
   TableOfContentsDto,
 } from './bindings';
 
@@ -240,6 +242,29 @@ export interface LibraryClient {
    * disagreement between the two numbers would be the caller's.
    */
   countReadings(filter: ReadingFilterDto | null): Promise<number>;
+  /**
+   * Which years this filter's readings **ended** in, newest first, and whether
+   * any of them is still open (item 51).
+   *
+   * The request behind the year picker, and the thing it replaced is worth
+   * keeping in view: the wall used to derive its years from `activityByMonth`,
+   * which is a **proxy**. `reading_events` gets a row when a read started, when
+   * a note was written, when a highlight carries a device date and when a device
+   * measured minutes — and it holds nothing at all until `rb activity --refill`
+   * has run. So a library that never refilled offered no years while plainly
+   * having finished things, and a year could be offered because a note was
+   * written in it while no read ended.
+   *
+   * **`open` is not a year and must not be rendered as one.** A wall holds open
+   * readings deliberately, and they have no `finished_at`, so the years alone do
+   * not partition it. The chip's own count is `countReadings` with
+   * `{ open: true }` — never `total − Σ(years)`, which would be this frontend
+   * inventing an arithmetic the engine did not state.
+   *
+   * Hand it the **same filter** the page and the count get; all three clauses
+   * come from one predicate below the seam, so any disagreement is the caller's.
+   */
+  readingYears(filter: ReadingFilterDto | null): Promise<ReadingYearsDto>;
 
   // ---- moments (item 23) --------------------------------------------------
 
@@ -376,6 +401,47 @@ export interface LibraryClient {
   outgoingLinks(noteId: number): Promise<OutgoingLinkDto[]>;
   /** The notes that link *here*. */
   backlinks(noteId: number): Promise<NoteDto[]>;
+
+  // ---- searching one book's marks (items 40, 50) --------------------------
+
+  /**
+   * This book's notes **and** passages, in one ranked list (item 50).
+   *
+   * `bookId` is the engine's predicate and never a filter over the answer.
+   * That is the whole of item 40 and the reason this method took a wave longer
+   * than the screen that wanted it: `limit` cuts the *global* ranked list, so a
+   * caller that searched the library and kept one book's hits gets **nothing**
+   * whenever the best marks live in other books — which is most queries, and an
+   * empty answer is indistinguishable from *you never wrote about that*.
+   *
+   * **One list, both kinds.** The order is the engine's — each index ordered by
+   * its own bm25, the two merged by within-source position, recency breaking
+   * ties — and no score crosses the wire, because a note's rank and a
+   * highlight's rank come from different corpora and no constant converts one
+   * into the other. Nothing above this seam re-sorts it. Asking twice with
+   * `source` set and stitching the two replies together would be inventing
+   * exactly the ranking the single method exists to make unnecessary.
+   *
+   * **`limit` is a hard ceiling with no offset and no cursor**, and — unlike
+   * `listBooks`, where a negative limit means *no limit*, and `listNotes`,
+   * where an absent one means *every note* — **`0` and negatives return an
+   * empty list**. Three neighbouring methods, three meanings, so it is required
+   * here rather than defaulted: a `?? 0` reaching this parameter would be a
+   * search that silently found nothing.
+   *
+   * An empty or whitespace query is **not an error and not a search**: the
+   * engine issues no statement and answers with an empty list, so a box may
+   * send every keystroke without guarding for blankness. Punctuation is safe
+   * too — every token is quoted into a phrase below the seam, so `don't` and
+   * `C++` are searches rather than fts5 syntax errors.
+   *
+   * Each hit carries a `snippet`: plain text with `>>`/`<<` around the matched
+   * terms, **unescaped**, and it may have come from any indexed column — a
+   * highlight's `ko_note` or `annotation` as readily as its `text`. Render it
+   * through `$lib/book/snippet`, never as HTML, and do not assume it is a
+   * substring of the row beside it.
+   */
+  searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]>;
 
   // ---- citations ----------------------------------------------------------
 
@@ -644,7 +710,15 @@ export class TauriClient implements LibraryClient {
   }
 
   async countReadings(filter: ReadingFilterDto | null): Promise<number> {
-    return expect(await this.#call({ method: 'count_readings', params: { filter } }), 'count').value;
+    return expect(await this.#call({ method: 'count_readings', params: { filter } }), 'count')
+      .value;
+  }
+
+  async readingYears(filter: ReadingFilterDto | null): Promise<ReadingYearsDto> {
+    return expect(
+      await this.#call({ method: 'reading_years', params: { filter } }),
+      'reading_years',
+    ).value;
   }
 
   async pendingMoments(limit = 1): Promise<MomentDto[]> {
@@ -708,8 +782,10 @@ export class TauriClient implements LibraryClient {
   // ---- item 27 ------------------------------------------------------------
 
   async bookTags(bookId: number): Promise<BookTagDto[]> {
-    return expect(await this.#call({ method: 'book_tags', params: { book_id: bookId } }), 'book_tags')
-      .value;
+    return expect(
+      await this.#call({ method: 'book_tags', params: { book_id: bookId } }),
+      'book_tags',
+    ).value;
   }
 
   async bookFiles(bookId: number): Promise<BookFileDto[]> {
@@ -735,7 +811,10 @@ export class TauriClient implements LibraryClient {
 
   async setAnnotation(highlightId: number, annotation: string | null): Promise<void> {
     expect(
-      await this.#call({ method: 'set_annotation', params: { highlight_id: highlightId, annotation } }),
+      await this.#call({
+        method: 'set_annotation',
+        params: { highlight_id: highlightId, annotation },
+      }),
       'unit',
     );
   }
@@ -750,7 +829,10 @@ export class TauriClient implements LibraryClient {
   }
 
   async updateNoteBody(noteId: number, body: string): Promise<void> {
-    expect(await this.#call({ method: 'update_note_body', params: { note_id: noteId, body } }), 'unit');
+    expect(
+      await this.#call({ method: 'update_note_body', params: { note_id: noteId, body } }),
+      'unit',
+    );
   }
 
   async createNote(note: NewNoteDto): Promise<CreatedNoteDto> {
@@ -787,13 +869,30 @@ export class TauriClient implements LibraryClient {
   }
 
   async outgoingLinks(noteId: number): Promise<OutgoingLinkDto[]> {
-    return expect(await this.#call({ method: 'outgoing_links', params: { note_id: noteId } }), 'links')
-      .value;
+    return expect(
+      await this.#call({ method: 'outgoing_links', params: { note_id: noteId } }),
+      'links',
+    ).value;
   }
 
   async backlinks(noteId: number): Promise<NoteDto[]> {
     return expect(await this.#call({ method: 'backlinks', params: { note_id: noteId } }), 'notes')
       .value;
+  }
+
+  /**
+   * `source: null` is **both**, stated rather than omitted: one ranked list is
+   * what this method is for, and narrowing to a kind here would be the caller
+   * deciding something the engine's merge already decided. See the interface.
+   */
+  async searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]> {
+    return expect(
+      await this.#call({
+        method: 'search_marks',
+        params: { query, source: null, book_id: bookId, limit },
+      }),
+      'search_hits',
+    ).value;
   }
 
   async cite(noteId: number, highlightId: number): Promise<void> {
@@ -805,7 +904,10 @@ export class TauriClient implements LibraryClient {
 
   async uncite(noteId: number, highlightId: number): Promise<boolean> {
     return expect(
-      await this.#call({ method: 'uncite', params: { note_id: noteId, highlight_id: highlightId } }),
+      await this.#call({
+        method: 'uncite',
+        params: { note_id: noteId, highlight_id: highlightId },
+      }),
       'bool',
     ).value;
   }
@@ -856,8 +958,10 @@ export class TauriClient implements LibraryClient {
   }
 
   async reviewRating(noteId: number): Promise<RatingDto | null> {
-    return expect(await this.#call({ method: 'review_rating', params: { note_id: noteId } }), 'rating')
-      .value;
+    return expect(
+      await this.#call({ method: 'review_rating', params: { note_id: noteId } }),
+      'rating',
+    ).value;
   }
 
   async setRating(noteId: number, value: number): Promise<void> {
@@ -906,4 +1010,3 @@ export function client(): LibraryClient {
   current = hasTauri() ? new TauriClient() : new FakeClient();
   return current;
 }
-

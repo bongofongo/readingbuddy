@@ -41,8 +41,8 @@ pub use reading_events::{
     day_of_unix,
 };
 pub use readings::{
-    ReadCount, ReadNumbering, Reading, ReadingRow, ReadingSort, STATUS_ABANDONED, STATUS_FINISHED,
-    STATUS_READING, ko_datetime_to_unix,
+    ReadCount, ReadNumbering, Reading, ReadingRow, ReadingSort, ReadingYears, STATUS_ABANDONED,
+    STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
 };
 pub use sidecar_seen::SidecarFacts;
 

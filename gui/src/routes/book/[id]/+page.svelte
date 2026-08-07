@@ -38,6 +38,7 @@
   } from '$lib/api/bindings';
   import { client, type StoredBook } from '$lib/api/client';
   import About from '$lib/book/About.svelte';
+  import MarkSearch from '$lib/book/MarkSearch.svelte';
   import NotePane from '$lib/book/NotePane.svelte';
   import Passages from '$lib/book/Passages.svelte';
   import Jacket from '$lib/components/Jacket.svelte';
@@ -126,6 +127,31 @@
   /** Every card captured from this book, so a passage can show what it gave up. */
   let flashcards = $state<FlashcardDto[]>([]);
 
+  /**
+   * The passage a search hit sent the reader to, or `null` (item 50).
+   *
+   * It stays marked after the jump rather than flashing and clearing: the axiom
+   * asks that state persist and be visible, and a reader who scrolls away and
+   * back has to be able to find the passage they were sent to. The next hit
+   * moves it; nothing else does.
+   */
+  let found = $state<number | null>(null);
+
+  /**
+   * Take the reader to a passage in the band below.
+   *
+   * The scroll is done here, from the click, rather than in an effect on the
+   * prop — the same hit clicked twice sets the same id, and an effect would not
+   * run the second time, which is exactly the moment a reader is asking to be
+   * taken back. `listHighlights` is unlimited and the search is scoped to this
+   * book, so the element is always one this page drew; the optional chain is
+   * for the frame before it has.
+   */
+  function showPassage(highlightId: number) {
+    found = highlightId;
+    document.getElementById(`passage-${highlightId}`)?.scrollIntoView({ block: 'center' });
+  }
+
   $effect(() => {
     const which = id;
     (async () => {
@@ -151,9 +177,18 @@
       // broken one.
       reloadCitations(ns).catch(() => (noteCitations = []));
       reloadCards(which).catch(() => (flashcards = []));
-      api.bookTags(which).then((t) => (tags = t), () => {});
-      api.bookFiles(which).then((f) => (files = f), () => {});
-      api.fieldProvenance(which).then((p) => (provenance = p), () => {});
+      api.bookTags(which).then(
+        (t) => (tags = t),
+        () => {},
+      );
+      api.bookFiles(which).then(
+        (f) => (files = f),
+        () => {},
+      );
+      api.fieldProvenance(which).then(
+        (p) => (provenance = p),
+        () => {},
+      );
     })().catch((e) => (failure = e instanceof Error ? e.message : String(e)));
   });
 
@@ -257,8 +292,7 @@
 {:else if missing}
   <p class="note">There is no book with that id.</p>
   <p class="hint">
-    It may have been folded into another by a merge — <code>rb book list</code> shows what is
-    there now.
+    It may have been folded into another by a merge — <code>rb book list</code> shows what is there now.
   </p>
 {:else if book}
   <article>
@@ -294,6 +328,15 @@
   -->
   <div class="columns">
     <div class="yours">
+      <!-- Above both bands, because what it searches is drawn by both of them
+           (item 50). It belongs to the column, not to a heading. -->
+      <MarkSearch
+        bookId={id}
+        marks={notes.length + highlights.length}
+        onopennote={(n) => (openNoteId = n)}
+        onshowpassage={showPassage}
+      />
+
       <NotePane
         bookId={id}
         {notes}
@@ -307,6 +350,7 @@
         open={openNote}
         {cited}
         {quoted}
+        {found}
         cards={flashcards}
         oncite={toggleCite}
         onannotate={annotate}

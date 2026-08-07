@@ -64,6 +64,7 @@
     open,
     cited,
     quoted,
+    found,
     cards,
     oncite,
     onannotate,
@@ -79,6 +80,15 @@
      * `CitationsForNotes` reply, never a `CitationsFor` per note.
      */
     quoted: Set<number>;
+    /**
+     * The passage a search hit sent the reader to, or `null` (item 50).
+     *
+     * A mark on the passage and **not** a filter of the list: a band that
+     * showed only the hit would have thrown away where the passage sits, which
+     * is half of why a reader searches for it. The page scrolls; this says
+     * which one it scrolled to.
+     */
+    found: number | null;
     /** Every card captured from this book, anchored and unanchored alike. */
     cards: FlashcardDto[];
     oncite: (highlightId: number, on: boolean) => void;
@@ -150,7 +160,7 @@
   </div>
 
   {#if highlights.length === 0}
-    <p class="note">None here yet.</p>
+    <p class="note">None here.</p>
     <p class="hint">
       <code>rb ko pull</code> brings across what is on a connected reader, marks and all.
     </p>
@@ -160,7 +170,10 @@
         {@const loc = where(h)}
         {@const isQuoted = quoted.has(h.id)}
         {@const words = wordsOn(h.id)}
-        <li>
+        <!-- The id is the search's anchor (item 50): the page scrolls to it by
+             `getElementById` from the click, so a second click on the same hit
+             takes the reader back rather than doing nothing. -->
+        <li id={`passage-${h.id}`} class:found={found === h.id}>
           <!-- `bind:this` so a selection can be tested for lying inside *this*
                passage rather than merely somewhere on the page. -->
           <blockquote bind:this={quotes[h.id]}>{h.text}</blockquote>
@@ -276,6 +289,23 @@
     border-left: 2px solid var(--accent);
     padding-left: 0.85rem;
     margin-bottom: 1.5rem;
+  }
+  /*
+   * The passage a search hit sent the reader to (item 50).
+   *
+   * Every passage already carries an `--accent` rule down its left, so a mark
+   * made of that colour again would be one hue against the same hue — the
+   * failure item 49's review found twice on this very screen. This differs by
+   * **shape and ground**: a thicker rule and a faint tint behind the row, both
+   * of which survive a desaturated screen and neither of which puts colour on
+   * text. The padding is stated on both states so arriving at a passage does
+   * not shift the page under the reader's eye.
+   */
+  li.found {
+    border-left-width: 5px;
+    padding-left: 0.7rem;
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+    border-radius: 0 var(--radius) var(--radius) 0;
   }
   blockquote {
     margin: 0;

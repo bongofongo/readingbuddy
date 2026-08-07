@@ -79,7 +79,7 @@
 {:else if books.length === 0}
   <!-- Idle is not blank. An empty state names the moves that fill it and never
        apologises. These are the two importers that need no network. -->
-  <p class="note">Nothing on the shelf yet.</p>
+  <p class="note">Nothing on the shelf.</p>
   <p class="hint">
     <code>rb epub &lt;file&gt;</code> adds a book from a file.
     <code>rb ko pull</code> takes what is on a connected reader.
