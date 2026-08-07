@@ -48,10 +48,10 @@ use readingbuddy::{
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
     ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
-    MonthActivity, NewNoteInput, NoteKind, NoteRecord, OutgoingLink, Progress, PullReport,
-    RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingState, RefillReport,
-    SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, Source,
-    StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, Progress,
+    PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingState,
+    RefillReport, SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource,
+    Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -1505,6 +1505,26 @@ impl From<FileImportReport> for FileImportReportDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlashcardDto {
     pub id: i64,
+    /// The book this card was captured from (item 45).
+    ///
+    /// **Deliberately without `#[serde(default)]`**, unlike its neighbour. The
+    /// additive rule this crate lives by is about *requests* — a payload
+    /// written before a field existed must still parse — and no request carries
+    /// a flashcard. What a default would buy here is an old daemon's reply
+    /// parsing into a card whose `book_id` is `0`, and `0` is not a book: a
+    /// client would follow it to a `NotFound` indistinguishable from a book
+    /// somebody deleted. `pdf.rs` states the rule this follows — a sentinel
+    /// nothing downstream can tell from a real value is worse than the parse
+    /// failure it replaces.
+    pub book_id: i64,
+    /// The passage the word came from, where there is one.
+    ///
+    /// This is the field the item exists for: without it a card can only ever
+    /// be shown beside its book's *title*. `#[serde(default)]` because absence
+    /// and `null` mean the same true thing — this card is not anchored — which
+    /// is exactly what `book_id` cannot say.
+    #[serde(default)]
+    pub highlight_id: Option<i64>,
     pub word: String,
     #[serde(default)]
     pub context: Option<String>,
@@ -1516,10 +1536,45 @@ impl From<FlashcardRow> for FlashcardDto {
     fn from(c: FlashcardRow) -> Self {
         FlashcardDto {
             id: c.id,
+            book_id: c.book_id,
+            highlight_id: c.highlight_id,
             word: c.word,
             context: c.context,
             book_title: c.book_title,
             exported: c.exported,
+        }
+    }
+}
+
+/// Which passages one note cites, as handles (item 46).
+///
+/// **Ids, not [`HighlightDto`]s.** The surface asking this is a book's passage
+/// list wanting to mark the ones already quoted somewhere, and it is holding
+/// those passages already — `gui/src/routes/book/[id]/+page.svelte` loads the
+/// highlights and the notes in one `Promise.all`. Rows here would send the
+/// reader's private text back once *per citing note*, on a screen whose entire
+/// output is a tick. [`Request::CitationsFor`](crate::Request::CitationsFor)
+/// stays as it is and is not made redundant: it feeds the pane that shows the
+/// passages themselves, where the text is the point.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteCitationsDto {
+    pub note_id: i64,
+    /// In the order a book reads — the same order
+    /// [`Response::Highlights`](crate::Response::Highlights) comes back in for
+    /// the single-note call, from the same `ORDER BY`. Empty is an answer.
+    pub highlight_ids: Vec<i64>,
+}
+
+impl From<NoteCitations> for NoteCitationsDto {
+    fn from(c: NoteCitations) -> Self {
+        NoteCitationsDto {
+            note_id: c.note_id,
+            highlight_ids: c.highlight_ids,
         }
     }
 }
@@ -3684,5 +3739,52 @@ mod tests {
         let json = serde_json::to_value(&dto).unwrap();
         assert_eq!(json["status"], "other");
         assert_eq!(json["raw"], "tsundoku");
+    }
+
+    /// The last leg of item 45's round trip. `FlashcardRow` gained the two
+    /// handles; this is what makes them reach a client, and the reason to
+    /// assert it is that a hand-written `From` is exactly where a new field is
+    /// forgotten — with no symptom but a card that cannot find its passage.
+    #[test]
+    fn a_card_carries_both_handles_across_the_seam() {
+        let dto: FlashcardDto = FlashcardRow {
+            id: 1,
+            book_id: 4,
+            highlight_id: Some(9),
+            word: "pachinko".into(),
+            context: Some("Ch 1".into()),
+            book_title: "Pachinko".into(),
+            exported: false,
+        }
+        .into();
+        assert_eq!(dto.book_id, 4);
+        assert_eq!(dto.highlight_id, Some(9));
+
+        let json = serde_json::to_string(&dto).unwrap();
+        assert_eq!(serde_json::from_str::<FlashcardDto>(&json).unwrap(), dto);
+        assert!(json.contains(r#""book_id":4"#));
+        assert!(json.contains(r#""highlight_id":9"#));
+    }
+
+    /// `highlight_id` may be absent — an unanchored card is ordinary — and
+    /// `book_id` may **not**. A default there would parse an old reply into a
+    /// card belonging to book `0`, which is not a book and which no client
+    /// could tell from one somebody deleted.
+    #[test]
+    fn an_unanchored_card_parses_and_a_bookless_one_does_not() {
+        let anchorless: FlashcardDto = serde_json::from_str(
+            r#"{"id":1,"book_id":4,"word":"mot","book_title":"Pachinko","exported":false}"#,
+        )
+        .unwrap();
+        assert_eq!(anchorless.highlight_id, None);
+        assert_eq!(anchorless.context, None);
+
+        assert!(
+            serde_json::from_str::<FlashcardDto>(
+                r#"{"id":1,"word":"mot","book_title":"Pachinko","exported":false}"#
+            )
+            .is_err(),
+            "a card with no book is not a card, and 0 would be a lie"
+        );
     }
 }

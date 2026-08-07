@@ -707,6 +707,15 @@ impl Api {
         Ok(map(self.engine.citations_for(note_id).await?))
     }
 
+    /// Which passages each of these notes cites, in one call (item 46).
+    ///
+    /// One entry per id, in the order asked, empties included — the shape
+    /// `book_summaries` set, and for the same reason: a caller zips it against
+    /// a page it already has. Ids rather than rows; see [`NoteCitationsDto`].
+    pub async fn citations_for_notes(&self, note_ids: &[i64]) -> ApiResult<Vec<NoteCitationsDto>> {
+        Ok(map(self.engine.citations_for_notes(note_ids).await?))
+    }
+
     // ---- goodreads ---------------------------------------------------------
 
     pub async fn import_goodreads(
@@ -792,6 +801,24 @@ impl Api {
     }
 
     // ---- flashcards --------------------------------------------------------
+
+    /// Capture a card (item 45). `true` created, `false` you already had it.
+    ///
+    /// Both ids are re-read in the engine before anything is written — the pair
+    /// is two handles a client supplies independently, and nothing in the
+    /// schema stops them naming different books.
+    pub async fn create_flashcard(
+        &self,
+        book_id: i64,
+        highlight_id: Option<i64>,
+        word: &str,
+        context: Option<&str>,
+    ) -> ApiResult<bool> {
+        Ok(self
+            .engine
+            .create_flashcard(book_id, highlight_id, word, context)
+            .await?)
+    }
 
     pub async fn list_flashcards(&self, include_exported: bool) -> ApiResult<Vec<FlashcardDto>> {
         Ok(map(self.engine.list_flashcards(include_exported).await?))
@@ -1081,6 +1108,9 @@ impl Api {
                 highlight_id,
             } => Response::Bool(self.uncite(note_id, highlight_id).await?),
             R::CitationsFor { note_id } => Response::Highlights(self.citations_for(note_id).await?),
+            R::CitationsForNotes { note_ids } => {
+                Response::NoteCitations(self.citations_for_notes(&note_ids).await?)
+            }
 
             R::ImportGoodreads {
                 path,
@@ -1134,6 +1164,15 @@ impl Api {
                 Response::Unit
             }
 
+            R::CreateFlashcard {
+                book_id,
+                highlight_id,
+                word,
+                context,
+            } => Response::Bool(
+                self.create_flashcard(book_id, highlight_id, &word, context.as_deref())
+                    .await?,
+            ),
             R::ListFlashcards { include_exported } => {
                 Response::Flashcards(self.list_flashcards(include_exported).await?)
             }

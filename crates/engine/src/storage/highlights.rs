@@ -388,6 +388,24 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// Which book a highlight belongs to — `None` when there is no such
+    /// highlight.
+    ///
+    /// One statement answering both halves of *is this passage a passage of
+    /// that book*, which is the question `Engine::create_flashcard` has to ask
+    /// before it writes a card pointing at one. Deliberately not a
+    /// `get_highlight`: nothing needs the row, and returning the whole thing
+    /// would put the reader's private text on a path whose only output is a
+    /// yes or a no.
+    pub async fn highlight_book(&self, highlight_id: i64) -> Result<Option<i64>> {
+        Ok(
+            sqlx::query_scalar("SELECT book_id FROM highlights WHERE id = ?")
+                .bind(highlight_id)
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
     pub async fn list_highlights(&self, book_id: i64) -> Result<Vec<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE book_id = ?

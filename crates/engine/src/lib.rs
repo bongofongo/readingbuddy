@@ -87,9 +87,9 @@ pub use search::{RankedResult, SearchOutcome};
 pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
-    MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteRecord, NoteScope, OutgoingLink,
-    RUN_MIN_DAYS, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent, RefillReport,
-    SearchHit, SearchSource, Source, StatusFilter, Storage,
+    MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteCitations, NoteRecord, NoteScope,
+    OutgoingLink, RUN_MIN_DAYS, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent,
+    RefillReport, SearchHit, SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -1653,6 +1653,22 @@ impl Engine {
         self.storage.citations_for(note_id).await
     }
 
+    /// Which passages each of these notes cites, in one call (item 46).
+    ///
+    /// The question "is this highlight already quoted somewhere?" is asked
+    /// about a *page* of notes, and [`Engine::citations_for`] answers it one
+    /// note at a time — which is the N+1 `gui/CLAUDE.md` told the frontend not
+    /// to build. This is the call that makes the mark buildable.
+    ///
+    /// One entry per requested id, in the order asked, empties included; and it
+    /// carries **ids rather than rows**, because the surface asking already
+    /// holds the highlights and does not need the reader's text sent back once
+    /// per citing note. The two calls cannot disagree about order — they share
+    /// one `ORDER BY`.
+    pub async fn citations_for_notes(&self, note_ids: &[i64]) -> Result<Vec<NoteCitations>> {
+        self.storage.citations_for_notes(note_ids).await
+    }
+
     // ---- goodreads ---------------------------------------------------------
 
     /// Import a Goodreads CSV export. `dry_run` reports what would change and
@@ -1780,6 +1796,61 @@ impl Engine {
     }
 
     // ---- flashcards --------------------------------------------------------
+
+    /// Capture a flashcard from a book, optionally anchored to the passage the
+    /// word came from (item 45).
+    ///
+    /// Until this, [`Storage::insert_flashcard`]'s only production caller in
+    /// the repo was the KOReader import's auto-capture of single-word
+    /// highlights — so a card could be minted **by an import and by nothing
+    /// else**, and no frontend could offer one. This is the door.
+    ///
+    /// Returns whether a card was created. `false` is *you already had this
+    /// one*, not a failure: `UNIQUE(book_id, word)` dedupes and the existing
+    /// card is left untouched, so the two answers are different facts and a
+    /// caller drawing a confirmation has to be able to tell them apart.
+    ///
+    /// **The pair is checked, not trusted.** `book_id` and `highlight_id` are
+    /// two handles a client supplies independently, and nothing in the schema
+    /// stops them naming different books — after which the card sits, for ever,
+    /// beside a passage from somewhere else. `crates/api/CLAUDE.md`'s rule is
+    /// that a write path takes ids and re-reads server-side; `link_foreign_record`
+    /// is the precedent, down to the reason a raw foreign-key error is not an
+    /// acceptable answer to a frontend offering a list that another pane may
+    /// have deleted from under it.
+    pub async fn create_flashcard(
+        &self,
+        book_id: i64,
+        highlight_id: Option<i64>,
+        word: &str,
+        context: Option<&str>,
+    ) -> Result<bool> {
+        // Trimmed rather than taken as given: `UNIQUE(book_id, word)` is the
+        // dedup, and " mot" and "mot" are one word wearing two spellings.
+        let word = word.trim();
+        if word.is_empty() {
+            return Err(EngineError::InvalidInput(
+                "a flashcard needs a word".to_string(),
+            ));
+        }
+        if self.storage.get_book(book_id).await?.is_none() {
+            return Err(EngineError::NotFound(format!("book {book_id}")));
+        }
+        if let Some(hid) = highlight_id {
+            match self.storage.highlight_book(hid).await? {
+                None => return Err(EngineError::NotFound(format!("highlight {hid}"))),
+                Some(owner) if owner != book_id => {
+                    return Err(EngineError::InvalidInput(format!(
+                        "highlight {hid} belongs to book {owner}, not book {book_id}"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        self.storage
+            .insert_flashcard(book_id, highlight_id, word, context)
+            .await
+    }
 
     pub async fn list_flashcards(&self, include_exported: bool) -> Result<Vec<FlashcardRow>> {
         self.storage.list_flashcards(include_exported).await

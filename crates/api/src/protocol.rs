@@ -530,6 +530,26 @@ pub enum Request {
     CitationsFor {
         note_id: i64,
     },
+    /// Which passages each of these notes cites, in one call (item 46).
+    ///
+    /// The call that makes "mark the highlights some note already quotes"
+    /// buildable. [`Request::CitationsFor`] is one call per note, and
+    /// `gui/CLAUDE.md` told the frontend outright not to build that loop; this
+    /// is what it was waiting for.
+    ///
+    /// It answers with **highlight ids** rather than rows —
+    /// [`NoteCitationsDto`] carries the argument — and one entry per requested
+    /// id, in the order asked, empties included. A note id that does not exist
+    /// gets an empty entry: to this question, "no such note" and "cites
+    /// nothing" are the same answer, and a missing row would make a caller
+    /// unable to zip the reply against the page it already holds.
+    ///
+    /// A **new method rather than a `note_ids` beside `note_id`**: the two
+    /// return different shapes, so one variant answering both would be a reply
+    /// whose shape depends on which field a client filled in.
+    CitationsForNotes {
+        note_ids: Vec<i64>,
+    },
 
     // ---- goodreads ----
     ImportGoodreads {
@@ -576,6 +596,32 @@ pub enum Request {
     },
 
     // ---- flashcards ----
+    /// Capture a card from a book, optionally anchored to the passage the word
+    /// came from (item 45).
+    ///
+    /// Until this there was no way to make one: `Storage::insert_flashcard`'s
+    /// only production caller was the KOReader import's auto-capture of
+    /// single-word highlights, so a card could be minted **by an import and by
+    /// nothing else**.
+    ///
+    /// The reply is [`Response::Bool`] — `true` created, `false` *you already
+    /// had this card*. `UNIQUE(book_id, word)` dedupes and the existing card is
+    /// left exactly as it was, so the two are different facts and a caller
+    /// drawing a confirmation needs to tell them apart. An existing shape
+    /// rather than a new one: `Uncite` already answers a write with a bool
+    /// meaning "there was something there".
+    ///
+    /// **The pair is re-read server-side**, this crate's own "handles do not
+    /// cross": `highlight_id` belonging to a different book is `InvalidInput`
+    /// and not a card quietly filed beside a passage from somewhere else.
+    CreateFlashcard {
+        book_id: i64,
+        #[serde(default)]
+        highlight_id: Option<i64>,
+        word: String,
+        #[serde(default)]
+        context: Option<String>,
+    },
     ListFlashcards {
         #[serde(default)]
         include_exported: bool,
@@ -639,6 +685,10 @@ pub enum Response {
 
     Note(Option<NoteDto>),
     Notes(Vec<NoteDto>),
+    /// Which passages each requested note cites — one entry per id asked, in
+    /// that order, empties included. **Not `Highlights`**: this shape carries
+    /// handles, and the two calls answer the same question at two grains.
+    NoteCitations(Vec<NoteCitationsDto>),
     SearchHits(Vec<SearchHitDto>),
     Links(Vec<OutgoingLinkDto>),
     CreatedNote(CreatedNoteDto),

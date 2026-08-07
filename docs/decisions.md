@@ -2432,3 +2432,108 @@ because item 31 needed somewhere to put reading time.
       second made the first worse before it made it better: with the figures at
       `--ink`, italics alone separated a measured `0 min` from *not measured*, so
       the absence now carries **two** signals rather than one.
+
+45. **A card can be made.** No migration and no `API_VERSION` move; two columns
+    selected, one facade method, one request. `flashcards` has carried `book_id`
+    and `highlight_id` since `0001_init.sql` and `list_flashcards`' SQL had
+    never selected either, so a card knew only its book's *title* — not a
+    handle, and no way back to the passage the word was taken from. And
+    `Storage::insert_flashcard` had no wrapper and no request: its only
+    production caller in the repo was the KOReader import's auto-capture of
+    single-word highlights, so a card could be **minted by an import and by
+    nothing else**.
+    - **The pair is checked, and the reason is stronger than the rule that asks
+      for it.** `crates/api/CLAUDE.md` says handles do not cross — a write takes
+      ids and re-reads server-side — and that alone justifies refusing a
+      `highlight_id` belonging to a different book, which would otherwise leave
+      a card sitting beside a passage from somewhere else for ever with nothing
+      on screen looking wrong. Building it turned up the second half:
+      `flashcards.highlight_id` is a **foreign key**, so the unvalidated write
+      does not silently succeed on a stale id — it returns a raw sqlx constraint
+      error, which crosses the seam as `internal`. `link_foreign_record` had
+      already recorded exactly this (a frontend offering a candidate list can
+      always name a row another pane has deleted) and taken the same medicine.
+      So validation is not a cost paid for tidiness; it converts a wrong error
+      into a typed one *and* closes the incoherence.
+    - **`#[serde(default)]` on `book_id` was specified and is wrong.** The
+      attribute is this crate's device for **request** compatibility — a payload
+      written before a field existed still parses — and no request carries a
+      flashcard. What a default would buy on a *reply* is an old daemon's card
+      parsing as `book_id: 0`, which is not a book: a client follows it to a
+      `NotFound` indistinguishable from a book somebody deleted. `pdf.rs`
+      already states the rule — a sentinel nothing downstream can tell from a
+      real value is worse than the parse failure it replaces — so the field is
+      required and `highlight_id` keeps the default, because *absent* and *not
+      anchored* are the same true thing there.
+    - **The bool had to survive to the wire, and an existing shape carries it.**
+      `UNIQUE(book_id, word)` dedupes through `ON CONFLICT DO NOTHING`, so *you
+      already had this card* and *a card now exists* are different facts and a
+      caller drawing a confirmation must tell them apart. `Response::Bool`, not
+      a new shape — `Uncite` already answers a write that way. `DO NOTHING`
+      rather than `DO UPDATE` is what makes the answer true: a later capture of
+      the same word must not repoint the card at a different passage, which is
+      asserted rather than left to the clause.
+    - **The word is trimmed at the facade**, which had never mattered because
+      the import's only caller hands it `single_word`'s already-clean output.
+      `UNIQUE(book_id, word)` is the dedup and `" mot"` is not a second word;
+      the first typed card would have found that out.
+    - **Two `SELECT`s and two row mappers were already one column list written
+      twice**, in a module whose entire SQL surface is four statements — and the
+      item's two fields would have made it four places to remember. One
+      `FLASHCARD_COLUMNS` and one `row_to_flashcard`, the shape `NOTE_COLUMNS`
+      and `HIGHLIGHT_COLUMNS` set.
+    - **`Engine::cite` throws away `add_citation`'s bool** — the identical loss,
+      one table over, and it is left standing: changing it changes
+      `Response::Unit` to `Response::Bool` on a shipped method, which is a wire
+      change and not this item's. Recorded so it is a decision rather than an
+      oversight.
+
+46. **Which passages are already cited, asked once.** No migration and no
+    `API_VERSION` move; one storage method, one facade method, one request.
+    `CitationsFor` is one call per note, and both `gui/CLAUDE.md` and
+    `Passages.svelte`'s module doc record the refusal to loop it. This is what
+    they were waiting for.
+    - **It answers with ids, not passages.** The screen asking is a book's
+      highlight list wanting to mark the ones some note already quotes, and it
+      is holding those highlights already — `book/[id]/+page.svelte` loads them
+      in the same `Promise.all` as the notes. A `Vec<HighlightDto>` per note
+      would put the reader's private text back on the wire once *per citing
+      note* to draw a tick. `CitationsFor` is untouched and is **not** made
+      redundant: it feeds the pane that shows the passages, where the words are
+      the point. One shape would have been better than two only if it could
+      avoid sending the text N times, and none can.
+    - **The agreement the item is judged on was not assertable against the
+      ordering it inherited.** `citations_for` orders by `h.page ASC,
+      h.ko_datetime ASC` — both columns nullable, both absent from a legacy
+      sidecar — so two cited passages of one note can tie on the whole key, and
+      SQL leaves a tie unordered. The batch is a different plan over a different
+      row set, so nothing makes the two break such a tie the same way, and
+      "the batch equals the single call" would have been green by luck. `h.id`
+      is appended as a tie-break to **both**, which refines the stated order
+      rather than changing it, and both statements now name **one shared
+      `CITATION_ORDER` string** — so the guarantee is structural and the test
+      only confirms it. This is item 18's `books.id` finding arriving a second
+      time in a place the spec said not to touch.
+    - **The chunk cannot be asserted behaviourally, and the specified test
+      cannot fail.** Measured, not assumed: with the split removed entirely,
+      1 203 ids still bind, still return the right rows and still pass, because
+      the SQLite sqlx bundles allows 32 766 parameters — only an older build
+      refuses at 999, on somebody else's machine, on whichever library is big
+      enough. So the split is a **pure function** (`citation_batches`) whose
+      generated statements are read: none binds more than the old ceiling, the
+      chunks partition the ids in order, and a `const` assertion pins the two
+      numbers against each other where raising one is written. The behavioural
+      test stays, with its scope stated honestly — it proves that crossing the
+      boundary loses, duplicates and reorders nothing, which is the bug a
+      *present* chunk introduces. `book_summaries` chunks and still nothing
+      proves it does.
+    - **A note id that is not a note gets an empty row**, not a dropped one. One
+      entry per id asked, in that order, duplicates included — `book_summaries`'
+      contract, and for its reason: a caller zips the reply against a page it
+      already holds. To this question "no such note" and "cites nothing" are the
+      same answer, and the distinction belongs to `GetNote`.
+    - **A new method rather than a `note_ids` beside `note_id`.** The two return
+      different shapes, so one variant answering both would be a reply whose
+      shape depends on which field a client filled in — and adding a field to a
+      shipped request is what `ts-rs` emits as *required* TypeScript however
+      `#[serde(default)]` the Rust is.
