@@ -857,6 +857,124 @@ day: string, minutes: number | null, pages: number | null,
 source: string, confidence: ConfidenceDto, created_at: number, };
 
 /**
+ * Which readings a list is about, before it is ordered or paged (item 43).
+ *
+ * Every field absent is *every reading*, so a client with no opinion sends
+ * nothing — [`BookFilterDto`]'s rule, and the mirror of
+ * [`readingbuddy::ReadingFilter`], where the predicates are documented because
+ * they are properties of the SQL and not of the wire.
+ *
+ * There is no `NoReading` case here and there cannot be one: every row of this
+ * list *is* a reading, so the absence [`StatusFilterDto`] had to name is
+ * unrepresentable rather than merely unwanted. Which is why `status` is a bare
+ * [`ReadingStateDto`] and not a second filter enum.
+ */
+export type ReadingFilterDto = { 
+/**
+ * One book's readings — what lets the card page for a single book ask the
+ * **same** question the wall asks, rather than `ListReadings` plus one
+ * `CardPassage` per row beside it.
+ */
+book_id: number | null, status: ReadingStateDto | null, 
+/**
+ * `true` is a reading still open. Not redundant with `status`:
+ * `abandon_reading` deliberately leaves the reading open, so *abandoned*
+ * and *reading* are both open and a wall of finished reads cannot be
+ * written as a status.
+ */
+open: boolean | null, 
+/**
+ * Readings that **finished** inside this span of days, UTC — the year
+ * filter `gui-vision.md` asks the shelf for.
+ *
+ * One nested range rather than two flat optional days, because the pair is
+ * inseparable: a half-set span is a question nobody asked, and
+ * [`DayRangeDto`]'s two fields are both required. An inverted span is an
+ * [`crate::error::ErrorCode::InvalidInput`] and never a confident empty
+ * answer — the engine's own `DayRange` refuses it, exactly as it does for
+ * `ActivitySummary`.
+ */
+finished_in: DayRangeDto | null, };
+
+/**
+ * A page of the library's readings: which ones, in what order, which slice.
+ *
+ * The typed argument to [`crate::Api::list_reading_rows`], and
+ * [`BookQueryDto`]'s shape for [`BookQueryDto`]'s reason — `limit` and `offset`
+ * are both `i64` and adjacent, which is a swap no type checker catches. The
+ * request carries the same four values **flat**.
+ */
+export type ReadingQueryDto = { sort: ReadingSortDto, filter: ReadingFilterDto | null, 
+/**
+ * **Negative means no limit** — SQLite's own reading of `LIMIT -1`.
+ *
+ * No `#[serde(default)]`, deliberately: `0` is a perfectly good limit and
+ * an omitted one would silently be a page of nothing. A client asking for
+ * everything says `-1`, which is the one spelling of that.
+ */
+limit: number, 
+/**
+ * Rows to skip. An offset and not a cursor; `docs/decisions.md` entry 18.
+ */
+offset: number, };
+
+/**
+ * One row of the library-wide readings list (item 43).
+ *
+ * **Not a card, and that is what keeps item 44's refusal standing.** That item
+ * declined a `CardDto` because a card is a *layout* — cover, dates, rating,
+ * passage, notes — and a layout is a frontend's composition of facts this crate
+ * already serves. This row carries no rating and no notes and is not shaped by
+ * what a card draws; it is shaped by what **one round trip** must contain for a
+ * page of readings to be drawable at all. That is item 18's `BookSummaries`
+ * argument rather than a layout one, and the two are told apart by asking what
+ * would be added next: a card would grow the rating, and this will not.
+ *
+ * So the passage is here and still not on [`ReadingDto`]. Item 44's objection
+ * to that field was that it would ride the reader's private highlight text
+ * along on every row of every `ListReadings`, *including the ones nobody is
+ * drawing a card for* — and every row of this list is one somebody is.
+ *
+ * The book's four progress projections describe the **current** read while
+ * `reading` is this one; on a reread they genuinely differ, which is what item
+ * 22 found a frontend getting wrong. `reading.progress` is this read's.
+ */
+export type ReadingRowDto = { book: BookDto, reading: ReadingDto, 
+/**
+ * Which read this is, 1-based, counted oldest-first over **every** reading
+ * of the book — never over the page (item 41).
+ *
+ * **Not an `Option`, and that is the decision.**
+ * `readingbuddy::ReadNumbering::number_of` folds *read once* into the same
+ * `None` as *unattributed* and *not in this list*, which is right for the
+ * TUI's gutter, wanting one answer to all three. Two of those three are
+ * facts about a **highlight**, and on a list whose rows are readings they
+ * are unreachable — so shipping the fold would have made `null` mean a
+ * fourth thing, *whoever built this row could not tell*, which is the
+ * ambiguity a row type must not carry. A client showing "your second read"
+ * asks `of_reads > 1`, which is the same test the gutter makes.
+ */
+read_number: number, 
+/**
+ * How many readings this book has in total.
+ */
+of_reads: number, 
+/**
+ * The passage a card shows for this reading, by item 44's rule, or `null`.
+ *
+ * `null` for a reading whose highlights are all unattributed, which is an
+ * ordinary and well-understood set of marks — `attribute_highlights`
+ * leaves `reading_id` NULL when no window holds a timestamp. A card drawing
+ * that absence *as* an absence is right.
+ */
+passage: HighlightDto | null, };
+
+/**
+ * How a library-wide readings list is ordered (item 43).
+ */
+export type ReadingSortDto = "finished" | "started" | "last_modified";
+
+/**
  * A reading's state, typed. The mirror of [`readingbuddy::ReadingState`], and
  * deliberately the same shape as [`KoStatusDto`] — one is our vocabulary, the
  * other is the device's, and both have to survive a word neither build knows.
@@ -910,7 +1028,22 @@ offset: number,
 /**
  * Absent is every book.
  */
-filter: BookFilterDto | null, } } | { "method": "count_books", "params": { filter: BookFilterDto | null, } } | { "method": "book_summaries", "params": { book_ids: Array<number>, } } | { "method": "get_book", "params": { id: number, } } | { "method": "resolve_books", "params": { selector: string, } } | { "method": "book_tags", "params": { book_id: number, } } | { "method": "enrich_book", "params": { book_id: number, } } | { "method": "set_book_fields", "params": { book_id: number, fields: BookDto, } } | { "method": "field_provenance", "params": { book_id: number, } } | { "method": "currently_reading", "params": { limit: number, } } | { "method": "delete_book", "params": { id: number, } } | { "method": "fetch_cover", "params": { book_id: number, } } | { "method": "merge_books", "params": { src: number, dst: number, } } | { "method": "list_readings", "params": { book_id: number, } } | { "method": "get_reading", "params": { id: number, } } | { "method": "active_reading", "params": { book_id: number, } } | { "method": "update_progress", "params": { book_id: number, page: number | null, finished: boolean | null, } } | { "method": "reread", "params": { book_id: number, } } | { "method": "list_highlights", "params": { book_id: number, } } | { "method": "highlights_for_reading", "params": { reading_id: number, } } | { "method": "card_passage", "params": { reading_id: number, } } | { "method": "set_annotation", "params": { highlight_id: number, annotation: string | null, } } | { "method": "import_epub", "params": { path: string, } } | { "method": "import_file", "params": { path: string, 
+filter: BookFilterDto | null, } } | { "method": "count_books", "params": { filter: BookFilterDto | null, } } | { "method": "book_summaries", "params": { book_ids: Array<number>, } } | { "method": "get_book", "params": { id: number, } } | { "method": "resolve_books", "params": { selector: string, } } | { "method": "book_tags", "params": { book_id: number, } } | { "method": "enrich_book", "params": { book_id: number, } } | { "method": "set_book_fields", "params": { book_id: number, fields: BookDto, } } | { "method": "field_provenance", "params": { book_id: number, } } | { "method": "currently_reading", "params": { limit: number, } } | { "method": "delete_book", "params": { id: number, } } | { "method": "fetch_cover", "params": { book_id: number, } } | { "method": "merge_books", "params": { src: number, dst: number, } } | { "method": "list_readings", "params": { book_id: number, } } | { "method": "list_reading_rows", "params": { 
+/**
+ * Negative is no limit.
+ */
+limit: number, sort: ReadingSortDto, 
+/**
+ * Rows to skip. An offset and not a cursor — `docs/decisions.md` entry
+ * 18 has the argument, and it applies here more simply, since a count
+ * composes with an offset and a wall that knows its total wants page
+ * numbers, which *are* offsets.
+ */
+offset: number, 
+/**
+ * Absent is every reading.
+ */
+filter: ReadingFilterDto | null, } } | { "method": "count_readings", "params": { filter: ReadingFilterDto | null, } } | { "method": "get_reading", "params": { id: number, } } | { "method": "active_reading", "params": { book_id: number, } } | { "method": "update_progress", "params": { book_id: number, page: number | null, finished: boolean | null, } } | { "method": "reread", "params": { book_id: number, } } | { "method": "list_highlights", "params": { book_id: number, } } | { "method": "highlights_for_reading", "params": { reading_id: number, } } | { "method": "card_passage", "params": { reading_id: number, } } | { "method": "set_annotation", "params": { highlight_id: number, annotation: string | null, } } | { "method": "import_epub", "params": { path: string, } } | { "method": "import_file", "params": { path: string, 
 /**
  * Create a book even over a near-miss candidate. Without it an
  * ambiguous file comes back as `Unmatched` with **nothing written**.
@@ -926,7 +1059,7 @@ only: Array<number>, } } | { "method": "link_calibre_book", "params": { uuid: st
 /**
  * What came back, by shape. See [`Request`] on the size of these variants.
  */
-export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "highlight", "value": HighlightDto | null } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "search_hits", "value": Array<SearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "moments", "value": Array<MomentDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "activity_by_month", "value": Array<MonthActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
+export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "reading_rows", "value": Array<ReadingRowDto> } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "highlight", "value": HighlightDto | null } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "search_hits", "value": Array<SearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "moments", "value": Array<MomentDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "activity_by_month", "value": Array<MonthActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
 
 /**
  * One hit in the one ranked list, carrying whichever row matched.

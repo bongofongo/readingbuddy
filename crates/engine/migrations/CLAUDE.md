@@ -33,7 +33,20 @@ and `0011`–`0012` in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md);
 `0009` under "goodreads.rs"; `0010` under "files.rs"; `0013`, `0014`, `0015` and `0016`
 in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md) and, for what `0013`
 deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md);
-`0017` under "moments.rs" in [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md).
+`0017` under "moments.rs" and `0018` under "Readings" in
+[`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md).
+
+`0018` is the **second indexes-only migration on a sort key**, and it is the one
+to read before writing a range filter over a timestamp. `0016`'s collation
+lesson has a twin here: SQLite declines an index whose *column is wrapped in a
+function* as silently as one whose collation differs, so
+`date(finished_at, 'unixepoch') BETWEEN ? AND ?` — which is what
+`activity_summary` had asked since `0011` — could never have used
+`idx_readings_finished_at`. The conversion to raw unix bounds happens once, in
+`DayRange::unix_bounds`, and the file's own control is a *test* rather than an
+unindexable sort: `0016` had `BookSort::Progress` to prove its assertions could
+fail, and every arm of `ReadingSort` is indexed, so the control is the year
+filter written the old way and watched to lose the index.
 
 `0017` is the one migration here that adds **no fact about a book** — both its
 tables are what the app knows about *itself*. That is also why it carries the

@@ -132,11 +132,30 @@ pub(super) const BOOK_COLUMNS: &str = "books.id, books.title, books.sort_title, 
 /// "current" rather than a different one per column — a book whose `finished`
 /// came from its last reading while its `current_page` came from nowhere would
 /// render as a contradiction.
-pub(super) const BOOK_FROM: &str = "FROM books LEFT JOIN readings cur ON cur.id = (
+///
+/// **A macro rather than a `const` because it has two drivers now** (item 43).
+/// `BOOK_FROM` drives from `books`; `list_reading_rows` drives from `readings`
+/// so its `ORDER BY readings.finished_at` can walk `idx_readings_finished_at`
+/// instead of sorting the whole table. The join text is identical either way and
+/// **must stay identical** — a second spelling of "current" is exactly the
+/// contradiction the paragraph above describes, one query over — and a `const`
+/// cannot be `concat!`ed into another `const`, so the shared definition is a
+/// macro expanding to a string literal. Nothing here is stringly at runtime:
+/// both `FROM` clauses are one literal by the time the binary exists.
+macro_rules! book_current_join {
+    () => {
+        "LEFT JOIN readings cur ON cur.id = (
          SELECT r.id FROM readings r WHERE r.book_id = books.id
           ORDER BY (r.finished_at IS NULL) DESC,
                    COALESCE(r.started_at, r.created_at) DESC, r.id DESC
-          LIMIT 1)";
+          LIMIT 1)"
+    };
+}
+pub(super) use book_current_join;
+
+/// The book-driven `FROM`: every `books` query in the repo, and the shape
+/// `BOOK_COLUMNS` is written against.
+pub(super) const BOOK_FROM: &str = concat!("FROM books ", book_current_join!());
 
 /// The `ORDER BY` for one sort key, **ending in `books.id`**.
 ///
@@ -204,7 +223,11 @@ fn order_by(sort: BookSort) -> &'static str {
 
 /// Apply a [`Predicate`](super::query::Predicate)'s values, in the order its
 /// clause named them.
-fn bind_all<'q>(
+///
+/// Shared with [`super::readings`] since item 43: the second filter/count pair
+/// binds by the same rule, and a second copy is a second chance to bind them in
+/// the order they were *declared* rather than the order the clause names.
+pub(super) fn bind_all<'q>(
     mut q: Query<'q, Sqlite, SqliteArguments<'q>>,
     binds: &[Bind],
 ) -> Query<'q, Sqlite, SqliteArguments<'q>> {

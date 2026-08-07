@@ -1,0 +1,67 @@
+-- The readings list gets its sort keys indexed (item 43).
+--
+-- `0016` did this for `books` and found that **there was no index on any sort
+-- key**. `readings` is one table over and was in the same state: the two
+-- indexes it has ever had (`idx_readings_book`, `idx_readings_one_open`) are a
+-- foreign key and an invariant. Nothing had ever ordered this table
+-- library-wide, because until item 43 nothing could — every reading method was
+-- scoped to one `book_id`, where a handful of rows sort for free.
+--
+-- Three indexes, one per arm of `ReadingSort`. There is no fourth arm and no
+-- unindexable one, so this migration has **no live control** of the kind
+-- `BookSort::Progress` gives `0016`; the control is
+-- `a_finished_at_index_that_nearly_matches_is_not_used`, which keeps `0008`'s
+-- collation lesson honest by writing the clause the wrong way on purpose and
+-- watching the plan fall back to a temp b-tree.
+--
+-- **An indexes-only migration is judged on `EXPLAIN QUERY PLAN`** — `0008`'s
+-- rule, and the only claim a file like this can make.
+-- `the_reading_sort_indexes_are_the_plan_the_planner_picks` asserts each one
+-- against the SQL `list_reading_rows` actually issues, and asserts the outer
+-- query no longer says `USE TEMP B-TREE FOR ORDER BY`. An index that is scanned
+-- for its rows and then sorted anyway bought nothing.
+--
+-- ## `idx_readings_finished_at` is three things at once, and that is the point
+--
+-- It is the leading term of `ReadingSort::Finished`; it is what the **year
+-- filter** compares against; and it is what `activity_summary`'s
+-- `books_finished` has been scanning the whole table for since `0011`.
+--
+-- The year filter is the reason this file exists and the reason it nearly
+-- bought nothing. `activity_summary` asked
+-- `date(finished_at, 'unixepoch') BETWEEN ? AND ?` — an **expression over the
+-- column**, which no index on the bare column can serve, and SQLite declines it
+-- as silently as it declines an index whose collation differs (`0008`). So
+-- `DayRange` now converts its two days to raw unix-second bounds once, at the
+-- validated boundary, and every reader of `finished_at` compares
+-- `finished_at >= ? AND finished_at < ?` against the bare column.
+-- `the_bare_bounds_select_exactly_what_the_date_expression_did` pins that the
+-- rewrite is an equivalence and not a new rule: the conversion is UTC, which is
+-- the convention `date(…, 'unixepoch')` already used and the one `0011` fixed
+-- for `reading_events.day`.
+--
+-- ## `idx_readings_started` is on an expression, for `0016`'s reason
+--
+-- `ReadingSort::Started` orders by `COALESCE(started_at, created_at)` rather
+-- than by the bare column, because a NULL `started_at` is ordinary here in a way
+-- a NULL `sort_title` is not: `goodreads.rs` writes `Read Count > 1` as several
+-- readings with no start date **by design** (the CSV has no start date and it
+-- refuses to invent one), so a bare-column sort would file every imported reread
+-- at one end of the list. `COALESCE(started_at, created_at)` is the key
+-- `list_readings` has ordered by since `0005` and is the one this repo means by
+-- "when this read began"; the index is declared on the same expression, spelled
+-- the same way, or it is an index the planner reads correctly and never uses.
+--
+-- **No collation anywhere in this file, and that is not an omission.** All three
+-- keys are INTEGER columns; `0016` needed `COLLATE NOCASE` on
+-- `idx_books_sort_title` because its comparison is textual, and a collation on
+-- an integer index would differ from the comparison for the opposite reason.
+--
+-- **No back-fill, and unlike `0014` and `0016` none was ever conceivable.**
+-- Those two are non-back-fills because the value needs a PNG decoded or a human
+-- name parsed. These three index columns that have been written on every
+-- `INSERT` since `0005`.
+
+CREATE INDEX idx_readings_finished_at  ON readings(finished_at);
+CREATE INDEX idx_readings_started      ON readings(COALESCE(started_at, created_at));
+CREATE INDEX idx_readings_last_modified ON readings(last_modified);

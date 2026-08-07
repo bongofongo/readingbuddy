@@ -190,6 +190,51 @@ pub enum Request {
     ListReadings {
         book_id: i64,
     },
+    /// One page of the library's readings, each with its book, its own
+    /// progress, its read number and its card passage (item 43).
+    ///
+    /// **The list `readings` never had.** Every other method here is scoped to
+    /// one book except `CurrentlyReading`, which is filtered to the open ones —
+    /// so a *finished* reading was reachable only by already knowing its book,
+    /// while `ActivitySummary::books_finished` had been counting exactly those
+    /// rows since item 21.
+    ///
+    /// A **new method rather than four fields on `ListReadings`**, and not only
+    /// because reshaping a request breaks a client: the two answer different
+    /// questions and return different rows. `ListReadings` is a book's history
+    /// and returns `ReadingDto`; this is a page of the library and returns
+    /// [`ReadingRowDto`], which carries a book and a passage beside it.
+    ///
+    /// One call answers a page. The alternatives are a `GetBook` and a
+    /// `CardPassage` per row — the N+1 item 18 exists to remove, on a list whose
+    /// whole purpose is to be long, and the thing item 44 wrote down in advance
+    /// that this item had to prevent.
+    ListReadingRows {
+        /// Negative is no limit.
+        limit: i64,
+        #[serde(default)]
+        sort: ReadingSortDto,
+        /// Rows to skip. An offset and not a cursor — `docs/decisions.md` entry
+        /// 18 has the argument, and it applies here more simply, since a count
+        /// composes with an offset and a wall that knows its total wants page
+        /// numbers, which *are* offsets.
+        #[serde(default)]
+        offset: i64,
+        /// Absent is every reading.
+        #[serde(default)]
+        filter: Option<ReadingFilterDto>,
+    },
+    /// How many readings match — the number a wall needs *before* it needs the
+    /// rows.
+    ///
+    /// Its own method rather than a field beside the page, for `CountBooks`'
+    /// reason: a count is a property of the **filter**, asked once per year the
+    /// reader picks, while the page is asked on every scroll. The clause is
+    /// shared in the engine, which is where sharing it guarantees the two agree.
+    CountReadings {
+        #[serde(default)]
+        filter: Option<ReadingFilterDto>,
+    },
     GetReading {
         id: i64,
     },
@@ -628,6 +673,10 @@ pub enum Response {
 
     Reading(Option<ReadingDto>),
     Readings(Vec<ReadingDto>),
+    /// A page of the library's readings (item 43). Its own shape rather than
+    /// `Readings`, because a row here carries a book and a passage beside the
+    /// reading and a client reading one as the other would find neither.
+    ReadingRows(Vec<ReadingRowDto>),
 
     Highlights(Vec<HighlightDto>),
     /// One passage, or `null` because this reading has none attributed to it —

@@ -33,7 +33,7 @@ pub use highlights::{Highlight, NewHighlight};
 pub use moments::{Moment, MomentKind, RUN_MIN_DAYS, runs_of_days};
 pub use notes::{NewNoteMeta, NoteFile, NoteRecord, NoteScope, OutgoingLink};
 pub use provenance::BookTag;
-pub use query::{BookFilter, BookQuery, BookSummary, StatusFilter};
+pub use query::{BookFilter, BookQuery, BookSummary, ReadingFilter, ReadingQuery, StatusFilter};
 pub use ratings::{Rating, RatingScale};
 pub use reading_events::{
     ActivitySummary, Confidence, DayActivity, DayRange, FillStats, MonthActivity, NewReadingEvent,
@@ -41,7 +41,8 @@ pub use reading_events::{
     day_of_unix,
 };
 pub use readings::{
-    ReadNumbering, Reading, STATUS_ABANDONED, STATUS_FINISHED, STATUS_READING, ko_datetime_to_unix,
+    ReadCount, ReadNumbering, Reading, ReadingRow, ReadingSort, STATUS_ABANDONED, STATUS_FINISHED,
+    STATUS_READING, ko_datetime_to_unix,
 };
 pub use sidecar_seen::SidecarFacts;
 
