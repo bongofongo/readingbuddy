@@ -7,14 +7,19 @@
 //! every render call site untouched — see `BOOK_COLUMNS` in
 //! [`super::books`].
 
+use std::collections::HashMap;
+
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
-use super::books::{BOOK_COLUMNS, BOOK_FROM, row_to_book};
-use super::{Storage, now_unix};
+use super::books::{BOOK_COLUMNS, BOOK_FROM, bind_all, book_current_join, row_to_book};
+use super::highlights::card_passage_order;
+use super::query::{Predicate, ReadingFilter, ReadingQuery};
+use super::{Highlight, Storage, now_unix};
 use crate::book::Book;
 use crate::error::{EngineError, Result};
 use crate::koreader::KoStatus;
+use crate::progress::Progress;
 
 /// Which read a highlight belongs to, as a person counts them.
 ///
@@ -50,15 +55,15 @@ impl<'a> ReadNumbering<'a> {
     /// reading it names is not in this list, or **the book has been read once**.
     /// A single-read book has nothing to tell apart, and a number on every row
     /// of it is a column that always reads `1`.
+    ///
+    /// The third case is [`ReadCount::ordinal`] and is reached through it, so
+    /// there is one statement of "a lone read has no number" rather than two.
     pub fn number_of(&self, reading_id: Option<i64>) -> Option<usize> {
-        if !self.is_meaningful() {
-            return None;
-        }
         let rid = reading_id?;
-        self.readings
-            .iter()
-            .position(|r| r.id == rid)
-            .map(|i| i + 1)
+        let pos = self.readings.iter().position(|r| r.id == rid)?;
+        ReadCount::new(pos as i64 + 1, self.readings.len() as i64)
+            .ordinal()
+            .map(|n| n as usize)
     }
 
     /// Is there more than one read to tell apart?
@@ -67,7 +72,53 @@ impl<'a> ReadNumbering<'a> {
     /// the same: deciding per row leaves an unattributed highlight flush against
     /// the border while its neighbours are indented.
     pub fn is_meaningful(&self) -> bool {
-        self.readings.len() > 1
+        ReadCount::new(1, self.readings.len() as i64).tells_reads_apart()
+    }
+}
+
+/// One read, counted: **which** it is and **how many** there are (item 41).
+///
+/// [`ReadNumbering`] answers the same two questions for a caller that already
+/// holds the whole `Vec<Reading>` — the TUI's gutter, `rb show`. This is the
+/// form the answer takes when the caller does *not*: a page of
+/// [`Storage::list_reading_rows`] may hold the second read of a book without
+/// holding the first, so the counting cannot be done over the page and is done
+/// in SQL over every sibling. `ReadNumbering` now reaches its rule through this
+/// type, which is what makes "the wall and the gutter agree" structural instead
+/// of a coincidence between two files.
+///
+/// **Both numbers cross the wire and neither is an `Option`**, which is the
+/// decision. `ReadNumbering::number_of` folds "read once" into the same `None`
+/// as "unattributed" and "not in this list", and that is right for a gutter
+/// wanting one answer to all three — but two of those three are facts about a
+/// *highlight*, and on a list whose rows are readings they are unreachable.
+/// Shipping the fold anyway would have made `None` mean a fourth thing, *the
+/// caller who built this row could not tell*, which is the ambiguity a row type
+/// must not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadCount {
+    /// 1-based, counted oldest first — [`Storage::list_readings`]' order, which
+    /// is the ordering contract every read number in this app depends on.
+    pub number: i64,
+    /// How many readings this book has, in total and not on this page.
+    pub of: i64,
+}
+
+impl ReadCount {
+    pub fn new(number: i64, of: i64) -> ReadCount {
+        ReadCount { number, of }
+    }
+
+    /// Is there more than one read to tell apart?
+    pub fn tells_reads_apart(&self) -> bool {
+        self.of > 1
+    }
+
+    /// The number to *show*, or `None` — [`ReadNumbering::number_of`]'s rule,
+    /// stated once. A book read once has nothing to tell apart, and a number on
+    /// every row of it is a column that always reads `1`.
+    pub fn ordinal(&self) -> Option<i64> {
+        self.tells_reads_apart().then_some(self.number)
     }
 }
 
@@ -211,6 +262,163 @@ pub(super) const READING_WINDOWS: &str = "
       FROM readings r
      WHERE r.book_id = ?1";
 
+/// **When a read began**, as an `ORDER BY` list over `alias` — and the one
+/// definition of it.
+///
+/// `COALESCE(started_at, created_at)` is the key [`Storage::list_readings`] has
+/// ordered by since `0005`, and that ordering is a **silent contract**:
+/// `ReadNumbering`'s doc records that the CLI's `reading 2/3`, the TUI's gutter
+/// and now [`Storage::list_reading_rows`]' `read_number` all count in it, and a
+/// second spelling would make two of them disagree with nothing on either screen
+/// looking wrong.
+///
+/// A function of the alias because it has three callers in three shapes: an
+/// `ORDER BY` (oldest first, for a book), a *descending* `ORDER BY`
+/// ([`ReadingSort::Started`], for the library) and a **row value** on both sides
+/// of a `<=` (the ordinal's correlated subquery). The comma list is the same
+/// text in all three, which is precisely what parenthesising it as a row value
+/// requires.
+///
+/// `started_at` is NULL for ordinary rows rather than broken ones — the CSV has
+/// no start date and `goodreads.rs` refuses to invent one — so the fallback is
+/// `created_at`, which is when we learned of the read.
+pub(super) fn reading_age_key(alias: &str) -> String {
+    format!("{}, {alias}.id", reading_began(alias))
+}
+
+/// **When a read began**, as a single expression — the leading term of
+/// [`reading_age_key`] and the expression `idx_readings_started` is declared on.
+///
+/// Split out because [`ReadingSort::Started`] cannot use the key: a comma list's
+/// terms take their own direction, so appending ` DESC` to it would reverse only
+/// `id`. It orders by this term descending and takes its own tie-break, and
+/// `the_started_sort_orders_by_the_key_list_readings_counts_in` is what stops
+/// the two spellings drifting.
+pub(super) fn reading_began(alias: &str) -> String {
+    format!("COALESCE({alias}.started_at, {alias}.created_at)")
+}
+
+/// What [`Storage::list_reading_rows`] orders by.
+///
+/// Three arms, each indexed by migration `0018`, and there is deliberately no
+/// fourth: a title sort would order this list by a `books` column, which cannot
+/// be served by any index on `readings` and would put the whole-table sort back
+/// that `0018` exists to remove. A wall sorted by book title is a wall the
+/// caller can ask for one book at a time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReadingSort {
+    /// Most recently finished first. Open readings have no `finished_at` and
+    /// land last, which is SQLite's own ordering for NULLs under `DESC` and is
+    /// where a read that has not ended belongs on a list of reads that did.
+    #[default]
+    Finished,
+    /// Most recently begun first, by [`reading_age_key`].
+    Started,
+    LastModified,
+}
+
+/// The `ORDER BY` for one reading sort, **ending in `readings.id`**.
+///
+/// Item 18 learned this the hard way one table over and wrote down that the
+/// behavioural test cannot catch its absence: SQLite's sorter is deterministic
+/// for one plan over one set of rows, so deleting the tie-break leaves a
+/// partition test green until the day the plan changes and a reading appears on
+/// two pages and another on none. `readings.id` is the `INTEGER PRIMARY KEY`,
+/// i.e. the rowid, which SQLite appends to every index entry — so the tie-break
+/// comes free off the same scan in either direction and costs nothing to keep.
+/// `the_reading_order_is_a_total_order` reads this function's output.
+///
+/// The tie-break follows the primary key's direction so a descending list's ties
+/// read newest-first like the rest of it.
+fn reading_order_by(sort: ReadingSort) -> &'static str {
+    match sort {
+        ReadingSort::Finished => "readings.finished_at DESC, readings.id DESC",
+        // The same expression `idx_readings_started` is declared on, spelled the
+        // same way — `0016`'s lesson about `COALESCE(sort_title, title)`. Not
+        // built from `reading_age_key` even though it is that key descending:
+        // the key is a comma list whose terms take their own direction, so
+        // appending ` DESC` would reverse only `readings.id` and leave the
+        // leading term ascending — a clause that reads right, runs, and orders
+        // by neither thing the caller asked for.
+        ReadingSort::Started => {
+            "COALESCE(readings.started_at, readings.created_at) DESC, readings.id DESC"
+        }
+        ReadingSort::LastModified => "readings.last_modified DESC, readings.id DESC",
+    }
+}
+
+/// The exact statement [`Storage::list_reading_rows`] issues, minus its two
+/// trailing binds.
+///
+/// A function rather than a `format!` inside the method **so the plan test can
+/// ask for the real thing.** `0016`'s equivalent rebuilds the statement in the
+/// test out of the same pieces, which is one edit away from testing an
+/// approximation — and the likeliest failure an index migration has is a
+/// *mismatch* between the clause and the index, which an approximation is
+/// exactly what cannot catch.
+fn reading_rows_sql(sort: ReadingSort, predicate: &Predicate) -> String {
+    let reading = reading_columns_as("readings", JOINED_READING_PREFIX);
+    let mine = reading_age_key("readings");
+    let sibling = reading_age_key("sib");
+    let passage = card_passage_order("h");
+    let join = book_current_join!();
+    let where_sql = &predicate.sql;
+    let order = reading_order_by(sort);
+    format!(
+        "SELECT {BOOK_COLUMNS}, {reading},
+                (SELECT count(*) FROM readings sib
+                  WHERE sib.book_id = readings.book_id) AS of_reads,
+                (SELECT count(*) FROM readings sib
+                  WHERE sib.book_id = readings.book_id
+                    AND ({sibling}) <= ({mine})) AS read_number,
+                (SELECT h.id FROM highlights h
+                  WHERE h.reading_id = readings.id
+                  ORDER BY {passage} LIMIT 1) AS passage_id
+           FROM readings JOIN books ON books.id = readings.book_id {join}
+          {where_sql} ORDER BY {order} LIMIT ? OFFSET ?"
+    )
+}
+
+/// One row of the library-wide readings list (item 43): a reading, the book it
+/// is of, and the two things a card needs that a `Reading` cannot answer.
+///
+/// **Not a card, and the difference is what keeps item 44's refusal standing.**
+/// That item declined a `CardDto` because a card is a *layout* — cover, dates,
+/// rating, passage, notes — and a layout is a frontend's composition of facts
+/// the API already serves. This row carries no rating and no notes, and it is
+/// not shaped by what a card draws; it is shaped by what **one round trip** has
+/// to contain for a page of readings to be drawable at all. That is item 18's
+/// `book_summaries` argument (one call for a page, not four per row) rather than
+/// a layout, and the two are told apart by asking what would be added next: a
+/// card would grow the rating, and this will not.
+///
+/// The `passage` is here rather than on `ReadingDto` for item 44's own reason,
+/// read the other way round: putting it on `ReadingDto` would ride the reader's
+/// private highlight text along on every row of every `ListReadings`, while
+/// every row of *this* list is one somebody is drawing a card for.
+// No `PartialEq`: neither `Book` nor `Highlight` derives one, and adding it to
+// two domain types so a row can be compared whole would be a test's convenience
+// changing the domain.
+#[derive(Debug, Clone)]
+pub struct ReadingRow {
+    pub book: Book,
+    pub reading: Reading,
+    /// **This** reading's progress, not the book's.
+    ///
+    /// Filled here rather than by the caller because this is the one place that
+    /// holds both halves: `readings` carries no length, and
+    /// `Engine::readings_with_progress` exists precisely because a caller with a
+    /// bare `Reading` cannot reach [`Progress::of_reading`]. Handing back a row
+    /// that holds the book *and* leaves the pairing to the caller would rebuild
+    /// that trap in a new shape.
+    pub progress: Progress,
+    /// Which read this is, out of how many — see [`ReadCount`]. Counted over
+    /// every reading of the book and never over the page.
+    pub count: ReadCount,
+    /// The passage a card shows for this reading, by item 44's rule, or `None`.
+    pub passage: Option<Highlight>,
+}
+
 /// KOReader's `datetime` as unix seconds.
 ///
 /// The device writes `YYYY-MM-DD HH:MM:SS` with no zone, so it is read as UTC —
@@ -249,10 +457,16 @@ impl Storage {
     }
 
     /// Every reading of a book, oldest first.
+    ///
+    /// **This ordering is a contract, not a preference** — see
+    /// [`reading_age_key`], which is where it is now written down once so that
+    /// `read_number` in [`Storage::list_reading_rows`] counts in the same
+    /// direction this list numbers in.
     pub async fn list_readings(&self, book_id: i64) -> Result<Vec<Reading>> {
+        let age = reading_age_key("readings");
         let sql = format!(
             "SELECT {READING_COLUMNS} FROM readings WHERE book_id = ?
-             ORDER BY COALESCE(started_at, created_at) ASC, id ASC"
+             ORDER BY {age} ASC"
         );
         let rows = sqlx::query(&sql)
             .bind(book_id)
@@ -308,6 +522,116 @@ impl Storage {
                 ))
             })
             .collect()
+    }
+
+    /// One page of the library's readings (item 43).
+    ///
+    /// Everything `readings` could answer before this was scoped to one
+    /// `book_id`, except [`Storage::list_open_readings`], which is filtered to
+    /// `finished_at IS NULL` — so a **finished** reading was reachable only by
+    /// already knowing its book, and `ActivitySummary::books_finished` counted
+    /// exactly the rows nothing could list. See
+    /// [`ReadingQuery`](super::ReadingQuery) for the filter, the paging and the
+    /// year, and [`reading_order_by`] for why every arm ends in `readings.id`.
+    ///
+    /// ## It drives from `readings`, and that is the whole of the plan
+    ///
+    /// `BOOK_FROM` drives from `books`, which is right for every other query in
+    /// the repo and wrong for this one: `ORDER BY readings.finished_at` over a
+    /// books-driven join is a sort of the whole library, and migration `0018`'s
+    /// three indexes would never be reached. So the `FROM` is `readings JOIN
+    /// books` plus the *same* current-reading join, shared verbatim through
+    /// `book_current_join!` — a second spelling of "current" is the
+    /// contradiction `BOOK_FROM`'s own doc describes.
+    ///
+    /// The book's four reading projections therefore describe the **current**
+    /// read while `reading` is *this* one, which is not a slip: on a reread the
+    /// two genuinely differ, and item 22 is the item that found a frontend
+    /// printing one under the other's heading. `progress` is this reading's.
+    ///
+    /// ## The ordinal is a correlated subquery and must not be a window function
+    ///
+    /// `ROW_NUMBER() OVER (PARTITION BY book_id …)` is the obvious spelling and
+    /// it is **wrong here**, because a window function is computed over the rows
+    /// that survived the `WHERE`. A page filtered to one year, or to
+    /// `open: false`, holds the second read of a book without holding the first
+    /// — and would then number it `1`. The subqueries count over every sibling
+    /// in the table, so the number is a fact about the book and not about the
+    /// page; `the_read_number_survives_a_filter_that_hides_the_first_read` is
+    /// the assertion, and it fails against the window-function version.
+    ///
+    /// ## The passage costs one extra statement, not one per row
+    ///
+    /// The list picks each row's passage *id* in a correlated subquery ordered
+    /// by [`card_passage_order`] — item 44's rule, from the same function
+    /// `card_passage` calls, so the wall and a single card cannot disagree — and
+    /// the highlights themselves come back in one `IN (…)` fetch. Two
+    /// statements a page, whatever the page size. Item 44 wrote down in advance
+    /// that N `CardPassage` calls across a wall is "the pathology item 18 exists
+    /// to remove"; a `card_passage` call per row inside this function would have
+    /// been the same pathology moved below the seam where nobody counts it.
+    pub async fn list_reading_rows(&self, query: &ReadingQuery) -> Result<Vec<ReadingRow>> {
+        let predicate = query.filter.predicate();
+        let sql = reading_rows_sql(query.sort, &predicate);
+        let q = bind_all(sqlx::query(&sql), &predicate.binds)
+            .bind(query.limit)
+            .bind(query.offset.max(0));
+        let rows = q.fetch_all(self.pool()).await?;
+
+        let passage_ids: Vec<i64> = rows
+            .iter()
+            .filter_map(|r| r.try_get::<Option<i64>, _>("passage_id").ok().flatten())
+            .collect();
+        let mut passages: HashMap<i64, Highlight> = self
+            .highlights_by_ids(&passage_ids)
+            .await?
+            .into_iter()
+            .map(|h| (h.id, h))
+            .collect();
+
+        rows.iter()
+            .map(|row| {
+                let book = row_to_book(row)?;
+                let reading = row_to_reading_prefixed(row, JOINED_READING_PREFIX)?;
+                let progress = Progress::of_reading(&reading, book.page_count);
+                let passage = row
+                    .try_get::<Option<i64>, _>("passage_id")?
+                    .and_then(|id| passages.remove(&id));
+                Ok(ReadingRow {
+                    book,
+                    reading,
+                    progress,
+                    count: ReadCount::new(row.try_get("read_number")?, row.try_get("of_reads")?),
+                    passage,
+                })
+            })
+            .collect()
+    }
+
+    /// How many readings a [`ReadingFilter`](super::ReadingFilter) matches.
+    ///
+    /// **Its own call and not a field beside the rows** — item 18's ruling, and
+    /// a wall of cards is the case it was made for: the count is a property of
+    /// the filter, asked once per year the reader picks, while the page is asked
+    /// on every scroll. The clause is the same one the page uses, from
+    /// `ReadingFilter::predicate` and from nothing else.
+    ///
+    /// The `FROM` drops the current-reading join the page needs for its `Book`,
+    /// and cannot change the answer by dropping it: that is a `LEFT JOIN` on an
+    /// equality with a scalar subquery, so it matches at most one row and never
+    /// zero. `JOIN books` is kept because `readings.book_id` is a NOT NULL
+    /// foreign key, so it too cannot change the count — keeping it means the two
+    /// statements differ in exactly one clause rather than in two.
+    pub async fn count_readings(&self, filter: &ReadingFilter) -> Result<i64> {
+        let predicate = filter.predicate();
+        let where_sql = &predicate.sql;
+        let sql = format!(
+            "SELECT COUNT(*) FROM readings JOIN books ON books.id = readings.book_id {where_sql}"
+        );
+        let row = bind_all(sqlx::query(&sql), &predicate.binds)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(row.try_get::<i64, _>(0)?)
     }
 
     /// Open a reading. Returns its id.
@@ -395,9 +719,10 @@ impl Storage {
     /// reading the user opened by hand is not one of ours to count against the
     /// far side's `Read Count`.
     pub async fn readings_from_source(&self, book_id: i64, source: &str) -> Result<Vec<Reading>> {
+        let age = reading_age_key("readings");
         let sql = format!(
             "SELECT {READING_COLUMNS} FROM readings WHERE book_id = ? AND source = ?
-             ORDER BY COALESCE(started_at, created_at) ASC, id ASC"
+             ORDER BY {age} ASC"
         );
         let rows = sqlx::query(&sql)
             .bind(book_id)
@@ -1359,6 +1684,548 @@ mod tests {
             .unwrap();
         s.attribute_highlights(id).await.unwrap();
         assert_eq!(reading_of(&s, id, "on the boundary").await, Some(second));
+    }
+
+    // ---- the library-wide list (item 43) ----------------------------------
+
+    use crate::book::ReadingState;
+    use crate::storage::DayRange;
+
+    const EVERY_SORT: [ReadingSort; 3] = [
+        ReadingSort::Finished,
+        ReadingSort::Started,
+        ReadingSort::LastModified,
+    ];
+
+    /// The outer query's own plan lines: `EXPLAIN QUERY PLAN` rows whose
+    /// `parent` is 0.
+    ///
+    /// The filter matters for the same reason it does in [`super::super::books`]
+    /// — the current-reading join carries a correlated subquery with an
+    /// `ORDER BY` of its own, and so do the two ordinal counts and the passage
+    /// pick, so asserting over the whole tree would fail on lines that have
+    /// nothing to do with the sort key.
+    async fn outer_plan(s: &Storage, sql: &str) -> Vec<String> {
+        sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .fetch_all(s.pool())
+            .await
+            .expect("query plan")
+            .iter()
+            .filter(|r| r.try_get::<i64, _>("parent").unwrap_or(-1) == 0)
+            .map(|r| r.try_get::<String, _>("detail").unwrap_or_default())
+            .collect()
+    }
+
+    fn plan_of(sort: ReadingSort, filter: ReadingFilter) -> String {
+        reading_rows_sql(sort, &filter.predicate())
+    }
+
+    /// **Migration `0018`'s only claim, asserted: the planner reaches the
+    /// index.**
+    ///
+    /// A behavioural test cannot see an index — every one of these sorts
+    /// returns the rows it returned the day before the migration. This is
+    /// `0008`'s rule applied to a second table, and it reads the SQL
+    /// `list_reading_rows` actually issues, through the same
+    /// [`reading_rows_sql`] the method calls, because the likeliest failure of
+    /// an index migration is a *mismatch* between the clause and the index — a
+    /// `COALESCE` spelled differently, a column left bare — and an approximate
+    /// rebuild is exactly what cannot catch that.
+    ///
+    /// Two assertions per sort, and the second is the one with teeth: the index
+    /// is named, **and** the outer query no longer says `USE TEMP B-TREE FOR
+    /// ORDER BY`. An index scanned for its rows and then sorted anyway bought
+    /// nothing.
+    #[tokio::test]
+    async fn the_reading_sort_indexes_are_the_plan_the_planner_picks() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for (sort, index) in [
+            (ReadingSort::Finished, "idx_readings_finished_at"),
+            (ReadingSort::Started, "idx_readings_started"),
+            (ReadingSort::LastModified, "idx_readings_last_modified"),
+        ] {
+            let plan = outer_plan(&s, &plan_of(sort, ReadingFilter::default()))
+                .await
+                .join("; ");
+            assert!(
+                plan.contains(index),
+                "{sort:?} must scan {index}, got: {plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE FOR ORDER BY"),
+                "{sort:?} reached {index} and sorted anyway, which buys nothing: {plan}"
+            );
+        }
+    }
+
+    /// The control that makes the assertion above evidence rather than
+    /// ceremony, and the reason decision 3 of this item exists.
+    ///
+    /// `books` has `BookSort::Progress` as a live control — a sort no index can
+    /// serve. Every arm of `ReadingSort` *is* indexed, so the control has to be
+    /// built: this is the year filter written the way `activity_summary` used to
+    /// write it, `date(finished_at, 'unixepoch') BETWEEN ? AND ?`, which is an
+    /// expression over the column. SQLite reads it correctly and declines the
+    /// index in silence — the same silence `0008` found for a mismatched
+    /// collation — so the plan falls back to a full scan. If this ever passes,
+    /// the bare-column rewrite next door has stopped being the thing that buys
+    /// the index.
+    #[tokio::test]
+    async fn a_year_filter_over_an_expression_loses_the_index() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let honest = plan_of(
+            ReadingSort::LastModified,
+            ReadingFilter {
+                finished_in: Some(DayRange::new("2025-01-01", "2025-12-31").unwrap()),
+                ..Default::default()
+            },
+        );
+        let plan = outer_plan(&s, &honest).await.join("; ");
+        assert!(
+            plan.contains("idx_readings_finished_at"),
+            "the bare-column year filter must reach the index: {plan}"
+        );
+
+        // The same question, spelled over an expression.
+        let naive = honest.replace(
+            "readings.finished_at >= ? AND readings.finished_at < ?",
+            "date(readings.finished_at, 'unixepoch') BETWEEN ? AND ?",
+        );
+        assert_ne!(naive, honest, "the substitution must have bitten");
+        let plan = outer_plan(&s, &naive).await.join("; ");
+        assert!(
+            !plan.contains("idx_readings_finished_at"),
+            "an index that serves a function of its own column would make \
+             decision 3 of item 43 unnecessary; it does not: {plan}"
+        );
+    }
+
+    /// Every arm orders by something unique, so a page is the successor of the
+    /// one before it by construction rather than by the planner's current mood.
+    ///
+    /// Structural on purpose. Item 18 measured that the behavioural partition
+    /// test stays green with the tie-break deleted, because SQLite's sorter is
+    /// deterministic for one plan over one set of rows — a guarantee that
+    /// belongs to the plan and not to the schema.
+    #[test]
+    fn the_reading_order_is_a_total_order() {
+        for sort in EVERY_SORT {
+            let clause = reading_order_by(sort);
+            assert!(
+                clause.trim_end().ends_with("readings.id ASC")
+                    || clause.trim_end().ends_with("readings.id DESC"),
+                "{sort:?} orders by `{clause}`, which ties — and a tie under \
+                 LIMIT/OFFSET is a reading on two pages and another on none"
+            );
+        }
+    }
+
+    /// `ReadingSort::Started` orders by the same expression `list_readings`
+    /// counts in, and the index is declared on.
+    ///
+    /// Three spellings of "when this read began" would otherwise be free to
+    /// drift: the sort's literal, the key the ordinal's row values compare, and
+    /// the migration's index. The first two are pinned here; the third is pinned
+    /// by the plan test, which fails the moment the index stops matching.
+    #[test]
+    fn the_started_sort_orders_by_the_key_list_readings_counts_in() {
+        let began = reading_began("readings");
+        let clause = reading_order_by(ReadingSort::Started);
+        assert!(
+            clause.starts_with(&format!("{began} DESC")),
+            "`{clause}` does not lead with `{began}`"
+        );
+        assert!(
+            reading_age_key("readings").starts_with(&began),
+            "the ordinal counts in a different expression from the sort"
+        );
+    }
+
+    /// The year filter names the **bare column**, and that is a decision rather
+    /// than an implementation detail — see `a_year_filter_over_an_expression_
+    /// loses_the_index` for the measurement behind it.
+    #[test]
+    fn the_year_filter_compares_the_bare_column() {
+        let p = ReadingFilter {
+            finished_in: Some(DayRange::new("2025-01-01", "2025-12-31").unwrap()),
+            ..Default::default()
+        }
+        .predicate();
+        assert!(
+            !p.sql.contains("date(") && !p.sql.contains("strftime"),
+            "a function over the column is an index SQLite declines: {}",
+            p.sql
+        );
+        assert_eq!(
+            p.binds,
+            vec![
+                super::super::query::Bind::Int(1735689600), // 2025-01-01T00:00:00Z
+                super::super::query::Bind::Int(1767225600), // 2026-01-01T00:00:00Z, exclusive
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_reading_filter_writes_no_clause() {
+        let p = ReadingFilter::default().predicate();
+        assert!(p.sql.is_empty());
+        assert!(p.binds.is_empty());
+        assert!(ReadingFilter::default().is_empty());
+        let q = ReadingQuery::default();
+        assert!(q.limit < 0, "a negative limit is SQLite's own `no limit`");
+        assert_eq!(q.offset, 0);
+        assert_eq!(q.sort, ReadingSort::Finished);
+    }
+
+    /// A shelf of readings to ask questions of: three books, five readings, two
+    /// of them of one book, spread across two years.
+    async fn wall(s: &Storage) -> (i64, i64, i64) {
+        let a = add(s, "Piranesi").await;
+        let b = add(s, "Kokoro").await;
+        let c = add(s, "Snow Country").await;
+        // Piranesi twice: 2024 and 2025. The reread is the whole reason the read
+        // number exists.
+        s.record_reading(
+            a,
+            day("2024-01-01"),
+            day("2024-02-01"),
+            STATUS_FINISHED,
+            "manual",
+        )
+        .await
+        .unwrap();
+        s.record_reading(
+            a,
+            day("2025-03-01"),
+            day("2025-04-01"),
+            STATUS_FINISHED,
+            "manual",
+        )
+        .await
+        .unwrap();
+        s.record_reading(
+            b,
+            day("2025-05-01"),
+            day("2025-06-01"),
+            STATUS_FINISHED,
+            "manual",
+        )
+        .await
+        .unwrap();
+        s.record_reading(
+            c,
+            day("2024-07-01"),
+            day("2024-08-01"),
+            STATUS_FINISHED,
+            "goodreads",
+        )
+        .await
+        .unwrap();
+        // One still open, so `finished_at IS NULL` is exercised everywhere.
+        s.open_reading(c, day("2026-01-01"), "manual")
+            .await
+            .unwrap();
+        (a, b, c)
+    }
+
+    fn day(d: &str) -> Option<i64> {
+        ko_datetime_to_unix(&format!("{d} 00:00:00"))
+    }
+
+    fn year(y: &str) -> DayRange {
+        DayRange::new(&format!("{y}-01-01"), &format!("{y}-12-31")).unwrap()
+    }
+
+    /// A count and a page are the same question asked two ways, which is the
+    /// whole reason one function writes the clause — and the year filter has to
+    /// compose with the count like every other one, or the wall's page numbers
+    /// are about a different set than its rows.
+    #[tokio::test]
+    async fn the_reading_count_agrees_with_the_page_for_every_filter() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let (a, _, _) = wall(&s).await;
+
+        for filter in [
+            ReadingFilter::default(),
+            ReadingFilter {
+                book_id: Some(a),
+                ..Default::default()
+            },
+            ReadingFilter {
+                open: Some(true),
+                ..Default::default()
+            },
+            ReadingFilter {
+                open: Some(false),
+                ..Default::default()
+            },
+            ReadingFilter {
+                status: Some(ReadingState::Finished),
+                ..Default::default()
+            },
+            ReadingFilter {
+                status: Some(ReadingState::Reading),
+                ..Default::default()
+            },
+            ReadingFilter {
+                finished_in: Some(year("2024")),
+                ..Default::default()
+            },
+            ReadingFilter {
+                finished_in: Some(year("2025")),
+                ..Default::default()
+            },
+            // The year composing with a second predicate, which is the case a
+            // count written beside the page rather than from it gets wrong.
+            ReadingFilter {
+                finished_in: Some(year("2025")),
+                book_id: Some(a),
+                ..Default::default()
+            },
+            ReadingFilter {
+                finished_in: Some(year("2030")),
+                ..Default::default()
+            },
+        ] {
+            let count = s.count_readings(&filter).await.unwrap();
+            for sort in EVERY_SORT {
+                let rows = s
+                    .list_reading_rows(&ReadingQuery::new(-1, sort).with_filter(filter.clone()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    rows.len() as i64,
+                    count,
+                    "{filter:?} counted {count} and listed {} under {sort:?}",
+                    rows.len()
+                );
+            }
+        }
+    }
+
+    /// A page and its successor partition the filtered list, and the count
+    /// agrees with a full page-walk. The year is the filter under test because
+    /// it is the one this item exists for.
+    #[tokio::test]
+    async fn a_page_and_its_successor_partition_the_filtered_list() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        wall(&s).await;
+        let filter = ReadingFilter {
+            open: Some(false),
+            ..Default::default()
+        };
+        let count = s.count_readings(&filter).await.unwrap();
+        assert_eq!(count, 4, "four closed readings on this shelf");
+
+        for sort in EVERY_SORT {
+            let query = ReadingQuery::new(2, sort).with_filter(filter.clone());
+            let mut walked: Vec<i64> = Vec::new();
+            let mut offset = 0;
+            loop {
+                let page = s
+                    .list_reading_rows(&query.clone().at_offset(offset))
+                    .await
+                    .unwrap();
+                if page.is_empty() {
+                    break;
+                }
+                walked.extend(page.iter().map(|r| r.reading.id));
+                offset += 2;
+            }
+            let whole: Vec<i64> = s
+                .list_reading_rows(&ReadingQuery::new(-1, sort).with_filter(filter.clone()))
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.reading.id)
+                .collect();
+            assert_eq!(walked, whole, "the pages do not reassemble under {sort:?}");
+            assert_eq!(walked.len() as i64, count);
+        }
+    }
+
+    /// **The whole of item 41**: the number this list carries is the number the
+    /// TUI's gutter shows for the same book.
+    ///
+    /// That agreement is the reason the rule left the frontend at all —
+    /// `ReadNumbering` silently depends on `list_readings`' oldest-first
+    /// ordering, so a second frontend counting off a differently-ordered list
+    /// would disagree with `rb show` about which read a highlight came from with
+    /// nothing on either screen looking wrong.
+    #[tokio::test]
+    async fn the_read_number_agrees_with_the_gutter() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let (a, b, _) = wall(&s).await;
+
+        for book in [a, b] {
+            let readings = s.list_readings(book).await.unwrap();
+            let numbering = ReadNumbering::new(&readings);
+            let rows = s
+                .list_reading_rows(&ReadingQuery::default().with_filter(ReadingFilter {
+                    book_id: Some(book),
+                    ..Default::default()
+                }))
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), readings.len());
+            for row in &rows {
+                assert_eq!(
+                    row.count.of as usize,
+                    readings.len(),
+                    "of_reads counts the book's readings"
+                );
+                assert_eq!(
+                    row.count.ordinal().map(|n| n as usize),
+                    numbering.number_of(Some(row.reading.id)),
+                    "the wall and the gutter number reading {} differently",
+                    row.reading.id
+                );
+                assert_eq!(row.count.tells_reads_apart(), numbering.is_meaningful());
+            }
+        }
+        // And the shape of the answer: a book read twice numbers 1 and 2 in
+        // `list_readings` order, a book read once has no ordinal to show.
+        let twice = s
+            .list_reading_rows(&ReadingQuery::new(-1, ReadingSort::Started).with_filter(
+                ReadingFilter {
+                    book_id: Some(a),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap();
+        // `Started` is newest first, so the second read leads.
+        assert_eq!(
+            twice.iter().map(|r| r.count.number).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        let once = s
+            .list_reading_rows(&ReadingQuery::default().with_filter(ReadingFilter {
+                book_id: Some(b),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(once[0].count.ordinal(), None, "a lone read has no number");
+    }
+
+    /// The number is counted over the **book**, never over the page — which is
+    /// what forbids the window function the obvious implementation reaches for.
+    ///
+    /// `ROW_NUMBER() OVER (PARTITION BY book_id …)` is computed after the
+    /// `WHERE`, so a page filtered to 2025 holds *Piranesi*'s second read
+    /// without its first and would call it read 1. There is nothing on a card
+    /// saying "your first read" that looks wrong.
+    #[tokio::test]
+    async fn the_read_number_survives_a_filter_that_hides_the_first_read() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let (a, _, _) = wall(&s).await;
+        let rows = s
+            .list_reading_rows(&ReadingQuery::default().with_filter(ReadingFilter {
+                book_id: Some(a),
+                finished_in: Some(year("2025")),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "only the 2025 read is in this year");
+        assert_eq!(rows[0].count.number, 2, "it is still the second read");
+        assert_eq!(rows[0].count.of, 2);
+        assert_eq!(rows[0].count.ordinal(), Some(2));
+    }
+
+    /// The wall and the single card show the **same** passage for one reading,
+    /// which is item 44's rule surviving its second caller.
+    #[tokio::test]
+    async fn the_wall_and_the_single_card_choose_the_same_passage() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        let (a, _, _) = wall(&s).await;
+        for (text, when) in [
+            ("short", "2024-01-15 09:00:00"),
+            (
+                "the long one that a card should show, dragged across a whole paragraph",
+                "2024-01-16 09:00:00",
+            ),
+            ("also short", "2025-03-15 09:00:00"),
+        ] {
+            s.insert_highlight(a, &hl(text, when)).await.unwrap();
+        }
+        s.attribute_highlights(a).await.unwrap();
+
+        let rows = s
+            .list_reading_rows(&ReadingQuery::default().with_filter(ReadingFilter {
+                book_id: Some(a),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            let alone = s.card_passage(row.reading.id).await.unwrap();
+            assert_eq!(
+                row.passage.as_ref().map(|h| h.id),
+                alone.as_ref().map(|h| h.id),
+                "reading {} shows one passage on the wall and another on its card",
+                row.reading.id
+            );
+        }
+        // And it is the long one, not the first one — the rule, not the order.
+        let first_read = rows.iter().find(|r| r.count.number == 1).unwrap();
+        assert!(
+            first_read
+                .passage
+                .as_ref()
+                .is_some_and(|h| h.text.starts_with("the long one")),
+            "the passage is the longest mark of the reading"
+        );
+
+        // A reading whose highlights are all unattributed has no passage, the
+        // way `highlights_for_reading` returns an empty list.
+        let rows = s.list_reading_rows(&ReadingQuery::default()).await.unwrap();
+        assert!(
+            rows.iter().any(|r| r.passage.is_none()),
+            "a reading with no marks must report the absence as an absence"
+        );
+    }
+
+    /// The row carries **this** reading's progress, not the book's — item 22's
+    /// finding, which a list of rereads is exactly where it bites.
+    #[tokio::test]
+    async fn the_row_progresses_by_its_own_reading() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        // The book that has one finished read and one still open: two reads of
+        // one book whose progress genuinely differs, which is what a wall of
+        // rereads shows side by side.
+        let (_, _, c) = wall(&s).await;
+        let readings = s.list_readings(c).await.unwrap();
+        sqlx::query("UPDATE readings SET current_page = ? WHERE id = ?")
+            .bind(300i64)
+            .bind(readings[0].id)
+            .execute(s.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE readings SET current_page = ? WHERE id = ?")
+            .bind(30i64)
+            .bind(readings[1].id)
+            .execute(s.pool())
+            .await
+            .unwrap();
+
+        let rows = s
+            .list_reading_rows(&ReadingQuery::default().with_filter(ReadingFilter {
+                book_id: Some(c),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        for row in &rows {
+            let own = Progress::of_reading(&row.reading, row.book.page_count);
+            assert_eq!(row.progress, own);
+        }
+        assert_ne!(
+            rows[0].progress, rows[1].progress,
+            "two reads of one book must be able to report different progress"
+        );
     }
 
     /// A highlight with no `ko_datetime` cannot be placed at all.

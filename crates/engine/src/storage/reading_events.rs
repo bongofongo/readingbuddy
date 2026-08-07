@@ -162,10 +162,31 @@ impl RefillReport {
 }
 
 /// An inclusive span of days, both ends `YYYY-MM-DD`.
+///
+/// It carries the same span twice: as the two day strings `reading_events.day`
+/// is compared against, and as the **raw unix-second bounds** every column that
+/// stores an instant is compared against. See [`DayRange::unix_bounds`] for why
+/// the second form exists and why it is computed here rather than in SQL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DayRange {
     from: String,
     to: String,
+    /// Inclusive lower bound, unix seconds — midnight UTC opening `from`.
+    start: i64,
+    /// **Exclusive** upper bound, unix seconds — midnight UTC closing `to`.
+    end: i64,
+}
+
+/// Midnight UTC opening this day, in unix seconds.
+///
+/// UTC because that is what `date(x, 'unixepoch')` means and what `0011` fixed
+/// `reading_events.day` to; a second convention here would put a reading and the
+/// day it is counted in a boundary apart for anyone not on UTC, which is exactly
+/// the skew `ko_statistics.rs` documents and refuses to guess its way out of.
+fn midnight_utc(d: time::Date) -> i64 {
+    time::PrimitiveDateTime::new(d, time::Time::MIDNIGHT)
+        .assume_utc()
+        .unix_timestamp()
 }
 
 impl DayRange {
@@ -173,11 +194,15 @@ impl DayRange {
     /// refuses an inverted span — a backwards range would otherwise select
     /// nothing and every aggregate would report a confident, wrong zero.
     pub fn new(from: &str, to: &str) -> Result<DayRange> {
+        let mut days = Vec::with_capacity(2);
         for d in [from, to] {
-            if !is_day(d) {
-                return Err(EngineError::InvalidInput(format!(
-                    "{d:?} is not a YYYY-MM-DD day"
-                )));
+            match parse_day(d) {
+                Some(day) => days.push(day),
+                None => {
+                    return Err(EngineError::InvalidInput(format!(
+                        "{d:?} is not a YYYY-MM-DD day"
+                    )));
+                }
             }
         }
         if from > to {
@@ -188,6 +213,11 @@ impl DayRange {
         Ok(DayRange {
             from: from.to_string(),
             to: to.to_string(),
+            start: midnight_utc(days[0]),
+            // A unix day is 86 400 seconds by definition — the epoch does not
+            // count leap seconds — so this is the *next representable* midnight
+            // and not an approximation of one.
+            end: midnight_utc(days[1]) + 86_400,
         })
     }
 
@@ -197,6 +227,26 @@ impl DayRange {
 
     pub fn to(&self) -> &str {
         &self.to
+    }
+
+    /// The same span as unix seconds: `start` inclusive, `end` **exclusive**.
+    ///
+    /// **This is what makes an index on an instant column reachable** (item 43,
+    /// migration `0018`). Every count over `readings.finished_at` and
+    /// `notes.created_at` used to be written
+    /// `date(col, 'unixepoch') BETWEEN ? AND ?` — an expression over the column,
+    /// which SQLite declines to serve from an index on the bare column as
+    /// silently as it declines one whose collation differs (`0008`). So the two
+    /// days are converted **once, here, at the boundary that already validated
+    /// them**, and every reader compares `col >= ? AND col < ?`.
+    ///
+    /// Half-open rather than `BETWEEN`: the inclusive upper day ends at the
+    /// instant before the next one starts, and `end - 1` would be a bound
+    /// expressed in the resolution of the column rather than in the resolution
+    /// of a day. `the_bare_bounds_select_exactly_what_the_date_expression_did`
+    /// pins that this is an equivalence and not a new rule.
+    pub fn unix_bounds(&self) -> (i64, i64) {
+        (self.start, self.end)
     }
 }
 
@@ -289,8 +339,17 @@ pub fn day_of_ko_datetime(s: &str) -> Option<String> {
 
 /// Shape *and* validity: `2026-13-45` has the shape and is not a day.
 fn is_day(s: &str) -> bool {
+    parse_day(s).is_some()
+}
+
+/// The same check, keeping what it parsed.
+///
+/// [`DayRange`] needs the `Date` and not the verdict — it converts both ends to
+/// unix seconds — and re-parsing a string a line after deciding it parses is the
+/// shape of a bug rather than of an invariant.
+fn parse_day(s: &str) -> Option<time::Date> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
-    time::Date::parse(s, fmt).is_ok()
+    time::Date::parse(s, fmt).ok()
 }
 
 /// The merge, written once because three fillers share it.
@@ -602,16 +661,36 @@ impl Storage {
     /// `SUM` over rows that all hold NULL is NULL in SQLite, and over no rows at
     /// all it is NULL too, which is exactly the answer wanted in both cases —
     /// so the absence is carried by the database rather than reconstructed here.
+    ///
+    /// **Every count over an instant column compares the bare column** (item
+    /// 43). All three used to read `date(col, 'unixepoch') BETWEEN ? AND ?`,
+    /// which is an expression over the column and therefore an index SQLite
+    /// silently declines — including `idx_readings_finished_at`, which migration
+    /// `0018` adds and which this query is one of three readers of.
+    /// [`DayRange::unix_bounds`] does the conversion once, and
+    /// `the_bare_bounds_select_exactly_what_the_date_expression_did` pins that
+    /// the rewrite selects the same rows.
+    ///
+    /// `notes.created_at` has **no** index and this migration does not add one,
+    /// so the two note counts gain nothing today. They are rewritten anyway
+    /// because two dialects for one question inside one function is how the
+    /// third caller picks the wrong one — the same argument `BookFilter` makes
+    /// about writing a `WHERE` once.
+    ///
+    /// `activity_days` and the totals still compare `day` to `from`/`to`,
+    /// because `day` **is** the day: `0011` chose a zero-padded ISO string
+    /// precisely so that `BETWEEN` is the whole range query, and
+    /// `idx_reading_events_day` serves it already.
     pub async fn activity_summary(&self, range: &DayRange) -> Result<ActivitySummary> {
         let (from, to) = (range.from(), range.to());
+        let (start, end) = range.unix_bounds();
 
         let books_finished: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM readings
-              WHERE finished_at IS NOT NULL
-                AND date(finished_at, 'unixepoch') BETWEEN ? AND ?",
+              WHERE finished_at >= ? AND finished_at < ?",
         )
-        .bind(from)
-        .bind(to)
+        .bind(start)
+        .bind(end)
         .fetch_one(self.pool())
         .await?;
 
@@ -624,19 +703,19 @@ impl Storage {
         .await?;
 
         let notes_created: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM notes WHERE date(created_at, 'unixepoch') BETWEEN ? AND ?",
+            "SELECT count(*) FROM notes WHERE created_at >= ? AND created_at < ?",
         )
-        .bind(from)
-        .bind(to)
+        .bind(start)
+        .bind(end)
         .fetch_one(self.pool())
         .await?;
 
         let links_created: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM note_links l JOIN notes n ON n.id = l.from_note
-              WHERE date(n.created_at, 'unixepoch') BETWEEN ? AND ?",
+              WHERE n.created_at >= ? AND n.created_at < ?",
         )
-        .bind(from)
-        .bind(to)
+        .bind(start)
+        .bind(end)
         .fetch_one(self.pool())
         .await?;
 
@@ -930,6 +1009,60 @@ mod tests {
             "a backwards range selects nothing, and every aggregate would then \
              report a confident zero"
         );
+    }
+
+    /// **The rewrite that makes migration `0018` pay is an equivalence, not a
+    /// new rule** (item 43, decision 3).
+    ///
+    /// `date(col, 'unixepoch') BETWEEN from AND to` is what every count over an
+    /// instant column used to say, and it is an expression over the column that
+    /// no index can serve. [`DayRange::unix_bounds`] replaces it with a
+    /// half-open comparison of the bare column, and the claim that has to hold
+    /// is that the two select **exactly** the same instants — including both
+    /// boundaries, which is where an off-by-one would live and where a
+    /// behavioural test seeded at noon would never look.
+    ///
+    /// Asserted against SQLite's own `date()` rather than against Rust
+    /// arithmetic, because SQLite is the thing the old query asked.
+    #[tokio::test]
+    async fn the_bare_bounds_select_exactly_what_the_date_expression_did() {
+        let s = Storage::connect("sqlite::memory:").await.unwrap();
+        for (from, to) in [
+            ("2026-01-01", "2026-01-31"),
+            ("2026-01-05", "2026-01-05"),
+            ("2025-12-31", "2026-01-01"),
+            ("1969-12-30", "1970-01-02"), // before the epoch, where the sign flips
+            ("2024-02-28", "2024-02-29"), // a leap day
+        ] {
+            let range = DayRange::new(from, to).unwrap();
+            let (start, end) = range.unix_bounds();
+            // Every second on and around both boundaries, plus a day in the
+            // middle: the disagreement an off-by-one produces is one second
+            // wide.
+            for probe in [
+                start - 1,
+                start,
+                start + 1,
+                (start + end) / 2,
+                end - 1,
+                end,
+                end + 1,
+            ] {
+                let by_expression: bool =
+                    sqlx::query_scalar("SELECT date(?1, 'unixepoch') BETWEEN ?2 AND ?3")
+                        .bind(probe)
+                        .bind(from)
+                        .bind(to)
+                        .fetch_one(s.pool())
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    by_expression,
+                    probe >= start && probe < end,
+                    "{from}..{to} disagrees about unix second {probe}"
+                );
+            }
+        }
     }
 
     // ---- the fillers ------------------------------------------------------

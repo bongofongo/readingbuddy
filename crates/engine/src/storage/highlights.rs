@@ -223,6 +223,21 @@ pub(super) fn row_to_highlight(r: &sqlx::sqlite::SqliteRow) -> Highlight {
 const DEVICE_FIELDS_DIFFER: &str =
     "(ko_note IS NOT ?3 OR color IS NOT ?4 OR chapter IS NOT ?5 OR page IS NOT ?6)";
 
+/// **Which passage a card shows**, as an `ORDER BY` list over `alias`.
+///
+/// Item 44's rule — the longest mark of the reading, ties to the lowest `id` —
+/// and the whole argument for it is on [`Storage::card_passage`]. This is a
+/// function of the alias rather than two literals because item 43 gave the rule
+/// a second caller: `list_reading_rows` picks the passage for a whole page in a
+/// correlated subquery, where the highlights table is aliased away from its own
+/// name. Two spellings of "which passage" is the frontend-invents-a-rule failure
+/// item 44 exists to prevent, moved one layer down and made harder to see.
+///
+/// `length()` counts characters and not bytes; see `card_passage`.
+pub(super) fn card_passage_order(alias: &str) -> String {
+    format!("length({alias}.text) DESC, {alias}.id ASC")
+}
+
 impl Storage {
     /// Insert one highlight; returns Some(id) if newly inserted, None if it
     /// already existed (identity_hash conflict).
@@ -505,14 +520,53 @@ impl Storage {
     pub async fn card_passage(&self, reading_id: i64) -> Result<Option<Highlight>> {
         let sql = format!(
             "SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE reading_id = ?
-             ORDER BY length(text) DESC, id ASC
-             LIMIT 1"
+             ORDER BY {}
+             LIMIT 1",
+            card_passage_order("highlights")
         );
         let row = sqlx::query(&sql)
             .bind(reading_id)
             .fetch_optional(self.pool())
             .await?;
         Ok(row.as_ref().map(row_to_highlight))
+    }
+
+    /// The passages of a whole page of readings, in **one** statement.
+    ///
+    /// [`Storage::card_passage`] answers one reading and is right for the card
+    /// you reached by choosing a book. A wall of cards across the library asks
+    /// the same question twenty times a page, and item 44 wrote down in advance
+    /// that when that wall arrived the passage had to come with the list rather
+    /// than in N calls beside it — "the pathology item 18 exists to remove".
+    ///
+    /// Keyed by **reading id**, because `reading_id` is on
+    /// [`Highlight`](crate::Highlight) and a caller zipping this against its
+    /// page has readings in hand rather than highlight ids. A reading with no
+    /// attributed highlights is simply absent, which is the same absence
+    /// `card_passage` reports as `None`.
+    ///
+    /// The ids come from [`Storage::list_reading_rows`]'s own correlated
+    /// subquery, which orders by [`card_passage_order`] — the same rule
+    /// `card_passage` uses, from the same function, so the wall and the single
+    /// card cannot choose different passages for one reading. That is the whole
+    /// reason the `ORDER BY` is a function and not two literals.
+    pub(super) async fn highlights_by_ids(&self, ids: &[i64]) -> Result<Vec<Highlight>> {
+        let mut out = Vec::with_capacity(ids.len());
+        // `book_summaries`' chunking, for its reason: SQLite's default parameter
+        // ceiling is 999 on older builds and a caller may hand this a whole-
+        // library page (`limit` may be negative, which is *no limit*).
+        for chunk in ids.chunks(500) {
+            let holes = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT {HIGHLIGHT_COLUMNS} FROM highlights WHERE id IN ({holes})");
+            let mut q = sqlx::query(&sql);
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            out.extend(q.fetch_all(self.pool()).await?.iter().map(row_to_highlight));
+        }
+        Ok(out)
     }
 }
 

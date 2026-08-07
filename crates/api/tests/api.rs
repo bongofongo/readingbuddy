@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use readingbuddy::{Engine, EngineConfig};
 use readingbuddy_api::{
-    Api, ApiError, BookDto, BookFilterDto, BookQueryDto, ErrorCode, MomentKindDto, NewNoteDto,
-    NoteKindDto, Outcome, ReadingStateDto, Request, Response, SearchHitDto, SearchSourceDto,
-    ShapeSourceDto, StatusFilterDto,
+    Api, ApiError, BookDto, BookFilterDto, BookQueryDto, DayRangeDto, ErrorCode, MomentKindDto,
+    NewNoteDto, NoteKindDto, Outcome, ReadingFilterDto, ReadingQueryDto, ReadingStateDto, Request,
+    Response, SearchHitDto, SearchSourceDto, ShapeSourceDto, StatusFilterDto,
 };
 
 /// A library in a tempdir with an in-memory database, like every other suite
@@ -1489,4 +1489,196 @@ fn a_payload_written_before_the_cards_wave_still_parses() {
             note_ids: vec![3, 4]
         }
     );
+}
+
+// ---- readings across the library (items 43 and 41) -------------------------
+
+/// A payload written before this wave still parses into the new methods, and
+/// the minimal one means what a client with no opinion means.
+///
+/// Neither method existed before item 43, so nothing *old* can be replayed at
+/// them — which is exactly why they are new methods and not four fields on
+/// `ListReadings`. What is pinned here is the other half of the same guarantee:
+/// every added field is `#[serde(default)]`, so the smallest honest payload is
+/// the whole-library read, and `API_VERSION` did not have to move.
+#[test]
+fn the_new_reading_methods_parse_from_the_smallest_honest_payload() {
+    let rows: Request =
+        serde_json::from_str(r#"{"method":"list_reading_rows","params":{"limit":20}}"#).unwrap();
+    assert_eq!(
+        rows,
+        Request::ListReadingRows {
+            limit: 20,
+            sort: Default::default(),
+            offset: 0,
+            filter: None,
+        }
+    );
+    let count: Request =
+        serde_json::from_str(r#"{"method":"count_readings","params":{}}"#).unwrap();
+    assert_eq!(count, Request::CountReadings { filter: None });
+
+    // And a payload written against `list_readings` still means what it did —
+    // it was not reshaped to make room for this.
+    let old: Request =
+        serde_json::from_str(r#"{"method":"list_readings","params":{"book_id":3}}"#).unwrap();
+    assert_eq!(old, Request::ListReadings { book_id: 3 });
+}
+
+/// The wall, end to end: one call carries the book, the reading, the read
+/// number and the passage, and the count is a second call answering the same
+/// filter.
+#[tokio::test]
+async fn a_page_of_readings_carries_what_a_card_needs_in_one_call() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    api.update_progress(book_id, Some(333), Some(true))
+        .await
+        .unwrap();
+    api.reread(book_id).await.unwrap();
+
+    let query = ReadingQueryDto {
+        limit: -1,
+        filter: Some(ReadingFilterDto {
+            book_id: Some(book_id),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let typed = api.list_reading_rows(query.clone()).await.unwrap();
+    assert_eq!(typed.len(), 2, "a reread is a second row, not a flag");
+    for row in &typed {
+        assert_eq!(row.book.id, Some(book_id), "the book rides with the row");
+        assert_eq!(row.of_reads, 2);
+    }
+    assert_eq!(
+        typed.iter().map(|r| r.read_number).collect::<Vec<_>>(),
+        vec![1, 2],
+        "most recently finished first — and the open reread has no `finished_at`
+         at all, so it lands last, which is where a read that has not ended
+         belongs on a list of reads that did"
+    );
+    assert_eq!(typed[1].reading.finished_at, None);
+
+    // The dispatch arm is the same call, which is the claim this suite exists
+    // for — the four values travel flat and are assembled by pure fan-out.
+    match ok(api
+        .dispatch(Request::ListReadingRows {
+            limit: -1,
+            sort: Default::default(),
+            offset: 0,
+            filter: query.filter.clone(),
+        })
+        .await)
+    {
+        Response::ReadingRows(rows) => assert_eq!(rows, typed),
+        other => panic!("{other:?}"),
+    }
+
+    // The count is its own call, answering the same filter.
+    assert_eq!(api.count_readings(query.filter.clone()).await.unwrap(), 2);
+    match ok(api
+        .dispatch(Request::CountReadings {
+            filter: query.filter.clone(),
+        })
+        .await)
+    {
+        Response::Count(n) => assert_eq!(n, 2),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **The passage is on the row and still not on `ReadingDto`** — item 44's
+/// refusal, asserted rather than trusted.
+///
+/// Putting it on `ReadingDto` would ride the reader's private highlight text
+/// along on every row of every `ListReadings`, including the ones nobody is
+/// drawing a card for. Serialising both and reading the keys is the only check
+/// that fails when somebody adds the convenient field.
+#[tokio::test]
+async fn the_readings_list_carries_no_passage_and_the_wall_does() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+    api.update_progress(book_id, Some(12), None).await.unwrap();
+
+    let plain = api.list_readings(book_id).await.unwrap();
+    let json = serde_json::to_value(&plain[0]).unwrap();
+    assert!(
+        json.get("passage").is_none(),
+        "a reading is not a card: {json}"
+    );
+
+    let rows = api
+        .list_reading_rows(ReadingQueryDto {
+            limit: -1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let json = serde_json::to_value(&rows[0]).unwrap();
+    assert!(json.get("passage").is_some(), "the wall's row carries it");
+    // And it is not a card: no rating, no notes, no composition of a layout.
+    for absent in ["rating", "notes", "reflection", "review"] {
+        assert!(
+            json.get(absent).is_none(),
+            "{absent} would make this a CardDto, which item 44 refused: {json}"
+        );
+    }
+}
+
+/// An inverted year is refused, not answered with a confident empty wall.
+///
+/// The rule lives in the engine's own `DayRange` and this layer must not be able
+/// to route around it — the ruling item 33 recorded for the two activity
+/// aggregates, reaching a filter for the first time.
+#[tokio::test]
+async fn a_backwards_year_is_refused_by_both_doors() {
+    let (api, _tmp) = api().await;
+    let filter = ReadingFilterDto {
+        finished_in: Some(DayRangeDto {
+            from: "2025-12-31".into(),
+            to: "2025-01-01".into(),
+        }),
+        ..Default::default()
+    };
+
+    let err = api
+        .list_reading_rows(ReadingQueryDto {
+            limit: 20,
+            filter: Some(filter.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect_err("a backwards range is a refusal");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    let err = api
+        .count_readings(Some(filter.clone()))
+        .await
+        .expect_err("and the count refuses it identically");
+    assert_eq!(err.code, ErrorCode::InvalidInput);
+
+    match api
+        .dispatch(Request::CountReadings {
+            filter: Some(filter),
+        })
+        .await
+    {
+        Err(e) => assert_eq!(e.code, ErrorCode::InvalidInput),
+        Ok(other) => panic!("{other:?}"),
+    }
+}
+
+/// The DTO's `Default` and the engine's are the **same query**.
+///
+/// Two types with one name meaning opposite things by *the whole-library read*
+/// is the trap a derived `Default` walks into here: it would put `limit: 0`
+/// against the engine's `-1`, and a page of nothing is indistinguishable from a
+/// library of nothing at every call site.
+#[test]
+fn the_two_reading_query_defaults_are_one_query() {
+    let dto = ReadingQueryDto::default();
+    let engine: readingbuddy::ReadingQuery = dto.clone().try_into().unwrap();
+    assert_eq!(engine, readingbuddy::ReadingQuery::default());
+    assert!(dto.limit < 0, "the whole-library read has one spelling");
 }

@@ -48,6 +48,7 @@ use std::sync::Arc;
 use readingbuddy::{
     Book, BookFilter, BookQuery, CalibreImportOptions, DayRange, Engine, EngineError,
     FileImportOptions, GoodreadsImportOptions, NoteKind, NoteRecord, NoteScope, RatingScale,
+    ReadingFilter, ReadingQuery,
 };
 
 pub use dto::*;
@@ -261,6 +262,28 @@ impl Api {
             .into_iter()
             .map(|(r, p)| ReadingDto::new(r, p))
             .collect())
+    }
+
+    /// One page of the library's readings (item 43).
+    ///
+    /// One struct rather than four arguments, for [`Api::list_books`]' reason.
+    /// **Fallible before it reaches the engine**, and only because of the year:
+    /// the filter's `finished_in` is validated by the engine's own `DayRange`,
+    /// so an inverted span is refused here exactly as it is for
+    /// `ActivitySummary` rather than becoming a confident empty wall.
+    pub async fn list_reading_rows(&self, query: ReadingQueryDto) -> ApiResult<Vec<ReadingRowDto>> {
+        let query: ReadingQuery = query.try_into()?;
+        Ok(map(self.engine.list_reading_rows(&query).await?))
+    }
+
+    /// How many readings match. See [`Request::CountReadings`] for why this is
+    /// its own call and not a field beside the rows.
+    pub async fn count_readings(&self, filter: Option<ReadingFilterDto>) -> ApiResult<i64> {
+        let filter: ReadingFilter = filter
+            .map(TryInto::try_into)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(self.engine.count_readings(&filter).await?)
     }
 
     pub async fn get_reading(&self, id: i64) -> ApiResult<Option<ReadingDto>> {
@@ -931,6 +954,21 @@ impl Api {
             R::MergeBooks { src, dst } => Response::MergeReport(self.merge_books(src, dst).await?),
 
             R::ListReadings { book_id } => Response::Readings(self.list_readings(book_id).await?),
+            R::ListReadingRows {
+                limit,
+                sort,
+                offset,
+                filter,
+            } => Response::ReadingRows(
+                self.list_reading_rows(ReadingQueryDto {
+                    sort,
+                    filter,
+                    limit,
+                    offset,
+                })
+                .await?,
+            ),
+            R::CountReadings { filter } => Response::Count(self.count_readings(filter).await?),
             R::GetReading { id } => Response::Reading(self.get_reading(id).await?),
             R::ActiveReading { book_id } => Response::Reading(self.active_reading(book_id).await?),
             R::UpdateProgress {

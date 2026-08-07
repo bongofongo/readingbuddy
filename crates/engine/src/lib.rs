@@ -88,8 +88,9 @@ pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
     MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteCitations, NoteRecord, NoteScope,
-    OutgoingLink, RUN_MIN_DAYS, Rating, RatingScale, ReadNumbering, Reading, ReadingEvent,
-    RefillReport, SearchHit, SearchSource, Source, StatusFilter, Storage,
+    OutgoingLink, RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering, Reading,
+    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, RefillReport, SearchHit,
+    SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -738,6 +739,30 @@ impl Engine {
             .get_book(book_id)
             .await?
             .and_then(|b| b.page_count))
+    }
+
+    /// One page of the library's readings, each with its book, its own
+    /// progress, its read number and its card passage (item 43).
+    ///
+    /// The list `readings` never had. Every other reading method here is scoped
+    /// to one book except [`Engine::currently_reading`], which is filtered to
+    /// the open ones — so a *finished* reading could be reached only by already
+    /// knowing its book, while `ActivitySummary::books_finished` had been
+    /// counting exactly those rows since item 21.
+    ///
+    /// **One call answers a page**, which is the point: the alternatives are a
+    /// `get_book` and a `card_passage` per row, i.e. the N+1 item 18 exists to
+    /// remove, on a list whose whole purpose is to be long. See
+    /// [`Storage::list_reading_rows`] for the plan and for why the read number
+    /// is counted over the book rather than over the page.
+    pub async fn list_reading_rows(&self, query: &ReadingQuery) -> Result<Vec<ReadingRow>> {
+        self.storage.list_reading_rows(query).await
+    }
+
+    /// How many readings match — the number a wall needs before it needs the
+    /// rows. Its own call for the reason [`Engine::count_books`] is.
+    pub async fn count_readings(&self, filter: &ReadingFilter) -> Result<i64> {
+        self.storage.count_readings(filter).await
     }
 
     /// The book's open reading, if it has one. At most one can exist —

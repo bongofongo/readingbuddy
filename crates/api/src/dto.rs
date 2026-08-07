@@ -49,9 +49,10 @@ use readingbuddy::{
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
     ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
     MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, Progress,
-    PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingState,
-    RefillReport, SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource,
-    Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingFilter,
+    ReadingQuery, ReadingRow, ReadingSort, ReadingState, RefillReport, SearchHit, SearchOutcome,
+    SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter,
+    TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -1262,6 +1263,228 @@ impl From<(Book, Reading)> for OpenReadingDto {
         OpenReadingDto {
             book: book.into(),
             reading: ReadingDto::new(reading, progress),
+        }
+    }
+}
+
+/// How a library-wide readings list is ordered (item 43).
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadingSortDto {
+    /// Most recently finished first; readings still open land last.
+    #[default]
+    Finished,
+    /// Most recently begun first.
+    Started,
+    LastModified,
+}
+
+impl From<ReadingSortDto> for ReadingSort {
+    fn from(s: ReadingSortDto) -> Self {
+        match s {
+            ReadingSortDto::Finished => ReadingSort::Finished,
+            ReadingSortDto::Started => ReadingSort::Started,
+            ReadingSortDto::LastModified => ReadingSort::LastModified,
+        }
+    }
+}
+
+/// Which readings a list is about, before it is ordered or paged (item 43).
+///
+/// Every field absent is *every reading*, so a client with no opinion sends
+/// nothing — [`BookFilterDto`]'s rule, and the mirror of
+/// [`readingbuddy::ReadingFilter`], where the predicates are documented because
+/// they are properties of the SQL and not of the wire.
+///
+/// There is no `NoReading` case here and there cannot be one: every row of this
+/// list *is* a reading, so the absence [`StatusFilterDto`] had to name is
+/// unrepresentable rather than merely unwanted. Which is why `status` is a bare
+/// [`ReadingStateDto`] and not a second filter enum.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingFilterDto {
+    /// One book's readings — what lets the card page for a single book ask the
+    /// **same** question the wall asks, rather than `ListReadings` plus one
+    /// `CardPassage` per row beside it.
+    #[serde(default)]
+    pub book_id: Option<i64>,
+    #[serde(default)]
+    pub status: Option<ReadingStateDto>,
+    /// `true` is a reading still open. Not redundant with `status`:
+    /// `abandon_reading` deliberately leaves the reading open, so *abandoned*
+    /// and *reading* are both open and a wall of finished reads cannot be
+    /// written as a status.
+    #[serde(default)]
+    pub open: Option<bool>,
+    /// Readings that **finished** inside this span of days, UTC — the year
+    /// filter `gui-vision.md` asks the shelf for.
+    ///
+    /// One nested range rather than two flat optional days, because the pair is
+    /// inseparable: a half-set span is a question nobody asked, and
+    /// [`DayRangeDto`]'s two fields are both required. An inverted span is an
+    /// [`crate::error::ErrorCode::InvalidInput`] and never a confident empty
+    /// answer — the engine's own `DayRange` refuses it, exactly as it does for
+    /// `ActivitySummary`.
+    #[serde(default)]
+    pub finished_in: Option<DayRangeDto>,
+}
+
+impl TryFrom<ReadingFilterDto> for ReadingFilter {
+    type Error = readingbuddy::EngineError;
+
+    /// Fallible where [`BookFilterDto`] is not, and only because of the range:
+    /// two day strings are validated by the engine, and this layer must not be
+    /// able to route around the refusal — the rule item 33 recorded for the two
+    /// activity aggregates.
+    fn try_from(f: ReadingFilterDto) -> Result<Self, Self::Error> {
+        Ok(ReadingFilter {
+            book_id: f.book_id,
+            status: f.status.map(Into::into),
+            open: f.open,
+            finished_in: f
+                .finished_in
+                .map(|r| DayRange::new(&r.from, &r.to))
+                .transpose()?,
+        })
+    }
+}
+
+/// A page of the library's readings: which ones, in what order, which slice.
+///
+/// The typed argument to [`crate::Api::list_reading_rows`], and
+/// [`BookQueryDto`]'s shape for [`BookQueryDto`]'s reason — `limit` and `offset`
+/// are both `i64` and adjacent, which is a swap no type checker catches. The
+/// request carries the same four values **flat**.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadingQueryDto {
+    #[serde(default)]
+    pub sort: ReadingSortDto,
+    #[serde(default)]
+    pub filter: Option<ReadingFilterDto>,
+    /// **Negative means no limit** — SQLite's own reading of `LIMIT -1`.
+    ///
+    /// No `#[serde(default)]`, deliberately: `0` is a perfectly good limit and
+    /// an omitted one would silently be a page of nothing. A client asking for
+    /// everything says `-1`, which is the one spelling of that.
+    pub limit: i64,
+    /// Rows to skip. An offset and not a cursor; `docs/decisions.md` entry 18.
+    #[serde(default)]
+    pub offset: i64,
+}
+
+impl Default for ReadingQueryDto {
+    /// The whole library, most recently finished first — **the same query
+    /// `ReadingQuery::default()` means**, and `the_two_defaults_are_one_query`
+    /// asserts it.
+    ///
+    /// Hand-written rather than derived for that reason alone: a derived
+    /// `Default` would put `limit: 0` here against the engine's `-1`, so the two
+    /// types with one name would mean opposite things by *the whole-library
+    /// read*. [`BookQueryDto`] has no `Default` at all, which is the other way
+    /// to avoid the same trap.
+    fn default() -> Self {
+        let q = ReadingQuery::default();
+        ReadingQueryDto {
+            sort: ReadingSortDto::default(),
+            filter: None,
+            limit: q.limit,
+            offset: q.offset,
+        }
+    }
+}
+
+impl TryFrom<ReadingQueryDto> for ReadingQuery {
+    type Error = readingbuddy::EngineError;
+
+    fn try_from(q: ReadingQueryDto) -> Result<Self, Self::Error> {
+        Ok(ReadingQuery {
+            sort: q.sort.into(),
+            filter: q
+                .filter
+                .map(TryInto::try_into)
+                .transpose()?
+                .unwrap_or_default(),
+            limit: q.limit,
+            offset: q.offset,
+        })
+    }
+}
+
+/// One row of the library-wide readings list (item 43).
+///
+/// **Not a card, and that is what keeps item 44's refusal standing.** That item
+/// declined a `CardDto` because a card is a *layout* — cover, dates, rating,
+/// passage, notes — and a layout is a frontend's composition of facts this crate
+/// already serves. This row carries no rating and no notes and is not shaped by
+/// what a card draws; it is shaped by what **one round trip** must contain for a
+/// page of readings to be drawable at all. That is item 18's `BookSummaries`
+/// argument rather than a layout one, and the two are told apart by asking what
+/// would be added next: a card would grow the rating, and this will not.
+///
+/// So the passage is here and still not on [`ReadingDto`]. Item 44's objection
+/// to that field was that it would ride the reader's private highlight text
+/// along on every row of every `ListReadings`, *including the ones nobody is
+/// drawing a card for* — and every row of this list is one somebody is.
+///
+/// The book's four progress projections describe the **current** read while
+/// `reading` is this one; on a reread they genuinely differ, which is what item
+/// 22 found a frontend getting wrong. `reading.progress` is this read's.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReadingRowDto {
+    pub book: BookDto,
+    pub reading: ReadingDto,
+    /// Which read this is, 1-based, counted oldest-first over **every** reading
+    /// of the book — never over the page (item 41).
+    ///
+    /// **Not an `Option`, and that is the decision.**
+    /// `readingbuddy::ReadNumbering::number_of` folds *read once* into the same
+    /// `None` as *unattributed* and *not in this list*, which is right for the
+    /// TUI's gutter, wanting one answer to all three. Two of those three are
+    /// facts about a **highlight**, and on a list whose rows are readings they
+    /// are unreachable — so shipping the fold would have made `null` mean a
+    /// fourth thing, *whoever built this row could not tell*, which is the
+    /// ambiguity a row type must not carry. A client showing "your second read"
+    /// asks `of_reads > 1`, which is the same test the gutter makes.
+    pub read_number: i64,
+    /// How many readings this book has in total.
+    pub of_reads: i64,
+    /// The passage a card shows for this reading, by item 44's rule, or `null`.
+    ///
+    /// `null` for a reading whose highlights are all unattributed, which is an
+    /// ordinary and well-understood set of marks — `attribute_highlights`
+    /// leaves `reading_id` NULL when no window holds a timestamp. A card drawing
+    /// that absence *as* an absence is right.
+    #[serde(default)]
+    pub passage: Option<HighlightDto>,
+}
+
+impl From<ReadingRow> for ReadingRowDto {
+    fn from(r: ReadingRow) -> Self {
+        ReadingRowDto {
+            book: r.book.into(),
+            reading: ReadingDto::new(r.reading, r.progress),
+            read_number: r.count.number,
+            of_reads: r.count.of,
+            passage: r.passage.map(Into::into),
         }
     }
 }

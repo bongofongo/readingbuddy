@@ -2537,3 +2537,140 @@ because item 31 needed somewhere to put reading time.
       shape depends on which field a client filled in — and adding a field to a
       shipped request is what `ts-rs` emits as *required* TypeScript however
       `#[serde(default)]` the Rust is.
+
+43. **Readings across the library.** Migration `0018` — three indexes, no
+    columns and no tables; one filter type, two storage methods, two requests
+    and one row DTO. Its subject is that `readings` had twelve public methods
+    and every one was scoped to a single book except `list_open_readings`, which
+    is filtered to `finished_at IS NULL` — so a **finished** reading was
+    reachable only by already knowing its book, while
+    `ActivitySummary::books_finished` had been counting exactly those rows since
+    item 21. The shelf's "a finished wall that grows, and a year filtered out of
+    it" had no query behind it at all.
+    - **The passage belongs to this list's row type, and `ReadingDto` is
+      untouched.** Item 44 said the passage must ride whatever list item 43
+      mints; `CardPassage`'s own doc refused to put it on `ReadingDto` because
+      that rides the reader's private highlight text along on every row of every
+      `ListReadings`. Both are right, and the resolution is a **distinct row
+      DTO** rather than an opt-in flag on the request. The flag was the tempting
+      shape and it is the same pathology decision 2 below rejects one field
+      over: `passage: null` would mean *this reading has no marks* on one call
+      and *you did not ask* on another, and no client can tell those apart. The
+      row type also makes the cost legible — every row of `ReadingRowDto` is one
+      somebody is drawing a card for, which is precisely the property
+      `ReadingDto` cannot have. **It is still not a `CardDto`**: it carries no
+      rating and no notes, and the test of whether it has become one is what
+      would be added next. A card would grow the rating. This will not.
+    - **Two statements a page, not one per row.** The list picks each row's
+      passage *id* in a correlated subquery and fetches the highlights in one
+      `IN (…)`. A `card_passage` call per row inside the storage method would
+      have been the N+1 item 44 named in advance, moved below the seam where
+      nobody counts it. The `ORDER BY` is a **function of the alias**
+      (`card_passage_order`) shared with `card_passage`, so the wall and a single
+      card cannot choose different passages for one reading.
+    - **The correction the build forced: the read number must not be a window
+      function.** `ROW_NUMBER() OVER (PARTITION BY book_id …)` is the obvious
+      implementation and it is wrong, because a window function is computed over
+      the rows that survived the `WHERE` — a page filtered to 2025 holds
+      *Piranesi*'s second read without its first and would call it read 1, on a
+      card whose whole sentence is "your second read". It is two correlated
+      subqueries over the unfiltered table instead, so the number is a fact about
+      the book and never about the page;
+      `the_read_number_survives_a_filter_that_hides_the_first_read` is the
+      assertion and it is red against the window version.
+    - **The list drives from `readings`, which forced the join to be shared.**
+      `BOOK_FROM` drives from `books`, and `ORDER BY readings.finished_at` over a
+      books-driven join is a sort of the whole library that reaches none of the
+      three new indexes. So the `FROM` is `readings JOIN books` plus the *same*
+      current-reading join, and "the same" had to become structural: a `const`
+      cannot be `concat!`ed into another `const`, so the join is now a
+      `macro_rules!` expanding to one string literal that both `FROM` clauses are
+      built from. A second spelling of "current" is the contradiction
+      `BOOK_FROM`'s own doc describes, one query over.
+    - **`ReadingSort` has three arms and deliberately no title.** A title sort
+      would order this list by a `books` column, which no index on `readings` can
+      serve — it would put back exactly the whole-table sort `0018` removes. A
+      wall sorted by title is a wall asked one book at a time.
+    - **The index migration's control had to be built rather than found.**
+      `0016` has `BookSort::Progress` as a live control: a sort no index can
+      serve, proving the other assertions are capable of failing. Every arm of
+      `ReadingSort` is indexed, so the control here is
+      `a_year_filter_over_an_expression_loses_the_index` — the year filter
+      spelled the old way, over `date(finished_at, 'unixepoch')`, watched to lose
+      the index in silence.
+    - **The plan test reads the statement the method issues, through the same
+      function.** `0016`'s equivalent rebuilds the SQL in the test out of the
+      same pieces, which is one edit away from testing an approximation — and the
+      likeliest failure an index migration has is a *mismatch* between clause and
+      index, which is exactly what an approximation cannot catch. So
+      `reading_rows_sql` is a function both the method and the test call.
+    - **The count is its own request, and the year composes with it.** Item 18's
+      ruling, and a wall is the case it was made for: the count is a property of
+      the filter, asked once per year the reader picks, while the page is asked
+      on every scroll. `the_reading_count_agrees_with_the_page_for_every_filter`
+      sweeps ten filters against all three sorts, including a year *and* a book
+      together — the case a count written beside the page rather than from it
+      gets wrong.
+    - **`API_VERSION` did not move and no existing request changed shape.**
+      `ListReadingRows` and `CountReadings` are new methods rather than four
+      fields on `ListReadings`, and not only because reshaping a request breaks a
+      generated TypeScript client: the two answer different questions and return
+      different rows. `ListReadings` is one book's history.
+    - **`ReadingFilter` is fallible where `BookFilter` is not**, and only because
+      of the year: `finished_in` is a `DayRange`, validated by the engine, so an
+      inverted span is `InvalidInput` at both doors rather than a confident empty
+      wall. That is item 33's ruling about the two activity aggregates reaching a
+      *filter* for the first time.
+    - **A finding, not built here.** `notes.created_at` still has no index, so
+      `notes_created` and `links_created` were rewritten to the bare column for
+      one dialect rather than for a plan. They become cheap the day a migration
+      indexes that column, and the query will not have to change again.
+
+41. **The read number crosses.** No migration of its own — it rides item 43 —
+    and no new engine rule: `ReadNumbering` had answered *which read is this* and
+    *is there more than one to tell apart* since item 17c and had stopped at the
+    TUI, so item 28 declined to fake a card's read number with
+    `readings.indexOf(id) + 1` and used dates instead.
+    - **The `None` was the whole question, and the answer is that two thirds of
+      it is unreachable here.** `ReadNumbering::number_of` returns `None` for
+      three situations — the highlight is unattributed, the reading is not in
+      this list, or the book has been read once — and the prompt's warning was
+      that putting that `None` on a DTO gives it a fourth meaning, *the caller
+      who built this could not tell*. The correction building it forced is that
+      the fold does not have to cross at all: the first two cases are facts about
+      a **highlight**, and on a list whose rows are readings neither is
+      representable. What is left is "read once", which is honestly `of_reads ==
+      1`. So the wire carries `read_number` and `of_reads`, **neither of them an
+      `Option`**, and the ambiguity is not shipped rather than being documented.
+    - **`ReadingDto` therefore gains nothing**, which is the other half of
+      decision 2. `ReadingDto::new(reading, progress)` is its only constructor
+      and `GetReading`/`ActiveReading` hold one row with no siblings, so a field
+      there could only be honest by making every mint site do a second query —
+      and `gui/src/lib/api/fake.ts` builds a `ReadingDto` by hand with no `as`
+      cast, so it is a mint site the engine cannot reach at all. The ordinal
+      lives only where it is computed from every sibling.
+    - **The single-book card page is served by the same list**, which is what
+      makes the item complete rather than half done. `ReadingFilter::book_id`
+      means `/book/[id]/cards` asks the wall's question narrowed to one book —
+      one call carrying the passage and the number — instead of `ListReadings`
+      plus N `CardPassage` calls. Without that field the ordinal would have
+      reached the wall and not the one screen that already wanted it.
+    - **The rule now has one statement and the agreement is structural.**
+      `ReadCount::ordinal` is "a lone read has no number", and
+      `ReadNumbering::number_of` reaches its own third case through it rather
+      than spelling it a second time. `the_read_number_agrees_with_the_gutter`
+      asserts the wall and the gutter number the same reading identically — which
+      is the entire reason the rule left the frontend, since `ReadNumbering`
+      silently depends on `list_readings`' oldest-first ordering and a second
+      frontend counting off a differently-ordered list would disagree with
+      `rb show` with nothing on either screen looking wrong.
+    - **That ordering is now written down once.** `reading_age_key` is the
+      `COALESCE(started_at, created_at), id` list, and `list_readings`,
+      `readings_from_source` and the ordinal's row-value comparison all take it
+      from there. `ReadingSort::Started` deliberately does **not**: a comma
+      list's terms take their own direction, so appending ` DESC` would reverse
+      only `id` and leave the leading term ascending — a clause that reads right,
+      runs, and orders by neither thing the caller asked for. It orders by
+      `reading_began` descending with its own tie-break, and
+      `the_started_sort_orders_by_the_key_list_readings_counts_in` is what stops
+      the two spellings drifting.

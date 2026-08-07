@@ -52,10 +52,29 @@
 //! filters on, counts, and eventually puts a badge beside, which is the
 //! completion framing `docs/decisions.md` bans. A filter case is a question
 //! somebody asked once; a variant is a permanent claim about every book.
+//!
+//! ## The same shape, one table over (item 43)
+//!
+//! [`ReadingFilter`] and [`ReadingQuery`] are this module's second pair, and
+//! they are deliberately the *same* shape rather than a better one: one
+//! `predicate()` read by the page and by the count, `Default` meaning every row,
+//! an offset, and an `ORDER BY` that ends in `readings.id`. `readings` had
+//! twelve public methods before this item and every one was scoped to a single
+//! book except `list_open_readings`, which is filtered to `finished_at IS NULL`
+//! — so a *finished* reading was reachable only by already knowing its book,
+//! and `ActivitySummary::books_finished` counted exactly the rows nobody could
+//! list.
+//!
+//! One thing here is not a copy. [`ReadingFilter::finished_in`] is a
+//! [`DayRange`], and it binds **unix seconds** rather than the two day strings
+//! the range is written in — see [`DayRange::unix_bounds`] and migration `0018`.
+//! Every other predicate in this file compares a column to a value; a day
+//! filter's obvious spelling compares a *function of* the column, which is the
+//! one shape an index cannot serve.
 
 use crate::book::ReadingState;
 
-use super::BookSort;
+use super::{BookSort, DayRange, ReadingSort};
 
 /// One filter predicate's bound value, in the order the clause names them.
 ///
@@ -279,6 +298,159 @@ impl BookQuery {
     }
 
     pub fn at_offset(mut self, offset: i64) -> BookQuery {
+        self.offset = offset;
+        self
+    }
+}
+
+/// Which readings a list is about, before it is ordered or cut into pages
+/// (item 43).
+///
+/// `Default` is *every reading in the library*, which is what makes the filtered
+/// and unfiltered call sites one code path — [`BookFilter`]'s rule, and for the
+/// same reason.
+///
+/// Four predicates and no fifth, because every one of them is a question a
+/// screen asks: which book's readings (the card page for one book), what state
+/// (the wall of finished reads), open or closed, and **which year**. There is
+/// deliberately no `source` filter and no `has_passage` filter: neither is a
+/// question anything asks, and a filter case nobody asked is a filter case
+/// nobody can be shown to have got right.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReadingFilter {
+    /// One book's readings. This is what lets the single-book card page ask the
+    /// **same** question as the wall — one call carrying the passage and the
+    /// read number — rather than `ListReadings` plus N `CardPassage` calls
+    /// beside it.
+    pub book_id: Option<i64>,
+    /// The reading's own `status`. `ReadingState::Other(raw)` reaches through
+    /// unchanged, so a device vocabulary this build does not model is still
+    /// filterable — [`StatusFilter::Is`]'s rule, one table over.
+    ///
+    /// There is no `NoReading` case here and there cannot be: every row of this
+    /// list *is* a reading, so the absence [`StatusFilter`] had to name is
+    /// unrepresentable rather than merely unwanted.
+    pub status: Option<ReadingState>,
+    /// `Some(true)` is a reading still open — `finished_at IS NULL`, which is
+    /// what open *means* and not a status word.
+    ///
+    /// Not redundant with `status`: `abandon_reading` deliberately leaves the
+    /// reading open, so `abandoned` and `reading` are both open and a wall of
+    /// finished reads cannot be written as a status filter.
+    pub open: Option<bool>,
+    /// Readings that **finished** inside this span of days, UTC.
+    ///
+    /// The year filter, and the reason migration `0018` exists. A
+    /// [`DayRange`] rather than a bare year because the type already validates
+    /// its ends and refuses an inverted span — a backwards range would select
+    /// nothing and report a confident zero — and because a year is two days,
+    /// which is exactly what `ActivitySummary` already asks a client for. It
+    /// binds [`DayRange::unix_bounds`] against the bare column; see there.
+    pub finished_in: Option<DayRange>,
+}
+
+impl ReadingFilter {
+    /// True when this filter asks nothing, so every reading is in the answer.
+    pub fn is_empty(&self) -> bool {
+        *self == ReadingFilter::default()
+    }
+
+    /// The clause, against the alias `readings`.
+    ///
+    /// Written once and read by both `list_reading_rows` and `count_readings`.
+    /// Nothing here names `books` or `cur`, which is what lets the count drop
+    /// the current-reading join the page needs for its `BookDto`.
+    pub(super) fn predicate(&self) -> Predicate {
+        let mut parts: Vec<String> = Vec::new();
+        let mut binds: Vec<Bind> = Vec::new();
+
+        if let Some(book_id) = self.book_id {
+            parts.push("readings.book_id = ?".into());
+            binds.push(Bind::Int(book_id));
+        }
+        if let Some(state) = &self.status {
+            parts.push("readings.status = ?".into());
+            binds.push(Bind::Text(state.to_string()));
+        }
+        match self.open {
+            Some(true) => parts.push("readings.finished_at IS NULL".into()),
+            Some(false) => parts.push("readings.finished_at IS NOT NULL".into()),
+            None => {}
+        }
+        if let Some(range) = &self.finished_in {
+            // **The bare column, and half-open.** `date(finished_at,
+            // 'unixepoch') BETWEEN ? AND ?` is the obvious spelling and it is
+            // the one thing `idx_readings_finished_at` cannot serve — an
+            // expression over the column, declined as silently as a mismatched
+            // collation is (`0008`). A NULL `finished_at` fails both
+            // comparisons, which is correct: an open reading did not finish in
+            // any year.
+            let (start, end) = range.unix_bounds();
+            parts.push("readings.finished_at >= ? AND readings.finished_at < ?".into());
+            binds.push(Bind::Int(start));
+            binds.push(Bind::Int(end));
+        }
+
+        let sql = if parts.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", parts.join(" AND "))
+        };
+        Predicate { sql, binds }
+    }
+}
+
+/// A page of the library's readings: which ones, in what order, which slice.
+///
+/// [`BookQuery`]'s shape, and the offset is an offset for the same reason —
+/// `docs/decisions.md` entry 18 has the argument, and it applies here more
+/// simply, since a count composes with an offset and a shelf that knows its
+/// total wants page numbers, which *are* offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadingQuery {
+    pub sort: ReadingSort,
+    pub filter: ReadingFilter,
+    /// How many rows. **Negative means no limit**, SQLite's own reading of
+    /// `LIMIT -1` — the convention [`BookQuery::limit`] states.
+    pub limit: i64,
+    /// How many rows to skip first. Negative is clamped to zero.
+    pub offset: i64,
+}
+
+impl Default for ReadingQuery {
+    /// Every reading, most recently finished first.
+    ///
+    /// Not [`BookQuery`]'s `LastModified`, and the difference is the point: a
+    /// book's recency is when you last touched it, while a *reading* is an
+    /// episode with an end, and `readings.last_modified` moves on a device sync
+    /// that says nothing about when you read. Open readings have no
+    /// `finished_at` and sort last under SQLite's own NULL ordering, which is
+    /// where they belong on a list of reads that ended.
+    fn default() -> Self {
+        ReadingQuery {
+            sort: ReadingSort::Finished,
+            filter: ReadingFilter::default(),
+            limit: -1,
+            offset: 0,
+        }
+    }
+}
+
+impl ReadingQuery {
+    pub fn new(limit: i64, sort: ReadingSort) -> ReadingQuery {
+        ReadingQuery {
+            sort,
+            limit,
+            ..ReadingQuery::default()
+        }
+    }
+
+    pub fn with_filter(mut self, filter: ReadingFilter) -> ReadingQuery {
+        self.filter = filter;
+        self
+    }
+
+    pub fn at_offset(mut self, offset: i64) -> ReadingQuery {
         self.offset = offset;
         self
     }
