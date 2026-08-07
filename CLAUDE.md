@@ -91,6 +91,19 @@ names. Launch them; do not reimplement what they do.
   created ~80 commits behind `main` with migrations stopping at `0010`; every
   thread caught it *only because it was told to look*, and one would otherwise
   have written a migration into a five-version gap.
+- **Two threads appending to one file merge cleanly into nonsense.** Git aligns
+  a *shared tail*, so two tests that both end in
+  `.dispatch(Request::X { .. }).await` get interleaved around it and deleting
+  the conflict markers **compiles** — into two tests asserting something neither
+  thread wrote. When both sides only appended, do not resolve in place: rebuild
+  the file from each side's own block (`git show <side>:<path>`, sliced past the
+  merge-base's line count). Generated files are not merged at all; regenerate
+  them. This is "never read a piped report" in a third costume — the cheap
+  resolution looks right and is not.
+- **A subagent with no `SendMessage` stalls the agent that spawned it.** A
+  worker's `cargo-tester` reported its PASS to the *orchestrator* and the worker
+  sat completed-but-unfinished until it was relayed by hand. If a thread goes
+  quiet after its tests would have finished, that is the first thing to check.
 - **A worker cannot gate on `make ci`, so an engine change that breaks the
   frontend passes.** A fresh worktree has no `gui/node_modules`, so `web-check`
   and `routes` print `SKIPPED:` and the worker "passes" them. Gate workers on

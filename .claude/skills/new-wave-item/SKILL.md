@@ -47,13 +47,10 @@ is not a git conflict — the filenames differ past the number.
 `migration_versions_are_contiguous_from_one` catches it, but only after both are
 merged, which is the expensive moment to find out.
 
-Currently pre-allocated, in merge order: `0011`–`0017` are **applied** (items
-21, 29, 32, 20, 34, 35, 23 — `0017` moved down from `0015` on 2026-08-06 so the
-non-GUI wave could land ahead of it). Outstanding: **`0018`** → item 43
-(readings across the library — an index so the year filter and the finish-date
-order are not a full scan). Nothing else in any wave takes one: items 41, 45 and
-46 need no schema change, and `flashcards` has carried the columns item 45 wants
-since `0001`.
+Currently pre-allocated, in merge order: `0011`–`0018` are **applied** (items
+21, 29, 32, 20, 34, 35, 23, 43 — `0017` moved down from `0015` on 2026-08-06 so
+the non-GUI wave could land ahead of it). **Nothing is outstanding**: the next
+migration is `0019` and no item in any wave has claimed it.
 
 The contiguity test fails on a **gap** as well as on a duplicate, so a branch
 holding `0012` before `0011` has merged is red until its predecessor lands.
