@@ -10,29 +10,55 @@
    * the *current* read's and printing it under a read that closed in January is
    * exactly what `Progress::of_book` warns about.
    *
-   * ## What it carries, and one thing it deliberately does not
+   * ## It is handed a row, and it draws one
    *
-   * The cover, the dates, the rating if a review was written, one passage, and
-   * what you left behind. What it does **not** carry is *which* read it is —
-   * no "Read #2" anywhere. `ReadNumbering` is the engine's since item 17c
-   * precisely because it depends on `list_readings`' oldest-first ordering,
-   * which is stated nowhere on the wire; `readings.indexOf(id) + 1` here would
-   * re-implement a domain rule *and* silently re-acquire that dependency, with
-   * nothing on the screen looking wrong. Item 41 is the request that would fill
-   * it. The dates say which read this is in the meantime, and they say it in the
-   * terms the reader actually remembers.
+   * The prop is a whole `ReadingRow` (item 43) rather than a book and a reading,
+   * because the cover, the dates, **which read this is** and **the passage** all
+   * arrive together in one round trip. That is the shape that makes a wall of
+   * four hundred of these affordable at all: the wall costs two requests a page
+   * whatever the page size, and a card drawn from a row alone makes no request
+   * of its own.
    *
-   * ## The passage is asked for, never picked
+   * ## Which read it is — no longer a prohibition
    *
-   * `cardPassage` is one request (item 44) and the rule behind it — longest,
-   * ties to the lowest id — is not restated here or anywhere in `gui/`.
-   * `highlights[0]` is the thing this component exists not to do: it is a
-   * frontend inventing a selection predicate, and the day the TUI grows a card
-   * the two apps would show a different sentence for the same reading with
-   * neither looking wrong.
+   * This component used to refuse an ordinal, and the refusal was correct while
+   * it lasted: `readings.indexOf(id) + 1` re-implements a domain rule *and*
+   * silently re-acquires a dependency on `list_readings`' oldest-first ordering,
+   * which is stated nowhere on the wire, with nothing on the screen looking
+   * wrong. **Item 41 filled the gap**, so the rule is read rather than
+   * reinvented: `read_number` and `of_reads` are on the row, counted by the
+   * engine over every reading of the book, and the frontend's whole half is
+   * `of_reads > 1` — the same test the TUI's gutter makes. See
+   * `readOrdinalLabel`. The dates stay, because they are what a reader
+   * remembers a read by.
+   *
+   * ## The passage is handed over, never picked
+   *
+   * Item 44's rule — longest, ties to the lowest id — is not restated here or
+   * anywhere in `gui/`. `highlights[0]` is the thing this component exists not
+   * to do: a frontend inventing a selection predicate, so that the day the TUI
+   * grows a card the two apps show a different sentence for the same reading
+   * with neither looking wrong. The row's `passage` comes from the same
+   * `card_passage_order` a single `cardPassage` call uses, so the wall and one
+   * card cannot disagree.
+   *
+   * ## `detail`, and the three calls behind it
+   *
+   * The rating and *what you left behind* are **not** on the row, and item 43
+   * refused to put them there by name: a card would grow the rating and that row
+   * will not. So they cost three requests per card — marks, notes, and the
+   * review whose rating is a fourth hop — and this prop is where that cost is
+   * decided rather than assumed. `/book/[id]/cards` sets it, because a book has
+   * a handful of reads and the bound is a fact about reading rather than a page
+   * size somebody chose. The wall does not, because the same code across a page
+   * of cards is the N+1 item 44 wrote down in advance.
+   *
+   * That makes two card densities and it is the trade `docs/decisions.md` entry
+   * 47 argues for: the wall draws the row, and the whole card is one click away
+   * on the book that mints it.
    */
-  import type { HighlightDto, NoteDto, RatingDto, ReadingDto } from '$lib/api/bindings';
-  import { client, type StoredBook } from '$lib/api/client';
+  import type { HighlightDto, NoteDto, RatingDto } from '$lib/api/bindings';
+  import { client, type ReadingRow } from '$lib/api/client';
   import Jacket from '$lib/components/Jacket.svelte';
   import {
     countLabel,
@@ -42,19 +68,29 @@
     ratingLabel,
     readingSpan,
     readingStateLabel,
+    readOrdinalLabel,
     titleLabel,
   } from '$lib/phrasing';
 
-  let { book, reading }: { book: StoredBook; reading: ReadingDto } = $props();
+  let { row, detail = false }: { row: ReadingRow; detail?: boolean } = $props();
 
-  let passage = $state<HighlightDto | null>(null);
+  const book = $derived(row.book);
+  const reading = $derived(row.reading);
+  const passage = $derived(row.passage);
+  const ordinal = $derived(readOrdinalLabel(row.read_number, row.of_reads));
+
   let marks = $state<HighlightDto[]>([]);
   let notes = $state<NoteDto[]>([]);
   let rating = $state<RatingDto | null>(null);
   /** Not asked / asked / answered — three, not a nullable. See item 27's finding. */
   let loaded = $state(false);
 
-  const cover = $derived(client().heroSrc(book));
+  // **`coverSrc`, not `heroSrc`** (item 20c, and item 47 is where it bit). The
+  // art box is 84px; `cover_path` is the largest jacket a provider publishes, so
+  // a wall of sixty cards was about to load sixty hero shots. `cover_shelf_path`
+  // is the downscaled tier where one exists and the original where it does not,
+  // and the engine is what decides which.
+  const cover = $derived(client().coverSrc(book));
   const when = $derived(readingSpan(reading) ?? dayLabel(reading.created_at));
   // `stateWord`, not `state`: a top-level `const state` in a rune file shadows
   // the `$state` rune for svelte-check, which reports it as sixteen errors on
@@ -65,19 +101,21 @@
   $effect(() => {
     const id = reading.id;
     const api = client();
+    // Nothing is asked for a wall card, so nothing is `loaded` and the band
+    // below never renders. `cardPassage` is **gone from here entirely** — the
+    // passage is a prop now, which is the N+1 this item exists to retire.
+    if (!detail) return;
     loaded = false;
     (async () => {
       // The rating is two hops and the second only happens when the first found
       // something: a rating belongs to a **review note**, never to a book and
       // never to a reading, so a read with no review has no rating to ask for.
-      const [p, hs, ns, review] = await Promise.all([
-        api.cardPassage(id),
+      const [hs, ns, review] = await Promise.all([
         api.highlightsForReading(id),
         api.notesForReading(id),
         api.noteForReading(id, 'review'),
       ]);
       if (reading.id !== id) return;
-      passage = p;
       marks = hs;
       notes = ns;
       rating = review === null ? null : await api.reviewRating(review.id);
@@ -98,6 +136,12 @@
       <!-- The book's title, linked: nothing is a dead end, and the book is where
            every one of these parts can be edited. -->
       <a class="title" href={`/book/${book.id}`}>{titleLabel(book.title)}</a>
+      <!-- Which read, and then when. `null` for a book read once, so the
+           ordinary card is not captioned *your first read* — `ReadCount::ordinal`
+           is "a lone read has no number" and this is that, worded. -->
+      {#if ordinal}
+        <p class="ordinal">{ordinal}</p>
+      {/if}
       {#if when}
         <p class="when">{when}</p>
       {/if}
@@ -132,14 +176,15 @@
         </footer>
       {/if}
     </blockquote>
-  {:else if loaded}
-    <!-- Absence, drawn as absence. A read whose marks the dates could not place
-         has no passage of its own, which is ordinary — and the move that fills
-         it is the reader's own, on the book. -->
-    <p class="hint">No passage from this read.</p>
+  {:else}
+    <!-- Absence, drawn as absence — and **not gated on a load** any more, since
+         the passage arrives as a prop and its absence is known at first paint.
+         A read whose marks the dates could not place has no passage of its own,
+         which is ordinary; the move that fills it is the reader's, on the book. -->
+    <p class="hint no-passage">No passage from this read.</p>
   {/if}
 
-  {#if loaded}
+  {#if detail && loaded}
     <section class="left">
       <!--
         **"What you left behind", not "What you left."**
@@ -220,6 +265,13 @@
   .title:hover {
     color: var(--accent-text);
   }
+  /* Above the dates and quieter than the title: it tells you which of two
+     otherwise-identical cards you are looking at, which is a caption's job. */
+  .ordinal {
+    margin: 0.3rem 0 0;
+    font-size: 0.82rem;
+    color: var(--accent-text);
+  }
   .when {
     margin: 0.25rem 0 0;
     font-size: 0.85rem;
@@ -267,10 +319,22 @@
     font-size: 0.85rem;
   }
   .left li {
-    padding: 0.2rem 0;
+    /*
+     * Roomier than it was, and the reason is a collision rather than taste. The
+     * kind is a fixed gutter, so an **untyped** note's title begins at exactly
+     * the x a typed note's title wraps to — and the fixture has one of each,
+     * one under the other, rendering as a single note with a wrapped line. The
+     * gutter stays (it is `NotePane`'s arrangement and labelling every plain
+     * note would be a column of the same word); what changes is that a new row
+     * is now visibly further down than a continuation of the one above.
+     */
+    padding: 0.35rem 0;
     display: flex;
     gap: 0.5rem;
     align-items: baseline;
+  }
+  .left li a {
+    line-height: 1.3;
   }
   .left a:hover {
     color: var(--accent-text);
@@ -292,5 +356,13 @@
   /* `.hint` is the shared token; only the tight spacing inside a card is here. */
   .card :global(.hint) {
     margin-bottom: 0;
+  }
+  /* Indented to where a passage's text sits, past the rule it does not get.
+     Unindented it was flush with the card's padding, so the cards with *no*
+     passage were also the ones whose text started furthest left — the absence
+     read as unstyled rather than as composed. It gets no rule of its own,
+     because a rule is what says *the book is talking*. */
+  .card :global(.no-passage) {
+    padding-left: calc(0.9rem + 2px);
   }
 </style>

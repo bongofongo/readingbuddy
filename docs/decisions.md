@@ -2674,3 +2674,155 @@ because item 31 needed somewhere to put reading time.
       `reading_began` descending with its own tie-break, and
       `the_started_sort_orders_by_the_key_list_readings_counts_in` is what stops
       the two spellings drifting.
+
+47. **The wall of cards.** No migration, no engine change and no `API_VERSION`
+    move; one route, two components, one pure module, two client methods and a
+    reworked `Card`. Items 43 and 41 had built the row and the read number and
+    nothing drew either — this is the screen they were for, and the one that
+    pays off the N+1 item 44 wrote down a whole item in advance.
+    - **The call-count decision, which the prompt asked for and which is the
+      item's real content: `Card` is handed its facts and the rest is opt-in.**
+      The row already carries the book, the reading, the passage and the
+      ordinal, so a wall card asks for **nothing**: `/cards` is **two requests a
+      page** — the page and its count — at any page size, plus one
+      `ActivityByMonth` to find the years. The rejected option was letting the
+      page size bound a per-card fetch, and it is rejected because *bounded by a
+      number the frontend chose* is the argument every N+1 makes; 24 cards is
+      ~72 requests over a unix socket for one screen and 400 would be 1,200. The
+      per-book page keeps the whole card behind `detail` and costs **2 + 3N + r**
+      (`getBook`, one `listReadingRows`, then marks/notes/review per card and a
+      rating per review found), down from `2 + 4N + r`. That bound is a fact
+      about reading — a book has a handful of reads — rather than a page size,
+      which is the distinction the two options actually turn on.
+    - **So the wall's card carries no rating and no note list, and that follows
+      from the API's own refusal rather than from a shortfall.** Item 43 stated
+      the test of whether its row had become a `CardDto`: *a card would grow the
+      rating; this row will not.* Take it at its word and a wall that showed one
+      is four calls per row. The two densities are therefore deliberate — the
+      wall draws the row, the whole card is one click away on the book that
+      minted it — and that is also what keeps `/cards` and `/book/[id]/cards`
+      two screens rather than one filtered twice. Batching the three through
+      `listNotes(book_id)` and `listHighlights(book_id)` and partitioning on
+      `reading_id` above the seam was considered and declined: it is
+      `NoteScope::Reading` and `highlights_for_reading` respelled in TypeScript,
+      which is a one-line predicate in two places and exactly what item 17 is
+      about. If the wall ever wants a marks count it is a batched engine request.
+    - **The correction the build forced first: the fixture had one dated finish
+      in the entire library**, so the year filter — the item's own subject — had
+      a single row to select and could not be seen to partition anything. Two
+      books carried `reading_state: finished` with `date_started` and
+      `date_finished` both `NULL`, which is a state `finish_reading` cannot
+      leave behind: it stamps `finished_at`. `fake.ts` had been modelling an
+      unreachable row and the cost was invisible until a screen asked the
+      question the columns exist for. The dates are stated now and the
+      synthesised reading takes them from the book's own projections rather than
+      carrying a second opinion.
+    - **A card was loading the hero shot.** `Card.svelte` used `heroSrc` for an
+      84px box. That is item 20c's finding — providers are asked for the largest
+      jacket they publish — in a place item 20c did not look, and it was harmless
+      for two cards on one book and about to be sixty full-size jackets on a
+      wall. `coverSrc` now, which is the tier the engine decides.
+    - **The per-book page's oldest-first order had no sort behind it, and
+      `.reverse()` was the wrong fix.** All three `ReadingSort` arms are
+      descending and there is no ascending one, so moving that page onto
+      `ListReadingRows` cost it the order `list_readings` gave for free. It is
+      ordered by **`read_number`** — the engine's own ordinal over
+      `reading_age_key` — which is reading a field rather than a frontend
+      inventing an order, and unlike a reversal it does not become a silent lie
+      the day anything pages that list. The audit's advice was "accept
+      newest-first or raise a direction item"; this is a third answer and it is
+      cheaper than either.
+    - **A stale prohibition is worse than none, because the next thread obeys
+      it.** `Card.svelte`'s header and `a card names its read by its dates and
+      never by a number` both forbade an ordinal — correctly, while `read_number`
+      did not exist. Item 41 shipped it and both had to be rewritten rather than
+      deleted: the test now pins that the ordinal appears **exactly** where
+      `of_reads > 1`, which is the half that can still go wrong and is the same
+      test the TUI's gutter makes. The passage's absence line lost its `loaded`
+      gate for the same reason — the passage is a prop now, so its absence is
+      known at first paint and drawing it late was a leftover of the request.
+    - **`yearRange` returns an inverted span for a year that has not happened**,
+      and it is left alone. It clamps only the `to` end, so `yearRange(2030,
+      today)` is `2030-01-01 … today` — the one shape `DayRange` refuses from
+      both doors. It is unreachable from either screen, because the years come
+      from `ActivityByMonth`, a log of what has already happened; guarding it
+      would be a guard that cannot fire, and a wrong clock reaching it gets the
+      engine's refusal and the wall's failure state, which names a move. The
+      test asserts the reachable range and says the rest out loud.
+    - **The year picker is a proxy, and that is the finding this item hands
+      on.** Nothing on the wire answers *which years hold a finished reading*, so
+      the years come from `ActivityByMonth` — the same source `/life` derives its
+      years from, so the two pages offer one list rather than two. It is honest
+      about two things and hides neither: a library that has never run
+      `rb activity --refill` offers no years at all (the switch is simply
+      absent), and a year can be offered because a note was written in it while
+      no read ended. The second is not a defect — it is the state
+      `cards-wall-empty-year` renders, and *a year you read in and closed nothing
+      in* is an ordinary year and is not styled as a failure. The engine item
+      that would replace it is a `ReadingYears`-shaped request grouping
+      `readings` by the year of `finished_at` with `ReadingFilter::predicate`
+      composed in, so the picker and the wall agree by construction.
+    - **Where the line is for a number, said plainly.** `/cards` may print
+      `10 cards` and the shelf may not, and the distinction is not the number's
+      size: it is that `/cards` is a page you opened on purpose, like `/life`,
+      and the figure is a **total** of readings you have had. It is never phrased
+      as a portion of one — *showing 24 of 400* is a progress bar through your
+      own library, and the route suite bans that spelling by name along with the
+      four target words. The door in the header is a link and carries no figure.
+    - **Two pill groups are one control, and moving them apart did not fix it —
+      the words did.** A first look found *All* and *Finished* lit side by side
+      in identical pills, so the order group was pushed to the far side (the
+      shelf's `band-head` arrangement). `screenshot-reviewer` then reported that
+      the geometry landed and the reading did not: a lit **Finished** beside a
+      group that genuinely *is* a filter reads as *show me finished reads*, and
+      two rows below it one card said `Reading  p. 100 of 300` and another said
+      `Put down`. **The screen disproved its own control**, and the only thing
+      naming it an order was a screen-reader `aria-label`. Three bare
+      event-nouns are self-evidently a sort only to somebody who already knows
+      it is one, so that group carries a visible *Order* and the years carry no
+      label — the asymmetry is the ambiguity, not sloppiness. The same review
+      found `margin-left: auto` surviving the wrap: at 390px the group landed
+      alone, flush right, against a page flush left everywhere else, with the
+      two gold pills diagonally *closer* than the desktop reading depends on. It
+      is behind a `min-width` now.
+    - **Three more that no assertion reaches.** Cards start-aligned in a grid
+      left bottoms missing by 70–115px in alternating columns — the passage is
+      one to four lines and half the cards have none, so the height spread is
+      nearly 2× — which reads as broken masonry rather than as a grid; stretched
+      rows put the ragged edge *inside* a card, where it is whitespace. The
+      absence line sat at the card's own padding, so the cards with **no**
+      passage were the ones whose text began furthest left; it is indented to
+      where a passage's text sits now, and gets no rule of its own, because a
+      rule is what says the book is talking. And an **untyped** note's title
+      begins at exactly the x a typed note's title *wraps* to, so two notes
+      rendered as one note with a wrapped line — the fixed gutter stays (it is
+      `NotePane`'s arrangement, and labelling every plain note would be a column
+      of one word) and the rows are spaced so a new one is visibly not a
+      continuation.
+    - **The wordmark was the one string still using `--accent` as text.**
+      `app.css` names that exact pair and that exact ratio — 2.78:1 — as the
+      whole reason `--accent-text` exists, and `+layout.svelte` then did not use
+      it. It is in every committed shot, on a line no item had touched since the
+      scaffold, and it took the only check here that can see.
+    - **Two findings are declined and recorded rather than fixed.** `--line` on
+      `--bg` measures 1.28:1, so an unselected pill's boundary is carried
+      entirely by its dim label; this screen added six more of them, but that
+      token borders everything in the app and moving it is its own item. And
+      **no hostile string reaches the wall** — the 220-character title, the null
+      title, the RTL and the CJK books all carry `reading_state: null` in
+      `fake.ts`, so they mint no reading and are on no card. Fixing it means
+      changing a declared `state` in `crates/corpus/edge-cases.json` and in
+      `devdb.rs`, which is item 38's artifact and another thread's base; the
+      title box is the same `84px minmax(0, 1fr)` composition the tile and the
+      book hero already exercise with those exact titles, which is a reason to
+      expect it holds and not evidence that it does.
+    - **What is owed: the paging control is in no screenshot.** `PAGE` is 24 and
+      `fake.ts` holds ten readings, because its book set is the hostile set
+      `crates/corpus/edge-cases.json` declares and its size is not this item's to
+      choose. Inflating the fixture until a control appears would be picking a
+      fixture to flatter a screenshot, and shrinking the page size until it
+      appears would be picking a page size to do the same. Its arithmetic is
+      unit-tested (`pageCount`, `offsetOf`, and the fake's own offset
+      partitioning), its absence below the threshold is correct, and its markup
+      is looked at with `make dev-db` and a real library. It is the one thing
+      here no committed image reviews.

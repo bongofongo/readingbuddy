@@ -2,12 +2,11 @@
   /**
    * A book's cards — one per reading, side by side.
    *
-   * **Reached by selecting a book**, which is the user's ruling and is also what
-   * the cost of the data says. Entry 44: the card's passage is *"one call per
-   * card, which is right for a card reached by selecting a book and wrong for
-   * the wall of cards across the library"* — that wall wants item 43 first, and
-   * a route that quietly grew into it would be the N+1 across four hundred cards
-   * item 18 exists to remove.
+   * **Reached by selecting a book**, which is the user's ruling. It stayed when
+   * `/cards` arrived (item 47) because the two answer different questions — *my
+   * reading life* and *this book's reads* — and a book's cards reached from the
+   * book are not a filtered view of a library wall in the reader's head,
+   * whatever they are in the query.
    *
    * Two cards on one book is the whole point of the screen: *"the two sit side
    * by side showing what changed. What you rated it at 22 and at 31. Which
@@ -16,17 +15,32 @@
    * is a track that puts them beside each other wherever there is room, and the
    * common case — one reading, one card — is a single card at a readable width
    * rather than a lonely column in a two-column grid.
+   *
+   * ## It asks the wall's question, narrowed to one book
+   *
+   * `listReadingRows` with `ReadingFilterDto.book_id` set, which is what that
+   * field exists for — its own doc comment says so, and item 43's entry says the
+   * single-book page being served by the same list *"is what makes the item
+   * complete rather than half done"*. It replaces `listReadings` **plus one
+   * `cardPassage` per card**: entry 44 named that N+1 an item in advance, and
+   * this is where it is paid off. The passage and the read number now arrive
+   * with the row.
+   *
+   * The remaining three calls a card makes — marks, notes, and the review whose
+   * rating is a fourth hop — are `Card.svelte`'s `detail` prop, which this page
+   * sets and the wall does not. They are per *read* and a book has a handful, so
+   * the bound is a fact about reading rather than a page size somebody chose;
+   * `docs/decisions.md` entry 47 has the argument and the arithmetic.
    */
   import { page } from '$app/state';
-  import type { ReadingDto } from '$lib/api/bindings';
-  import { client, type StoredBook } from '$lib/api/client';
+  import { client, type ReadingRow, type StoredBook } from '$lib/api/client';
   import Card from '$lib/card/Card.svelte';
   import { titleLabel } from '$lib/phrasing';
 
   const id = $derived(Number(page.params.id));
 
   let book = $state<StoredBook | null>(null);
-  let readings = $state<ReadingDto[]>([]);
+  let rows = $state<ReadingRow[]>([]);
   let missing = $state(false);
   let loaded = $state(false);
   let failure = $state<string | null>(null);
@@ -36,13 +50,38 @@
     loaded = false;
     (async () => {
       const api = client();
+      // Still asked for, and not taken from `rows[0].book`: a book with no
+      // reading has no row to take it from, and the empty state below names the
+      // book. The missing-book case needs it too.
       const b = await api.getBook(which);
       if (b === null) {
         missing = true;
         return;
       }
       book = b;
-      readings = await api.listReadings(which);
+      const all = await api.listReadingRows({
+        // `-1` is no limit — every reading of one book, which is a handful.
+        // This page does not page, and if it ever did, the reorder below would
+        // have to become an engine item rather than a wider slice.
+        limit: -1,
+        // Any sort would do, since the order is imposed below; `started` is the
+        // one whose key **is** `reading_age_key`, so this is that list reversed
+        // rather than reshuffled.
+        sort: 'started',
+        offset: 0,
+        filter: { book_id: which, status: null, open: null, finished_in: null },
+      });
+      // Oldest first — the order a reading life happened in, and the order the
+      // side-by-side comparison reads in.
+      //
+      // **Sorted by the engine's own ordinal, not reversed.** Every arm of
+      // `ReadingSort` is descending and there is no ascending one, so this had
+      // to come from somewhere; `read_number` is `reading_age_key` counted by
+      // the engine over every sibling (item 41), so ordering by it is *reading a
+      // field* rather than a frontend inventing an order. `.reverse()` would
+      // have been the same answer today and a silent lie the day anything paged
+      // this list — a reversed page is not the head of a reversed list.
+      rows = all.toSorted((a, b2) => a.read_number - b2.read_number);
     })()
       .catch((e) => (failure = e instanceof Error ? e.message : String(e)))
       .finally(() => (loaded = true));
@@ -72,7 +111,7 @@
        title is not. A heading repeating it would print the same words three
        times on a reread. -->
   <h1>Cards</h1>
-  {#if readings.length === 0}
+  {#if rows.length === 0}
     <!--
       Idle is not blank and never an apology — and this state was three things
       wrong before it was looked at rather than reasoned about.
@@ -93,12 +132,13 @@
     </p>
     <p class="hint">Reading it is what mints one, and the book is where a read begins.</p>
   {:else}
-    <!-- A card per reading, oldest first — the order `list_readings` returns and
-         the order a reading life happened in. No ordinal on any of them: see
-         `Card.svelte`, and item 41. -->
+    <!-- A card per reading, oldest first — see the reorder above for where that
+         order comes from now. `detail`, because this is the page a card is
+         reached from and the one whose card is whole: the rating, the notes and
+         the marks are three requests each, and a book has a handful of reads. -->
     <div class="wall">
-      {#each readings as r (r.id)}
-        <Card {book} reading={r} />
+      {#each rows as row (row.reading.id)}
+        <Card {row} detail />
       {/each}
     </div>
   {/if}

@@ -40,9 +40,11 @@ import type {
   RatingDto,
   RatingScaleDto,
   ReadingDto,
+  ReadingFilterDto,
+  ReadingSortDto,
   TableOfContentsDto,
 } from './bindings';
-import type { LibraryClient, OpenReading, StoredBook } from './client';
+import type { LibraryClient, OpenReading, ReadingPage, ReadingRow, StoredBook } from './client';
 
 /**
  * Every field, so a new DTO column shows up here as a type error.
@@ -258,6 +260,14 @@ const BOOKS: StoredBook[] = [
     // Finished carries no page: every frontend that had this case dropped the
     // numbers for a word.
     progress: { progress: 'finished' },
+    // **Dated, since item 47.** These two projections were `null` under a
+    // `finished: true` — a state a real `finish_reading` cannot leave behind,
+    // since it stamps `finished_at` — and the cost of the inconsistency was
+    // that the whole fixture held exactly *one* dated finish, so a year filter
+    // over `finished_at` had a single row to select in the entire library and
+    // the wall's own subject was untestable. 2025-02-20 to 2025-03-14.
+    date_started: 1740009600,
+    date_finished: 1741910400,
   }),
   // CJK. Font fallback, and character-count clipping being wrong.
   book(14, { title: '北回帰線のあたりで', authors: ['村上 春樹'], authors_display: ['村上 春樹'] }),
@@ -315,6 +325,11 @@ const BOOKS: StoredBook[] = [
     reading_state: { state: 'finished' },
     finished: true,
     progress: { progress: 'finished' },
+    // A finish in the *other* year, so the wall's year filter partitions rather
+    // than merely matching: 2024 holds this and the reread's first read,
+    // 2025 holds book 13 alone. 2024-11-10 to 2024-12-05.
+    date_started: 1731196800,
+    date_finished: 1733356800,
     description:
       'Provider subjects beside minted shelves — two different things that look alike, and one of the separations migration 0013 rests on.',
   }),
@@ -387,6 +402,37 @@ const HIGHLIGHTS: Record<number, HighlightDto[]> = {
   ],
   11: [highlight(4, 11, 'It is a mistake to read a map as a promise.', { chapter: 'Chapter 2', page: 31 })],
   /**
+   * The two dated finishes, so the wall is a wall of *cards* and not a wall of
+   * absences.
+   *
+   * Both belong to the reading `listReadings` synthesises for a single-read
+   * book (`100 + bookId`), and in both the chosen passage is **not** the first
+   * mark — the same trap book 12's reread sets, restated here because these are
+   * the rows a year filter selects and therefore the ones a reviewer looks at.
+   */
+  13: [
+    highlight(11, 13, 'It began, as these things do, with a timetable.', {
+      chapter: 'I',
+      page: 12,
+      reading_id: 113,
+    }),
+    highlight(
+      12,
+      13,
+      'What I had taken for an ending turned out to be the middle of something much larger and much slower, and I had been reading it at the wrong speed the whole way through.',
+      { chapter: 'XIV', page: 288, reading_id: 113, annotation: 'The line I will remember it by.' },
+    ),
+  ],
+  20: [
+    highlight(
+      13,
+      20,
+      'A shelf is an argument about what a person intends to have been.',
+      { chapter: 'On Shelving', page: 44, reading_id: 120 },
+    ),
+    highlight(14, 20, 'Everything else is filing.', { chapter: 'On Shelving', page: 45, reading_id: 120 }),
+  ],
+  /**
    * The reread, and the case item 44's `CardPassage` exists for.
    *
    * Book 12 has two readings, so it has two cards — and the three shapes below
@@ -442,7 +488,7 @@ const HIGHLIGHTS: Record<number, HighlightDto[]> = {
  * unattributed, so it has no card passage at all, and `cardPassage` returns
  * `null` there exactly as `highlightsForReading` returns `[]`.
  */
-const CARD_PASSAGE: Record<number, number> = { 1: 6, 2: 9, 103: 1 };
+const CARD_PASSAGE: Record<number, number> = { 1: 6, 2: 9, 103: 1, 113: 12, 120: 13 };
 
 /** No cast here either. `NoteDto` has no `last_modified`; this file claimed one. */
 function note(id: number, bookId: number | null, title: string, over: Partial<NoteDto>): NoteDto {
@@ -679,6 +725,14 @@ const MOMENTS: MomentDto[] = [
  *   an event come back; the empty ones are the client's to draw or to leave out.
  */
 const MONTHS: MonthActivityDto[] = [
+  // **A year you read in and finished nothing** (item 47). It is a real shape —
+  // `activity_by_month` reads `reading_events`, which a highlight or a note
+  // fills as readily as a closed read — and it is the fixture for the one state
+  // the wall's year filter cannot otherwise reach: a year the picker offers and
+  // no card belongs to. `SUMMARIES['2023']` states `books_finished: 0` so the
+  // reading-life page and the wall agree about it rather than contradicting
+  // each other on adjacent screens.
+  { month: '2023-06', books: 1, activity_days: 4, minutes: null, pages: null },
   { month: '2024-11', books: 2, activity_days: 9, minutes: null, pages: null },
   { month: '2024-12', books: 3, activity_days: 14, minutes: null, pages: null },
   { month: '2025-01', books: 2, activity_days: 12, minutes: 620, pages: 410 },
@@ -726,6 +780,18 @@ const WHOLE_LIFE: PeriodFigures = {
  * year would deny.
  */
 const SUMMARIES: Record<string, PeriodFigures> = {
+  // Days with something on them and **nothing closed** — `books_finished: 0`,
+  // which is knowable rather than absent (the engine originates that count) and
+  // is what makes `0 books finished` a sentence this fixture can render. It is
+  // also the year the wall's picker offers with no card behind it.
+  '2023': {
+    books_finished: 0,
+    activity_days: 4,
+    notes_created: 1,
+    links_created: 0,
+    minutes: null,
+    pages: null,
+  },
   '2024': {
     books_finished: 3,
     activity_days: 23,
@@ -898,8 +964,81 @@ export class FakeClient implements LibraryClient {
         status: b.reading_state,
         current_page: b.current_page,
         progress: b.progress,
+        // The book's four reading projections **are** the current reading's, so
+        // a synthesised reading takes its dates from them rather than carrying
+        // a second opinion. `date_started` falls back to the default epoch
+        // because most of the set states no start; `date_finished` does not,
+        // because `finished_at: null` is what *open* means and inventing one
+        // would close every read in the fixture.
+        started_at: b.date_started ?? 1735689600,
+        finished_at: b.date_finished,
       }),
     ];
+  }
+
+  // ---- the wall of cards (items 43, 41, 47) -------------------------------
+
+  /**
+   * Every reading in the library as a row, **before any filter** — which is the
+   * whole reason this is a separate step.
+   *
+   * `read_number` and `of_reads` are counted here, over each book's complete
+   * list, and never over what a filter left. That is item 43's correction
+   * restated as a fixture: the engine had to refuse `ROW_NUMBER() OVER
+   * (PARTITION BY book_id …)` because a window function is computed over the
+   * rows that survived the `WHERE`, so a wall filtered to 2025 would hold the
+   * reread's second read without its first and call it the first. A fake that
+   * numbered after filtering would agree with the wrong version.
+   *
+   * The passage is [`CARD_PASSAGE`]'s stated answer, so the wall and
+   * [`FakeClient.cardPassage`] cannot disagree here either.
+   */
+  async #readingRows(): Promise<ReadingRow[]> {
+    const rows: ReadingRow[] = [];
+    for (const b of BOOKS) {
+      const own = await this.listReadings(b.id);
+      own.forEach((r, i) => {
+        const chosen = CARD_PASSAGE[r.id];
+        rows.push({
+          book: b,
+          reading: r,
+          read_number: i + 1,
+          of_reads: own.length,
+          passage:
+            chosen === undefined
+              ? null
+              : (Object.values(HIGHLIGHTS)
+                  .flat()
+                  .find((h) => h.id === chosen) ?? null),
+        });
+      });
+    }
+    return rows;
+  }
+
+  async listReadingRows({
+    limit,
+    sort = 'finished',
+    offset = 0,
+    filter = null,
+  }: ReadingPage): Promise<ReadingRow[]> {
+    refuseInvertedSpan(filter);
+    const matched = (await this.#readingRows()).filter((r) => matchesReadingFilter(r, filter));
+    matched.sort(readingOrder(sort));
+    const from = Math.max(0, offset);
+    // **Negative is no limit and `0` is a page of nothing** — SQLite's own
+    // reading of `LIMIT -1`, and `slice(from, from)` is the second half of it.
+    return limit < 0 ? matched.slice(from) : matched.slice(from, from + limit);
+  }
+
+  /**
+   * The same predicate, over the same rows — so the count and the page cannot
+   * disagree here any more than they can in the engine, where both are built
+   * from one `ReadingFilter::predicate`.
+   */
+  async countReadings(filter: ReadingFilterDto | null): Promise<number> {
+    refuseInvertedSpan(filter);
+    return (await this.#readingRows()).filter((r) => matchesReadingFilter(r, filter)).length;
   }
 
   // ---- one card, per reading (item 28) ------------------------------------
@@ -1208,6 +1347,99 @@ export class FakeClient implements LibraryClient {
   heroSrc(): string | null {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The wall's filter and its three orders, as fixtures of `ReadingFilter` and
+// `reading_order_by` (items 43, 47).
+//
+// These state the engine's clauses rather than re-deriving anything: every one
+// of them is an equality or a comparison on a column that is **on the wire**,
+// which is what separates them from `listBooks`' sort — deliberately ignored
+// there, because ordering by a rule the engine owns would give this file a place
+// that rule could be broken and still look tested. `finished_at DESC` is not a
+// rule; it is the field. And a fake that ignored the filter would make the wall's
+// own subject — the year picker — untestable at the two layers it is tested at.
+// ---------------------------------------------------------------------------
+
+/**
+ * The one refusal, in the one place it lives.
+ *
+ * `ReadingFilter` is fallible where `BookFilter` is not, and only because of the
+ * year: `DayRange` refuses an inverted span so a backwards range is an
+ * `InvalidInput` from **both** doors rather than a confident empty wall. Stated
+ * here so that property is observable at layers 1 and 2; nothing above the seam
+ * carries a second copy of it, and nothing above the seam can construct one.
+ */
+function refuseInvertedSpan(filter: ReadingFilterDto | null): void {
+  const span = filter?.finished_in;
+  if (span && span.from > span.to) {
+    throw new Error(`inverted day range: ${span.from} is after ${span.to}`);
+  }
+}
+
+/** A unix second as the UTC day it fell on, which is the engine's convention. */
+function dayOfUnix(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().slice(0, 10);
+}
+
+function matchesReadingFilter(row: ReadingRow, filter: ReadingFilterDto | null): boolean {
+  if (filter === null) return true;
+  const r = row.reading;
+  if (filter.book_id !== null && r.book_id !== filter.book_id) return false;
+  if (filter.status !== null && r.status.state !== filter.status.state) return false;
+  // `open` is `finished_at IS NULL` and is **not** redundant with `status`:
+  // `abandon_reading` leaves the reading open, so *abandoned* and *reading* are
+  // both open and a wall of finished reads cannot be written as a status.
+  if (filter.open !== null && (r.finished_at === null) !== filter.open) return false;
+  if (filter.finished_in !== null) {
+    // An open reading finished in no year — the engine's clause is `finished_at
+    // >= ? AND < ?` against the bare column and a NULL fails both comparisons.
+    // The bounds are midnight of `from` to midnight after `to`, i.e. **both days
+    // inclusive**, which on day strings is exactly this.
+    if (r.finished_at === null) return false;
+    const day = dayOfUnix(r.finished_at);
+    if (day < filter.finished_in.from || day > filter.finished_in.to) return false;
+  }
+  return true;
+}
+
+/**
+ * One of `reading_order_by`'s three clauses, as a comparator.
+ *
+ * All three are descending and all three end in `readings.id DESC`, which is the
+ * tie-break that makes paging a total order — item 18 learned one table over
+ * that a behavioural test cannot catch its absence, so it is stated here too
+ * rather than left to insertion order.
+ */
+function readingOrder(sort: ReadingSortDto): (a: ReadingRow, b: ReadingRow) => number {
+  const key = (row: ReadingRow): number | null => {
+    const r = row.reading;
+    switch (sort) {
+      case 'finished':
+        return r.finished_at;
+      case 'started':
+        // `COALESCE(started_at, created_at)` — the CSV has no start date and
+        // `goodreads.rs` refuses to invent one, so the fallback is when we
+        // learned of the read.
+        return r.started_at ?? r.created_at;
+      case 'last_modified':
+        return r.last_modified;
+      default:
+        return null;
+    }
+  };
+  return (a, b) => {
+    const x = key(a);
+    const y = key(b);
+    // Open readings have no `finished_at` and land **last**, which is SQLite's
+    // own ordering for NULLs under `DESC` and is where a read that has not ended
+    // belongs on a list of reads that did.
+    if (x === null && y === null) return b.reading.id - a.reading.id;
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return y - x || b.reading.id - a.reading.id;
+  };
 }
 
 /**

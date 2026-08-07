@@ -18,12 +18,50 @@ import {
   progressDetail,
   progressLabel,
   ratingLabel,
+  readingSortLabel,
   readingSpan,
   readingStateLabel,
+  readOrdinalLabel,
   sourceLabel,
   titleLabel,
   trimNumber,
 } from './phrasing';
+
+describe('the read ordinal', () => {
+  it('says nothing about a book read once', () => {
+    // `ReadCount::ordinal` is "a lone read has no number", and `of_reads > 1` is
+    // the frontend's whole half of it — the same test the TUI's gutter makes. A
+    // card captioned *your first read* under a book with one read would be a
+    // number saying nothing.
+    expect(readOrdinalLabel(1, 1)).toBeNull();
+  });
+
+  it('names the read a reread is', () => {
+    expect(readOrdinalLabel(1, 2)).toBe('Your first read');
+    expect(readOrdinalLabel(2, 2)).toBe('Your second read');
+    expect(readOrdinalLabel(3, 4)).toBe('Your third read');
+    expect(readOrdinalLabel(10, 12)).toBe('Your tenth read');
+  });
+
+  it('falls back to a numeral past the words, and gets the teens right', () => {
+    expect(readOrdinalLabel(11, 20)).toBe('Your 11th read');
+    expect(readOrdinalLabel(12, 20)).toBe('Your 12th read');
+    expect(readOrdinalLabel(13, 20)).toBe('Your 13th read');
+    expect(readOrdinalLabel(21, 30)).toBe('Your 21st read');
+    expect(readOrdinalLabel(22, 30)).toBe('Your 22nd read');
+    expect(readOrdinalLabel(23, 30)).toBe('Your 23rd read');
+  });
+});
+
+describe('the wall’s three orders', () => {
+  it('names the event rather than the direction', () => {
+    // All three are descending, so a label saying "newest" would describe a
+    // choice nobody made — there is no ascending arm to tell it apart from.
+    expect(readingSortLabel('finished')).toBe('Finished');
+    expect(readingSortLabel('started')).toBe('Started');
+    expect(readingSortLabel('last_modified')).toBe('Touched');
+  });
+});
 
 describe('reading state', () => {
   it('gives a book nobody has opened no label at all', () => {

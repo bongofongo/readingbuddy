@@ -43,6 +43,10 @@ const ROUTES = [
   { name: 'cards-no-passage', path: '/book/11/cards' },
   // A book nobody has read. Idle is not blank: the empty state names the moves.
   { name: 'cards-none', path: '/book/4/cards' },
+  // Item 47. The wall across the library — every card, a page at a time, with
+  // the year picker and the three orders above it. It is also the only screen
+  // where a card with a read ordinal sits beside one without.
+  { name: 'cards-wall', path: '/cards' },
   { name: 'life', path: '/life' },
 ];
 
@@ -350,17 +354,122 @@ test('two readings of one book carry two different passages', async ({ page }) =
   await expect(page.locator('main')).toContainText('4.5 / 5');
 });
 
-/** No ordinal on a card, because `ReadNumbering` is the engine's (item 41). */
-test('a card names its read by its dates and never by a number', async ({ page }) => {
+/**
+ * A card names its read by the **engine's** ordinal, and only when there are two.
+ *
+ * This test used to forbid an ordinal outright, and the prohibition was right
+ * while it lasted: `readings.indexOf(id) + 1` re-implements a domain rule *and*
+ * silently re-acquires a dependency on `list_readings`' undocumented ordering,
+ * with nothing on the screen looking wrong. Item 41 put `read_number` and
+ * `of_reads` on the row, so the rule is now read rather than reinvented — and a
+ * stale prohibition is worse than none, because the next thread obeys it.
+ *
+ * What is pinned instead is the half that can still go wrong: the ordinal
+ * appears exactly where `of_reads > 1`, which is the same test the TUI's gutter
+ * makes. A frontend counting off a list would caption the single-read page too.
+ */
+test('a card names its read by the engine’s number, and only on a reread', async ({ page }) => {
   await page.goto('/book/12/cards');
   await expect(page.locator('main')).not.toContainText('Opening…');
-  const all = await page.locator('main').innerText();
-  // `readings.indexOf(id) + 1` would re-implement a domain rule *and* silently
-  // re-acquire a dependency on `list_readings`' undocumented ordering — item
-  // 27's finding for the read gutter, and nothing on screen would look wrong.
-  for (const banned of [/read #\d/i, /\b(first|second) read\b/i, /\bread \d\b/i]) {
-    expect(all, 'a read ordinal is item 41, not a frontend derivation').not.toMatch(banned);
+  const reread = await page.locator('main').innerText();
+  expect(reread).toContain('Your first read');
+  expect(reread).toContain('Your second read');
+  // Oldest first: the order a reading life happened in, and the order the
+  // side-by-side comparison reads in. It comes from `read_number` itself.
+  expect(reread.indexOf('Your first read')).toBeLessThan(reread.indexOf('Your second read'));
+
+  // One read is one read. `ReadCount::ordinal` is "a lone read has no number",
+  // so this page must caption nothing at all.
+  await page.goto('/book/3/cards');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+  const once = await page.locator('main').innerText();
+  expect(once, 'a book read once gets no ordinal').not.toMatch(/\byour \w+ read\b/i);
+  // And never a raw one, whatever the source. `Read #2` is the shape a frontend
+  // reaches for when it has an index rather than a fact.
+  expect(once).not.toMatch(/read #\d/i);
+});
+
+// ---------------------------------------------------------------------------
+// Item 47 — the wall of cards.
+// ---------------------------------------------------------------------------
+
+/**
+ * The wall filters by year, and a year it has nothing for is not a failure.
+ *
+ * The year picker is the item's own subject and a route screenshot only sees a
+ * page's first frame, so the two states that matter — a year selected, and a
+ * year that matched nothing — would have been reviewed by nobody. The shelf's
+ * arrangement test set the precedent: drive the thing, then take the picture.
+ *
+ * 2023 is in the fixture's activity log with no read closed in it, which is a
+ * real shape (the log is filled by highlights and notes as well as by closed
+ * reads) and is the one state the empty wall has to word without apologising.
+ */
+test('the wall filters by year, and an empty year is not a failure', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/cards');
+  await expect(page.locator('main')).not.toContainText('Reading the wall…');
+
+  const y2024 = page.getByRole('button', { name: '2024', exact: true });
+  await y2024.click();
+  await expect(y2024).toHaveAttribute('aria-pressed', 'true');
+  // The reread's first read closed in 2024, and its ordinal is a fact about the
+  // book rather than about the page — item 43's correction, on a screen: this
+  // filter hides the second read and the first is still the first.
+  await expect(page.locator('main')).toContainText('Your first read');
+  await expect(page.locator('main')).not.toContainText('Your second read');
+  await expect(page).toHaveScreenshot('cards-wall-year.png', { fullPage: true });
+
+  await page.getByRole('button', { name: '2023', exact: true }).click();
+  await expect(page.locator('main')).toContainText('No cards from 2023');
+  const empty = await page.locator('main').innerText();
+  // Not an apology, not a task, and **no "yet"** — that one word turns an
+  // absence into something outstanding.
+  for (const banned of [/\byet\b/i, /\bfail/i, /\bmissing\b/i, /\bsorry\b/i, /\bno data\b/i]) {
+    expect(empty, `"${banned}" frames an ordinary year as a shortfall`).not.toMatch(banned);
   }
+  await expect(page).toHaveScreenshot('cards-wall-empty-year.png', { fullPage: true });
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The wall may count, and the shelf may not.
+ *
+ * `/cards` is a page you chose to open, like `/life`, so a count of the readings
+ * a filter matched is legitimate here. Two conditions, and both are asserted:
+ * it is phrased as a **total** rather than as a portion of one — *showing 24 of
+ * 400* is a progress bar through your own library — and it does not leak onto
+ * the home surface.
+ */
+test('the wall counts what you read and never what is left of it', async ({ page }) => {
+  await page.goto('/cards');
+  await expect(page.locator('main')).not.toContainText('Reading the wall…');
+
+  await expect(page.locator('main')).toContainText(/\d+ cards\b/);
+  const all = await page.locator('body').innerText();
+  for (const banned of [
+    /\bshowing \d+ of \d+/i,
+    /\bstreak\b/i,
+    /\bgoal\b/i,
+    /\btarget\b/i,
+    /\bunread\b/i,
+    /\bto[- ]read\b/i,
+    /\bremaining\b/i,
+    /\bleft\b(?! behind)/i,
+  ]) {
+    expect(all, `"${banned}" is a portion or a target, not a thing you did`).not.toMatch(banned);
+  }
+
+  // And the door to it is a link, never a figure — the header is checked for
+  // digits by `the library surface greets you with no numbers` besides.
+  await page.goto('/');
+  const chrome = await page.locator('header').innerText();
+  expect(chrome).toContain('Cards');
+  expect(chrome).not.toMatch(/\d/);
 });
 
 /**
