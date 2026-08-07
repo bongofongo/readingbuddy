@@ -19,32 +19,105 @@
    * pointer and a book view can do that a terminal list could not, so the
    * control lives on the passage rather than in a form somewhere else.
    *
-   * It needs a note to cite **into**, so it appears only when one is open. What
-   * is deliberately *not* here is a mark saying which passages are cited by
-   * some *other* note: that needs one `CitationsFor` per note in the book, an
-   * N+1 with no request behind it, and it is recorded as a later item rather
-   * than built badly.
+   * It needs a note to cite **into**, so it appears only when one is open.
+   *
+   * ## The quoted mark, which was the N+1 and is now one call (item 48)
+   *
+   * This file used to record a refusal here: marking which passages *some other*
+   * note cites needed one `CitationsFor` per note in the book, an N+1 with no
+   * request behind it, so it was deferred rather than built badly. **Item 46
+   * built the request and item 48 draws the mark.** `CitationsForNotes` takes
+   * the note ids the route already loaded and answers with *ids* — one entry per
+   * id asked, in the order asked, empties included — so the mark is a union over
+   * one reply. The loop is still refused, and for the sharper of its two
+   * reasons: a `HighlightDto` per citing note would put the reader's private
+   * text back on the wire once per tick, on a screen whose entire output is a
+   * tick.
+   *
+   * **The mark and the toggle are two different facts and are drawn apart.** The
+   * toggle says *the note I have open quotes this*, and it is a control — it
+   * fills with the accent and it is how you undo it. The mark says *a note
+   * quotes this*, it is a fact, and it sits on the passage's own metadata line
+   * beside the chapter and page. A reader must be able to tell those apart, so
+   * one may not be the other's colour.
+   *
+   * Its scope is honest and narrow: the batch is asked about **this book's
+   * notes**, so every mark drawn is backed by a note in the pane beside it. A
+   * note filed under no book could quote a passage here and go unmarked — there
+   * is no reverse query and this screen claims only what it asked about.
+   *
+   * ## Taking a word off a passage (item 49)
+   *
+   * `Capture` is the control and its own doc carries the argument about the
+   * word. What belongs here is the row above it: the words already taken off
+   * this passage, past tense, no count, and no offer of the ones you have not
+   * taken. `highlight_id` is `null` on every card minted before item 45 selected
+   * the column, and those are shown against **no** passage rather than guessed
+   * onto one.
    */
-  import type { HighlightDto, NoteDto } from '$lib/api/bindings';
+  import type { FlashcardDto, HighlightDto, NoteDto } from '$lib/api/bindings';
+  import { cardWordsLabel, QUOTED } from '$lib/phrasing';
+  import Capture from './Capture.svelte';
 
   let {
     highlights,
     open,
     cited,
+    quoted,
+    cards,
     oncite,
     onannotate,
+    oncapture,
   }: {
     highlights: HighlightDto[];
     /** The note the notes band has open, and therefore the one to cite into. */
     open: NoteDto | null;
-    /** Which of these passages that note already cites. One call, not one per note. */
+    /** Which of these passages that note already cites. One call, for one note. */
     cited: number[];
+    /**
+     * Which of these passages **some** note quotes — the union of one
+     * `CitationsForNotes` reply, never a `CitationsFor` per note.
+     */
+    quoted: Set<number>;
+    /** Every card captured from this book, anchored and unanchored alike. */
+    cards: FlashcardDto[];
     oncite: (highlightId: number, on: boolean) => void;
     onannotate: (highlightId: number, text: string | null) => void;
+    /** `true` created the card, `false` means it was already there. */
+    oncapture: (highlightId: number, word: string, context: string) => Promise<boolean>;
   } = $props();
 
   let editing = $state<number | null>(null);
   let draft = $state('');
+
+  /**
+   * The passage elements, so a selection can be tested for being *inside* one.
+   *
+   * A plain object rather than `$state`: nothing renders it and it is read only
+   * inside an event handler, so making it reactive would re-run the band on
+   * every mount for no observer.
+   */
+  const quotes: Record<number, HTMLElement | undefined> = {};
+
+  /**
+   * What the reader has selected within one passage's own text, or `''`.
+   *
+   * **Both ends must be inside it.** A drag that began in the passage and ended
+   * in the annotation under it is not a word from the passage, and
+   * `Selection.toString()` would happily hand back both.
+   */
+  function selectionIn(id: number): string {
+    const el = quotes[id];
+    const sel = typeof window === 'undefined' ? null : window.getSelection();
+    if (!el || !sel || sel.isCollapsed) return '';
+    if (!el.contains(sel.anchorNode) || !el.contains(sel.focusNode)) return '';
+    return sel.toString().trim();
+  }
+
+  /** The words already taken off this passage, in the order the engine listed them. */
+  function wordsOn(id: number): string[] {
+    return cards.filter((c) => c.highlight_id === id).map((c) => c.word);
+  }
 
   function edit(h: HighlightDto) {
     editing = h.id;
@@ -84,9 +157,14 @@
   {:else}
     <ul>
       {#each highlights as h (h.id)}
+        {@const loc = where(h)}
+        {@const isQuoted = quoted.has(h.id)}
+        {@const words = wordsOn(h.id)}
         <li>
-          <blockquote>{h.text}</blockquote>
-          {#if where(h)}
+          <!-- `bind:this` so a selection can be tested for lying inside *this*
+               passage rather than merely somewhere on the page. -->
+          <blockquote bind:this={quotes[h.id]}>{h.text}</blockquote>
+          {#if loc || isQuoted}
             <!-- KOReader does produce a highlight with neither a chapter nor a
                  page, and an empty line still takes space. Absence gets no
                  element rather than a stray separator.
@@ -94,8 +172,23 @@
                  `ko_datetime` is deliberately not here: it is the device's own
                  clock in the device's own timezone, and putting it beside the
                  UTC dates this app words elsewhere would be two clocks in one
-                 column with nothing saying so. -->
-            <p class="where">{where(h)}</p>
+                 column with nothing saying so.
+
+                 The quoted mark (item 48) shares this line and **not** the cite
+                 button's skin: accent *text* for a fact, accent *fill* for the
+                 control that changes it. Collapsing the two into one visual is
+                 the failure the item names — a reader has to be able to tell
+                 "I am citing this into the note I have open" from "a note
+                 quotes this". -->
+            <p class="where">
+              <!-- The separator is CSS and not a text node between two `{#if}`s:
+                   Svelte trims the whitespace around markup, so ` · ` written
+                   inline arrives as `p. 640·Quoted`. A `::before` cannot be
+                   trimmed. -->
+              {#if loc}{loc}{/if}{#if isQuoted}<span class="quoted" class:tail={loc !== null}
+                  >{QUOTED}</span
+                >{/if}
+            </p>
           {/if}
 
           {#if h.ko_note}
@@ -115,6 +208,15 @@
             </p>
           {/if}
 
+          {#if cardWordsLabel(words)}
+            <!-- What you took, never what you have not: no count, no offer, and
+                 nothing here about the passages you have captured nothing from.
+                 Below the two owners' words because it is neither of theirs —
+                 it is a record of a move you made, and it sits next to the
+                 control that makes another. -->
+            <p class="kept">{cardWordsLabel(words)}</p>
+          {/if}
+
           <div class="acts">
             {#if editing !== h.id && !h.annotation}
               <button type="button" onclick={() => edit(h)}>Write against this</button>
@@ -129,6 +231,15 @@
                 {cited.includes(h.id) ? `Cited in “${open.title}”` : `Cite into “${open.title}”`}
               </button>
             {/if}
+            <!-- Unconditional, unlike Cite: a card needs no note to be made
+                 into, so this is the one control on a passage that is always
+                 available. Its box and its confirmation wrap onto their own row
+                 of this same flex line — see `Capture`'s stylesheet. -->
+            <Capture
+              passage={h}
+              selection={() => selectionIn(h.id)}
+              oncapture={(word, context) => oncapture(h.id, word, context)}
+            />
           </div>
         </li>
       {/each}
@@ -174,6 +285,41 @@
     font-size: 0.75rem;
     color: var(--ink-dim);
     margin: 0.25rem 0 0;
+  }
+  /*
+   * `--accent-text`, never `--accent`: this is the one of the two accent tokens
+   * that carries a contrast floor, and `app.css` names the pair by name.
+   *
+   * **The weight is not decoration.** Measured in item 49's review, this text
+   * is 5.09:1 on the page and the dim location beside it is 5.29:1 — so at
+   * equal weight the two are separated by *hue alone*, and desaturated the
+   * whole line collapses into one grey run. Colour-blind or not, a mark that
+   * only a hue distinguishes from the chapter number is not a mark. The weight
+   * is the second cue and the wider gap below is the third.
+   */
+  .quoted {
+    color: var(--accent-text);
+    font-weight: 500;
+  }
+  /* Only when there is a location to be separated *from*. A passage with no
+     chapter and no page carries the mark alone, and a leading bullet there is
+     the stray separator the `.where` line already refuses.
+
+     A **gap** rather than the `·` the location parts use between themselves:
+     the bullet said the mark was a third field of the same run, which is
+     exactly what it is not. */
+  .quoted.tail {
+    margin-left: 1.1em;
+  }
+  /* Ink rather than `--ink-dim`, which is the whole point: this is the reader's
+     own move, said in the reader's own voice, and in dim it measured identical
+     to the location line above it and read as a third metadata field. Smaller
+     than the owner notes so it stays quieter than what was written. */
+  .kept {
+    font-size: 0.78rem;
+    color: var(--ink);
+    margin: 0.5rem 0 0;
+    overflow-wrap: anywhere;
   }
   /* Who wrote it, said in a word rather than implied by a shade. Two grey
      paragraphs is the state this screen exists to end. */

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { NoteDto, ReadingDto } from './api/bindings';
 import {
   authorsLabel,
+  cardWordsLabel,
   countLabel,
   dayLabel,
   deviceFigures,
@@ -17,6 +18,7 @@ import {
   noteKindLabel,
   progressDetail,
   progressLabel,
+  QUOTED,
   ratingLabel,
   readingSortLabel,
   readingSpan,
@@ -415,5 +417,40 @@ describe('what was measured, and what was not', () => {
     // be wrong; inventing a correction here would hide a case that could be.
     expect(monthLabel('nonsense')).toBe('nonsense');
     expect(monthLabel('2025-13')).toBe('2025-13');
+  });
+});
+
+describe('the marks a passage carries', () => {
+  it('says a passage is quoted without ever saying by how many', () => {
+    // `CitationsForNotes` answers with ids, so a count is right there and is
+    // deliberately not spoken: a number beside a passage would be the library
+    // counting itself on the one screen that exists to show what was written.
+    expect(QUOTED).not.toMatch(/\d/);
+    // Singular and true at every count — a passage quoted in three notes is
+    // still quoted in a note.
+    expect(QUOTED).toBe('Quoted in a note');
+  });
+
+  it('says what you kept, in the past tense, and joins the words', () => {
+    // Not `Cards: survives`. Both screenshot reviews found that shape reading as
+    // a third metadata field under `Chapter 9 · p. 640` — one measured it as
+    // byte-identical ink at the same size, the other called it "a lowercase
+    // `Label:` inline form" against a screen whose every other label is small
+    // caps. `You kept` cannot be read as a property of a passage.
+    expect(cardWordsLabel(['survives'])).toBe('You kept “survives”');
+    expect(cardWordsLabel(['argument', 'intends'])).toBe('You kept “argument” and “intends”');
+    expect(cardWordsLabel(['a', 'b', 'c'])).toBe('You kept “a”, “b” and “c”');
+  });
+
+  it('gives a passage nobody captured from no label at all', () => {
+    // `null`, not `No cards` and not `0 cards`. Absence is not a zero, and
+    // *no cards yet* is the completion framing the axiom forbids by name.
+    expect(cardWordsLabel([])).toBeNull();
+  });
+
+  it('keeps the order the engine listed rather than sorting the words', () => {
+    // `list_flashcards_for_book` orders by `created_at ASC`; re-sorting here
+    // would be this file deciding something, which is exactly what it is not for.
+    expect(cardWordsLabel(['zebra', 'apple'])).toBe('You kept “zebra” and “apple”');
   });
 });

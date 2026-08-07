@@ -2826,3 +2826,172 @@ because item 31 needed somewhere to put reading time.
       partitioning), its absence below the threshold is correct, and its markup
       is looked at with `make dev-db` and a real library. It is the one thing
       here no committed image reviews.
+
+48. **The quoted mark.** No engine change, no migration, no `API_VERSION` move;
+    one client method, one union, one line of metadata. Item 46 built
+    `CitationsForNotes` for this and the item is mostly the deletion of a
+    prohibition — `gui/CLAUDE.md` and `Passages.svelte`'s module doc had both
+    carried *do not build the N+1* since item 27, and a stale prohibition is
+    worse than none because the next thread obeys it. Both now state what
+    shipped and by which call, with the reason the loop was refused kept,
+    because it is still the reason the one-call shape is right.
+    - **The mark and the toggle had to be told apart before either was drawn.**
+      They are one word away from being the same thing — *a note quotes this*
+      and *the note I have open quotes this* — and a single visual for both
+      passes every assertion in the suite while leaving a reader unable to say
+      which they are looking at. The split is by **kind and not by shade**: the
+      toggle is an accent-**filled** button because it is a control and its fill
+      is how you know clicking undoes it, and the mark is accent **text** on the
+      passage's own metadata line because it is a fact, sitting where the
+      chapter and page already sit. `a quoted passage says so, and that is not
+      the cite toggle` drives both states onto one passage at once, which is the
+      only arrangement where the confusion is visible.
+    - **A separator written between two `{#if}` blocks is not there.** ` · `
+      as a text node rendered as `p. 640·Quoted in a note`: Svelte trims
+      whitespace around markup, so the padding vanished and the bullet did not.
+      It is a `::before` now, which cannot be trimmed, and it is conditional on
+      there being a location to separate *from* — the `.where` line's own
+      standing rule that an absence gets no element rather than a stray
+      separator, arriving one element later.
+    - **The batch is held as the reply, not as the union it draws.** The
+      tempting state is the `Set` the mark actually needs, and it cannot be
+      corrected: after a cite the page has one note's new answer and would have
+      to re-ask `CitationsForNotes` for the whole page of notes to fold it in —
+      the N+1 back through the side door, once per click instead of once per
+      load. Keyed by `note_id` the open note's row is patched from the
+      `CitationsFor` reply the toggle already made, and the union is a
+      `$derived` over it.
+    - **The mark's scope is the ids asked about, and the phrasing may not
+      over-claim.** The `api-surface-auditor` found it before a line was
+      written: `citations` ties no note's book to the highlight's, and
+      `add_citation` checks nothing, so an unsorted note can quote this book's
+      passage and appear in no page of notes. There is no reverse query — no
+      `CitedHighlights { book_id }` anywhere — so the mark **under**-reports and
+      cannot over-report, which is the survivable direction. Silence is not a
+      false claim; *Quoted in a note* is true of every mark drawn, and the
+      absent case is recorded here rather than papered over with a request
+      nobody asked for. The coupling to watch is `listNotes(book_id)` sending
+      `limit: null`: cap that and the mark silently under-reports further.
+    - **No number, at any count.** The reply is a list of ids per note, so *how
+      many notes quote this* is right there and is deliberately not spoken.
+      Singular phrasing is true at every count — a passage quoted in three notes
+      is still quoted in a note — and `the passage controls count nothing and
+      open nothing` pins it. The banned pattern it was first written with,
+      `/\d+\s+cards?\b/`, matched **`p. 44` above a `Cards:` line**, because
+      `\s` crosses a newline: a guard against counting undone work firing on a
+      page number beside a record of what was done. A literal space now.
+    - **The fixture had exactly one citing note, so the mark had never been
+      rendered doing its job.** Both screenshot reviews found it independently:
+      with only `note 1 → highlight 2`, opening note 1 puts the mark and the
+      filled toggle on the same passage and on *no other*, so the two appear
+      together and only together — one reviewer read them as one fact stated
+      twice and asked for the mark to be suppressed in that case. It is a
+      **fixture** gap and not a design one, and suppressing would have made a
+      fact about a passage conditional on which note happens to be open, which
+      is worse than the overlap it fixes: the mark would vanish at the exact
+      moment a reader opened the note that quotes it. `fake.ts` now states a
+      second citing note, so a passage quoted by a note that is *not* open
+      renders in `book-note-open.png` — the mark beside an **unfilled** Cite,
+      which is the only arrangement where it says something the button cannot.
+    - **The mark was separated from the chapter and page by hue alone.**
+      Measured in review: 5.09:1 for the mark and 5.29:1 for the location beside
+      it, both comfortably AA against the page and *the same lightness as each
+      other*, so desaturated the line collapses into one grey run. Two
+      non-colour cues were added — a heavier weight, and a plain gap in place of
+      the `·` the location parts use between themselves, since the bullet was
+      itself claiming the mark was a third field of that same run.
+
+49. **A card can be captured.** No engine change, no migration and no
+    `API_VERSION` move; two client methods, one component, one record line. Item
+    45 minted `CreateFlashcard` and selected `book_id`/`highlight_id` onto
+    `FlashcardDto`; this is the surface, and it is the first way a reader can
+    make a card at all — `Storage::insert_flashcard`'s only production caller
+    had been the KOReader import's auto-capture of single-word highlights.
+    - **The specified word-capture was overturned, and the correction is
+      smaller than the disagreement.** The prompt leaned toward *the selection
+      is the word*, with a typed box as its fallback. The selection is now an
+      **accelerator** and the box is the mechanism: select and the box arrives
+      holding it, selected, ready to be replaced; select nothing and it arrives
+      empty and focused. Three reasons, in order of weight. A control that
+      writes different things depending on whether some text happened to be
+      selected is a **hidden mode** — Cite is conditional too, but on which note
+      is *open*, which is visible state named on the button itself, and a
+      selection is gone from the screen the instant the reader looks at the
+      button. `UNIQUE(book_id, word)` makes the word the card's **identity**, so
+      a drag catching a trailing comma or two words instead of one mints a card
+      keyed on that, and the reader never sees what they saved until they export
+      it. And trimming a selection down to "a word" in TypeScript would be a
+      rule about what a word is, invented above the seam and free to disagree
+      with `single_word`'s — showing the reader the word needs no rule at all.
+      The pointer argument that put Cite on the passage survives intact: the
+      drag still does the work, it just no longer decides alone.
+    - **The prefill is a `preventDefault` on the button's `mousedown`, and
+      without it the whole feature is dead code.** Pressing a button outside the
+      selection collapses it before `click` fires, so `window.getSelection()` in
+      the handler finds nothing every time — and finds nothing *silently*, since
+      an empty box is also the legitimate no-selection state. It cost the only
+      thing worth costing: the button no longer takes mouse focus, and Tab and
+      Enter are untouched.
+    - **Headless WebKit does not word-select on `dblclick`**, which is how the
+      prefill came to look broken when it was not. Under Playwright a double
+      click leaves the selection collapsed with one range; a triple click and a
+      drag both select. So the test drags, which is the real gesture anyway —
+      and the lesson is the repo's own: a red test was the driver, not the app,
+      and the way to know was a probe that read the selection at three points
+      rather than a guess about which end was wrong.
+    - **`false` is rendered as its own sentence, and it is not an error.**
+      `ON CONFLICT DO NOTHING` means *you already had this card, unchanged*,
+      which is a different fact from *created* and the only thing the write
+      answers. It gets "You already had that one, and it is unchanged" in the
+      same dim voice as the success, with `\bfail/`, `\berror\b` and
+      `already exists` asserted absent — having already done something is not a
+      failure, which is the abandoned-book rule one screen over.
+    - **The card list is re-asked after a write rather than patched from what
+      was sent**, and `false` is exactly why: `CreateFlashcard` answers a bool
+      and no card, so on a repeat the card that exists may carry a *different*
+      passage and a different context than the one just offered. Synthesizing
+      one would draw a card the database does not have.
+    - **An existing card is shown beside its passage, and a card anchored to
+      nothing is shown beside none.** That was left open and is decided: the
+      record line is the half of item 45 that makes the control worth having
+      rather than a form, and `highlight_id: null` — every card minted before
+      item 45 selected the column — belongs to the book and not to a passage, so
+      it appears nowhere in the band rather than being hung off whichever
+      passage came first. `exported` is carried and drawn nowhere on purpose: it
+      is `rb cards export`'s bookkeeping, and a tick saying a card left for Anki
+      would be this screen reporting on a pipeline the reader did not open it to
+      see.
+    - **The refusals are not pre-validated above the seam.** A `highlight_id`
+      from another book is `InvalidInput` and one pointing at nothing is
+      `NotFound`, both re-read server-side; the frontend sends the pair and
+      words the refusal. The **fake** models both, which is the part that is
+      easy to skip — a fake that accepted everything leaves the refusal path
+      rendered by nothing, and this file's whole job is to be a second opinion.
+    - **The trigger is borderless, and two independent screenshot reviews asked
+      for it.** As a bordered pill it put a second control on *every* passage:
+      six identical `Write against this | Make a card` pairs down a reread's
+      band, wider and heavier than the one-sentence passages they belong to, and
+      three equal-weight pills in a row once a note was open — a toolbar where
+      the band's job is to show who wrote what. The precedent was already on the
+      screen (`Edit` beside a `YOU` annotation) and the hierarchy it states is
+      the true one. The reviewer's alternative — reveal the row on hover — was
+      **declined**: a control that is invisible at rest is the hidden mode this
+      item's own word-capture argument rejects, it is unreachable by touch, and
+      *idle is not blank* is the axiom's clause about exactly this.
+    - **`Cards: survives` read as a third metadata field**, which is a finding
+      neither reviewer had to guess at: one measured the ink as byte-identical
+      to the `Chapter 9 · p. 640` line eight pixels above it, the other named
+      the `Label:` shape as the About rail's and noted it was the only lowercase
+      inline label on a screen whose every other label is small caps. It is
+      `You kept “survives”` now — past tense, the same voice as the `YOU` chip,
+      in ink rather than dim, and unreadable as a property of the passage.
+    - **Two more review findings are declined and recorded.** *Keep the trigger
+      visible in a pressed state while the form is open, so it shares the Cite
+      toggle's in-place idiom* — they are different kinds, a toggle is a state
+      and a capture is an action needing input, and a form replacing its own
+      trigger is honest with Cancel as the way back. And *the Cite button
+      embeds a note title with no `max-width`, and no fixture has a long one* —
+      true, and it is item 27's control and item 27's fixture; a hostile note
+      title would move a driven test this thread does not own, and a CSS guard
+      nothing renders is the guard-that-cannot-fail this repo complains about.
+      It is a real gap, left named rather than half-closed.
