@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sqlx::Row;
 use time::OffsetDateTime;
 
@@ -107,6 +109,82 @@ pub struct OutgoingLink {
     pub target_title: String,
     /// The note it resolves to, when one exists.
     pub to: Option<NoteRecord>,
+}
+
+/// Which passages one note cites, as handles (item 46).
+///
+/// The batch answer, and deliberately **not** a `Vec<Highlight>` per note: see
+/// [`Storage::citations_for_notes`] for why the text does not travel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteCitations {
+    pub note_id: i64,
+    /// In the order a book reads, the same order [`Storage::citations_for`]
+    /// returns its rows in.
+    pub highlight_ids: Vec<i64>,
+}
+
+/// The order a book reads, written once and used by **both** citation queries.
+///
+/// [`Storage::citations_for`] and [`Storage::citations_for_notes`] answer the
+/// same question at two grains, and a client that prefers the batch on a page
+/// and the single call in a pane must not see two orders — so the clause is
+/// shared for `BookFilter::predicate`'s reason, which is that two hand-written
+/// clauses that agree today disagree the first time one of them changes.
+///
+/// **`h.id` is a tie-break and not part of the reading order.** `page` and
+/// `ko_datetime` are both nullable — a legacy sidecar supplies neither — so two
+/// cited passages of one note can tie on the whole key, and SQL leaves a tie
+/// unordered. The two queries are different plans over different row sets, so
+/// nothing makes them break such a tie the same way, and the agreement between
+/// them would then be true only by luck. Item 18 learned this on `books.id` and
+/// recorded that the behavioural test cannot see the tie-break's absence; the
+/// difference here is that the two statements are ordered by *one string*, so
+/// the guarantee is structural rather than asserted.
+const CITATION_ORDER: &str = "h.page ASC, h.ko_datetime ASC, h.id ASC";
+
+/// How many note ids one statement of [`Storage::citations_for_notes`] binds.
+///
+/// `book_summaries`' number, for `book_summaries`' reason: a caller may hand
+/// the batch every note in the vault, and **`SQLITE_MAX_VARIABLE_NUMBER` is 999
+/// on builds before 3.32**. Chunked rather than documented-as-a-limit, because
+/// a limit stated in a doc comment is a limit somebody exceeds.
+const CITATION_CHUNK: usize = 500;
+
+/// The ceiling the chunk exists to stay under. Not the ceiling *this* build
+/// enforces — sqlx bundles a modern SQLite whose default is 32 766, which is
+/// exactly why the chunk cannot be checked by asking the database.
+const OLD_PARAMETER_CEILING: usize = 999;
+
+// The relationship between the two, pinned where raising the chunk is written
+// rather than where it is discovered. `no_batch_statement_exceeds_the_parameter_ceiling`
+// reads the generated SQL; this reads the number.
+const _: () = assert!(CITATION_CHUNK <= OLD_PARAMETER_CEILING);
+
+/// The statements [`Storage::citations_for_notes`] will issue, as a pure
+/// function of the ids — so the split can be **read** rather than trusted.
+///
+/// This shape is not tidiness. The behavioural test *cannot see the chunk's
+/// absence*: measured, not assumed — remove the split and 1 203 ids still bind
+/// and still return the right rows, because the SQLite sqlx bundles allows
+/// 32 766 parameters. The failure is reserved for whichever older build a user
+/// happens to have, on whichever library happens to be big enough, which is
+/// nobody's development machine. Item 18 hit the identical wall with
+/// `order_by_is_a_total_order` and drew the identical conclusion: when the
+/// behavioural test is green either way, the guard has to read the SQL.
+fn citation_batches(ids: &[i64]) -> Vec<(String, &[i64])> {
+    ids.chunks(CITATION_CHUNK)
+        .map(|chunk| {
+            let holes = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT c.note_id, h.id AS highlight_id
+                 FROM citations c JOIN highlights h ON h.id = c.highlight_id
+                 WHERE c.note_id IN ({holes}) ORDER BY {CITATION_ORDER}"
+            );
+            (sql, chunk)
+        })
+        .collect()
 }
 
 /// Prefix a canonical column list with a table alias, so a joined query can
@@ -500,13 +578,58 @@ impl Storage {
         let columns = qualified(HIGHLIGHT_COLUMNS, "h");
         let sql = format!(
             "SELECT {columns} FROM citations c JOIN highlights h ON h.id = c.highlight_id
-             WHERE c.note_id = ? ORDER BY h.page ASC, h.ko_datetime ASC"
+             WHERE c.note_id = ? ORDER BY {CITATION_ORDER}"
         );
         let rows = sqlx::query(&sql)
             .bind(note_id)
             .fetch_all(self.pool())
             .await?;
         Ok(rows.iter().map(row_to_highlight).collect())
+    }
+
+    /// Which passages each of these notes cites — one call for a whole page of
+    /// notes, rather than one [`Storage::citations_for`] per note (item 46).
+    ///
+    /// **Ids, not passages.** The screen this exists for is a book's highlight
+    /// list wanting to mark the ones some note already quotes; it is holding
+    /// those highlights already, so returning rows would send the reader's
+    /// private text back once per citing note to draw a tick. `citations_for`
+    /// stays exactly as it is for the pane that shows the passages themselves.
+    ///
+    /// Returns one entry per requested id **in the order given**, empties
+    /// included, so a caller zips it against the list it already has and
+    /// "nothing behind this note" is an answer rather than a missing row. A
+    /// note id that does not exist is one of those empties: absence and
+    /// citing-nothing are the same answer to this question.
+    ///
+    /// Within each entry the order is [`Storage::citations_for`]'s, from the
+    /// same clause — see [`CITATION_ORDER`].
+    pub async fn citations_for_notes(&self, note_ids: &[i64]) -> Result<Vec<NoteCitations>> {
+        let mut cited: HashMap<i64, Vec<i64>> = HashMap::new();
+        for id in note_ids {
+            cited.entry(*id).or_default();
+        }
+        let ids: Vec<i64> = cited.keys().copied().collect();
+        for (sql, chunk) in citation_batches(&ids) {
+            let mut q = sqlx::query(&sql);
+            for id in chunk {
+                q = q.bind(*id);
+            }
+            for row in q.fetch_all(self.pool()).await? {
+                let note_id: i64 = row.try_get("note_id")?;
+                let highlight_id: i64 = row.try_get("highlight_id")?;
+                if let Some(v) = cited.get_mut(&note_id) {
+                    v.push(highlight_id);
+                }
+            }
+        }
+        Ok(note_ids
+            .iter()
+            .map(|id| NoteCitations {
+                note_id: *id,
+                highlight_ids: cited[id].clone(),
+            })
+            .collect())
     }
 
     /// Outgoing links of a note: (target_title, resolved note id if any).
@@ -595,6 +718,35 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chunk, asserted structurally — the only way it *can* be asserted.
+    ///
+    /// A behavioural test at 1 203 ids passes with the split removed, because
+    /// the bundled SQLite binds 32 766 parameters; this reads the statements
+    /// instead and pins the two things that matter about them: none binds more
+    /// than one old build would accept, and together they are a partition of
+    /// the ids in order, so no id is asked about twice and none is dropped.
+    #[test]
+    fn no_batch_statement_exceeds_the_parameter_ceiling() {
+        for n in [0usize, 1, CITATION_CHUNK - 1, CITATION_CHUNK, 1_203] {
+            let ids: Vec<i64> = (0..n as i64).collect();
+            let batches = citation_batches(&ids);
+
+            let mut seen: Vec<i64> = Vec::new();
+            for (sql, chunk) in &batches {
+                let holes = sql.matches('?').count();
+                assert_eq!(holes, chunk.len(), "a hole per bind, and no more");
+                assert!(
+                    holes <= OLD_PARAMETER_CEILING,
+                    "{holes} parameters in one statement, for {n} ids"
+                );
+                assert!(sql.contains(CITATION_ORDER), "one order, not two");
+                seen.extend_from_slice(chunk);
+            }
+            assert_eq!(seen, ids, "the batches partition the ids, in order");
+            assert_eq!(batches.is_empty(), n == 0, "nothing asked, nothing issued");
+        }
+    }
 
     #[tokio::test]
     async fn fts_roundtrip_and_link_resolution() {

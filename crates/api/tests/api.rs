@@ -1298,3 +1298,195 @@ async fn a_limit_takes_the_newest_moments() {
         other => panic!("{other:?}"),
     }
 }
+
+// ---- items 45 and 46 -------------------------------------------------------
+
+/// Item 45's whole subject: until it, `Storage::insert_flashcard` had no facade
+/// wrapper and no request, so a card could be minted by the KOReader import and
+/// by nothing else. This is the door, and the two paths through it agree.
+///
+/// The reply is `Response::Bool` because *you already had this card* and *a card
+/// now exists* are different facts — an existing shape rather than a new one.
+#[tokio::test]
+async fn a_card_can_be_made_across_the_seam_and_the_second_is_not_new() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+
+    assert!(
+        api.create_flashcard(book_id, None, "pachinko", Some("Ch 1"))
+            .await
+            .unwrap()
+    );
+
+    // The same word again, through `dispatch` this time. A rule that lived in
+    // the dispatch arm would show up here as the two paths disagreeing.
+    match ok(api
+        .dispatch(Request::CreateFlashcard {
+            book_id,
+            highlight_id: None,
+            word: "pachinko".into(),
+            context: Some("Ch 9".into()),
+        })
+        .await)
+    {
+        Response::Bool(created) => assert!(!created, "you already had this card"),
+        other => panic!("{other:?}"),
+    }
+
+    let cards = api.list_flashcards_for_book(book_id).await.unwrap();
+    assert_eq!(cards.len(), 1, "UNIQUE(book_id, word) deduped");
+    assert_eq!(
+        cards[0].book_id, book_id,
+        "the handle item 45 added — a card knew only its book's title before"
+    );
+    assert_eq!(cards[0].highlight_id, None);
+    assert_eq!(
+        cards[0].context.as_deref(),
+        Some("Ch 1"),
+        "the second attempt must not rewrite the first card"
+    );
+}
+
+/// Handles do not cross: the write takes ids and the engine re-reads them, so a
+/// stale or mismatched handle is a typed refusal rather than a raw
+/// foreign-key error surfacing as `internal`.
+#[tokio::test]
+async fn a_card_pointing_at_nothing_is_refused_by_name() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+
+    let err = api
+        .create_flashcard(book_id, Some(4_242), "ghost", None)
+        .await
+        .expect_err("no such highlight");
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    let err = api
+        .create_flashcard(9_999, None, "ghost", None)
+        .await
+        .expect_err("no such book");
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    match api
+        .dispatch(Request::CreateFlashcard {
+            book_id,
+            highlight_id: None,
+            word: "   ".into(),
+            context: None,
+        })
+        .await
+    {
+        Err(e) => assert_eq!(e.code, ErrorCode::InvalidInput),
+        Ok(other) => panic!("{other:?}"),
+    }
+    assert!(api.list_flashcards(true).await.unwrap().is_empty());
+}
+
+/// Item 46: one call for a page of notes, one entry per id asked, in that
+/// order, empties included — including for an id that is not a note at all, to
+/// which "cites nothing" is the honest answer.
+#[tokio::test]
+async fn the_citation_batch_answers_every_id_asked_in_order() {
+    let (api, _tmp) = api().await;
+    let book_id = seed(&api).await;
+
+    let mut ids = Vec::new();
+    for body in ["The first note.", "The second note."] {
+        ids.push(
+            api.create_note(NewNoteDto {
+                book_id: Some(book_id),
+                body: body.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .id,
+        );
+    }
+    let asked = vec![ids[1], 9_999, ids[0], ids[1]];
+
+    let typed = api.citations_for_notes(&asked).await.unwrap();
+    assert_eq!(
+        typed.iter().map(|r| r.note_id).collect::<Vec<_>>(),
+        asked,
+        "one row per id, duplicates included, in the order asked"
+    );
+    assert!(typed.iter().all(|r| r.highlight_ids.is_empty()));
+
+    match ok(api
+        .dispatch(Request::CitationsForNotes {
+            note_ids: asked.clone(),
+        })
+        .await)
+    {
+        Response::NoteCitations(dispatched) => assert_eq!(dispatched, typed),
+        other => panic!("{other:?}"),
+    }
+
+    // And the empty ask is not an error.
+    assert!(api.citations_for_notes(&[]).await.unwrap().is_empty());
+}
+
+/// The batch carries **handles, not passages**, and the wire is where that
+/// claim is worth pinning: a `Vec<HighlightDto>` per note would put the
+/// reader's private text back on the wire once per citing note, for a screen
+/// whose whole output is a tick. `CitationsFor` is untouched and still returns
+/// the passages, because the pane that shows them needs the words.
+#[test]
+fn the_citation_batch_puts_no_highlight_text_on_the_wire() {
+    let json = serde_json::to_string(&Response::NoteCitations(vec![
+        readingbuddy_api::NoteCitationsDto {
+            note_id: 3,
+            highlight_ids: vec![7, 9],
+        },
+    ]))
+    .unwrap();
+    assert_eq!(
+        json,
+        r#"{"shape":"note_citations","value":[{"note_id":3,"highlight_ids":[7,9]}]}"#
+    );
+    assert!(!json.contains("text"));
+}
+
+/// Items 45 and 46 are **additive**, and this is what that claim means on the
+/// wire: no existing request changed shape, so `API_VERSION` does not move.
+#[test]
+fn a_payload_written_before_the_cards_wave_still_parses() {
+    let single: Request =
+        serde_json::from_str(r#"{"method":"citations_for","params":{"note_id":3}}"#).unwrap();
+    assert_eq!(single, Request::CitationsFor { note_id: 3 });
+
+    let cards: Request =
+        serde_json::from_str(r#"{"method":"list_flashcards","params":{}}"#).unwrap();
+    assert_eq!(
+        cards,
+        Request::ListFlashcards {
+            include_exported: false
+        }
+    );
+
+    // And the new shapes are reachable by name. A card with no passage and no
+    // context is the ordinary typed one, so both are `#[serde(default)]`.
+    let minimal: Request = serde_json::from_str(
+        r#"{"method":"create_flashcard","params":{"book_id":4,"word":"mot"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        minimal,
+        Request::CreateFlashcard {
+            book_id: 4,
+            highlight_id: None,
+            word: "mot".into(),
+            context: None,
+        }
+    );
+    let batch: Request =
+        serde_json::from_str(r#"{"method":"citations_for_notes","params":{"note_ids":[3,4]}}"#)
+            .unwrap();
+    assert_eq!(
+        batch,
+        Request::CitationsForNotes {
+            note_ids: vec![3, 4]
+        }
+    );
+}

@@ -52,6 +52,8 @@ mod tests {
     fn tsv_escapes_separators() {
         let cards = vec![FlashcardRow {
             id: 1,
+            book_id: 1,
+            highlight_id: None,
             word: "mot".into(),
             context: Some("line one\nline\ttwo".into()),
             book_title: "A Book".into(),
@@ -73,6 +75,8 @@ mod props {
     fn row(word: &str, context: Option<&str>, title: &str) -> FlashcardRow {
         FlashcardRow {
             id: 1,
+            book_id: 1,
+            highlight_id: None,
             word: word.to_string(),
             context: context.map(str::to_string),
             book_title: title.to_string(),
