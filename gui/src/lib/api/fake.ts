@@ -29,10 +29,12 @@ import type {
   BookTagDto,
   CreatedNoteDto,
   FieldSourceDto,
+  FlashcardDto,
   HighlightDto,
   MomentDto,
   MonthActivityDto,
   NewNoteDto,
+  NoteCitationsDto,
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
@@ -44,7 +46,14 @@ import type {
   ReadingSortDto,
   TableOfContentsDto,
 } from './bindings';
-import type { LibraryClient, OpenReading, ReadingPage, ReadingRow, StoredBook } from './client';
+import type {
+  LibraryClient,
+  NewFlashcard,
+  OpenReading,
+  ReadingPage,
+  ReadingRow,
+  StoredBook,
+} from './client';
 
 /**
  * Every field, so a new DTO column shows up here as a type error.
@@ -584,7 +593,82 @@ const EDGES: { from: number; target: string }[] = [
 ];
 
 /** Which passages a note cites. By reference, so a device refresh cannot break it. */
-const CITATIONS: { note: number; highlight: number }[] = [{ note: 1, highlight: 2 }];
+/**
+ * Who quotes what — and **two citing notes, not one**, which is the fixture the
+ * item 48 mark is judged on.
+ *
+ * With only `note 1 → highlight 2` the mark was never rendered apart from the
+ * Cite toggle: open note 1 and the one marked passage is also the one whose
+ * button is filled, so the two facts appear together and *only* together, and a
+ * screenshot review could not tell whether the mark was doing any work. The
+ * second row is a passage quoted by a note that is **not** open, which is the
+ * case the mark exists for and the only one where it says something the button
+ * cannot.
+ *
+ * Note 3 is *What survives*, which is itself anchored to highlight 2 — so a
+ * note anchored to one passage citing another is also stated here, and that is
+ * an ordinary vault rather than an edge: an anchor is where a note was written
+ * and a citation is what it quotes.
+ */
+const CITATIONS: { note: number; highlight: number }[] = [
+  { note: 1, highlight: 2 },
+  { note: 3, highlight: 3 },
+];
+
+/** No cast here either — `FlashcardDto` gained two columns in item 45. */
+function card(
+  id: number,
+  bookId: number,
+  bookTitle: string,
+  word: string,
+  over: Partial<FlashcardDto>,
+): FlashcardDto {
+  return {
+    id,
+    book_id: bookId,
+    highlight_id: null,
+    word,
+    context: null,
+    book_title: bookTitle,
+    exported: false,
+    ...over,
+  };
+}
+
+/**
+ * The cards already captured, and the three shapes item 49's band has to draw.
+ *
+ * - **A card on a passage that is also quoted** (book 3, highlight 2). The two
+ *   marks are different facts — *a note quotes this* and *you took a word from
+ *   this* — and this is the row that stops them being drawn as one thing.
+ * - **Two cards on one passage** (book 20, highlight 13), which is the only way
+ *   the plural ever renders. A reader taking two words out of one sentence is
+ *   ordinary, not an edge case.
+ * - **A card anchored to nothing** (book 20, `highlight_id: null`). `flashcards`
+ *   has carried the column since `0001_init.sql` and `list_flashcards` never
+ *   selected it until item 45, so every card minted before then is this shape.
+ *   The passages band must show it against **no** passage rather than guessing
+ *   one, and nothing on that screen may render it at all.
+ *
+ * `exported` is stated and deliberately drawn nowhere: it is `rb cards export`'s
+ * bookkeeping, and a tick beside a passage saying a card left for Anki would be
+ * this screen reporting on a pipeline the reader did not open it to see.
+ */
+const FLASHCARDS: FlashcardDto[] = [
+  card(1, 3, 'The Doorstop', 'survives', {
+    highlight_id: 2,
+    context: 'What survives is not what was meant to.',
+  }),
+  card(2, 20, 'A Book With Subjects And Shelves', 'argument', {
+    highlight_id: 13,
+    context: 'A shelf is an argument about what a person intends to have been.',
+  }),
+  card(3, 20, 'A Book With Subjects And Shelves', 'intends', {
+    highlight_id: 13,
+    context: 'A shelf is an argument about what a person intends to have been.',
+  }),
+  card(4, 20, 'A Book With Subjects And Shelves', 'shelving', { exported: true }),
+];
 
 const TAGS: Record<number, BookTagDto[]> = {
   // `book_tags` are minted shelves and are **not** `BookDto.subjects`; the raw
@@ -870,9 +954,11 @@ export class FakeClient implements LibraryClient {
   #bodies: Record<number, string> = { ...BODIES };
   #edges: { from: number; target: string }[] = EDGES.map((e) => ({ ...e }));
   #citations: { note: number; highlight: number }[] = CITATIONS.map((c) => ({ ...c }));
+  #flashcards: FlashcardDto[] = FLASHCARDS.map((c) => ({ ...c }));
   #annotations: Record<number, string | null> = {};
   #ratings: Record<number, number> = { ...RATINGS };
   #nextNoteId = 100;
+  #nextCardId = 100;
   /** Moments already handed back. Acknowledging is idempotent, so this is a set. */
   #surfaced = new Set<string>();
   #device: boolean;
@@ -1297,6 +1383,83 @@ export class FakeClient implements LibraryClient {
     return ids
       .map((id) => all.find((h) => h.id === id))
       .filter((h): h is HighlightDto => h !== undefined);
+  }
+
+  /**
+   * One entry per id asked, **in the order asked, empties and duplicates
+   * included** — which is the contract, not a convenience.
+   *
+   * A fake that dropped the empties would make the caller's zip untestable at
+   * the layer it is tested: the page holds a list of notes and a list of
+   * passages and marks the second from the first, and a reply missing a row
+   * silently shifts that alignment. `every_requested_note_gets_a_row_in_the_order_asked`
+   * is the engine's half of this.
+   *
+   * The ids inside an entry are in **citation order here and reading order in
+   * the engine** (`h.page ASC, h.ko_datetime ASC, h.id ASC`), and that is a
+   * deliberate difference rather than an omission: the surface asking is
+   * drawing set membership, so a fake reproducing the `ORDER BY` would be a
+   * second implementation of a rule nothing above the seam may depend on.
+   */
+  async citationsForNotes(noteIds: number[]): Promise<NoteCitationsDto[]> {
+    return noteIds.map((note_id) => ({
+      note_id,
+      highlight_ids: this.#citations.filter((c) => c.note === note_id).map((c) => c.highlight),
+    }));
+  }
+
+  // ---- flashcards (items 45, 49) ------------------------------------------
+
+  /**
+   * `true` created it, `false` means you already had it — and the existing card
+   * is left **exactly** as it was.
+   *
+   * `ON CONFLICT(book_id, word) DO NOTHING`, restated: a second capture of the
+   * same word must not repoint the card at a different passage or overwrite its
+   * context. A fake that returned `true` twice, or that updated on the repeat,
+   * would leave the confirmation's two faces rendered by nothing.
+   *
+   * The two refusals are modelled because the frontend deliberately does not
+   * pre-validate the pair: a `highlightId` from another book is the engine's
+   * `InvalidInput`, and the trim-then-empty check is its `InvalidInput` too.
+   */
+  async createFlashcard({
+    bookId,
+    word,
+    highlightId = null,
+    context = null,
+  }: NewFlashcard): Promise<boolean> {
+    // Trimmed **before** the uniqueness check, as `Engine::create_flashcard`
+    // does: `" mot"` is not a second word.
+    const clean = word.trim();
+    if (clean === '') throw new Error('a flashcard needs a word');
+    if (highlightId !== null) {
+      const owner = Object.values(HIGHLIGHTS)
+        .flat()
+        .find((h) => h.id === highlightId);
+      if (owner === undefined) throw new Error(`no highlight with id ${highlightId}`);
+      if (owner.book_id !== bookId) {
+        throw new Error(`highlight ${highlightId} belongs to book ${owner.book_id}, not book ${bookId}`);
+      }
+    }
+    if (this.#flashcards.some((c) => c.book_id === bookId && c.word === clean)) return false;
+    const book = BOOKS.find((b) => b.id === bookId);
+    if (book === undefined) throw new Error(`no book with id ${bookId}`);
+    this.#flashcards.push({
+      id: this.#nextCardId++,
+      book_id: bookId,
+      highlight_id: highlightId,
+      word: clean,
+      context,
+      book_title: book.title ?? '',
+      exported: false,
+    });
+    return true;
+  }
+
+  /** Pending and exported alike, which is what `list_flashcards_for_book` returns. */
+  async listFlashcardsForBook(bookId: number): Promise<FlashcardDto[]> {
+    return this.#flashcards.filter((c) => c.book_id === bookId).map((c) => ({ ...c }));
   }
 
   // ---- the rating on a review --------------------------------------------

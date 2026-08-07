@@ -226,7 +226,8 @@ grid tile and a hero want different ones.
 
 ## The book view
 
-`src/lib/book/`, and three rules it settled that item 28 inherits.
+`src/lib/book/`, and three rules it settled that item 28 inherits — plus the two
+controls items 48 and 49 added to the passages band.
 
 **The notes band is one pane at three depths** — the list, one note, that note's
 links — each replacing the last **in place**. No dialog anywhere on the screen.
@@ -239,9 +240,39 @@ it. Unlabelled they are two grey paragraphs, and this screen is the only place
 that distinction is visible at all.
 
 **Citing is per *open* note.** `CitationsFor` is one call for the note the pane
-has open, which is what makes `Uncite` reachable. Marking which passages *any*
-note cites is one call per note in the book and is a later item — do not build
-the N+1.
+has open, which is what makes `Uncite` reachable.
+
+**The quoted mark is one call for the whole page of notes** (item 48). This file
+used to forbid marking which passages *any* note cites, because it was one
+`CitationsFor` per note in the book — an N+1 with no request behind it. Item 46
+built the request and the mark is now shipped: `citationsForNotes(noteIds)`
+takes the ids the route already loaded and answers `{ note_id, highlight_ids }`,
+one entry per id asked, in the order asked, empties included. **The loop is
+still refused, and for the sharper of its two reasons** — a `HighlightDto` per
+citing note would put the reader's private text on the wire once per tick, on a
+screen whose entire output is a tick. Its scope is the ids you name, so the mark
+claims only this book's notes; there is no reverse query, and a note filed under
+no book can quote a passage here with nothing to say so.
+
+**The mark and the toggle are different facts and are drawn apart.** *A note
+quotes this* is accent **text** on the passage's own metadata line; *the note I
+have open quotes this* is an accent-**filled** button, and it is how you undo
+it. Collapsing them into one visual is the failure to watch for — it passes
+every assertion, and the reader can no longer tell which of the two they are
+looking at. After a toggle, correct the open note's row of the batch from the
+`citationsFor` reply the click already made, rather than re-asking the batch.
+
+**A card is captured from the passage, and the word is typed even when it is
+selected** (item 49). `createFlashcard` is the first way a reader can mint one —
+before item 45 the KOReader import's auto-capture of single-word highlights was
+the only caller anywhere. A selection inside the passage **prefills the box**
+and is never the word itself: a control that writes different things depending
+on whether something happened to be selected is a hidden mode, and
+`UNIQUE(book_id, word)` makes the word the card's identity, so a drag that
+caught a trailing comma would mint a card keyed on it. `true` created it;
+**`false` means you already had it**, left exactly as it was. Render both as
+"saved" and the write answers nothing. `false` is not an error and is not styled
+as one.
 
 The **note search is deliberately absent**: `SearchMarks` has no `book_id` and
 its `limit` is over the global ranked list, so narrowing above the seam returns

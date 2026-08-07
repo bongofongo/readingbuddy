@@ -30,7 +30,9 @@
     BookFileDto,
     BookTagDto,
     FieldSourceDto,
+    FlashcardDto,
     HighlightDto,
+    NoteCitationsDto,
     NoteDto,
     ReadingDto,
   } from '$lib/api/bindings';
@@ -100,6 +102,30 @@
   /** Which passages the open note cites. **One** call, for the one open note. */
   let cited = $state<number[]>([]);
 
+  /**
+   * Which passages **each** of this book's notes cites — one call for the whole
+   * page of notes (item 48).
+   *
+   * Held as the reply rather than as the union it draws, and that is the shape
+   * that matters: keyed by note id, the open note's row can be corrected from
+   * the `citationsFor` this page already makes after a toggle, so a click costs
+   * no second batch. A bare `Set` would have to be rebuilt from the wire on
+   * every cite, which is the N+1 arriving through the back door.
+   */
+  let noteCitations = $state<NoteCitationsDto[]>([]);
+  /**
+   * The mark: passages some note quotes.
+   *
+   * Set membership over the reply, which is what `NoteCitationsDto` says it is
+   * for in as many words — *"a book's passage list wanting to mark the ones
+   * already quoted somewhere"*. Not a derivation the engine is owed: no rule is
+   * being invented, the union of ids is the ids.
+   */
+  const quoted = $derived(new Set(noteCitations.flatMap((c) => c.highlight_ids)));
+
+  /** Every card captured from this book, so a passage can show what it gave up. */
+  let flashcards = $state<FlashcardDto[]>([]);
+
   $effect(() => {
     const which = id;
     (async () => {
@@ -111,19 +137,40 @@
       }
       book = b;
       // The reader's own material, which the page is not worth much without.
-      [readings, highlights, notes] = await Promise.all([
+      const [rs, hs, ns] = await Promise.all([
         api.listReadings(which),
         api.listHighlights(which),
         api.listNotes(which),
       ]);
+      [readings, highlights, notes] = [rs, hs, ns];
       // The reference material. A library that loaded must not be replaced by
       // an error thrown by the ornament beneath it — item 26 made that call for
-      // the reading strip and it is the same call.
+      // the reading strip and it is the same call. The two marks on the
+      // passages band are ornaments by the same test: a book with its
+      // highlights on screen and no ticks on them is a lesser page, not a
+      // broken one.
+      reloadCitations(ns).catch(() => (noteCitations = []));
+      reloadCards(which).catch(() => (flashcards = []));
       api.bookTags(which).then((t) => (tags = t), () => {});
       api.bookFiles(which).then((f) => (files = f), () => {});
       api.fieldProvenance(which).then((p) => (provenance = p), () => {});
     })().catch((e) => (failure = e instanceof Error ? e.message : String(e)));
   });
+
+  /**
+   * The quoted mark, for a known page of notes. **One call, never one per note.**
+   *
+   * Asked with the ids in hand rather than by book, because the request has no
+   * `book_id` and answers exactly what it was asked: an empty note list is an
+   * empty mark and needs no round trip to establish that.
+   */
+  async function reloadCitations(ns: NoteDto[]): Promise<void> {
+    noteCitations = ns.length === 0 ? [] : await client().citationsForNotes(ns.map((n) => n.id));
+  }
+
+  async function reloadCards(which: number): Promise<void> {
+    flashcards = await client().listFlashcardsForBook(which);
+  }
 
   $effect(() => {
     const note = openNote;
@@ -146,14 +193,47 @@
 
   async function reloadNotes() {
     notes = await client().listNotes(id);
+    // Deleting a note takes its citations with it, so the mark is refreshed
+    // with the list rather than left claiming a quote nothing makes any more.
+    await reloadCitations(notes);
   }
 
   async function toggleCite(highlightId: number, on: boolean) {
-    if (openNote === null) return;
+    const note = openNote;
+    if (note === null) return;
     const api = client();
-    if (on) await api.cite(openNote.id, highlightId);
-    else await api.uncite(openNote.id, highlightId);
-    cited = (await api.citationsFor(openNote.id)).map((h) => h.id);
+    if (on) await api.cite(note.id, highlightId);
+    else await api.uncite(note.id, highlightId);
+    const now = (await api.citationsFor(note.id)).map((h) => h.id);
+    cited = now;
+    // The open note's row of the batch, corrected from the reply already in
+    // hand. The mark must move with the toggle — a passage just cited is
+    // quoted — and re-asking `citationsForNotes` on every click would be paying
+    // for the whole page of notes to learn one note's answer.
+    const row = { note_id: note.id, highlight_ids: now };
+    noteCitations = noteCitations.some((c) => c.note_id === note.id)
+      ? noteCitations.map((c) => (c.note_id === note.id ? row : c))
+      : [...noteCitations, row];
+  }
+
+  /**
+   * Capture a word off a passage (item 49).
+   *
+   * The list is re-asked rather than patched from what was sent, and `false` is
+   * exactly why: `CreateFlashcard` answers a bool, and on a repeat the card
+   * that exists may carry a different passage and a different context than the
+   * one just offered. Synthesizing one here would draw a card the database does
+   * not have.
+   */
+  async function capture(highlightId: number, word: string, context: string): Promise<boolean> {
+    const created = await client().createFlashcard({
+      bookId: id,
+      highlightId,
+      word,
+      context,
+    });
+    await reloadCards(id);
+    return created;
   }
 
   async function annotate(highlightId: number, text: string | null) {
@@ -222,7 +302,16 @@
         onreload={reloadNotes}
       />
 
-      <Passages {highlights} open={openNote} {cited} oncite={toggleCite} onannotate={annotate} />
+      <Passages
+        {highlights}
+        open={openNote}
+        {cited}
+        {quoted}
+        cards={flashcards}
+        oncite={toggleCite}
+        onannotate={annotate}
+        oncapture={capture}
+      />
     </div>
 
     <aside class="reference">

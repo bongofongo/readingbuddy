@@ -40,10 +40,12 @@ import type {
   BookTagDto,
   CreatedNoteDto,
   FieldSourceDto,
+  FlashcardDto,
   HighlightDto,
   MomentDto,
   MonthActivityDto,
   NewNoteDto,
+  NoteCitationsDto,
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
@@ -107,6 +109,27 @@ export type ReadingPage = {
   sort?: ReadingSortDto;
   offset?: number;
   filter?: ReadingFilterDto | null;
+};
+
+/**
+ * A card to capture — **an object, for [`ReadingPage`]'s reason**.
+ *
+ * `word` and `context` are adjacent and both string-shaped, so passing them the
+ * wrong way round type-checks whenever the context is present: exactly the swap
+ * `ReadingQueryDto` names `limit`/`offset` for. Naming them at the call site is
+ * what makes it impossible rather than merely unlikely.
+ *
+ * `highlightId` and `context` default to `null` here and are **stated** on the
+ * wire. `#[serde(default)]` in the Rust makes an old payload parse; `ts-rs`
+ * emits the field as required regardless, and that is the seam behaving
+ * correctly rather than a quirk to work around.
+ */
+export type NewFlashcard = {
+  bookId: number;
+  word: string;
+  /** The passage the word came from. Re-read server-side against `bookId`. */
+  highlightId?: number | null;
+  context?: string | null;
 };
 
 /**
@@ -362,8 +385,65 @@ export interface LibraryClient {
    */
   cite(noteId: number, highlightId: number): Promise<void>;
   uncite(noteId: number, highlightId: number): Promise<boolean>;
-  /** Which passages one note cites. One call per note, so ask it for one. */
+  /**
+   * Which passages **one** note cites, as rows — the words are the point.
+   *
+   * It feeds the Cite/Uncite toggle, which is per *open* note, and it is what a
+   * pane showing those passages would take. For the mark on a whole band of
+   * passages, take [`citationsForNotes`] instead: this one in a loop is the N+1
+   * item 46 exists to retire.
+   */
   citationsFor(noteId: number): Promise<HighlightDto[]>;
+  /**
+   * Which passages a whole **page of notes** cites, as ids (item 46).
+   *
+   * One call for the note ids the route already holds, never one per note. The
+   * reply is `{ note_id, highlight_ids }` — **ids, not rows**, because the
+   * caller is a highlight list that is already holding those highlights and a
+   * `HighlightDto` per citing note would put the reader's private text back on
+   * the wire once per tick.
+   *
+   * **One entry per id asked, in the order asked, empties and duplicates
+   * included.** A note id that is not a note gets an empty entry — to this
+   * question *no such note* and *cites nothing* are the same answer — which is
+   * what makes the reply zippable against the page the caller already has.
+   *
+   * Its scope is **the ids you name**. `citations` ties no note's book to the
+   * highlight's, so an unsorted note could quote a passage and not be in any
+   * page of notes; there is no reverse query and a mark drawn from this must
+   * therefore claim only what it asked about.
+   */
+  citationsForNotes(noteIds: number[]): Promise<NoteCitationsDto[]>;
+
+  // ---- flashcards (items 45, 49) ------------------------------------------
+
+  /**
+   * Capture a card. **`true` is created and `false` is *you already had it***.
+   *
+   * `UNIQUE(book_id, word)` dedupes through `ON CONFLICT DO NOTHING`, so a
+   * repeat leaves the existing card exactly as it was — a later capture of the
+   * same word does **not** repoint it at a different passage. A caller drawing
+   * both as "saved" throws away the only thing the write answers.
+   *
+   * The pair is re-read server-side: a `highlightId` belonging to another book
+   * is an `InvalidInput` and one belonging to nothing is a `NotFound`, and they
+   * are different refusals. Do not pre-validate either here — the point of a
+   * write taking ids is that the refusal lives where the rows do.
+   *
+   * It returns no id and no card, so a screen that wants to *show* the card
+   * re-asks [`listFlashcardsForBook`]. Synthesizing one from what was sent
+   * would be wrong exactly on `false`, where the card that exists may carry a
+   * different passage and a different context than the one just offered.
+   */
+  createFlashcard(card: NewFlashcard): Promise<boolean>;
+  /**
+   * Every card captured from this book, pending and exported alike (item 45).
+   *
+   * `FlashcardDto` carries `highlight_id`, which is the whole point: a card can
+   * be shown beside the passage its word came from. `null` there is ordinary —
+   * the KOReader import's auto-capture anchors, but a card need not.
+   */
+  listFlashcardsForBook(bookId: number): Promise<FlashcardDto[]>;
 
   // ---- the rating on a review --------------------------------------------
 
@@ -734,6 +814,40 @@ export class TauriClient implements LibraryClient {
     return expect(
       await this.#call({ method: 'citations_for', params: { note_id: noteId } }),
       'highlights',
+    ).value;
+  }
+
+  async citationsForNotes(noteIds: number[]): Promise<NoteCitationsDto[]> {
+    return expect(
+      await this.#call({ method: 'citations_for_notes', params: { note_ids: noteIds } }),
+      'note_citations',
+    ).value;
+  }
+
+  // ---- flashcards (items 45, 49) ------------------------------------------
+
+  async createFlashcard({
+    bookId,
+    word,
+    highlightId = null,
+    context = null,
+  }: NewFlashcard): Promise<boolean> {
+    // The word is **not** trimmed here. `Engine::create_flashcard` trims before
+    // it dedupes, so `" mot"` and `"mot"` are already one card; trimming here
+    // too would be a second copy of a rule that has to agree with itself.
+    return expect(
+      await this.#call({
+        method: 'create_flashcard',
+        params: { book_id: bookId, highlight_id: highlightId, word, context },
+      }),
+      'bool',
+    ).value;
+  }
+
+  async listFlashcardsForBook(bookId: number): Promise<FlashcardDto[]> {
+    return expect(
+      await this.#call({ method: 'list_flashcards_for_book', params: { book_id: bookId } }),
+      'flashcards',
     ).value;
   }
 

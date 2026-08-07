@@ -31,6 +31,12 @@ const ROUTES = [
   // measured" rather than "this jacket is grey" is rendered nowhere.
   { name: 'book-no-cover', path: '/book/5' },
   { name: 'book-missing', path: '/book/9999' }, // no such book: a page, not a dead end
+  // Item 49. Words already taken off a passage — two off one, which is the only
+  // way the plural renders, plus a card anchored to nothing that must appear
+  // against no passage at all. Book 3 carries the other half: a passage that is
+  // both quoted and captured from, which is where the two marks would collide
+  // if they had been drawn as one thing.
+  { name: 'book-captured', path: '/book/20' },
   // Item 28. The card is per reading, so book 12 is the one that matters: two
   // cards side by side is the comparison the whole object exists for, and it is
   // also the only width at which the wall's grid has to do anything.
@@ -242,6 +248,194 @@ test('the book view counts what you did and never what you have left', async ({ 
     /\bremaining\b/i,
     /\buncited\b/i,
     /\bnot yet cited\b/i,
+  ]) {
+    expect(all, `"${banned}" is task-completion framing`).not.toMatch(banned);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Items 48 and 49 — the cited mark, and the capture.
+// ---------------------------------------------------------------------------
+
+/**
+ * *A note quotes this* and *I am citing this into the note I have open* are two
+ * different facts, and the item is judged on their being drawn apart.
+ *
+ * The mark comes from one `CitationsForNotes` over the page of notes the route
+ * already loaded; the toggle comes from `CitationsFor` for the one open note.
+ * Collapsing them into one visual is the failure `docs/prompts/48-49` names,
+ * and it is the kind that passes every other assertion here — the screen still
+ * renders, the console is still clean, and the reader can no longer tell which
+ * of two things they are looking at.
+ */
+test('a quoted passage says so, and that is not the cite toggle', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/book/3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  // Three passages, three states. `byThisNote` is quoted by note 1, which is
+  // the one about to be opened; `byAnother` is quoted by note 3, which is not;
+  // `plain` is quoted by nobody.
+  const byThisNote = page.locator('li').filter({ hasText: 'What survives is not what' });
+  const byAnother = page.locator('li').filter({ hasText: 'She counted the bells' });
+  const plain = page.locator('li').filter({ hasText: 'The thing about a place' });
+  await expect(byThisNote).toContainText('Quoted in a note');
+  await expect(byAnother).toContainText('Quoted in a note');
+  await expect(plain).not.toContainText('Quoted in a note');
+
+  // With no note open there is no toggle at all, so the mark is the only thing
+  // on screen saying anything about citations — which is the state that proves
+  // it is not the toggle wearing a different colour.
+  await expect(page.getByRole('button', { name: /Cite into|Cited in/ })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'p. 212 On The Doorstop' }).click();
+  await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(1);
+  // Both facts on one passage at once — the case where they could be mistaken
+  // for one thing…
+  await expect(byThisNote.getByRole('button', { name: /Cited in/ })).toHaveCount(1);
+  await expect(byThisNote).toContainText('Quoted in a note');
+  // …and the case that pays for the mark existing: quoted, by a note this one
+  // is not, so the button offers to cite it and the mark still says somebody
+  // has. A screen where these two never appear apart cannot show the
+  // difference, which is why `fake.ts` states a second citing note.
+  await expect(byAnother.getByRole('button', { name: /Cite into/ })).toHaveCount(1);
+  await expect(byAnother).toContainText('Quoted in a note');
+
+  // And the mark moves with the toggle. Citing the unquoted passage marks it;
+  // unciting the one only note 1 quotes unmarks it. That is the batch's row
+  // being corrected from the single-note reply rather than the page re-asking
+  // for the whole page of notes on every click.
+  await plain.getByRole('button', { name: /Cite into/ }).click();
+  await expect(plain).toContainText('Quoted in a note');
+  await byThisNote.getByRole('button', { name: /Cited in/ }).click();
+  await expect(byThisNote).not.toContainText('Quoted in a note');
+  // Unciting one note does not unmark what another quotes.
+  await expect(byAnother).toContainText('Quoted in a note');
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * A card is made from a passage, and the two answers are told apart.
+ *
+ * `CreateFlashcard` answers a bool where `true` is *created* and `false` is
+ * *you already had this*, and `UNIQUE(book_id, word)` leaves the existing card
+ * exactly as it was. A frontend rendering both as "saved" throws away the only
+ * thing the write answers — and rendering the second as an error would make
+ * having already done something a failure, which the axiom forbids by name.
+ *
+ * The selection is driven rather than described: the box arrives holding what
+ * the reader selected inside *that* passage, and arrives empty when there is no
+ * selection. Both paths end in the same write.
+ */
+test('a word can be taken off a passage, and the second time it says so', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/book/20');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  // What was already taken, past tense, and pluralised by how many there are.
+  const shelf = page.locator('li').filter({ hasText: 'A shelf is an argument' });
+  await expect(shelf).toContainText('You kept “argument” and “intends”');
+  // The card anchored to nothing belongs to no passage and is drawn against
+  // none — a band that guessed one would hang it off whichever came first. The
+  // whole set of record lines is asserted rather than one absence, because that
+  // is the direction a stray card would arrive from.
+  const records = page.locator('p').filter({ hasText: /^You kept / });
+  expect(await records.allInnerTexts()).toEqual(['You kept “argument” and “intends”']);
+
+  const filing = page.locator('li').filter({ hasText: 'Everything else is filing' });
+  await expect(filing).not.toContainText('You kept');
+
+  // Nothing selected: an empty box, focused. The fallback is a real path and
+  // not a degradation — a reader who wants a word that is not on the page
+  // types it.
+  await filing.getByRole('button', { name: 'Make a card' }).click();
+  const word = filing.getByRole('textbox');
+  await expect(word).toHaveValue('');
+  await expect(word).toBeFocused();
+  await expect(page).toHaveScreenshot('book-capture-open.png', { fullPage: true });
+  await filing.getByRole('button', { name: 'Cancel' }).click();
+
+  // A selection inside the passage fills the box.
+  //
+  // A **drag**, not a double-click: headless WebKit does not do word-selection
+  // on `dblclick` under Playwright at all (it leaves the selection collapsed
+  // with one range), so a double-click here would be asserting the driver
+  // rather than the app. A drag is also the gesture this control was put on the
+  // passage for.
+  //
+  // The distance decides which words are caught, so the assertion is that the
+  // box holds *the passage's own text* rather than a word the layout picks.
+  const line = await filing.locator('blockquote').boundingBox();
+  if (line === null) throw new Error('the passage has no box to drag across');
+  await page.mouse.move(line.x + 2, line.y + line.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(line.x + 70, line.y + line.height / 2, { steps: 10 });
+  await page.mouse.up();
+
+  await filing.getByRole('button', { name: 'Make a card' }).click();
+  const picked = await word.inputValue();
+  // `preventDefault` on the button's **mousedown** is what makes this non-empty:
+  // pressing a button outside the selection collapses it before `click` fires,
+  // so without that line the box would arrive empty every time and the prefill
+  // would be dead code nothing noticed.
+  expect(picked.length, 'the selection fills the box').toBeGreaterThan(0);
+  expect('Everything else is filing.').toContain(picked);
+
+  await word.fill('filing');
+  await filing.getByRole('button', { name: 'Keep' }).click();
+  await expect(filing).toContainText('Kept.');
+  // The record is re-read from the library rather than synthesized from what
+  // was sent — `CreateFlashcard` answers a bool and no card.
+  await expect(filing).toContainText('You kept “filing”');
+
+  // The same word again. Not an error, not styled as one, and the card that is
+  // there is unchanged.
+  await filing.getByRole('button', { name: 'Make a card' }).click();
+  await word.fill('filing');
+  await filing.getByRole('button', { name: 'Keep' }).click();
+  await expect(filing).toContainText('You already had that one');
+  await expect(filing).toContainText('You kept “filing”');
+  const text = await filing.innerText();
+  for (const banned of [/\bfail/i, /\berror\b/i, /\balready exists\b/i]) {
+    expect(text, 'having already done something is not a failure').not.toMatch(banned);
+  }
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * Neither control counts anything, and neither offers a dialog.
+ *
+ * The passages band is where two new controls could quietly reintroduce both
+ * things the axiom forbids: a tally of the passages you have *not* captured
+ * from, and a modal to capture in. `role=dialog` is the assertion for the
+ * second because it is what a modal is, whatever it looks like.
+ */
+test('the passage controls count nothing and open nothing', async ({ page }) => {
+  await page.goto('/book/20');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  await page.getByRole('button', { name: 'Make a card' }).first().click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  const all = await page.locator('body').innerText();
+  for (const banned of [
+    /\buncaptured\b/i,
+    /\bnot yet\b/i,
+    /\bremaining\b/i,
+    // A literal space, **not** `\s`: `\s` crosses the newline between a
+    // passage's `p. 44` and its `Cards:` line, so the broad spelling of this
+    // banned a page number sitting above a record of what you did. The thing
+    // being forbidden is "3 cards" on one line, and that is what it says now.
+    /\d+ cards?\b/i,
+    /\bcards? left\b/i,
   ]) {
     expect(all, `"${banned}" is task-completion framing`).not.toMatch(banned);
   }

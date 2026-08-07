@@ -314,6 +314,47 @@ export function noteAnchorLabel(n: NoteDto): string | null {
 }
 
 /**
+ * That some note quotes this passage (item 48).
+ *
+ * **No number, at any count.** The fact a reader wants from a band of passages
+ * is *this one is in my notes*, and a `3` beside it would be the library
+ * counting itself on a screen that exists to show what was written. The mark is
+ * drawn from `CitationsForNotes`, which answers with ids, so a count is
+ * available and deliberately not spoken.
+ *
+ * Singular by design and true at every count: a passage quoted in three notes is
+ * still quoted in a note. It claims only what was asked about — the batch is
+ * scoped to the note ids the screen holds, which is this book's notes, and a
+ * note filed under no book could quote a passage with nothing here to say so.
+ */
+export const QUOTED = 'Quoted in a note';
+
+/**
+ * The words already taken off a passage as cards (item 49).
+ *
+ * **A sentence in the past tense, and deliberately not `Cards: a, b`.** The
+ * `label: value` shape is what the About rail uses (`Publisher`,
+ * `Language`), and set in the same dim ink two lines under `Chapter 9 · p. 640`
+ * it scanned as a third metadata field rather than as a record of something the
+ * reader did — measured, in the item 49 screenshot review, as byte-identical
+ * colour at the same size. *You kept* is the same voice as the `YOU` chip
+ * above it and cannot be read as a property of the passage.
+ *
+ * The pluralisation and the joining are the frontend's half; the list is the
+ * engine's — these are `FlashcardDto.word`s in the order
+ * `list_flashcards_for_book` gave them (`created_at ASC`), not sorted here.
+ * `null` for none, so a passage nobody has captured from gets **no element**
+ * rather than an empty label: absence is not a zero, and *no cards yet* would be
+ * the completion framing the axiom forbids.
+ */
+export function cardWordsLabel(words: string[]): string | null {
+  const marked = words.map((w) => `“${w}”`);
+  const last = marked.pop();
+  if (last === undefined) return null;
+  return `You kept ${marked.length === 0 ? last : `${marked.join(', ')} and ${last}`}`;
+}
+
+/**
  * A rating, against the scale it was recorded on.
  *
  * The scale travels **with** the value on the wire and this is why: the
