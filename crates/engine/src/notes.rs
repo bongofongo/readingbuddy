@@ -91,8 +91,24 @@ pub fn slugify(s: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = true;
     for c in s.chars() {
-        if c.is_alphanumeric() {
-            out.extend(c.to_lowercase());
+        // **The lowercase expansion is filtered, not trusted.** `char::to_lowercase`
+        // can return more than one char, and the extra one need not be
+        // alphanumeric: `'İ'` (U+0130, the Turkish dotted capital I) lowercases to
+        // `i` + U+0307 COMBINING DOT ABOVE, and a combining mark is `Mn` rather
+        // than alphanumeric. Pushing it whole made `slugify` non-idempotent — the
+        // mark survived the first pass and became a dash on the second, so the
+        // same title produced two different filenames depending on how many times
+        // it had been through here. Found by `a_slug_is_always_a_safe_filename`,
+        // which is the property that exists to find exactly this.
+        let lowered = if c.is_alphanumeric() {
+            c.to_lowercase()
+                .filter(|l| l.is_alphanumeric())
+                .collect::<String>()
+        } else {
+            String::new()
+        };
+        if !lowered.is_empty() {
+            out.push_str(&lowered);
             prev_dash = false;
         } else if !prev_dash {
             out.push('-');

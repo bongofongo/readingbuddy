@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b68c52432a3f04d098179cd583128700b85a41507310e49b1d84aaa3a66ede29 # shrinks to keys = [], body = ""
+cc 8fe66fc37b68d37e9ea8b8945f92742d42342c52bcfa4010bec3bdfbe6ed0cee # shrinks to s = "İ"
