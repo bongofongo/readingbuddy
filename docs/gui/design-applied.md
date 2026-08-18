@@ -7,6 +7,12 @@ source: `docs/gui/design-research.md` for the evidence behind every claim here;
         `docs/gui/gui-vision.md` for the axiom.
 ---
 
+> **Settled.** Every position in this document was adopted, including all five
+> answers in Part 7. What shipped is `docs/decisions.md` entry 53; the two items
+> in Part 6 that are not layout — a written notification-level spec, and undo
+> before accelerators — are still open and are engine-shaped rather than
+> frontend-shaped.
+
 # The research, applied
 
 ## How I'm reasoning

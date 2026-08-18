@@ -81,7 +81,7 @@
     grid-template-columns: repeat(auto-fit, minmax(min(9.5rem, 100%), 1fr));
     gap: 1rem 1.4rem;
     margin: 0 0 0.9rem;
-    max-width: calc(var(--measure) + 12rem);
+    max-width: calc(var(--column) + 12rem);
   }
   /*
    * Three and three above a phone, rather than whatever `auto-fit` lands on.

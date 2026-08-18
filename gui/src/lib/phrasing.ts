@@ -510,6 +510,25 @@ export function countLabel(n: number, singular: string, plural = `${singular}s`)
 }
 
 /**
+ * A list of things, joined the way a sentence joins them: *A*, *A and B*,
+ * *A, B and C*.
+ *
+ * The reading-life page writes its months as sentences rather than as a stat
+ * block, and this is the join those sentences need. No Oxford comma, and no
+ * `Intl.ListFormat` — for `monthLabel`'s reason: a locale-dependent rendering
+ * would make the committed screenshots depend on the machine that took them.
+ *
+ * **Never truncates.** A month in which eleven books were finished says eleven
+ * titles; "and 3 more" would be a count of the part the page decided not to
+ * show, which is the one kind of number this app does not write.
+ */
+export function joinList(items: string[]): string {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0]!;
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]!}`;
+}
+
+/**
  * `2025-03` as *March 2025*.
  *
  * Spelled from a fixed table rather than handed to `Intl`, for `dayLabel`'s own

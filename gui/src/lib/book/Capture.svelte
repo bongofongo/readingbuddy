@@ -55,8 +55,18 @@
     passage,
     selection,
     oncapture,
+    tabbable = true,
   }: {
     passage: HighlightDto;
+    /**
+     * Whether the trigger is in the document's tab order.
+     *
+     * The passage list is a composite widget — one tab stop for the whole list,
+     * arrow keys within it — so a control on a passage that is not the active
+     * one must not be a stop of its own. `false` takes the trigger out; the box
+     * it opens is left alone, because opening it means focus is already here.
+     */
+    tabbable?: boolean;
     /**
      * What the reader has selected **inside this passage**, or `''`.
      *
@@ -145,7 +155,13 @@
     find nothing every time. Preventing the default only costs the button its
     mouse focus; Tab and Enter are untouched.
   -->
-  <button type="button" class="quiet" onmousedown={(e) => e.preventDefault()} onclick={start}>
+  <button
+    type="button"
+    class="quiet"
+    tabindex={tabbable ? 0 : -1}
+    onmousedown={(e) => e.preventDefault()}
+    onclick={start}
+  >
     Make a card
   </button>
 {/if}

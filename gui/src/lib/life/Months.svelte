@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * The months of one year, as they came off the wire.
+   * The months of one year, written as sentences.
    *
    * **Only months carrying an event appear**, which is the engine's rule and not
    * this component's shortcut: an empty month is the client's to draw, and
@@ -10,42 +10,112 @@
    *
    * Nothing here sums, averages or compares two months. A "best month" is a
    * threshold discovered after the fact, which is a leaderboard with one
-   * competitor, and it is the second-nearest wrong turn on this screen.
+   * competitor, and it is the nearest wrong turn on this screen.
    *
-   * Not a `<table>`: at 320px a four-column table either scrolls sideways or
-   * crushes its columns, and every one of these figures is a chip that reads on
-   * its own. The month name is the row's heading and the chips wrap under it.
+   * ## Sentences rather than chips, and what that changes
+   *
+   * The figures used to be a four-column grid of chips. A stat block invites
+   * reading *down* a column, and a column of comparable numbers is a scoreboard
+   * one glance away; a sentence is read across and says what happened. The
+   * figures are still the engine's, unchanged, and are still bold — what went is
+   * the grid that made them a series.
+   *
+   * **A month in which nothing was finished says nothing about finishing.** Not
+   * "Finished nothing." — that is a deficit sentence wearing a fact, and it is
+   * the exact failure this app is built to avoid. The page states what happened
+   * and is silent about what did not.
+   *
+   * **An absence gets its own line and says what is absent.** Never a zero: a
+   * month with no device data returns absent minutes, not zero minutes, and zero
+   * is a claim.
    */
   import type { MonthActivityDto } from '$lib/api/bindings';
-  import { countLabel, deviceFigures, monthLabel, NO_DEVICE_DATA, NOT_MEASURED } from '$lib/phrasing';
+  import type { StoredBook } from '$lib/api/client';
+  import { client } from '$lib/api/client';
+  import Jacket from '$lib/components/Jacket.svelte';
+  import {
+    countLabel,
+    deviceFigures,
+    joinList,
+    monthLabel,
+    NOT_MEASURED,
+    titleLabel,
+  } from '$lib/phrasing';
 
-  let { months }: { months: MonthActivityDto[] } = $props();
+  let {
+    months,
+    finished,
+  }: {
+    months: MonthActivityDto[];
+    /**
+     * The books whose reading **closed** in each month, keyed `YYYY-MM`.
+     *
+     * From `listReadingRows` with a `finished_in` span, which is the request
+     * that answers this — not from the activity log, which records that
+     * something happened on a day and not what ended. A month with no entry
+     * simply has no finishing sentence.
+     */
+    finished: Map<string, StoredBook[]>;
+  } = $props();
 </script>
 
 <ul>
   {#each months as m (m.month)}
     {@const device = deviceFigures(m.minutes, m.pages)}
+    {@const done = finished.get(m.month) ?? []}
     <li>
       <span class="month">{monthLabel(m.month)}</span>
-      <span class="figures">
-        <!-- Distinct books **over the whole month**, which is exactly why this
-             cannot be folded out of days: the same two books opened on twelve
-             days are two books, not twenty-four. -->
-        <span>{countLabel(m.books, 'book')}</span>
-        <span>{countLabel(m.activity_days, 'day')}</span>
-        {#each device as figure (figure)}
-          <!-- An absence keeps its own voice, and now two of them: dimmed **and**
-               italic. Italics alone was the only thing separating a measured
-               `0 min` from `minutes not measured`, which is one weak signal
-               carrying the distinction this whole page exists for. -->
-          <span
-            class:absent={figure === NO_DEVICE_DATA || figure.includes(NOT_MEASURED)}
-            class:wide={device.length === 1}
-          >
-            {figure}
-          </span>
-        {/each}
-      </span>
+      <div class="said">
+        {#if done.length > 0}
+          <p class="what">
+            Finished {joinList(done.map((b) => titleLabel(b.title)))}.
+          </p>
+        {/if}
+        <p class="figures">
+          <!-- Distinct books **over the whole month**, which is exactly why this
+               cannot be folded out of days: the same two books opened on twelve
+               days are two books, not twenty-four. -->
+          <strong>{countLabel(m.books, 'book')}</strong> on
+          <strong>{countLabel(m.activity_days, 'day')}</strong>.
+        </p>
+        {#if device.length === 1}
+          <!-- The named absence, on its own line, in its own voice: dimmed
+               **and** italic, because italics alone was the only thing
+               separating a measured `0 min` from an unmeasured one — one weak
+               signal carrying the distinction this whole page exists for. -->
+          <p class="absent">
+            No device data — minutes and pages come from a reader you have connected.
+          </p>
+        {:else}
+          <p class="figures">
+            <!-- The separator is CSS and not a text node between the spans:
+                 Svelte trims the whitespace around markup, so ` · ` written
+                 inline arrives as `10 h 20 min·410 pages`. A `::before` cannot
+                 be trimmed. -->
+            {#each device as figure (figure)}<span class:absent={figure.includes(NOT_MEASURED)}
+                >{figure}</span
+              >{/each}
+          </p>
+        {/if}
+        {#if done.length > 0}
+          <!-- The jackets of what closed, small. Typography is suppressed at this
+               size inside `Jacket`'s plate by the size alone — a title rendered
+               at 40px wide is illegible and reads as a rendering fault, so what
+               is here is the artwork and the name is in the sentence above. -->
+          <div class="jackets">
+            {#each done as b (b.id)}
+              <a
+                class="art"
+                href={`/book/${b.id}`}
+                title={titleLabel(b.title)}
+                aria-label={titleLabel(b.title)}
+              >
+                <Jacket src={client().coverSrc(b)} accent={b.cover_accent} />
+              </a>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </li>
   {/each}
 </ul>
@@ -55,76 +125,72 @@
     list-style: none;
     padding: 0;
     margin: 0;
-    max-width: calc(var(--measure) + 6rem);
+    max-width: calc(var(--column) + 7rem);
   }
   li {
-    display: flex;
-    gap: 0.4rem 1rem;
-    flex-wrap: wrap;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 0.55rem 0;
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: 0 1rem;
+    padding: 0.8rem 0;
     border-bottom: 1px solid var(--line);
   }
   li:last-child {
     border-bottom: 0;
   }
-  .month {
-    font-size: 0.92rem;
-    /* Wide enough that a column of month names lines up, and allowed to shrink
-       rather than push the chips off the row. */
-    flex: 0 1 9rem;
-  }
-  /*
-   * A fixed template, so the figures line up down the page.
-   *
-   * A floor per chip was the first attempt and it did not work: *minutes not
-   * measured* is far wider than any number, so it blew out its own slot and
-   * shoved everything to its left, leaving April's columns 65px off January's.
-   * A page of monthly figures whose whole purpose is reading **down** a column
-   * has to have columns.
-   *
-   * Still not a `<table>`: at 320px a four-column table either scrolls sideways
-   * or crushes, and the template below reflows to two columns instead. What is
-   * borrowed from a table is the shared geometry, not the element.
-   */
-  .figures {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.3rem 1rem;
-    justify-items: end;
-    font-size: 0.82rem;
-    /* `--ink`, not `--ink-dim`. The month name was three times the contrast of
-       the figures beside it, which inverts the hierarchy of a page whose
-       subject *is* the figures — the stat block above already gets this right
-       with a dark number and a muted label. */
-    color: var(--ink);
-    flex: 1 1 14rem;
-  }
-  @media (min-width: 34rem) {
-    .figures {
-      /* The third column is sized for the widest thing that can land in it,
-         which is the named absence rather than any number. */
-      grid-template-columns: 4.5rem 4.5rem 9rem 6rem;
-      flex: 0 0 auto;
+  @media (max-width: 520px) {
+    li {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0.3rem 0;
     }
   }
-  /* One chip standing for both device figures takes both slots rather than
-     leaving a hole where the second would have been. */
-  .wide {
-    grid-column: span 2;
+  .month {
+    font-size: 0.92rem;
+    color: var(--ink-dim);
   }
-  /*
-   * Italic **and** dimmed — two signals, and the second one is not decoration.
-   *
-   * With the figures now at `--ink`, italics alone was the only thing between a
-   * measured `0 min` and `minutes not measured`, and the distinction those two
-   * carry is the reason this page exists. `--ink-dim` is also what fixes the
-   * contrast: `opacity: 0.85` over `--ink-dim` measured **3.88:1** on the light
-   * theme — under AA, on the one string that must be legible *as* an absence.
-   */
+  .said {
+    min-width: 0;
+  }
+  p {
+    margin: 0 0 0.2rem;
+    font-size: 0.9rem;
+    overflow-wrap: anywhere;
+  }
+  .what {
+    /* What was read is the sentence that matters; the figures under it are the
+       measurement of it. Ink against dim carries that without a second size. */
+    color: var(--ink);
+  }
+  .figures {
+    color: var(--ink-dim);
+    font-size: 0.85rem;
+  }
+  .figures span + span::before {
+    content: ' · ';
+    color: var(--ink-dim);
+    font-style: normal;
+  }
+  .figures strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
   .absent {
     font-style: italic;
     color: var(--ink-dim);
+    font-size: 0.85rem;
+  }
+  .jackets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  .art {
+    display: block;
+    width: 40px;
+    aspect-ratio: 2 / 3;
+    background: var(--bg-raised);
+    border-radius: 2px;
+    overflow: hidden;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent);
   }
 </style>

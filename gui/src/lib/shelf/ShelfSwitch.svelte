@@ -1,31 +1,33 @@
 <script lang="ts">
   /**
-   * Picks the shelf's arrangement.
+   * Picks how the wall is arranged.
    *
-   * It offers whatever is in [`LAYOUTS`] — it does not name them itself, so
-   * adding the spine shelf later adds a button here without editing this file.
+   * It offers whatever is in [`ARRANGEMENTS`] — it does not name them itself, so
+   * the registry stays the only file that knows what exists.
    *
    * A **preference**, not a task. It shows which arrangement is on and offers
-   * the others; it counts nothing, and there is nothing here to finish.
+   * the others; it counts nothing, and there is nothing here to finish. What it
+   * used to offer was a *layout* — covers or rows — and the difference is the
+   * point: the wall's shape is settled, and where its groups fall is not.
    */
-  import { LAYOUTS, type ShelfLayoutId } from './layouts';
+  import { ARRANGEMENTS, type ArrangementId } from './arrangements';
 
   let {
     current,
     onpick,
-  }: { current: ShelfLayoutId; onpick: (id: ShelfLayoutId) => void } = $props();
+  }: { current: ArrangementId; onpick: (id: ArrangementId) => void } = $props();
 </script>
 
 <!-- Callback prop, never `createEventDispatcher` (Svelte 5). -->
 <div class="switch" role="group" aria-label="Shelf arrangement">
-  {#each LAYOUTS as l (l.id)}
+  {#each ARRANGEMENTS as a (a.id)}
     <button
       type="button"
-      class:on={l.id === current}
-      aria-pressed={l.id === current}
-      onclick={() => onpick(l.id)}
+      class:on={a.id === current}
+      aria-pressed={a.id === current}
+      onclick={() => onpick(a.id)}
     >
-      {l.label}
+      {a.label}
     </button>
   {/each}
 </div>
@@ -55,10 +57,10 @@
   }
   /* State persists and is visible — the axiom's first clause, and the reason
      this is a segmented control rather than a cycling button with one label.
-     The label is `--accent-on` rather than `--bg`: white on brass measured
-     2.95:1 while the *unselected* segment measured 5.61:1, so the control whose
-     only job is showing which state is on had the on state as the harder one to
-     read. A dark label on the fill inverts that. */
+     The selected point is a **surface**, so it takes `--accent` with an
+     `--accent-on` label: white on brass measured 2.95:1 while the *unselected*
+     segment measured 5.61:1, which put the one thing this control exists to
+     show on the harder side to read. */
   button.on {
     color: var(--accent-on);
     background: var(--accent);

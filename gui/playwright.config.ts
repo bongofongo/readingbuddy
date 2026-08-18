@@ -31,9 +31,23 @@ export default defineConfig({
     // readable without reproducing it.
     trace: 'on-first-retry',
   },
+  /*
+   * The three widths are chosen to be **one per layout**, not one per device.
+   *
+   * The book page is three columns and folds twice: at ≤1180 the right rail —
+   * the inspector — unsticks and goes under the centre, and at ≤860 the left
+   * rail stops being a column too. So a suite that only ever rendered 1180 and
+   * 720 would have screenshotted the *folded* layout twice and the three-column
+   * desk the whole redesign is about **never**. That is what these were before,
+   * and it is the failure this file exists to avoid one layer down.
+   *
+   * 1440 is the width the layout is argued at; 1100 is the one fold; the phone
+   * is the other. A layout bug is a size bug, and each of these is a different
+   * size in the sense that matters.
+   */
   projects: [
-    { name: 'desktop', use: { ...devices['Desktop Safari'], viewport: { width: 1180, height: 820 } } },
-    { name: 'narrow', use: { ...devices['Desktop Safari'], viewport: { width: 720, height: 900 } } },
+    { name: 'desktop', use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } } },
+    { name: 'narrow', use: { ...devices['Desktop Safari'], viewport: { width: 1100, height: 900 } } },
     { name: 'phone', use: { ...devices['iPhone 14'] } },
   ],
   webServer: {

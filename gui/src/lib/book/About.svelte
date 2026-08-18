@@ -179,7 +179,9 @@
 </section>
 
 <style>
-  /* See `NotePane` — each band owns its spacing. */
+  /* Each band owns its own spacing, here and in its siblings — deliberately not
+     a `:global(.band)` rule from a route, which would be one screen's spacing
+     leaking onto another's. */
   section.band {
     margin-top: 2.2rem;
   }
@@ -191,7 +193,7 @@
     grid-template-columns: max-content minmax(0, 1fr);
     gap: 0.25rem 1.1rem;
     margin: 0;
-    max-width: var(--measure);
+    max-width: var(--column);
     font-size: 0.88rem;
   }
   dt {
@@ -211,12 +213,12 @@
     font-size: 0.8rem;
   }
   .blurb {
-    max-width: var(--measure);
+    max-width: var(--column);
     color: var(--ink-dim);
     margin: 1.1rem 0 0;
   }
   details {
-    max-width: var(--measure);
+    max-width: var(--column);
     margin-top: 1rem;
     border-top: 1px solid var(--line);
     padding-top: 0.6rem;

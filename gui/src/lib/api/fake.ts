@@ -46,6 +46,7 @@ import type {
   ReadingSortDto,
   ReadingYearsDto,
   SearchHitDto,
+  SearchSourceDto,
   TableOfContentsDto,
 } from './bindings';
 import type {
@@ -580,7 +581,7 @@ const NOTES: NoteDto[] = [
    * Note that every one of these carries a `reading_id`. `NoteScope::Reading` is
    * literally `WHERE reading_id = ?` with **no** fall-back to the book's
    * unanchored notes, so a note created without one appears on no card — which
-   * is a real property of a real vault and is why `NotePane`'s plain notes (1–3)
+   * is a real property of a real vault and is why the plain notes (1–3)
    * are left without one here.
    */
   // Titled by its **date**, not by "first read": a read ordinal is item 41's
@@ -1107,9 +1108,15 @@ export class FakeClient implements LibraryClient {
     );
   }
 
-  async listNotes(bookId: number | null): Promise<NoteDto[]> {
-    if (bookId === null) return [...this.#notes];
-    return this.#notes.filter((n) => n.book_id === bookId);
+  async listNotes(bookId: number | null, limit: number | null = null): Promise<NoteDto[]> {
+    const own = bookId === null ? [...this.#notes] : this.#notes.filter((n) => n.book_id === bookId);
+    // Newest first, and the cut is applied *after* the sort — which is the half
+    // of `list_notes` a caller can get wrong. The engine orders
+    // `created_at DESC, id DESC`; a null `created_at` sorts last here rather
+    // than as epoch zero, because the column is nullable and a note with no date
+    // is not a note from 1970.
+    own.sort((a, b) => (b.created_at ?? -Infinity) - (a.created_at ?? -Infinity) || b.id - a.id);
+    return limit === null ? own : own.slice(0, Math.max(0, limit));
   }
 
   async listReadings(bookId: number): Promise<ReadingDto[]> {
@@ -1536,7 +1543,12 @@ export class FakeClient implements LibraryClient {
    * takes from the two kinds by within-source position so a book with one note
    * and thirty passages does not show a wall of one kind.
    */
-  async searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]> {
+  async searchMarks(
+    query: string,
+    bookId: number | null,
+    limit: number,
+    source: SearchSourceDto | null = null,
+  ): Promise<SearchHitDto[]> {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     if (terms.length === 0 || limit <= 0) return [];
     const hit = (fields: (string | null)[]): string | null => {
@@ -1562,6 +1574,12 @@ export class FakeClient implements LibraryClient {
       }))
       .filter((x): x is { highlight: HighlightDto; snippet: string } => x.snippet !== null)
       .map(({ highlight, snippet }): SearchHitDto => ({ kind: 'highlight', highlight, snippet }));
+
+    // The narrowing is the engine's `source` argument, copied: it selects which
+    // index is read at all, so a scoped search spends its whole `limit` on the
+    // kind that was asked for rather than filtering a mixed list afterwards.
+    if (source === 'note') return notes.slice(0, limit);
+    if (source === 'highlight') return marks.slice(0, limit);
 
     const merged: SearchHitDto[] = [];
     for (let i = 0; i < Math.max(notes.length, marks.length); i++) {

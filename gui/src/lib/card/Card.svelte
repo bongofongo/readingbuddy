@@ -198,7 +198,7 @@
       <h3 class="band-title">What you left behind</h3>
       {#if notes.length > 0}
         <!-- One list, with the kind as a **left prefix** — the book view's own
-             arrangement (`NotePane`), rather than a trailing chip that fired for
+             arrangement (the book page's note list), rather than a trailing chip that fired for
              reviews and not for reflections and looked arbitrary. Two screens
              listing the same notes had grown two systems. -->
         <ul>
@@ -244,7 +244,7 @@
   }
   header {
     display: grid;
-    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-columns: 48px minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
   }
@@ -324,7 +324,7 @@
      * kind is a fixed gutter, so an **untyped** note's title begins at exactly
      * the x a typed note's title wraps to — and the fixture has one of each,
      * one under the other, rendering as a single note with a wrapped line. The
-     * gutter stays (it is `NotePane`'s arrangement and labelling every plain
+     * gutter stays (it is the note list's arrangement and labelling every plain
      * note would be a column of the same word); what changes is that a new row
      * is now visibly further down than a continuation of the one above.
      */

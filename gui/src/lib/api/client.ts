@@ -61,6 +61,7 @@ import type {
   Request,
   Response,
   SearchHitDto,
+  SearchSourceDto,
   TableOfContentsDto,
 } from './bindings';
 
@@ -156,7 +157,7 @@ export interface LibraryClient {
   currentlyReading(limit?: number): Promise<OpenReading[]>;
   getBook(id: number): Promise<StoredBook | null>;
   listHighlights(bookId: number): Promise<HighlightDto[]>;
-  listNotes(bookId: number | null): Promise<NoteDto[]>;
+  listNotes(bookId: number | null, limit?: number | null): Promise<NoteDto[]>;
   listReadings(bookId: number): Promise<ReadingDto[]>;
 
   // ---- one card, per reading (item 28) ------------------------------------
@@ -441,7 +442,12 @@ export interface LibraryClient {
    * through `$lib/book/snippet`, never as HTML, and do not assume it is a
    * substring of the row beside it.
    */
-  searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]>;
+  searchMarks(
+    query: string,
+    bookId: number | null,
+    limit: number,
+    source?: SearchSourceDto | null,
+  ): Promise<SearchHitDto[]>;
 
   // ---- citations ----------------------------------------------------------
 
@@ -643,11 +649,19 @@ export class TauriClient implements LibraryClient {
    * Scoping to a reading is item 28's — a card's notes are per read, and a
    * reread has two.
    */
-  async listNotes(bookId: number | null): Promise<NoteDto[]> {
+  /**
+   * `limit: null` is **every** note, which is what a book's own page wants.
+   *
+   * `/notes` passes a number instead, for its *Recently written* list — the
+   * engine orders `created_at DESC` and applies the cut below the seam, so the
+   * newest are the ones that arrive rather than the ones a client happened to
+   * slice off a full vault it had already put on the wire.
+   */
+  async listNotes(bookId: number | null, limit: number | null = null): Promise<NoteDto[]> {
     return expect(
       await this.#call({
         method: 'list_notes',
-        params: { book_id: bookId, reading_id: null, limit: null },
+        params: { book_id: bookId, reading_id: null, limit },
       }),
       'notes',
     ).value;
@@ -881,15 +895,26 @@ export class TauriClient implements LibraryClient {
   }
 
   /**
-   * `source: null` is **both**, stated rather than omitted: one ranked list is
-   * what this method is for, and narrowing to a kind here would be the caller
-   * deciding something the engine's merge already decided. See the interface.
+   * `source: null` is **both**, and it is the default because one ranked list is
+   * what this method is mostly for — narrowing to a kind is a thing the caller
+   * has to say rather than a thing it falls into.
+   *
+   * The parameter exists for `/notes`, whose chips are *All · Notes · Passages*.
+   * Those are the engine's own two sources, so the narrowing happens **below the
+   * seam** where the ranking and the `limit` are: a client-side filter over a
+   * ranked, limited list would silently return fewer rows than exist and call it
+   * an answer.
    */
-  async searchMarks(query: string, bookId: number | null, limit: number): Promise<SearchHitDto[]> {
+  async searchMarks(
+    query: string,
+    bookId: number | null,
+    limit: number,
+    source: SearchSourceDto | null = null,
+  ): Promise<SearchHitDto[]> {
     return expect(
       await this.#call({
         method: 'search_marks',
-        params: { query, source: null, book_id: bookId, limit },
+        params: { query, source, book_id: bookId, limit },
       }),
       'search_hits',
     ).value;

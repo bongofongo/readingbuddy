@@ -133,9 +133,12 @@ Smaller, and none of it blocking:
 
 Both are from the GUI wave and both still stand:
 
-- **The WebGL spine shelf is deferred as cosmetic, not abandoned.** The
-  arrangement is a seam (`gui/src/lib/shelf/layouts.ts`) and the spine shelf is a
-  third entry in it. Entry 26 has the argument.
+- **The WebGL spine shelf is deferred as cosmetic, not abandoned.** Entry 26 has
+  the argument. **The seam it plugs into moved** with the layout rework (entry
+  53): `gui/src/lib/shelf/layouts.ts` is gone — a layout used to own the whole
+  band, and what varies now is *a group's field*, which `Wall.svelte` draws. That
+  is a narrower contract and the one the ray tracer wants. What the switch offers
+  is an **arrangement** (`arrangements.ts`), which is a different axis.
 - **A number on the home surface may describe one book, never the collection.**
   Stated precisely in `gui-vision.md` and `gui/CLAUDE.md` after item 27's
   screenshot review found the contradiction.

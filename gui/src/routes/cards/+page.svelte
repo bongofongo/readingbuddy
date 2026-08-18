@@ -134,11 +134,12 @@
 
 <svelte:head><title>Cards — readingbuddy</title></svelte:head>
 
-<a class="back" href="/">← Library</a>
-
-<!-- "Cards", with no figure beside it. The count belongs to the filter and sits
-     with the control that sets it, not in the heading. -->
-<h1>Cards</h1>
+<!-- "Cards", with no figure beside it — the count belongs to the filter and sits
+     with the control that sets it, not in the heading. Not drawn, because the
+     shell's nav already says which place you are in and marks it `aria-current`;
+     the document still needs a name, and a screen reader user still needs to
+     arrive somewhere named. -->
+<h1 class="sr-only">Cards</h1>
 
 {#if failure}
   <!-- A failure redirects: say what was refused and name the thing that works.
@@ -212,18 +213,6 @@
 {/if}
 
 <style>
-  .back {
-    color: var(--ink-dim);
-    font-size: 0.85rem;
-    display: inline-block;
-    margin-bottom: 1.1rem;
-  }
-  h1 {
-    font-size: 1.05rem;
-    color: var(--ink-dim);
-    font-weight: 500;
-    margin-bottom: 1.4rem;
-  }
   /*
    * A wall, not a track.
    *
@@ -236,8 +225,8 @@
    */
   .wall {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(19rem, 100%), 1fr));
-    gap: 1.2rem;
+    grid-template-columns: repeat(auto-fill, minmax(min(258px, 100%), 1fr));
+    gap: 1.6rem;
     /*
      * **Stretched, not `align-items: start`.** The passage is one to four lines
      * and half the cards on a real wall have none at all, so the height spread
@@ -278,7 +267,7 @@
     cursor: default;
   }
   .note {
-    max-width: var(--measure);
+    max-width: var(--column);
     margin: 0 0 0.5rem;
   }
   /* The move out of an empty state, in the accent — it is the only link in the

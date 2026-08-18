@@ -1,7 +1,14 @@
 ---
 title: The GUI layout, redesigned — the shelf you look back on and the desk you work at
 date: 2026-08-08
-status: draft for review; not yet settled, nothing here belongs in `docs/decisions.md` until it is
+status: **built and settled.** What shipped is `docs/decisions.md` entry 53, and
+        where this file and that entry disagree the entry is right — it records
+        the divergences, of which the load-bearing ones are: put-down readings
+        could not be grouped by the year they were put down (the engine records
+        no such date), `/notes`' column emphasis is swapped, `Recent` was
+        dropped, and the chips are the engine's own sources rather than note
+        kinds. `docs/gui/design-applied.md` overrode this file in twenty-two
+        places and won every one of them.
 source: `docs/gui/gui-vision.md` for the product argument and the axiom this is
         held against; `docs/gui/spec-gui-17-28.md` for the engine underneath it.
         The clickable prototype is `docs/gui/layout-prototype.html` — open it in

@@ -174,7 +174,7 @@
      * you; keeping the two halves within reading distance of each other is what
      * makes it read as one.
      */
-    max-width: calc(var(--measure) + 12rem);
+    max-width: calc(var(--column) + 12rem);
     background: var(--bg-raised);
     border-radius: var(--radius);
     /* One accent edge. The moment is the only thing on the shelf that is about
@@ -192,7 +192,7 @@
   }
   .said {
     margin: 0;
-    max-width: var(--measure);
+    max-width: var(--column);
     /* Slightly larger than body copy — it is one sentence and it is the point
        of the band. Not a heading: it is prose, and headings name places. */
     font-size: 1.02rem;

@@ -19,6 +19,22 @@
    *
    * It draws no box of its own: the caller owns the aspect, the shadow and the
    * hover, because a tile in a grid and a hero on a page want different ones.
+   *
+   * ## Letterbox, never crop
+   *
+   * `object-fit: contain`, and it is one policy rather than a prop, because the
+   * argument does not vary by call site: a library is full of covers that are
+   * not 2:3 — trade paperbacks near 1:1.5, mass-market near 1:1.6, manga and art
+   * books well outside both — and **cropping cuts the printed title off the
+   * edges**. On a wall of 86px tiles that title is the item's only textual
+   * identifier, so cropping destroys the identifier to save a few pixels of
+   * ragged edge. The raggedness is the honest cost of a non-standard asset.
+   *
+   * The caller's fixed box is the other half of it: a reserved box is what stops
+   * a grid of covers reflowing as images of undeclared dimension arrive, which
+   * is the first listed cause of layout shift — and it is what makes the plate
+   * and the image occupy identical space, so nothing moves when one replaces the
+   * other.
    */
   import type { AccentDto } from '$lib/api/bindings';
   import { plateShades } from '$lib/accent';
@@ -51,7 +67,8 @@
   img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    /* See the header: letterbox, never crop. */
+    object-fit: contain;
     display: block;
   }
 

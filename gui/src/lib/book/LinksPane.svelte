@@ -66,7 +66,7 @@
     list-style: none;
     padding: 0;
     margin: 0;
-    max-width: var(--measure);
+    max-width: var(--column);
   }
   li {
     display: flex;

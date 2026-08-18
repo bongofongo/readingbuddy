@@ -3166,3 +3166,103 @@ because item 31 needed somewhere to put reading time.
       on those would be deleted within a wave — and it was verified by planting
       a violation and watching it go red. The word joined the rendered
       assertion as well, for the surfaces that do draw.
+
+53. **The GUI layout, rebuilt from the deep dive.** No engine change and no new
+    request — a rework of every screen against `docs/gui/layout-redesign.md`
+    (the proposal) and `docs/gui/design-applied.md` (the argument that overrides
+    it). Where the two disagreed the second won, and the five open questions the
+    first left are now closed. **Those two documents were drafts and are now
+    settled**; what follows is what shipped, and the divergences are the part
+    worth keeping.
+    - **The library got quieter and the book page got much bigger.** The two
+      halves of the brief — *opening the app should be calming* and *the single
+      book page is where the time goes* — are not the same room, so they are not
+      the same page. Nothing was added to the library to make it useful, because
+      being useful is not its job.
+    - **The wall is grouped by the year a reading closed**, at 86px tiles with
+      captions off. Past tense, no target, no digits: scrolling from this year
+      back is the *look back and feel you did something* the brief asked for,
+      delivered with no streak and no badge. The key is the **reading's finish
+      year** and never `BookSort::Year`, which is the publication year.
+    - **The arrangement switch is not axiom-neutral, and that was the finding
+      nobody had.** Under `Year`, books with no reading are one group at the
+      bottom of a long scroll; under `Author` or `Title` they *interleave* with
+      books you finished, which is the textbook backlog rendering arriving
+      without a label or a number changing. **Adjacency is the mechanism and
+      styling does not hold the line against it**, so those two arrangements are
+      arrangements of the reading life and a book with no reading is simply not
+      what they are arrangements *of*. `Recent` was dropped: recency of
+      finishing is what `Year` already shows, and recency of *adding* is the
+      backlog sort by name.
+    - **The engine cannot say when a book was put down, so the wall does not
+      pretend it can.** The proposal has put-down readings landing in the year
+      they were put down; `abandon_reading` sets the status and deliberately
+      leaves `finished_at` NULL — a put-down reading is still *open*, which is
+      also why `ReadingFilter::open` is not redundant with `status`. Rather than
+      invent a date from `last_modified`, the wall ends in four true groups:
+      *Still reading*, *Put down*, *Read, undated*, *No reading recorded*. Same
+      tiles, same size, no count on any of them. **A put-down date is an engine
+      item.**
+    - **"Reading now" is capped at four and ordered by the newest mark.** A
+      continue shelf is filled by starting and drained only by finishing, so its
+      steady state is a queue of things abandoned — and an uncapped one puts that
+      arithmetic on the highest-salience region of the home surface with no
+      number for a test to catch. Recency ordering drains it **without any act of
+      dismissal**; the cut is silent, because *and 3 others* would be a count of
+      what is left. The overflow is on the wall immediately below.
+    - **The book page is three columns, and they are two different arguments.**
+      The right rail is an *inspector* — the `Link to…` search that writes
+      `[[Title]]` at the cursor is an instrument acting on the editor, not
+      reference material beside it. The left rail is a *mode selector*, and its
+      note list is what keeps it from habituating into wallpaper. Four attended
+      regions is at the ceiling; the mitigation is that the right rail's contents
+      are conditional on the centre, so you attend the centre plus one rail.
+    - **The centre is independent of which note is open**, and that is what makes
+      citing work: `Cite` needs a note to cite *into* and a passage to cite
+      *from*, and only one of them can be the work surface. The note stays open
+      and marked in the rail while the passage list is shown.
+    - **The passage list is a composite widget.** The hover-revealed controls are
+      right — three buttons × forty passages is the *too much happening* the
+      brief objects to — but `opacity: 0` removes nothing from the tab order, so
+      the reveal alone would have shipped ~120 stops on invisible buttons. The
+      list is now one stop with arrow keys inside it and only the active row's
+      controls tabbable. It deliberately does **not** claim `role="listbox"`: a
+      role is a promise, and listbox commits to type-ahead, a selection model and
+      non-interactive children, none of which are true here.
+    - **`/notes` is new and is the page that keeps the vault honest.** Linking
+      sells relief from *where do I put this*, and that relief holds only while
+      you believe you will retrieve it. The split is `26rem` of results then the
+      prose measure — the reverse of the draft, which gave the prose column to
+      structured metadata and a 38–42 character measure to the prose. Its chips
+      are **All · Notes · Passages**, the engine's own two sources: note *kind*
+      is not on `SearchMarks`, and a client-side filter over a ranked, limited
+      list silently returns fewer rows than exist. Kind filtering is an engine
+      item.
+    - **Two contrast defects, measured rather than eyeballed.** The focus ring
+      used raw `--accent` in both themes and measured **2.78:1** on the light
+      background — under the 3:1 SC 1.4.11 requires, in a file that already
+      carried that number in a comment and had repaired it for *text* only. And
+      the dark theme was the one that needed repair: `--ink-dim` measured **Lc
+      46.1** there against **Lc 74.0** for the same token on light, because WCAG
+      2's formula is symmetric and overstates contrast at the dark end. Both
+      tiers were lifted to clear APCA's Lc 60 non-body floor, verified against
+      WCAG 2 afterwards, which is the order the practice prescribes.
+    - **`--measure` was renamed rather than kept.** `ch` is the advance of the
+      zero glyph, so `68ch` of a proportional face is ~85–90 real characters:
+      the token was asserting a character count it did not have. The value was
+      chosen by eye and looks right, so the value stayed and the name went —
+      `--column`, plus `--editor` in `ch` (where a monospace face makes `ch`
+      honest) and `--passages` in `rem`.
+    - **The accent stopped doing eight jobs.** The rule adopted: **the accent is
+      for state that is true right now and that you can act on** — selection,
+      focus, the current page, progress, the primary action. The book header's
+      state fragment and the reflection chip are descriptive and lost it.
+    - **The three test viewports were one per device and are now one per
+      layout.** They were 1180 and 720 — which screenshotted the *folded* book
+      page twice and the three-column desk never, on the wave whose whole subject
+      was the three-column desk. 1440, 1100 and a phone is one width per fold.
+    - **Two gaps accepted with their shapes visible.** The reading band's latest
+      mark is `listHighlights` + `listNotes` per open reading — every highlight
+      in a book fetched to draw one line — and there is no note rename, so the
+      editor's title is stated rather than offered. Both are recorded in the
+      files that pay for them rather than hidden behind a client-side aggregate.

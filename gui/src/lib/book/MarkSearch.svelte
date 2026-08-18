@@ -217,7 +217,7 @@
 <style>
   .search {
     margin-top: 1.6rem;
-    max-width: var(--measure);
+    max-width: var(--column);
   }
   label {
     display: block;

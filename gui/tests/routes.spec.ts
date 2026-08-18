@@ -53,6 +53,10 @@ const ROUTES = [
   // the year picker and the three orders above it. It is also the only screen
   // where a card with a read ordinal sits beside one without.
   { name: 'cards-wall', path: '/cards' },
+  // The vault as a place. Its first frame is *Recently written* plus an empty
+  // preview column, which is the state a reader lands on and the one the two
+  // panes' widths have to look right in.
+  { name: 'notes', path: '/notes' },
   { name: 'life', path: '/life' },
 ];
 
@@ -100,18 +104,55 @@ test('the shelf renders in the arrangement you pick, and remembers it', async ({
   await page.goto('/');
   await expect(page.locator('main')).not.toContainText('Reading the shelf…');
 
-  const list = page.getByRole('button', { name: 'List' });
-  await list.click();
-  await expect(list).toHaveAttribute('aria-pressed', 'true');
-  await expect(page).toHaveScreenshot('library-list.png', { fullPage: true });
+  // The wall opens grouped by the year a reading closed, which is the default
+  // and the one arrangement that shows a book with no reading at all.
+  await expect(page.getByRole('button', { name: 'Year' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('main')).toContainText('No reading recorded');
+
+  const byAuthor = page.getByRole('button', { name: 'Author' });
+  await byAuthor.click();
+  await expect(byAuthor).toHaveAttribute('aria-pressed', 'true');
+  // The finding this arrangement carries: a book with no reading has no answer
+  // to "whose work have I read", so it is not on the wall under Author — and
+  // its absence is what stops the wall becoming a mixed field of read and
+  // unread, which is the backlog rendering arriving with no label changing.
+  await expect(page.locator('main')).not.toContainText('No reading recorded');
+  await expect(page).toHaveScreenshot('library-by-author.png', { fullPage: true });
 
   // The preference survives the window closing, which is the only thing that
   // makes it a preference rather than a toggle.
   await page.reload();
   await expect(page.locator('main')).not.toContainText('Reading the shelf…');
-  await expect(page.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Author' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
 
   expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The band above the wall promotes four books and says nothing about the rest.
+ *
+ * A "continue reading" shelf is populated by starting and drained only by
+ * finishing, so its steady state is a queue of things abandoned — and an
+ * uncapped one puts that arithmetic on the highest-salience region of the home
+ * surface, with no number anywhere for a test to catch. This is the cap, and the
+ * silence around it, asserted.
+ */
+test('the reading band promotes four books and counts none of them', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('main')).not.toContainText('Reading the shelf…');
+
+  const band = page.locator('section').filter({ hasText: 'Reading now' }).first();
+  const previews = band.locator('article');
+  expect(await previews.count(), 'four is the cap, and it is silent').toBeLessThanOrEqual(4);
+
+  // No "and 3 others", no total, nothing counting the books it did not promote.
+  const text = await band.innerText();
+  for (const banned of [/\band \d+ (more|others)\b/i, /\b\d+ books?\b/i, /\bin progress\b/i]) {
+    expect(text, `"${banned}" would be a count of what was left out`).not.toMatch(banned);
+  }
 });
 
 /**
@@ -131,7 +172,10 @@ test('the library surface greets you with no numbers', async ({ page }) => {
   const chrome = await page.locator('header').innerText();
   expect(chrome).not.toMatch(/\d/);
 
-  const heading = await page.locator('main h1').innerText();
+  // `textContent`, not `innerText`: the library's heading is in the document for
+  // the outline and for a screen reader and is not drawn — the shell's nav is
+  // what says where you are — and `innerText` reads what is rendered.
+  const heading = (await page.locator('main h1').textContent()) ?? '';
   expect(heading, 'a count beside the heading is the framing decisions.md bans').not.toMatch(/\d/);
 
   // And none of the words that carry completion framing, wherever they appear.
@@ -181,7 +225,7 @@ test('an abandoned book is not styled as a failure', async ({ page }) => {
  * The row's accessible name carries its anchor, which is what tells the two
  * notes with *The Doorstop* in their titles apart without a test id.
  */
-test('a note opens in place, and its links replace the note', async ({ page }) => {
+test('a note opens on the work surface, with its links beside it', async ({ page }) => {
   const problems: string[] = [];
   page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
   page.on('pageerror', (e) => problems.push(e.message));
@@ -189,7 +233,10 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   await page.goto('/book/3');
   await expect(page.locator('main')).not.toContainText('Opening…');
 
-  await page.getByRole('button', { name: 'p. 212 On The Doorstop' }).click();
+  // The note list is the left rail and it is there while you are anywhere on
+  // this page — including while writing, which is when it used to disappear.
+  // `exact`, because the cite control on a passage quotes the note's title.
+  await page.getByRole('button', { name: 'On The Doorstop', exact: true }).click();
 
   // The body is the note's own markdown, not a rendering of it: the file in the
   // vault is the origin and Obsidian is the other thing editing it.
@@ -198,21 +245,14 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   // passes on an empty box and fails on a full one.
   await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveValue(/Two hundred pages/);
 
-  // Citing is the gesture the mouse makes available, and it needs a note to
-  // cite *into* — so the control exists now and did not before the click.
-  await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: /Cite into/ })).toHaveCount(2);
-  await expect(page).toHaveScreenshot('book-note-open.png', { fullPage: true });
+  // The save bar names the file. Naming it is the app saying it did not capture
+  // your writing — the vault is markdown on disk and this is where that shows.
+  await expect(page.locator('main')).toContainText('in your vault as');
 
-  // Cite a second passage. Round trip through the pane, not through the fake.
-  await page
-    .getByRole('button', { name: /Cite into/ })
-    .first()
-    .click();
-  await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(2);
-
-  await page.getByRole('button', { name: 'Links', exact: true }).click();
-  // Counted per direction, both past tense. Nothing counts a link not written.
+  // **The links are a region, not a depth.** They used to be behind a button
+  // that replaced the note; with a third column there is nothing to trade off,
+  // and a graph you can see while writing into it is a different tool from one
+  // you have to go and look at. Counted per direction, both past tense.
   await expect(page.locator('main')).toContainText('2 out · 1 in');
   // A wikilink naming a note nobody has written is kept as text, and says so.
   // It is a forward reference, and it resolves itself the day that note exists.
@@ -220,15 +260,72 @@ test('a note opens in place, and its links replace the note', async ({ page }) =
   // *no note*, not *no note yet* — item 52 cut the word that turns a note
   // nobody has written into a note somebody owes.
   await expect(page.locator('main')).toContainText('no note');
-  await expect(page).toHaveScreenshot('book-note-links.png', { fullPage: true });
 
-  // Nothing is a dead end, at any of the three depths: the way back is in the
-  // page rather than in a dialog that has to be dismissed.
-  await page.getByRole('button', { name: '‹ Note' }).click();
-  await page.getByRole('button', { name: '‹ Notes' }).click();
-  await expect(page.getByRole('button', { name: 'Write a note' })).toBeVisible();
+  await expect(page).toHaveScreenshot('book-note-open.png', { fullPage: true });
+
+  // **The note stays open while the passages are shown**, which is what makes
+  // citing possible at all: `Cite` needs a note to cite *into* and a passage to
+  // cite *from*, and only one of them can be the work surface. The rail keeps the
+  // note marked as current; the centre goes back to the list.
+  await page.getByRole('button', { name: 'Passages', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'On The Doorstop', exact: true }),
+  ).toHaveAttribute('aria-current', 'true');
+  await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /Cite into/ })).toHaveCount(2);
+  await page
+    .getByRole('button', { name: /Cite into/ })
+    .first()
+    .click();
+  await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(2);
+
+  // Nothing is a dead end and nothing is modal: every other destination is on
+  // screen while a note is open, so leaving one is a move rather than a
+  // dismissal — and going back to it is one click on a row that never left.
+  await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'On The Doorstop', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveCount(1);
 
   expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * The passage list is one tab stop, not one per control.
+ *
+ * `opacity: 0` does not remove anything from the tab order, so a hover-revealed
+ * control on forty passages would be a hundred and twenty stops on invisible
+ * buttons — SC 2.4.7 failing in substance. The fix is the list: it contributes
+ * one stop, arrow keys move within it, and only the active passage's own
+ * controls are tabbable. **Tab-stop count is the real ergonomic metric of a
+ * keyboard interface and almost nobody measures it**, so this measures it.
+ */
+test('the passage list is a composite widget, not a hundred tab stops', async ({ page }) => {
+  await page.goto('/book/3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  const passages = page.locator('.passages > li');
+  await expect(passages).toHaveCount(3);
+
+  // Exactly one row is in the document's tab sequence at a time.
+  await expect(page.locator('.passages > li[tabindex="0"]')).toHaveCount(1);
+  await expect(page.locator('.passages > li[tabindex="-1"]')).toHaveCount(2);
+
+  // And the controls on the rows that are *not* active are out of it too, which
+  // is the half that stops the hidden buttons being stops of their own.
+  const dormant = passages.nth(1).locator('button');
+  expect(await dormant.count(), 'the fixture must have a control to check').toBeGreaterThan(0);
+  for (const b of await dormant.all()) {
+    await expect(b).toHaveAttribute('tabindex', '-1');
+  }
+
+  // Arrow keys move between passages; the active row follows focus.
+  await passages.first().focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(passages.nth(1)).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(passages.nth(2)).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(passages.first()).toBeFocused();
 });
 
 /**
@@ -260,18 +357,12 @@ test('a search over one book answers with notes and passages together', async ({
   await expect(hits.filter({ hasText: 'Note' }).first()).toBeVisible();
   await expect(page).toHaveScreenshot('book-search.png', { fullPage: true });
 
-  // A passage hit takes the reader to the passage in the band below and marks
-  // it — it does not filter the band down to one row, which would throw away
+  // A passage hit takes the reader to the passage in the centre column and marks
+  // it — it does not filter the list down to one row, which would throw away
   // where the passage sits.
   await hits.filter({ hasText: 'Passage' }).first().click();
   await expect(page.locator('li.found')).toHaveCount(1);
-  await expect(page.locator('.band').filter({ hasText: 'Highlights' }).locator('li')).toHaveCount(
-    3,
-  );
-
-  // A note hit opens the pane that already exists, at its note depth.
-  await hits.filter({ hasText: 'Note' }).first().click();
-  await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveCount(1);
+  await expect(page.locator('.passages > li')).toHaveCount(3);
 
   // Nothing matched is a sentence, not a zero. No digit may appear in it.
   await box.fill('zzzznothing');
@@ -279,11 +370,19 @@ test('a search over one book answers with notes and passages together', async ({
   await expect(none).toContainText('Nothing here matches');
   expect(await none.innerText()).not.toMatch(/\d/);
 
-  // And clearing the box puts the page back rather than leaving the last
-  // answer under an empty question.
+  // And clearing the box puts the page back rather than leaving the last answer
+  // under an empty question.
   await box.fill('');
   await expect(page.locator('.search li')).toHaveCount(0);
   await expect(page.locator('.search p')).toHaveCount(0);
+
+  // A note hit opens the note on the work surface. It is asserted last because
+  // the box lives in the right rail, and the right rail is an **inspector**:
+  // with a note open it shows that note's connections instead, which is the
+  // whole reason the column can be permanent.
+  await box.fill('the');
+  await hits.filter({ hasText: 'Note' }).first().click();
+  await expect(page.getByRole('textbox', { name: 'Note body' })).toHaveCount(1);
 
   expect(problems, 'the console must be clean').toEqual([]);
 });
@@ -366,7 +465,8 @@ test('a quoted passage says so, and that is not the cite toggle', async ({ page 
   // it is not the toggle wearing a different colour.
   await expect(page.getByRole('button', { name: /Cite into|Cited in/ })).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'p. 212 On The Doorstop' }).click();
+  await page.getByRole('button', { name: 'On The Doorstop', exact: true }).click();
+  await page.getByRole('button', { name: 'Passages', exact: true }).click();
   await expect(page.getByRole('button', { name: /Cited in/ })).toHaveCount(1);
   // Both facts on one passage at once — the case where they could be mistaken
   // for one thing…
@@ -581,9 +681,13 @@ test('a moment is shown once and is never counted', async ({ page }) => {
   //
   // A browser reload would rebuild `FakeClient` and prove nothing here; the real
   // client's acknowledgement is a row in SQLite, and layer 2 has no database.
+  // Through the shell's nav, which is now the way back from every place — the
+  // per-page "← Library" was a second door to the same room and the pages that
+  // are *in* the nav do not need one. A leaf still has its own: the book page
+  // is not a place the nav names.
   await page.getByRole('link', { name: 'Reading life' }).click();
   await expect(page.locator('main')).not.toContainText('Reading the log…');
-  await page.getByRole('link', { name: '← Library' }).click();
+  await page.getByRole('link', { name: 'Library' }).click();
   await expect(page.locator('main')).not.toContainText('Reading the shelf…');
 
   await expect(page.locator('section').filter({ hasText: 'You finished' })).toHaveCount(0);
@@ -794,13 +898,15 @@ test('the reading life renders an absence as an absence', async ({ page }) => {
 
   // November 2024 has activity days and no device behind them.
   const nov = page.locator('li').filter({ hasText: 'November 2024' });
-  await expect(nov).toContainText('no device data');
+  // Case-insensitive: the same absence is a chip in one place and the first
+  // words of a sentence in another, and which it is is phrasing.
+  await expect(nov).toContainText(/no device data/i);
   await expect(nov).not.toContainText('0 min');
 
   // February 2025 measured a very little, which is not the same thing at all.
   const feb = page.locator('li').filter({ hasText: 'February 2025' });
   await expect(feb).toContainText('0 min');
-  await expect(feb).not.toContainText('no device data');
+  await expect(feb).not.toContainText(/no device data/i);
 
   // April 2025 has pages and no minutes: the two are independent `Option`s.
   const apr = page.locator('li').filter({ hasText: 'April 2025' });

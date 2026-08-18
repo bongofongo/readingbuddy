@@ -159,7 +159,7 @@
     font-weight: 500;
     margin-bottom: 1.4rem;
     overflow-wrap: anywhere;
-    max-width: var(--measure);
+    max-width: var(--column);
   }
   /*
    * Beside each other where there is room, stacked where there is not.
@@ -183,14 +183,14 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
     gap: 1.2rem;
-    max-width: calc(var(--measure) + 23rem);
+    max-width: calc(var(--column) + 23rem);
     align-items: start;
   }
   .wall > :global(article) {
     max-width: 34rem;
   }
   .note {
-    max-width: var(--measure);
+    max-width: var(--column);
     margin: 0 0 0.5rem;
   }
   .note a {

@@ -5,6 +5,7 @@ import {
   authorsLabel,
   cardWordsLabel,
   countLabel,
+  joinList,
   dayLabel,
   deviceFigures,
   fieldLabel,
@@ -452,5 +453,20 @@ describe('the marks a passage carries', () => {
     // `list_flashcards_for_book` orders by `created_at ASC`; re-sorting here
     // would be this file deciding something, which is exactly what it is not for.
     expect(cardWordsLabel(['zebra', 'apple'])).toBe('You kept “zebra” and “apple”');
+  });
+});
+
+describe('a list, in a sentence', () => {
+  it('joins with and, and with commas before it', () => {
+    expect(joinList(['A'])).toBe('A');
+    expect(joinList(['A', 'B'])).toBe('A and B');
+    expect(joinList(['A', 'B', 'C'])).toBe('A, B and C');
+  });
+
+  it('is empty for nothing, so the sentence around it can be omitted', () => {
+    // A month in which nothing was finished says **nothing about finishing** —
+    // "Finished nothing." is a deficit sentence wearing a fact, and it is the
+    // exact failure mode this app is built to avoid.
+    expect(joinList([])).toBe('');
   });
 });

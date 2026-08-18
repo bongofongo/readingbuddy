@@ -1,64 +1,88 @@
 <script lang="ts">
+  /**
+   * One book on the wall: a jacket, in a fixed box, that is a link.
+   *
+   * ## A tile is its jacket
+   *
+   * The caption is **off** by default and the tile carries its identity in the
+   * accessible name and the `title` attribute instead. That is not a shortcut —
+   * it is what the group it is in is for. The year groups are books you have
+   * read, where re-finding one is *recognition*: you already hold a template of
+   * the cover, and a caption there buys a text row on every tile, doubles the
+   * vertical space and turns a wall of images into a mixed image-and-text
+   * surface that scans worse than either pure form.
+   *
+   * `caption` is therefore a property of the **group**, never a setting. See
+   * `shelf/arrangements.ts` for where it is decided and why "No reading
+   * recorded" is the one group that turns it on.
+   *
+   * ## The box is fixed, and the jacket letterboxes inside it
+   *
+   * This used to reserve `cover_aspect` — the measured shape of the stored file
+   * — so the grid did not reflow as images arrived. The box is now a flat 2:3
+   * for every tile, and the difference matters at 86px: with a per-book aspect
+   * the tops and bottoms of a row do not line up, and a row of jackets whose
+   * baselines disagree does not read as a shelf. The measurement has not stopped
+   * being useful — it is what `Jacket` needs to know it is letterboxing rather
+   * than failing — but the *field* wants one rhythm.
+   */
   import { client, type StoredBook } from '$lib/api/client';
   import Jacket from '$lib/components/Jacket.svelte';
-  import { authorsLabel, progressLabel, readingStateLabel, titleLabel } from '$lib/phrasing';
+  import { authorsLabel, titleLabel } from '$lib/phrasing';
 
-  let { book, proud = false }: { book: StoredBook; proud?: boolean } = $props();
+  let { book, caption = false }: { book: StoredBook; caption?: boolean } = $props();
 
   const cover = $derived(client().coverSrc(book));
-  const state = $derived(readingStateLabel(book.reading_state));
   // `authors_display`, never `authors`: the flip out of `Surname, Given` is the
   // engine's (item 17) and the record keeps the origin's own spelling.
   const authors = $derived(authorsLabel(book.authors_display));
-  // Beside the state, not instead of it — "Reading · 35%" — and absent for a
-  // book with nothing recorded. Every number in it was computed by the engine.
-  const progress = $derived(progressLabel(book.progress));
   const title = $derived(titleLabel(book.title));
   // The absence itself, not the word for it — the word is `titleLabel`'s and is
   // deliberately indistinguishable from a real title once produced.
   const untitled = $derived(!book.title || book.title.trim() === '');
 
   /**
-   * The box the tile reserves, before any image loads.
+   * What the tile is called when there is no caption under it.
    *
-   * `cover_aspect` is a **measurement of the stored file** (item 20b), so using
-   * it is what stops the grid reflowing when jackets arrive at their true
-   * shapes. It is `null` for a book with no cover *and* for a library predating
-   * the back-fill — `rb covers`, which `make dev-db` runs — so the fallback is
-   * not the exotic path and has to look deliberate. 2:3 is the trade paperback
-   * the rest of the shelf mostly is.
+   * The author is in it, not only the title: a wall is where two editions of one
+   * book and two books of one title sit side by side, and a screen reader moving
+   * across a row of jackets gets exactly what a sighted reader gets from the
+   * artwork. It is also the `title` attribute, which is the hover the mouse has.
    */
-  const aspect = $derived(book.cover_aspect ?? 2 / 3);
+  const name = $derived(authors ? `${title} — ${authors}` : title);
 </script>
 
-<a class="tile" class:proud href={`/book/${book.id}`}>
-  <div class="art" style:aspect-ratio={aspect}>
+<a class="tile" class:captioned={caption} href={`/book/${book.id}`} title={name} aria-label={name}>
+  <div class="art">
     <!-- The three states — bytes, a plate in this jacket's own colour, the hatch
-         — moved into `Jacket` when the book view needed the same three (item
-         27). One composition, so a coverless book cannot come to look like two
+         — live in `Jacket`, so a coverless book cannot come to look like two
          different books on two screens of one app. -->
     <Jacket src={cover} accent={book.cover_accent} />
   </div>
-  <div class="meta">
-    <span class="title" class:untitled>{title}</span>
-    {#if authors}
-      <span class="authors">{authors}</span>
-    {/if}
-    {#if state || progress}
-      <span class="state">{[state, progress].filter(Boolean).join(' · ')}</span>
-    {/if}
-  </div>
+  {#if caption}
+    <!-- `aria-hidden`, because the link already carries this text as its name:
+         without it a screen reader reads the title twice, once as the link and
+         once as the caption inside it. -->
+    <div class="meta" aria-hidden="true">
+      <span class="title" class:untitled>{title}</span>
+      {#if authors}
+        <span class="authors">{authors}</span>
+      {/if}
+    </div>
+  {/if}
 </a>
 
 <style>
   .tile {
     display: flex;
     flex-direction: column;
-    gap: 0.55rem;
+    gap: 0.45rem;
     min-width: 0;
   }
   .art {
     position: relative;
+    /* Reserved before any image exists, and identical for every tile. */
+    aspect-ratio: 2 / 3;
     background: var(--bg-raised);
     border-radius: var(--radius);
     overflow: hidden;
@@ -84,16 +108,15 @@
   .meta {
     display: flex;
     flex-direction: column;
-    gap: 0.12rem;
+    gap: 0.1rem;
     min-width: 0;
   }
   .title {
-    font-size: 0.86rem;
+    font-size: 0.76rem;
     line-height: 1.3;
-    /* Two lines' worth of box whether or not the title fills it, so the author
-       and state lines share a baseline across a row. Without it a row of five
-       tiles had its captions on two different baselines depending on which
-       titles happened to wrap. */
+    /* Two lines' worth of box whether or not the title fills it, so the authors
+       under a row of tiles share a baseline. Without it a row has its captions
+       on two different baselines depending on which titles happened to wrap. */
     min-height: 2.6em;
     /* Two lines then ellipsis. The dev library holds a 220-character title on
        purpose, and `-webkit-line-clamp` is the only thing that clips by rendered
@@ -105,33 +128,18 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .authors,
-  .state {
-    font-size: 0.76rem;
+  .authors {
+    font-size: 0.7rem;
     color: var(--ink-dim);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .state {
-    color: var(--accent-text);
   }
   /* "Untitled" is our word for an absence, not a book actually called that.
      Dimmed so it does not read as a title in the same voice as its neighbours. */
   .title.untitled {
     color: var(--ink-dim);
     font-style: italic;
-  }
-
-  /* Pulled proud: the same tile, larger, for the strip above the shelf.
-     Size alone does **not** carry the hierarchy — at 13% larger the strip read
-     as a second grid, and at one width it rendered smaller than the shelf. The
-     ground and the shelf rule in `+page.svelte` are what make it a different
-     kind of object; this only gives the title the room that ground implies. */
-  .proud .title {
-    font-size: 0.95rem;
-    -webkit-line-clamp: 3;
-    line-clamp: 3;
   }
 
   @media (prefers-reduced-motion: reduce) {

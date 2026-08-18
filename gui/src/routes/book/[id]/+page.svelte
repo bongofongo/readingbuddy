@@ -1,29 +1,52 @@
 <script lang="ts">
   /**
-   * The book, and the notes — item 27.
+   * The book — the desk, and where the time goes, so it gets the room.
    *
-   * The TUI's `ui/book.rs` is the reference for what belongs here and most of
-   * its choices are right; what a page has that a pane did not is room, so the
-   * four sections that were tabs there are **bands** here, all present at once.
-   * The one thing that is not always present is a note's body, and that
-   * replaces the note list *in place* rather than opening over it.
+   * ## Three columns, and they are justified by two different arguments
    *
-   * ## The hero, and why it is a different file from the shelf's
+   * They are not one move, and separating them says which one is fragile.
    *
-   * `cover_path`, not `cover_shelf_path`. The shelf tier exists because a grid
-   * of sixty tiles must not fetch sixty full-size jackets; this screen shows one
-   * book and wants the file nobody downscaled. Two client methods rather than a
-   * flag, so the call site says which it meant.
+   * **The right rail is an inspector.** Canvas-plus-inspector inverts
+   * master–detail: the centre is the work and the rails are instruments. The
+   * *Link to…* search that writes `[[Title]]` at the cursor is not reference
+   * material beside the editor — it is a tool acting *on* it, and writing a note
+   * and finding the note to link to is one operation. That is what justifies
+   * permanent screen area.
+   *
+   * **The left rail is a mode selector**, which is a different argument: it turns
+   * an unbounded set of destinations into a fixed column and stages the density,
+   * so at rest you see one work surface rather than all of them. The centre
+   * swaps; the rail is how you swap it. Nothing is modal, because every other
+   * destination is on screen while you are in any one of them.
+   *
+   * The count against it is real and is recorded rather than argued away: header
+   * plus two rails plus centre is four regions, and attended regions run to about
+   * three plus periphery. The mitigation is that the right rail's contents are
+   * conditional on the centre, so at any moment you are attending the centre plus
+   * *one* rail — and the obvious next move, demoting the left rail while a note is
+   * open, needs a visual change this phase does not take.
+   *
+   * ## The header lost 130px and the state lost its colour
+   *
+   * The hero jacket goes from 150px to 52px and the stacked identity becomes one
+   * metadata line. This is epicenter design and the argument is old: **chrome is
+   * cheap to add and expensive to remove, because a region that exists acquires
+   * occupants** — every feature with no natural home gets filed there. A book
+   * page is not a product page; you already know which book you opened.
+   *
+   * The state and progress fragment is `--ink-dim` rather than `--accent-text`,
+   * which is one of eight jobs the accent was doing at once. The rule adopted
+   * instead: **the accent is for state that is true right now and that you can
+   * act on** — selection, focus, the current page, progress, the primary action.
+   * Everything descriptive is carried by ink, dim, position and weight.
    *
    * ## Eight calls for one book, recorded rather than worked around
    *
-   * There is no request that returns a book with its children. Item 17 already
-   * named this — *"the detail screen makes four calls for one book, which for a
-   * list is eight hundred"* — and item 18 answered the list half with
-   * `BookSummaries`. The detail half is still open, and inventing a client-side
-   * aggregate would hide it from the next audit. So the calls are made in
-   * parallel and grouped by what their failure means: the **book** failing is
-   * this page failing, and the ornaments failing are not.
+   * There is no request that returns a book with its children. Item 17 named it
+   * and item 18 answered the list half; the detail half is still open, and a
+   * client-side aggregate would hide it from the next audit. So the calls are
+   * made in parallel and grouped by what their failure *means*: the **book**
+   * failing is this page failing, and the ornaments failing are not.
    */
   import { page } from '$app/state';
   import type {
@@ -38,12 +61,16 @@
   } from '$lib/api/bindings';
   import { client, type StoredBook } from '$lib/api/client';
   import About from '$lib/book/About.svelte';
-  import MarkSearch from '$lib/book/MarkSearch.svelte';
-  import NotePane from '$lib/book/NotePane.svelte';
+  import Composer from '$lib/book/Composer.svelte';
+  import Connections from '$lib/book/Connections.svelte';
+  import { type Centre, inspects } from '$lib/book/desk';
+  import Editor from '$lib/book/Editor.svelte';
   import Passages from '$lib/book/Passages.svelte';
+  import Rail from '$lib/book/Rail.svelte';
   import Jacket from '$lib/components/Jacket.svelte';
   import {
     authorsLabel,
+    countLabel,
     dayLabel,
     progressDetail,
     readingSpan,
@@ -54,18 +81,22 @@
   const id = $derived(Number(page.params.id));
 
   /**
-   * The note a link asked for, or `null`.
+   * What the URL asked for, read once on arrival.
    *
-   * A plain function rather than a `$derived`: it seeds state once, on arrival.
-   * Deriving it would re-open the note every time the query string was still
-   * there — which is after every save — and a reader who closed the pane would
-   * find it open again.
+   * Plain functions rather than `$derived`: they seed state. Deriving would
+   * re-open the note every time the query string was still there — which is
+   * after every save — and a reader who moved to the passages would find the
+   * note open again.
    */
   function paramNote(): number | null {
     const raw = page.url.searchParams.get('note');
     if (raw === null) return null;
     const n = Number(raw);
     return Number.isInteger(n) && n > 0 ? n : null;
+  }
+
+  function paramCompose(): boolean {
+    return page.url.searchParams.get('compose') !== null;
   }
 
   let book = $state<StoredBook | null>(null);
@@ -83,25 +114,36 @@
    *
    * The list is refetched after every write, so holding the `NoteDto` itself
    * would pin a stale object — a note whose title changed would keep the old
-   * one, and a deleted note would stay open over nothing. An id resolved
-   * against the current list makes both of those correct for free.
+   * one, and a deleted note would stay open over nothing. An id resolved against
+   * the current list makes both of those correct for free.
    *
    * **Seeded from `?note=`** (item 28), which is how a moment ends *in* the
-   * reflection rather than beside it. The moment opens the note through
-   * `OpenReflection` and lands here naming it, so the ceremony reuses this
-   * pane instead of growing a second editor that would have to be fixed twice.
-   * It is a URL rather than a store because it survives a reload — the axiom's
-   * *state persists and is visible* — and because a link is the one way to
-   * arrive somewhere that cannot be a dead end.
-   *
-   * An id naming a note this book does not have resolves to `null` and the pane
-   * shows the list, which is the same answer a deleted note already gets.
+   * reflection rather than beside it. It is a URL rather than a store because it
+   * survives a reload — the axiom's *state persists and is visible* — and
+   * because a link is the one way to arrive somewhere that cannot be a dead end.
    */
   let openNoteId = $state<number | null>(paramNote());
+
+  /**
+   * What the centre is showing — and it is **independent of which note is open**.
+   *
+   * That independence is the whole of how citing works. `Cite` needs a note to
+   * cite *into* and a passage to cite *from*, and only one of them can be the
+   * work surface; if opening a note closed the passage list, the gesture the
+   * mouse makes available would be unreachable. So the note stays open — named
+   * in the rail, marked as current, cited into from the passage list — while the
+   * centre shows whatever you last asked it for.
+   *
+   * Seeded from the URL for the same reason `?note=` is a URL: a moment ends
+   * *in* the reflection, and the state survives a reload.
+   */
+  let centre = $state<Centre>(paramNote() !== null ? 'note' : paramCompose() ? 'compose' : 'passages');
+
   const openNote = $derived(notes.find((n) => n.id === openNoteId) ?? null);
 
   /** Which passages the open note cites. **One** call, for the one open note. */
   let cited = $state<number[]>([]);
+  const citedPassages = $derived(highlights.filter((h) => cited.includes(h.id)));
 
   /**
    * Which passages **each** of this book's notes cites — one call for the whole
@@ -114,14 +156,6 @@
    * every cite, which is the N+1 arriving through the back door.
    */
   let noteCitations = $state<NoteCitationsDto[]>([]);
-  /**
-   * The mark: passages some note quotes.
-   *
-   * Set membership over the reply, which is what `NoteCitationsDto` says it is
-   * for in as many words — *"a book's passage list wanting to mark the ones
-   * already quoted somewhere"*. Not a derivation the engine is owed: no rule is
-   * being invented, the union of ids is the ids.
-   */
   const quoted = $derived(new Set(noteCitations.flatMap((c) => c.highlight_ids)));
 
   /** Every card captured from this book, so a passage can show what it gave up. */
@@ -132,24 +166,44 @@
    *
    * It stays marked after the jump rather than flashing and clearing: the axiom
    * asks that state persist and be visible, and a reader who scrolls away and
-   * back has to be able to find the passage they were sent to. The next hit
-   * moves it; nothing else does.
+   * back has to be able to find the passage they were sent to.
    */
   let found = $state<number | null>(null);
 
   /**
-   * Take the reader to a passage in the band below.
+   * How the right rail writes into the editor, or `null` when none is open.
    *
-   * The scroll is done here, from the click, rather than in an effect on the
-   * prop — the same hit clicked twice sets the same id, and an effect would not
-   * run the second time, which is exactly the moment a reader is asking to be
-   * taken back. `listHighlights` is unlimited and the search is scoped to this
-   * book, so the element is always one this page drew; the optional chain is
-   * for the frame before it has.
+   * The editor hands this out while it is mounted and takes it back when it is
+   * not, so the *Link to…* search cannot write into a box that has gone — and
+   * the rail never touches a DOM node it does not own.
+   */
+  let insert = $state<((text: string) => void) | null>(null);
+
+  /**
+   * Take the reader to a passage in the centre column.
+   *
+   * The scroll is done from the click rather than in an effect on a prop — the
+   * same hit clicked twice sets the same id, and an effect would not run the
+   * second time, which is exactly the moment a reader is asking to be taken
+   * back. The passages have to be the centre for there to be anything to scroll
+   * to, so this says so rather than scrolling into a column that is not there.
    */
   function showPassage(highlightId: number) {
     found = highlightId;
-    document.getElementById(`passage-${highlightId}`)?.scrollIntoView({ block: 'center' });
+    centre = 'passages';
+    // After the centre has swapped, since the element may not exist until then.
+    queueMicrotask(() =>
+      document.getElementById(`passage-${highlightId}`)?.scrollIntoView({ block: 'center' }),
+    );
+  }
+
+  function show(next: Centre) {
+    centre = next;
+  }
+
+  function openNoteById(next: number) {
+    openNoteId = next;
+    centre = 'note';
   }
 
   $effect(() => {
@@ -169,12 +223,10 @@
         api.listNotes(which),
       ]);
       [readings, highlights, notes] = [rs, hs, ns];
-      // The reference material. A library that loaded must not be replaced by
-      // an error thrown by the ornament beneath it — item 26 made that call for
-      // the reading strip and it is the same call. The two marks on the
-      // passages band are ornaments by the same test: a book with its
-      // highlights on screen and no ticks on them is a lesser page, not a
-      // broken one.
+      // The reference material. A book that loaded must not be replaced by an
+      // error thrown by an ornament beneath it — the two marks on the passages
+      // are ornaments by that test: a book with its highlights on screen and no
+      // ticks on them is a lesser page, not a broken one.
       reloadCitations(ns).catch(() => (noteCitations = []));
       reloadCards(which).catch(() => (flashcards = []));
       api.bookTags(which).then(
@@ -222,15 +274,70 @@
   const hero = $derived(book ? client().heroSrc(book) : null);
   // Not `state`: a top-level `const state` in a rune file shadows the `$state`
   // rune for svelte-check, which reports it as two dozen errors on the *other*
-  // lines. `BookTile` gets away with the name because it declares no `$state`.
+  // lines.
   const stateWord = $derived(book ? readingStateLabel(book.reading_state) : null);
   const progressWord = $derived(book ? progressDetail(book.progress) : null);
 
+  /**
+   * The one metadata line under the title.
+   *
+   * Everything the stacked identity block used to say, in the order a
+   * bibliographic record says it and then the state you are in. `filter(Boolean)`
+   * rather than a chain of `{#if}`s, so an absent publisher or an unmeasured
+   * length simply is not there — no empty separator, no *unknown*.
+   */
+  const line = $derived(
+    !book
+      ? []
+      : [
+          authorsLabel(book.authors_display),
+          book.publish_year === null ? null : String(book.publish_year),
+          book.page_count === null || book.page_count === 0
+            ? null
+            : countLabel(book.page_count, 'page'),
+          stateWord,
+          progressWord,
+        ].filter((x): x is string => Boolean(x)),
+  );
+
+  /**
+   * The reads, as lines for the right rail's readout.
+   *
+   * Past tense, always: when you read it and how far you got. A reread gets a
+   * line per reading rather than a badge saying it is a reread, and the progress
+   * on each is **that** reading's — putting today's page under a read that closed
+   * in January is what `Progress::of_book` warns about.
+   */
+  const readLines = $derived(
+    readings.map((r) =>
+      [
+        readingSpan(r) ?? dayLabel(r.created_at),
+        readingStateLabel(r.status),
+        progressDetail(r.progress),
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    ),
+  );
+
   async function reloadNotes() {
     notes = await client().listNotes(id);
-    // Deleting a note takes its citations with it, so the mark is refreshed
-    // with the list rather than left claiming a quote nothing makes any more.
+    // Deleting a note takes its citations with it, so the mark is refreshed with
+    // the list rather than left claiming a quote nothing makes any more.
     await reloadCitations(notes);
+  }
+
+  /** Open **or mint** — one call, and the engine decides which reading it hangs off. */
+  async function anchored(kind: 'reflection' | 'review') {
+    try {
+      const api = client();
+      const created =
+        kind === 'reflection' ? await api.openReflection(id) : await api.openReview(id);
+      await reloadNotes();
+      openNoteById(created.id);
+    } catch (e) {
+      failure = e instanceof Error ? e.message : String(e);
+    }
   }
 
   async function toggleCite(highlightId: number, on: boolean) {
@@ -242,9 +349,9 @@
     const now = (await api.citationsFor(note.id)).map((h) => h.id);
     cited = now;
     // The open note's row of the batch, corrected from the reply already in
-    // hand. The mark must move with the toggle — a passage just cited is
-    // quoted — and re-asking `citationsForNotes` on every click would be paying
-    // for the whole page of notes to learn one note's answer.
+    // hand. The mark must move with the toggle — a passage just cited is quoted
+    // — and re-asking `citationsForNotes` on every click would be paying for the
+    // whole page of notes to learn one note's answer.
     const row = { note_id: note.id, highlight_ids: now };
     noteCitations = noteCitations.some((c) => c.note_id === note.id)
       ? noteCitations.map((c) => (c.note_id === note.id ? row : c))
@@ -255,10 +362,10 @@
    * Capture a word off a passage (item 49).
    *
    * The list is re-asked rather than patched from what was sent, and `false` is
-   * exactly why: `CreateFlashcard` answers a bool, and on a repeat the card
-   * that exists may carry a different passage and a different context than the
-   * one just offered. Synthesizing one here would draw a card the database does
-   * not have.
+   * exactly why: `CreateFlashcard` answers a bool, and on a repeat the card that
+   * exists may carry a different passage and a different context than the one
+   * just offered. Synthesizing one here would draw a card the database does not
+   * have.
    */
   async function capture(highlightId: number, word: string, context: string): Promise<boolean> {
     const created = await client().createFlashcard({
@@ -295,108 +402,112 @@
     It may have been folded into another by a merge — <code>rb book list</code> shows what is there now.
   </p>
 {:else if book}
-  <article>
+  <header class="ident">
     <div class="art">
-      <!-- The hero shot, and the same three states the shelf tile has: bytes, a
-           plate in this jacket's own colour, or the hatch. One composition, in
-           `Jacket`, so a coverless book cannot look like two different books. -->
+      <!-- The same three states the wall's tile has: bytes, a plate in this
+           jacket's own colour, or the hatch. One composition, in `Jacket`, so a
+           coverless book cannot look like two different books. -->
       <Jacket src={hero} accent={book.cover_accent} />
     </div>
-
-    <div class="identity">
+    <div class="who">
       <!-- Dimmed and italic for exactly `BookTile`'s reason: *Untitled* is our
-           word for an absence, not a book that is called that, and styling it
-           like a real title on one screen while the shelf marks it on another
-           is one absence with two voices. The absence is `book.title`; the word
-           is `titleLabel`'s and is deliberately indistinguishable once made. -->
+           word for an absence, not a book that is called that. -->
       <h1 class:untitled={!book.title || book.title.trim() === ''}>{titleLabel(book.title)}</h1>
-      {#if authorsLabel(book.authors_display)}
-        <!-- `authors_display`: the engine read the comma, this joins. -->
-        <p class="by">{authorsLabel(book.authors_display)}</p>
-      {/if}
-      {#if stateWord || progressWord}
-        <p class="state">{[stateWord, progressWord].filter(Boolean).join(' · ')}</p>
+      {#if line.length > 0}
+        <p class="line">{line.join(' · ')}</p>
       {/if}
     </div>
-  </article>
+  </header>
 
-  <!--
-    Two columns, and the split is by *whose* they are rather than by size: what
-    you wrote is the page, and what is known about the book is the margin. At
-    one column the same order still reads top to bottom, which is why the
-    reference half is last in the markup.
-  -->
-  <div class="columns">
-    <div class="yours">
-      <!-- Above both bands, because what it searches is drawn by both of them
-           (item 50). It belongs to the column, not to a heading. -->
-      <MarkSearch
-        bookId={id}
-        marks={notes.length + highlights.length}
-        onopennote={(n) => (openNoteId = n)}
-        onshowpassage={showPassage}
-      />
+  <div class="desk">
+    <Rail
+      bookId={id}
+      {notes}
+      {centre}
+      {openNoteId}
+      onshow={show}
+      onopen={openNoteById}
+      oncompose={() => (centre = 'compose')}
+      onanchored={anchored}
+    />
 
-      <NotePane
-        bookId={id}
-        {notes}
-        open={openNote}
-        onopen={(n) => (openNoteId = n)}
-        onreload={reloadNotes}
-      />
-
-      <Passages
-        {highlights}
-        open={openNote}
-        {cited}
-        {quoted}
-        {found}
-        cards={flashcards}
-        oncite={toggleCite}
-        onannotate={annotate}
-        oncapture={capture}
-      />
-    </div>
-
-    <aside class="reference">
-      {#if readings.length > 0}
-        <section class="band">
-          <!-- Past tense, always: when you read it, and how far you got. A
-               reread gets a row per reading rather than a badge saying it is a
-               reread, and the progress on each row is **that** reading's —
-               putting the current page under a read that closed in January is
-               what `Progress::of_book` warns about. -->
-          <div class="band-head">
-            <h2 class="band-title">{readings.length > 1 ? 'Reads' : 'Read'}</h2>
-            <!-- The card, which is per reading — so a reread has two and they
-                 sit side by side. Its own route rather than a band here: a card
-                 carries a passage, and a passage wants a measure this column
-                 does not have. -->
-            <a class="cards" href={`/book/${id}/cards`}>Cards →</a>
-          </div>
+    <div class="work">
+      {#if centre === 'note' && openNote}
+        <Editor
+          note={openNote}
+          onreload={reloadNotes}
+          onclose={() => {
+            openNoteId = null;
+            centre = 'passages';
+          }}
+          onready={(fn) => (insert = fn)}
+        />
+      {:else if centre === 'compose'}
+        <Composer
+          bookId={id}
+          oncancel={() => (centre = 'passages')}
+          onwritten={async (noteId) => {
+            await reloadNotes();
+            openNoteById(noteId);
+          }}
+        />
+      {:else if centre === 'reads'}
+        {#if readings.length === 0}
+          <p class="note">No reading recorded for this book.</p>
+          <p class="hint">
+            <code>rb read start</code> opens one, and <code>rb ko pull</code> takes what a connected reader
+            already knows.
+          </p>
+        {:else}
           <ul class="readings">
             {#each readings as r (r.id)}
               <li>
                 <span class="when">{readingSpan(r) ?? dayLabel(r.created_at)}</span>
                 <span class="row2">
                   {#if readingStateLabel(r.status)}
-                    <span class="how">{readingStateLabel(r.status)}</span>
+                    <span>{readingStateLabel(r.status)}</span>
                   {/if}
                   {#if progressDetail(r.progress)}
-                    <span class="far">{progressDetail(r.progress)}</span>
+                    <span>{progressDetail(r.progress)}</span>
                   {/if}
-                  <!-- The writer's name, shown rather than branched on — it
-                       grows by one per importer and nothing decides on it. -->
+                  <!-- The writer's name, shown rather than branched on — it grows
+                       by one per importer and nothing decides on it. -->
                   <span class="src">{r.source}</span>
                 </span>
               </li>
             {/each}
           </ul>
-        </section>
+        {/if}
+      {:else if centre === 'about'}
+        <About {book} {tags} {files} {provenance} />
+      {:else}
+        <Passages
+          {highlights}
+          open={openNote}
+          {cited}
+          {quoted}
+          {found}
+          cards={flashcards}
+          oncite={toggleCite}
+          onannotate={annotate}
+          oncapture={capture}
+        />
       {/if}
+    </div>
 
-      <About {book} {tags} {files} {provenance} />
-    </aside>
+    <!-- The rail follows the **centre**, not the open note: with the passage list
+         on the work surface it answers about the book, even though a note is
+         still open to cite into. That is what `inspects` names. -->
+    <Connections
+      bookId={id}
+      note={inspects(centre) === 'note' ? openNote : null}
+      cited={citedPassages}
+      marks={notes.length + highlights.length}
+      reads={readLines}
+      oninsert={insert}
+      onopennote={openNoteById}
+      onshowpassage={showPassage}
+    />
   </div>
 {:else}
   <p class="hint">Opening…</p>
@@ -407,43 +518,31 @@
     color: var(--ink-dim);
     font-size: 0.85rem;
     display: inline-block;
-    margin-bottom: 1.1rem;
+    margin-bottom: 0.9rem;
   }
-  article {
+  .ident {
     display: grid;
-    grid-template-columns: 150px minmax(0, 1fr);
-    gap: 1.6rem;
-    align-items: end;
-    padding-bottom: 1.4rem;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 1rem;
+    align-items: center;
+    padding-bottom: 1rem;
     border-bottom: 1px solid var(--line);
-  }
-  @media (max-width: 620px) {
-    article {
-      grid-template-columns: minmax(0, 1fr);
-      align-items: start;
-    }
-    .art {
-      max-width: 130px;
-    }
+    margin-bottom: 1.6rem;
   }
   .art {
     aspect-ratio: 2 / 3;
     background: var(--bg-raised);
     border-radius: var(--radius);
     overflow: hidden;
-    /* The tile's own lift, so a jacket sits on the page rather than being
-       printed on it. Same shadow as `BookTile`'s `.art`, without the hover:
-       nothing here is a link. */
     box-shadow:
       inset 0 0 0 1px color-mix(in srgb, var(--ink) 12%, transparent),
-      0 1px 2px rgb(0 0 0 / 0.2),
-      0 6px 14px -8px rgb(0 0 0 / 0.45);
+      0 1px 2px rgb(0 0 0 / 0.2);
   }
-  .identity {
+  .who {
     min-width: 0;
   }
   h1 {
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     line-height: 1.25;
     /* The whole title wraps here rather than clipping. This is the one place it
        has room, which is what makes clipping it on a tile acceptable. */
@@ -453,78 +552,90 @@
     color: var(--ink-dim);
     font-style: italic;
   }
-  .by {
+  .line {
+    margin: 0.2rem 0 0;
+    font-size: 0.82rem;
     color: var(--ink-dim);
-    margin: 0.35rem 0 0;
-  }
-  .state {
-    color: var(--accent-text);
-    font-size: 0.85rem;
-    margin: 0.5rem 0 0;
+    overflow-wrap: anywhere;
   }
 
   /*
-   * What you wrote, and what is known about the book.
+   * Where you navigate, what you are doing, what it connects to.
    *
-   * One column until there is genuinely room for two. `--measure` caps prose at
-   * 68ch, so below ~1024px a sidebar would be taking width the passages need
-   * rather than width nobody was using — which is the version of this that
-   * reads as a squeezed page instead of a laid-out one.
+   * Both rails are sticky and the centre is capped, so the work surface keeps a
+   * measure while the window keeps growing. `align-items: start` rather than
+   * `stretch`, because a sticky child of a stretched grid item has nothing to
+   * stick within.
    */
-  .columns {
+  .desk {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0 3rem;
+    grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail-r);
+    gap: 0 2.6rem;
+    align-items: start;
   }
-  @media (min-width: 1024px) {
-    .columns {
-      grid-template-columns: minmax(0, var(--measure)) minmax(0, 20rem);
-      align-items: start;
-    }
-    /* The hero's rule stops where the columns stop. A divider that overshoots
-       the content it divides reads as a layout bug rather than as a decision. */
-    article,
-    .columns {
-      max-width: calc(var(--measure) + 23rem);
-    }
-    /* The reference column starts level with the first band beside it rather
-       than a band's margin lower. */
-    .reference {
-      margin-top: 0;
-    }
+  .desk > :global(.rail),
+  .desk > :global(.rrail) {
+    position: sticky;
+    top: 1.5rem;
+    /* A rail longer than the window has to be able to reach its own bottom. */
+    max-height: calc(100vh - 3rem);
+    overflow-y: auto;
   }
-  .yours,
-  .reference {
+  .work {
     min-width: 0;
   }
 
-  /* Each band owns its own top margin, here and in the three components — and
-     deliberately **not** as a `:global(.band)` rule from this file, which would
-     be one screen's spacing leaking onto the shelf. */
-  section.band {
-    margin-top: 2.2rem;
+  /*
+   * Two breakpoints, and they drop in this order: context before navigation.
+   *
+   * At ≤1180 the right rail unsticks and folds under the centre — an inspector
+   * is what a narrow window can least afford, and it is the one region whose
+   * contents are conditional anyway. The left rail stays, because it is how you
+   * get anywhere on this page.
+   *
+   * At ≤860 the left rail stacks above the centre. **`grid-column` must be reset
+   * to `auto` here**: the 1180 rule puts the folded rail in column 2, and
+   * leaving that in place at one column conjures an implicit second track — the
+   * "one column" layout then silently renders as two. That was a real bug in the
+   * prototype, found by screenshotting at 800px.
+   */
+  @media (max-width: 1180px) {
+    .desk {
+      grid-template-columns: var(--rail) minmax(0, 1fr);
+      gap: 0 2rem;
+    }
+    .desk > :global(.rrail) {
+      grid-column: 2;
+      position: static;
+      max-height: none;
+      margin-top: 2.4rem;
+      padding-top: 1.4rem;
+      border-top: 1px solid var(--line);
+    }
+  }
+  @media (max-width: 860px) {
+    .desk {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .desk > :global(.rail) {
+      position: static;
+      max-height: none;
+      margin-bottom: 2rem;
+    }
+    .desk > :global(.rrail) {
+      grid-column: auto;
+    }
   }
 
-  .band-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 0.3rem;
-  }
-  .cards {
-    font-size: 0.8rem;
-    color: var(--accent-text);
-    flex: none;
-  }
   ul.readings {
     list-style: none;
     padding: 0;
     margin: 0;
-    font-size: 0.85rem;
+    max-width: var(--column);
+    font-size: 0.9rem;
   }
   ul.readings li {
-    padding: 0.35rem 0;
+    padding: 0.5rem 0;
     border-bottom: 1px solid var(--line);
   }
   ul.readings li:last-child {
@@ -536,15 +647,11 @@
     flex-wrap: wrap;
     color: var(--ink-dim);
   }
-  .how {
-    color: var(--accent-text);
-  }
-  .far,
   .src {
     color: var(--ink-dim);
   }
   .note {
-    max-width: var(--measure);
+    max-width: var(--column);
     margin: 0 0 0.5rem;
   }
 </style>

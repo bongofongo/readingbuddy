@@ -39,30 +39,78 @@
   --bg-raised: #1d1c25;
   --line: #2e2c38;
   --ink: #e8e4dc;
-  --ink-dim: #9b96a5;
+  /*
+   * The dim tier, and it carries more than its name suggests: `.band-title`,
+   * `.hint`, every author line, every progress detail, the *no note* marker on
+   * a dangling link. All of it small text, which is where APCA asks for **more**
+   * contrast rather than less.
+   *
+   * `#9b96a5` measured **Lc 46.1** here against **Lc 74.0** for the same token
+   * on the light theme — one theme's secondary text two tiers below the
+   * other's. `#b8b3c2` is **Lc 61.7** on `--bg` and **Lc 60.7** on
+   * `--bg-raised`, clearing APCA's Lc 60 non-body floor on both grounds it is
+   * ever drawn on, at 9.02:1.
+   *
+   * Not lifted to the Lc 75 *body* floor, and that is deliberate: this is an
+   * evening reading tool, Lc 75 on this ground is bright enough to be harsh at
+   * night, and the tier carries non-body content. The asymmetry between the two
+   * themes is what was wrong, not the absolute.
+   */
+  --ink-dim: #b8b3c2;
 
   /*
    * The accent as *text*, which is not the same value as the accent as a
    * surface — and is this frontend's to decide.
    *
    * `--accent` is brass, `theme.rs`'s, and stays exactly what that file says.
-   * But brass was chosen against a terminal's background, and on this app's
-   * light theme `#c48b3f` on `#faf8f4` measures 2.78:1 — under the 4.5:1 body
-   * text needs. Every state label on the shelf is that colour.
+   * But brass was chosen against a terminal's background, and a renderer owes
+   * its own legibility against its own background — the same argument
+   * `src/lib/accent.ts` makes for a jacket's border.
    *
-   * So the *rendering* of the accent is bounded here, for the same reason
-   * `src/lib/accent.ts` bounds a jacket's: a renderer owes its own legibility
-   * against its own background, and neither the palette nor the measurement is
-   * the thing being changed. On the dark theme brass already clears it and the
-   * two are the same value.
+   * **Both themes are now lit, and the dark one was the theme that needed it.**
+   * This file used to say brass "already clears it" on dark and set the two to
+   * the same value. Under WCAG 2 that is true (6.25:1). Under APCA it is
+   * backwards: `#c48b3f` on `#14131a` is **Lc 45.2**, while the *repaired*
+   * light value is **Lc 72.6** — sixty per cent more perceptual contrast on the
+   * theme that was declared fine. WCAG 2's formula is symmetric and cannot tell
+   * light-on-dark from dark-on-light, which is exactly the case it overstates.
+   * `#dcab66` measures **Lc 60.8 / 8.84:1** on `--bg`: over APCA's non-body
+   * floor, and comfortably over WCAG's, which is the order Roselli prescribes —
+   * rank with APCA, then verify against the normative standard.
    */
-  --accent-text: #c48b3f;
+  --accent-text: #dcab66;
   /* A label on top of an accent fill. Dark, because the fill is mid-luma. */
   --accent-on: #1a1206;
 
   --radius: 3px;
   --gap: 0.75rem;
-  --measure: 68ch;
+
+  /*
+   * The four widths, and the one thing they are careful about.
+   *
+   * **`ch` is the advance width of the zero glyph**, which in a proportional
+   * face runs 20–30% wider than the average character — so `68ch` of this
+   * body font is roughly 85–90 real characters, not 68. The old name for this
+   * token was `--measure`, and a *measure* is a character count; the value was
+   * chosen by eye and looks right, so the value stayed and the name went.
+   * `--column` claims only what it is: the width of an ordinary column here.
+   *
+   * `--editor` is the one place `ch` is honest, because a monospace face gives
+   * every glyph the same advance — so 76ch there is exactly 76 characters, and
+   * under the 80-character cap SC 1.4.8 sets. `--passages` is in `rem` for the
+   * opposite reason: the passage list is proportional and a `ch` there would be
+   * the same token meaning two different quantities two states apart.
+   */
+  --column: 68ch;
+  --editor: 76ch;
+  --passages: 44rem;
+
+  /* The two rails on the book page, named so the breakpoints below read as a
+     decision rather than as magic numbers. */
+  --rail: 15rem;
+  --rail-r: 19rem;
+  /* The window the app lays itself out in, centred. */
+  --shell: 1400px;
 
   color-scheme: dark;
 }
@@ -78,7 +126,9 @@
     --ink: #21202a;
     --ink-dim: #6a6577;
     /* Brass darkened until it clears 4.5:1 on this background. Same hue —
-       it is the same accent, lit for a page instead of for a terminal. */
+       it is the same accent, lit for a page instead of for a terminal.
+       5.09:1 and Lc 72.6, which is the tier the dark theme was raised to
+       match rather than the tier it was left below. */
     --accent-text: #8f6114;
     color-scheme: light;
   }
@@ -104,6 +154,24 @@ body {
   font-synthesis: none;
 }
 
+/*
+ * Halation, compensated in the one way that costs nothing.
+ *
+ * On a dark ground a light stroke blooms — scattered light in the eye plus the
+ * visual system's edge response — so identical type looks heavier and tighter
+ * light-on-dark than dark-on-light, and counters close up. The craft answer is
+ * a little tracking. The other half of the compensation (the variable-font
+ * `GRAD` axis, which changes stroke weight without changing advance widths) is
+ * not taken: this app's stack is `ui-sans-serif, system-ui`, whose axis support
+ * varies by platform, and `font-synthesis: none` above means a face without the
+ * axis gets nothing rather than a guess.
+ */
+@media (prefers-color-scheme: dark) {
+  body {
+    letter-spacing: 0.006em;
+  }
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -117,12 +185,29 @@ h3 {
   margin: 0;
 }
 
-/* Focus is visible everywhere. Not a preference — a webview with no visible
+/*
+ * Focus is visible everywhere. Not a preference — a webview with no visible
  * focus ring is unusable by keyboard, and this app is meant to live beside a
- * terminal. */
+ * terminal. The focus indicator is to a keyboard user what the cursor is to a
+ * mouse user.
+ *
+ * **`--accent-text`, not `--accent`, and that was a conformance defect.** Raw
+ * brass is `#c48b3f` in *both* themes — only `--accent-text` was ever
+ * overridden — so on the light background the ring measured **2.78:1**, under
+ * the 3:1 SC 1.4.11 requires of a non-text indicator, and 2.95:1 against
+ * `--bg-raised`. This file already carried the 2.78 figure in a comment, and
+ * repaired it for text while leaving it on the ring.
+ *
+ * **Two tones, on purpose.** `outline` survives Windows High Contrast Mode and
+ * `box-shadow` is forced to `none` there, so the pair degrades to the half that
+ * still works for the users likeliest to need it. The inner ring is the page's
+ * own ground, which is what keeps the outline legible over a jacket or an
+ * accent fill rather than only over `--bg`.
+ */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--accent-text);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--bg);
   border-radius: var(--radius);
 }
 
@@ -148,12 +233,37 @@ h3 {
  * that fills it. Never an apology, and never a count of what is undone.
  */
 .hint {
-  max-width: var(--measure);
+  max-width: var(--column);
   color: var(--ink-dim);
   font-size: 0.88rem;
   /* Sized for the block it usually is, rather than inheriting a paragraph's
      1em gap — these sit tight under the thing they explain. */
   margin: 0 0 0.5rem;
+}
+
+/*
+ * A heading the page does not need to draw.
+ *
+ * The library's name is in the wordmark and in the nav, so a visible page title
+ * would be the app saying where you are twice on the surface whose whole brief
+ * is calm. The document still needs one — an outline with no `h1` is a document
+ * with no name, and a screen reader user arrives at a page of unlabelled
+ * sections.
+ *
+ * The clip-rect idiom rather than `display: none` or `visibility: hidden`, both
+ * of which take the element out of the accessibility tree along with the layout,
+ * which would defeat the point.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /*
