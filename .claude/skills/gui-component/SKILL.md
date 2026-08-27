@@ -70,10 +70,9 @@ what you have left.**
 
 - **Component logic** → Vitest + `@testing-library/svelte`, with a fake client
   injected. Milliseconds, no Tauri. This is where you write tests.
-- **How it looks** → a Playwright screenshot, reviewed by the
-  `screenshot-reviewer` agent. Do not describe what you intended; render it and
-  look.
-- **Never** reach for `make e2e` here. That is a seam check, not a feature test.
+- **How it looks** → run the app and look at it. There is no automated visual
+  gate (the Playwright suite was removed — see `docs/gui/testing.md`), so this
+  is a human step. Do not describe what you intended; render it and look.
 
 Render at a narrow, a normal and a wide width. The terminal sibling's
 `every_screen_draws_at_every_size` exists because the layout bug is always at an

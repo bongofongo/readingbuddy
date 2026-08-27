@@ -10,14 +10,14 @@
  *
  * ## Why this is a source scan and not another route assertion
  *
- * `tests/routes.spec.ts` already forbids the completion words in a rendered
- * body, and that assertion **could not have caught any of these**. Six of the
- * seven lived in *empty states*, and `fake.ts` is deliberately a library with
- * books, notes, highlights and months in it — so the markup that says them is
- * never on screen for the suite to read. A guard that can only fire on a branch
- * the fixture never takes is the guard this repo keeps writing down as worse
- * than none, and the `yet` in the routes spec is kept for the surfaces that
- * *do* render rather than as the check.
+The route suite that once forbade the completion words in a rendered
+ * body **could not have caught any of these**, which is why this scan exists and
+ * why it outlived that suite. Six of the seven lived in *empty states*, and
+ * `fake.ts` is deliberately a library with books, notes, highlights and months in
+ * it — so the markup that says them was never on screen for a renderer to read. A
+ * guard that can only fire on a branch the fixture never takes is the guard this
+ * repo keeps writing down as worse than none. Scanning the source has no such
+ * blind spot, and it is now the only check of this rule there is.
  *
  * The scan is over **markup only**: the `<script>` and `<style>` blocks and the
  * HTML comments come out first, because a comment saying *no "yet" here* is the

@@ -87,8 +87,8 @@ If you are starting a GUI item, say which of 26–28 are already in flight.
 One PR per thread. Green CI. Nothing auto-merges.
 
 - Engine work → the `cargo-tester` agent before you call it done.
-- Frontend work → the `web-checker` agent, then `screenshot-reviewer` for
-  anything that draws.
+- Frontend work → the `web-checker` agent. Anything that draws also wants a
+  human look at the running app; there is no agent that sees pixels any more.
 - A new GUI feature → the `api-surface-auditor` agent **first**, so a missing
   request becomes an engine item rather than a workaround.
 

@@ -91,7 +91,7 @@ jobs:
       - run: make ts-check
 
   frontend:
-    name: svelte-check + eslint + vitest + routes
+    name: svelte-check + eslint + vitest
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -114,21 +114,6 @@ jobs:
       # divergence.
       - run: make web-check
 
-      # Layer 2. Playwright's WebKit, because WKWebView is what the app ships
-      # inside on macOS, so WebKit's bugs are ours — and because `tauri-driver`
-      # cannot run on macOS at all, which is why the visual gate lives in a
-      # browser rather than in the real binary. See docs/gui/testing.md.
-      - run: pnpm exec playwright install --with-deps webkit
-        working-directory: gui
-      - run: make routes
-
-      # A failing shot is only diagnosable if you can see it.
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: gui/playwright-report
-          retention-days: 7
 
   test:
     name: tests — ${{ matrix.scope }} (${{ matrix.os }})

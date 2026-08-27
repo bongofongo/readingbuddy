@@ -43,9 +43,10 @@ often enough that a green typecheck over a broken bundle is a real outcome.
 
 ## What NOT to run
 
-- **`pnpm exec playwright test` / `make shots` / `make e2e`** — those need
-  browsers and a dev server, take minutes, and belong to the
-  `screenshot-reviewer` agent and to `make e2e`. Never run them here.
+- **Anything that starts a browser or a dev server.** There is no browser suite
+  in this repo any more — the Playwright/WebKit gate was removed on 2026-08-27
+  (see `docs/gui/testing.md`). If you find a `make routes` / `make shots` /
+  `make e2e` in an old doc, it does not exist; do not try to run it.
 - **`pnpm update`, `pnpm add`, `pnpm install`** — anything that writes
   `pnpm-lock.yaml`. A lockfile change is a decision, and it must never be a side
   effect of running checks.

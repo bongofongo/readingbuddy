@@ -12,8 +12,7 @@
  * engine reads. This is the *frontend's*: the same hostile shapes, as plain data,
  * with no database and no Rust. Two fixtures is a real cost and it is paid on
  * purpose — layer 2 has to run in a bare browser with no IPC, so it cannot reach
- * the database one, and a `make shots` that needed a built binary would be the
- * minute-scale loop `testing.md` argues against.
+ * the database one — vitest runs in node with no IPC and no engine at all.
  *
  * The cost is that they can diverge. So the shapes here are named after the
  * entries in `corpus/generated/devdb/manifest.json` and each carries the same

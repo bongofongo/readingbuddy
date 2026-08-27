@@ -48,8 +48,6 @@ gui/src/routes/(shell)/       the app with its header: +page (library), book/[id
                               book/[id]/cards, cards, notes, life, devices
 gui/src/routes/reading/       the app without one — reading mode (item 54)
 gui/src/lib/reading/          its panels and its one-panel-at-a-time rule
-gui/tests/routes.spec.ts      layer 2: every route, three viewports, WebKit
-gui/tests/shots/              committed PNGs — a reviewable artifact
 gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
 ```
 
@@ -156,8 +154,7 @@ one place in the repo where that failure would have been invisible.
 `LibraryClient` is one interface with two implementations, and `client()` picks
 by whether `window.__TAURI_INTERNALS__` exists.
 
-- **layer 1** (vitest) and **layer 2** (Playwright, dev server, no IPC) get
-  `FakeClient`, whose books are the hostile set: a null title, a 220-character
+- **layer 1** (vitest) gets `FakeClient`, whose books are the hostile set: a null title, a 220-character
   one, RTL, CJK, no author, `page_count` of zero, an abandoned reading, a reread.
   Those are the inputs *on purpose* — a suite rendering twenty ordinary books
   passes on the day the long title breaks the grid.
@@ -171,9 +168,8 @@ by whether `window.__TAURI_INTERNALS__` exists.
 **Two fixtures, one purpose, and one declaration over both** (item 38).
 `corpus gen-devdb` builds the app's fixture (real SQLite, real engine, real
 covers); `fake.ts` is the frontend's (plain data, no IPC, **no cover bytes**).
-Layer 2 runs in a bare browser and cannot reach the first, and a `make shots`
-needing a built binary would be the minute-scale loop `testing.md` argues
-against — so two fixtures is a cost paid on purpose and is not going away.
+Vitest runs in node with no IPC and cannot reach the first, so two fixtures is a
+cost paid on purpose and is not going away.
 
 What has gone away is the silent drift. `crates/corpus/edge-cases.json` declares
 the hostile set once and **both** fixtures are asserted against it — from Rust in
@@ -508,11 +504,12 @@ third spelling — `crates/cli`'s `ko.rs` was already the second.
 **A refusal removes the control rather than disabling it.** A disabled button is
 a dead end wearing a tooltip. A reader we will not write to gets a sentence
 naming the file and the move; the install verb is *absent from the markup*,
-which is a claim about what is not there and therefore a Playwright assertion.
+which is a claim about what is not there, and so a claim a reader of the markup
+can check.
 
 **Counts are allowed and three shapes of them are not.** A figure about **one
 reader's own contents** has `/life`'s permission: a page you chose to open, past
-tense. Forbidden and asserted in `tests/routes.spec.ts` — a number in the nav,
+tense. Forbidden, and now a review rule rather than an assertion — a number in the nav,
 the completion vocabulary in the body, and any total *across* readers. Zero
 renders as nothing at all: a zero where a figure goes is a scoreboard reading
 zero.
@@ -571,8 +568,8 @@ sharpens it to one testable sentence:
 
 > **The app tells you what you did. It never tells you what you have left.**
 
-Binding, and two of these are now **asserted** in `tests/routes.spec.ts` rather
-than left to review:
+Binding. Two of these used to be asserted by the Playwright suite; with that
+suite gone they are review rules again — hold them anyway:
 
 - **No aggregate number on a home surface.** Ever. Counts live on a page the
   user chose to open — **`/life` is that page**, and everything on it is past
@@ -599,7 +596,8 @@ than left to review:
   The library screen's failure state names `READINGBUDDY_DATA_DIR` and
   `make dev-db`.
 
-The `screenshot-reviewer` agent covers the rest — the part no assertion reaches.
+The rest is review: run the app and look at it. There is no agent and no suite
+that sees the pixels any more.
 
 ## Working here
 
@@ -608,12 +606,10 @@ The `screenshot-reviewer` agent covers the rest — the part no assertion reache
 | a library to render | `make dev-db`, then `READINGBUDDY_DATA_DIR=$PWD/dev-data pnpm tauri dev` |
 | checks | `make web-check`, or the **`web-checker`** agent |
 | regenerate types | `make ts` (and `make ts-check` is the gate) |
-| does it still render | `make routes` — fails on a diff, at 1440 / 1100 / phone: **one width per fold**, not one per device |
-| how it looks | `make shots`, then the **`screenshot-reviewer`** agent — render it, do not describe what you intended |
+| how it looks | run it (`pnpm tauri dev`) and **look** — there is no automated visual gate |
 | can the API serve this | the **`api-surface-auditor`** agent, *before* building |
 | a new component | the **`gui-component`** skill |
 | a new numbered item | the **`new-wave-item`** skill |
-| E2E | `make e2e` — pre-PR only, never the inner loop |
 
 **The data dir must be absolute.** `cover_path` is stored as
 `images_dir.join(name)`, so a relative root yields a relative `cover_path` and a
@@ -634,8 +630,10 @@ over a pre-`0014` library, never "no cover" — the back-fill is `rb covers`, an
 `make dev-db` runs it, so a dev library arrives measured), and `cover_accent` is the jacket's border colour as channels — what
 a placeholder gets instead of grey.
 
-`tauri-driver` does **not** run on macOS (no WKWebView driver exists). That is
-why the visual gate is Playwright's **WebKit** — the engine WKWebView is built on
-— and not a stand-in for an E2E suite that could exist. E2E is a Linux CI job, or
-`tauri-plugin-wdio-webdriver` locally. See
-[`../docs/gui/testing.md`](../docs/gui/testing.md).
+`tauri-driver` does **not** run on macOS (no WKWebView driver exists), which is
+why there has never been an E2E suite here. There is no browser suite either any
+more: the Playwright/WebKit gate was removed on 2026-08-27 because its snapshots
+could not agree across machines — a runner antialiases text ~2% differently and
+lays a page out a pixel shorter, so it failed on rendering noise rather than on
+regressions. See [`../docs/gui/testing.md`](../docs/gui/testing.md) for the full
+note.

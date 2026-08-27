@@ -7,6 +7,28 @@ source: Tauri v2 docs (WebDriver, Mocking) and the WebdriverIO Tauri service,
 
 # GUI testing
 
+> **Superseded in part, 2026-08-27 — layer 2 no longer exists.**
+>
+> The Playwright suite described below (`gui/tests/routes.spec.ts`, the committed
+> PNGs under `gui/tests/shots/`, `make routes` / `make shots` / `make e2e`, and
+> the `screenshot-reviewer` agent) has been removed, along with the browser half
+> of CI's `frontend` job.
+>
+> It was removed for a reason the argument below did not anticipate: **the
+> snapshots could not agree across machines.** A runner's WebKit antialiases text
+> about 2% differently from a dev machine's and lays a full page out a pixel
+> shorter (1648 vs 1649), so essentially every shot failed — `library` and
+> `book-doorstop` as readily as anything new. The gate was therefore reporting
+> rendering noise, not regressions, and the only fixes on offer were to loosen it
+> until it caught little or to pin every developer to a container. Neither was
+> worth its weight for a personal app whose author looks at the running window.
+>
+> **What remains:** layer 1 (vitest against the injected fake — 306 tests) is
+> untouched and still the fast inner loop, and the `client`/`FakeClient` seam that
+> makes a drifted DTO a `tsc` error is untouched too. Visual review is a human
+> looking at the app. Everything below is kept as the record of why the layering
+> was chosen; read it for L1 and the seam, not for L2.
+
 ## The fact that decides this
 
 > "Driven directly, only Windows and Linux are supported on desktop, as macOS

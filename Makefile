@@ -220,40 +220,7 @@ else
 	cd gui && pnpm exec eslint . --fix
 endif
 
-shots: ## Render every route to gui/tests/shots/ for the screenshot-reviewer agent
-ifeq ($(GUI_DEPS),)
-	@echo "SKIPPED: no gui/node_modules."
-else
-	@# Three projects, all WebKit — desktop, narrow and phone. WebKit because
-	@# WKWebView is what the app ships inside on macOS, so its bugs are ours;
-	@# Chromium would be a smaller download and the wrong browser. `--update-
-	@# snapshots` because this target's job is to PRODUCE the images for a human
-	@# or the screenshot-reviewer agent to look at. `make routes` is the target
-	@# that fails on a diff.
-	cd gui && pnpm exec playwright test --update-snapshots
-	@echo ""
-	@echo "shots in gui/tests/shots/ — read the PNGs, do not trust a green run."
-endif
-
-routes: ## Assert every route still renders and matches its committed shot
-ifeq ($(GUI_DEPS),)
-	@echo "SKIPPED: no gui/node_modules."
-else
-	cd gui && pnpm exec playwright test
-endif
-
-# NOT part of `check` or `ci`, deliberately. It builds the app binary and drives
-# a real webview, which is minutes, and `tauri-driver` does not run on macOS at
-# all (no WKWebView driver exists). This is the seam check — does it boot, does
-# one real invoke reach SQLite — never a feature suite. See docs/gui/testing.md.
-e2e: ## E2E smoke against the built app (slow; Linux, or the wdio plugin on macOS)
-ifeq ($(GUI_DEPS),)
-	@echo "SKIPPED: no gui/node_modules."
-else
-	cd gui && pnpm exec wdio run wdio.conf.ts
-endif
-
-check: fmt-check lint build-check ts-check test web-check routes ## Local gate: everything CI runs
+check: fmt-check lint build-check ts-check test web-check ## Local gate: everything CI runs
 
 # What .github/workflows/ci.yml runs, in the same order. Kept as a separate
 # target from `check` even when the two agree: it is the name people reach for,
@@ -263,17 +230,17 @@ check: fmt-check lint build-check ts-check test web-check routes ## Local gate: 
 # CI's macOS leg runs `test-engine` rather than `test`; that asymmetry is
 # explained in the workflow and is not worth reproducing locally.
 #
-# The GUI landed (spec item 25), so `ci` now carries the frontend. Four things
-# went in with it and each has a distinct job:
+# The GUI landed (spec item 25), so `ci` carries the frontend too:
 #   ts-check   — the committed bindings.ts still matches the DTOs. In CI's `check`
 #                job, since it needs cargo and no node.
 #   web-check  — svelte-check + tsc + eslint + vitest + build.
-#   routes     — layer 2: every route renders in WebKit at three sizes and matches
-#                its committed shot. `tauri-driver` cannot run on macOS, so this
-#                browser suite is the visual gate, not a stand-in for one.
-# `e2e` stays out of both: it builds the app binary and drives a real webview,
-# which is minutes, and is a seam check rather than a feature suite.
-ci: fmt-check lint build-check ts-check test web-check routes ## Reproduce the CI gate locally
+#
+# There is deliberately no browser layer here any more. The Playwright suite that
+# drove `pnpm dev` over HTTP in WebKit was removed: its snapshots could not agree
+# across machines (a runner's WebKit renders text ~2% differently and lays pages
+# out a pixel shorter), so the gate failed on rendering noise rather than on
+# regressions. Visual review is a human looking at the running app.
+ci: fmt-check lint build-check ts-check test web-check ## Reproduce the CI gate locally
 
 test-engine: ## Engine tests only — CI's macOS leg, and the fast inner loop
 	$(RUN) -p readingbuddy

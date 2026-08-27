@@ -160,7 +160,7 @@ export function finishYears(
  * - *Still reading* — the word `/cards`' own picker already uses for an open
  *   reading, chosen there for this reason: the state you are in, never
  *   *unfinished*, which is the same fact framed as something owed.
- * - *Put down* — the phrase `tests/routes.spec.ts` pins as the one that is not
+ * - *Put down* — the phrase this codebase pins as the one that is not
  *   failure. Same tiles, same size, same treatment as a finished book; the
  *   distinction it cannot carry at 91px lives on the card, one click away.
  * - *No reading recorded* — a statement of fact, not a queue. Goodreads
