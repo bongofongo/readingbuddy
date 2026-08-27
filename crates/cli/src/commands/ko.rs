@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use readingbuddy::{BookImportStats, DeviceBook, DeviceState, Engine, MatchCandidate};
+use readingbuddy::{
+    BookImportStats, DeviceBook, DeviceState, Engine, MatchCandidate, PluginCondition,
+};
 
 use super::resolve_one;
 
@@ -184,6 +186,49 @@ pub async fn watch(engine: &Engine) -> Result<()> {
 
 /// Pull a selection of a mounted reader in.
 pub async fn sync(engine: &Engine, path: &Path, all: bool, selectors: &[String]) -> Result<()> {
+    // `--all` is `sync_mount` and takes **the whole function**, before this
+    // command scans anything itself. Three reasons, and the first two were
+    // found by running it. It is the only verb that knows the mount and so the
+    // only one that can stamp `last_synced_at` (migration `0020`); scanning
+    // here first and calling it afterwards prints every warning **twice**,
+    // since it scans too; and an early return on "nothing to sync" placed
+    // above it skipped the stamp entirely, so a reader you were fully up to
+    // date with could never record that it was — the CLI and the engine
+    // disagreeing about a column whose whole job is to be the same on both.
+    //
+    // A per-book `--book` pull deliberately does *not* stamp: it leaves the
+    // question that column answers — *is this reader's reading here* —
+    // unchanged.
+    if all {
+        let done = engine.sync_mount(path).await?;
+        for w in &done.warnings {
+            eprintln!("warning: {w}");
+        }
+        for report in &done.reports {
+            for w in &report.warnings {
+                eprintln!("warning: {w}");
+            }
+            println!("{}", stats_line(&report.stats, ""));
+        }
+        // Two sentences, because they are two facts: a reader you have read
+        // nothing on and a reader you are up to date with are not the same
+        // picture, and one "nothing to sync" renders them identically.
+        if done.synced == 0 {
+            if done.found == 0 {
+                // Not "nothing to read **yet**". `docs/decisions.md` bans
+                // completion framing and the GUI asserts the word away by name;
+                // this is a fact about a volume, not a thing the reader owes.
+                println!("readingbuddy found no books on {}.", path.display());
+            } else {
+                println!(
+                    "nothing to sync — everything on {} is already here.",
+                    path.display()
+                );
+            }
+        }
+        return Ok(());
+    }
+
     let scan = engine.scan_device(path).await?;
     for w in &scan.warnings {
         eprintln!("warning: {w}");
@@ -200,7 +245,7 @@ pub async fn sync(engine: &Engine, path: &Path, all: bool, selectors: &[String])
 
     // Neither flag is not "sync everything": it is a question. Show what would
     // happen and name the flag rather than writing forty books unasked.
-    if !all && selectors.is_empty() {
+    if selectors.is_empty() {
         println!("{} books to bring across:", syncable.len());
         for b in &syncable {
             println!("{}", device_line(b));
@@ -218,11 +263,7 @@ pub async fn sync(engine: &Engine, path: &Path, all: bool, selectors: &[String])
         return Ok(());
     }
 
-    let chosen: Vec<&DeviceBook> = if all {
-        syncable.clone()
-    } else {
-        select(&syncable, selectors)?
-    };
+    let chosen: Vec<&DeviceBook> = select(&syncable, selectors)?;
 
     let paths: Vec<PathBuf> = chosen.iter().map(|b| b.path.clone()).collect();
     for report in engine.sync_device(&paths).await? {
@@ -409,15 +450,37 @@ pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
         }
         println!("no reader is plugged in. paired readers:");
         for d in &paired {
+            println!("  {}  {}", device_name(d), d.device_id);
+            // Where and **when**, said apart. This line used to read "last seen
+            // at <path>", labelling a place with a time word — and until item
+            // 55 there was no honest date to print anyway, because
+            // `last_seen_at` moved on install alone.
             println!(
-                "  {} — plugin v{}, last seen at {}",
-                d.label
-                    .as_deref()
-                    .unwrap_or(&d.device_id[..8.min(d.device_id.len())]),
+                "      plugin v{}, last plugged in at {}",
                 d.plugin_version,
                 d.last_mount_path.as_deref().unwrap_or("an unknown path"),
             );
+            println!(
+                "      last in your hands: {}",
+                match d.last_seen_at {
+                    Some(t) => crate::render::date(t),
+                    None => "not since readingbuddy started recording it".to_string(),
+                }
+            );
+            // *Not since we started recording* rather than *never*: migration
+            // `0020` arrived with no back-fill, because nothing recorded which
+            // device a past sync read from.
+            println!(
+                "      everything brought across: {}",
+                match d.last_synced_at {
+                    Some(t) => crate::render::date(t),
+                    None => "not since readingbuddy started recording it".to_string(),
+                }
+            );
         }
+        println!();
+        println!("    plug one in : readingbuddy ko sync <mount> --all");
+        println!("    sold it?    : readingbuddy ko plugin forget <device-id>");
         return Ok(());
     }
 
@@ -426,21 +489,35 @@ pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
     println!("reader     : {}", status.mount.display());
     println!("plugin dir : {}", status.plugin_dir.display());
 
-    match status.installed_version {
-        None if !status.installed => println!(
+    // The verdict is the engine's (item 55) and the words are ours. This used
+    // to compare `installed_version` against `our_version` here, which is the
+    // second spelling of a domain rule item 17 exists to prevent — the GUI would
+    // have been the third.
+    match status.condition() {
+        PluginCondition::Absent => println!(
             "installed  : no (this readingbuddy carries v{})",
             status.our_version
         ),
-        Some(v) => println!(
-            "installed  : v{v}{}",
-            match v.cmp(&status.our_version) {
-                std::cmp::Ordering::Less =>
-                    format!(" (this readingbuddy carries v{})", status.our_version),
-                std::cmp::Ordering::Greater => " — newer than this readingbuddy".to_string(),
-                std::cmp::Ordering::Equal => " (up to date)".to_string(),
-            }
+        PluginCondition::Current => println!(
+            "installed  : v{} (up to date)",
+            status.installed_version.unwrap_or(status.our_version)
         ),
-        None => println!("installed  : yes, but it carries no version"),
+        PluginCondition::Upgradable => println!(
+            "installed  : v{} (this readingbuddy carries v{})",
+            status.installed_version.unwrap_or_default(),
+            status.our_version
+        ),
+        PluginCondition::Unversioned => println!("installed  : yes, but it carries no version"),
+        // Which obstruction it is comes from the three lines below, which is
+        // why this one names none of them.
+        PluginCondition::Obstructed => match status.installed_version {
+            Some(v) if v > status.our_version => println!(
+                "installed  : v{v} — newer than this readingbuddy (v{})",
+                status.our_version
+            ),
+            Some(v) => println!("installed  : v{v}"),
+            None => println!("installed  : yes"),
+        },
     }
 
     match (&status.device_id, status.paired) {
@@ -543,4 +620,91 @@ fn confirm() -> Result<bool> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+/// What to call a reader: its name, else the head of its id.
+///
+/// The fallback is short on purpose — a full uuid in a column of names reads as
+/// noise, and `plugin_status` prints the whole id on the line beneath, which is
+/// what `rename`/`forget` actually take.
+fn device_name(d: &readingbuddy::PairedDevice) -> &str {
+    match d.label.as_deref() {
+        Some(l) => l,
+        None => &d.device_id[..8.min(d.device_id.len())],
+    }
+}
+
+/// Resolve a device id the user typed, allowing a unique prefix.
+///
+/// Uuids are not memorable and `ko plugin status` prints them in full beside a
+/// name; asking for all 32 characters to rename something would make the verb
+/// unusable without a clipboard. Ambiguity is a refusal that lists the
+/// candidates rather than picking one.
+async fn resolve_device(engine: &Engine, typed: &str) -> Result<readingbuddy::PairedDevice> {
+    let paired = engine.paired_devices().await?;
+    let hits: Vec<readingbuddy::PairedDevice> = paired
+        .into_iter()
+        .filter(|d| d.device_id.starts_with(typed))
+        .collect();
+    match hits.len() {
+        1 => Ok(hits.into_iter().next().expect("one")),
+        0 => anyhow::bail!(
+            "no paired reader starts with \"{typed}\".\n    \
+             which ones there are: readingbuddy ko plugin status"
+        ),
+        _ => {
+            let names: Vec<String> = hits
+                .iter()
+                .map(|d| format!("{} ({})", d.device_id, device_name(d)))
+                .collect();
+            anyhow::bail!(
+                "\"{typed}\" names {} readers: {}.\n    \
+                 type more of the id",
+                hits.len(),
+                names.join(", ")
+            )
+        }
+    }
+}
+
+/// Give a reader a name (item 55).
+pub async fn plugin_rename(engine: &Engine, typed: &str, label: &str) -> Result<()> {
+    let device = resolve_device(engine, typed).await?;
+    let was = device_name(&device).to_string();
+    engine.rename_device(&device.device_id, label).await?;
+
+    // Re-read rather than echoing what was sent: a blank clears the name, and
+    // what comes back is then the fallback rather than the empty string.
+    let now = engine.paired_devices().await?;
+    let now = now
+        .iter()
+        .find(|d| d.device_id == device.device_id)
+        .expect("just renamed");
+    if now.label.is_none() {
+        println!(
+            "{was} has no name of its own again — it is {}.",
+            device_name(now)
+        );
+    } else {
+        println!("{was} is now {}.", device_name(now));
+    }
+    Ok(())
+}
+
+/// Forget a reader we do not have in hand (item 55).
+///
+/// The second line is not decoration. This drops our half of the pairing and
+/// cannot reach the device, so the plugin and the token stay where they are —
+/// and a message that said only *forgotten* would leave somebody believing a
+/// reader they lent out had been cleaned.
+pub async fn plugin_forget(engine: &Engine, typed: &str) -> Result<()> {
+    let device = resolve_device(engine, typed).await?;
+    let name = device_name(&device).to_string();
+    engine.forget_device(&device.device_id).await?;
+    println!("forgotten: {name}.");
+    println!(
+        "    the plugin is still on that reader — readingbuddy cannot reach it from here.\n    \
+         plugged in? this removes it: readingbuddy ko plugin uninstall"
+    );
+    Ok(())
 }

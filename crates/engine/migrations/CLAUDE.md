@@ -36,6 +36,28 @@ deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md);
 `0017` under "moments.rs" and `0018` under "Readings" in
 [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md).
 
+`0019` and `0020` are the only migrations here that describe **a piece of
+hardware** rather than a book or the app's own bookkeeping, and they split one
+subject on purpose: `0019` is the *relationship* (a reader we wrote a plugin to,
+identified by a uuid we minted — never by `last_mount_path`, which moves), and
+`0020` is *what has come off it*. They are the file to read before adding a
+fifth timestamp to `paired_devices`, because it already carries three that are
+easy to conflate: `installed_at` is when the pairing began and a reinstall must
+not move it, `last_seen_at` is when the reader was last in hand (item 55 made
+`plugin_status` stamp it, so it finally means that), and `last_synced_at` is when
+*everything* on it was last brought across. Reading either of the first two as
+the third is what tells somebody who plugged a Kobo in to charge it that their
+highlights are here.
+
+`0020` is also the repo's **fourth deliberate non-back-fill**, and the cleanest
+case of the four: `0012` had signals that recorded who was *consulted* rather
+than who supplied a field, and `0014`/`0016` could not back-fill because SQLite
+cannot decode a PNG or parse a name. This one has nothing to reason from at all
+— `sync_device` has never recorded which mount its paths came from, so no row in
+`device_books` or `sidecar_seen` could attribute a past import to a device id.
+`NULL` therefore means *not since we started recording*, which is a claim about
+our records, and every caller has to word it that way.
+
 `0018` is the **second indexes-only migration on a sort key**, and it is the one
 to read before writing a range filter over a timestamp. `0016`'s collation
 lesson has a twin here: SQLite declines an index whose *column is wrapped in a

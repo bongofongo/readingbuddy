@@ -38,18 +38,26 @@ import type {
   BookFileDto,
   BookSortDto,
   BookTagDto,
+  CalibreBookDto,
+  CalibreReportDto,
+  CalibreStatusDto,
   CreatedNoteDto,
+  DeviceScanDto,
   FieldSourceDto,
   FlashcardDto,
   HighlightDto,
+  InstallReportDto,
   MomentDto,
   MonthActivityDto,
+  MountSyncDto,
   NewNoteDto,
   NoteCitationsDto,
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
+  PairedDeviceDto,
   PathsDto,
+  PluginStatusDto,
   RatingDto,
   RatingScaleDto,
   ReadingDto,
@@ -62,7 +70,9 @@ import type {
   Response,
   SearchHitDto,
   SearchSourceDto,
+  StatsImportReportDto,
   TableOfContentsDto,
+  UninstallReportDto,
 } from './bindings';
 
 /** A book that came out of the library, so it has an id. See the module doc. */
@@ -563,6 +573,154 @@ export interface LibraryClient {
    * call site says which it meant.
    */
   heroSrc(book: BookDto): string | null;
+
+  // ---- the devices page (items 15a, 55) -----------------------------------
+
+  /**
+   * Every reader we have paired with, **plugged in or not**.
+   *
+   * That is the whole reason `paired_devices` is a table rather than a walk of
+   * a mount: a reader in a bag is still one of yours, and a page that could
+   * only answer by reading a volume would have no way to say so.
+   *
+   * Newest-seen first, and the order is the engine's
+   * (`COALESCE(last_seen_at, installed_at) DESC`). Nothing above this seam
+   * re-sorts it.
+   *
+   * `last_seen_at` means *when this reader was last in our hands* — item 55
+   * made [`pluginStatus`] stamp it, so it is no longer a synonym for
+   * `installed_at`. `last_synced_at` is a different fact and a `null` there is
+   * **not** *never synced*: the column arrived with no back-fill.
+   */
+  pairedDevices(): Promise<PairedDeviceDto[]>;
+  /**
+   * Mounted volumes that hold a KOReader install.
+   *
+   * **Filtered below the seam, never a listing of `/Volumes`.** The engine
+   * applies `is_koreader_mount` plus the symlink rule in one place, because the
+   * watcher and the lister must agree — and because the caller that is about to
+   * *write* to a volume must not be the one deciding whether it is a reader.
+   *
+   * An empty list is the ordinary case. It is *nothing is plugged in*, never an
+   * error and never *you have no devices*.
+   */
+  candidateMounts(): Promise<string[]>;
+  /**
+   * What readingbuddy's plugin looks like on one mounted reader.
+   *
+   * Read-only about the mount. It **does** record that we saw the reader, which
+   * is what makes `last_seen_at` mean what it says.
+   *
+   * Branch on `condition`, never on `installed_version` against `our_version`:
+   * that comparison is a domain rule with a name and item 55 put it below the
+   * seam precisely so this file does not become its third spelling.
+   *
+   * It **throws** on a path that is not a KOReader install — `PluginRefused` —
+   * which is why [`candidateMounts`] is what feeds it.
+   */
+  pluginStatus(mount: string): Promise<PluginStatusDto>;
+  /**
+   * Install or upgrade the plugin, and pair with the reader.
+   *
+   * **Never on an automatic path.** `docs/decisions.md` keeps mount → import
+   * automatic and read-only precisely so that mount → *write* can be an
+   * explicit act, and a screen that called this when a device appeared would be
+   * undoing that rather than saving a click. Show `plugin_dir` first.
+   */
+  installPlugin(mount: string): Promise<InstallReportDto>;
+  /** Remove exactly what was installed, and forget the pairing. */
+  uninstallPlugin(mount: string): Promise<UninstallReportDto>;
+  /**
+   * Forget a reader you do **not** have in hand.
+   *
+   * Not [`uninstallPlugin`] without a path. Uninstall is exact — it takes the
+   * files off the device — so it needs the mount; this drops our row and
+   * nothing else, for a reader that has been sold, lost or reformatted.
+   *
+   * **Copy must say which happened.** The plugin is still on that device and
+   * still holds the token. `false` is *there was no such pairing*.
+   */
+  forgetDevice(deviceId: string): Promise<boolean>;
+  /**
+   * Give a reader a name. Blank clears it, so the fallback comes back.
+   *
+   * `false` is *no such pairing* — a device forgotten in another window, not an
+   * error to style as one.
+   */
+  renameDevice(deviceId: string, label: string): Promise<boolean>;
+  /**
+   * What is on a mounted reader, book by book, relative to the library.
+   *
+   * **Read-only**, which is why it may run when a device appears — that is the
+   * automatic half `docs/decisions.md` allows, and it is what makes the write
+   * half explicit by contrast.
+   *
+   * `parsed` and `cached` are reported rather than logged because the
+   * pre-filter's whole claim is that `parsed` is zero on a second scan of an
+   * unmodified tree. `DeviceBookDto.state` is the four states, typed; whether
+   * one of them is worth syncing is the engine's predicate and not a test to
+   * write here.
+   */
+  scanDevice(root: string): Promise<DeviceScanDto>;
+  /**
+   * Bring across everything one mounted reader has to offer.
+   *
+   * **Not `sync_device` with paths this page is holding.** The engine re-scans
+   * below the seam, which is `crates/api`'s "handles do not cross" applied to a
+   * filesystem: a volume can change between the scan a screen drew and the
+   * button a reader pressed. It is also the only verb that can stamp
+   * `last_synced_at`, because it is the only one that knows the mount.
+   *
+   * `found` and `synced` are both on the reply on purpose — *nothing new* and
+   * *nothing on this device* are different answers and a caller must be able to
+   * say which. It does **not** import measured reading time; that is
+   * [`importDeviceStatistics`].
+   */
+  syncMount(mount: string): Promise<MountSyncDto>;
+  /**
+   * Measured reading time out of the device's own `statistics.sqlite3`.
+   *
+   * **A verb of its own, and deliberately not part of a sync** — arrival is
+   * read-only, and a scan that quietly began importing months of timing data
+   * would not be read-only in spirit. The user asks for this by name.
+   */
+  importDeviceStatistics(mount: string): Promise<StatsImportReportDto>;
+
+  // ---- calibre ------------------------------------------------------------
+
+  /**
+   * Which calibre tools this machine has — **two, not one flag**.
+   *
+   * A half install degrades to the half that works, so a screen shows the
+   * feature it has. Both `null` is a perfectly good answer and **not an
+   * error**: calibre is feature-detected, and `docs/decisions.md` is explicit
+   * that we never ask anybody to install or configure it.
+   */
+  calibreStatus(): Promise<CalibreStatusDto>;
+  /**
+   * The rows in calibre's own library, via `calibredb list --for-machine`.
+   *
+   * `library: null` is calibredb's **own default library**, which is the only
+   * offer this app makes — a path picker is a configuration surface and
+   * deliberately not one of these.
+   */
+  calibreLibrary(library?: string | null): Promise<CalibreBookDto[]>;
+  /**
+   * Bring calibre's library in. **`dryRun` first, always.**
+   *
+   * The report has the same shape either way, so a screen shows what would
+   * happen and then does it — which is the same promise the plugin install
+   * makes about its path, applied to a library rather than to a volume.
+   *
+   * `createAmbiguous` decides what happens to rows that scored into the
+   * candidate band; leaving it false leaves them for a person.
+   */
+  importCalibreLibrary(options?: {
+    library?: string | null;
+    dryRun?: boolean;
+    createAmbiguous?: boolean;
+    only?: number[];
+  }): Promise<CalibreReportDto>;
 }
 
 export class ApiCallFailed extends Error {
@@ -1039,6 +1197,105 @@ export class TauriClient implements LibraryClient {
     return expect(
       await this.#call({ method: 'clear_review_rating', params: { note_id: noteId } }),
       'bool',
+    ).value;
+  }
+
+  // ---- items 15a and 55 ---------------------------------------------------
+
+  async pairedDevices(): Promise<PairedDeviceDto[]> {
+    return expect(await this.#call({ method: 'paired_devices' }), 'paired_devices').value;
+  }
+
+  async candidateMounts(): Promise<string[]> {
+    return expect(await this.#call({ method: 'candidate_mounts' }), 'paths').value;
+  }
+
+  async pluginStatus(mount: string): Promise<PluginStatusDto> {
+    return expect(await this.#call({ method: 'plugin_status', params: { mount } }), 'plugin_status')
+      .value;
+  }
+
+  async installPlugin(mount: string): Promise<InstallReportDto> {
+    return expect(
+      await this.#call({ method: 'install_plugin', params: { mount } }),
+      'plugin_installed',
+    ).value;
+  }
+
+  async uninstallPlugin(mount: string): Promise<UninstallReportDto> {
+    return expect(
+      await this.#call({ method: 'uninstall_plugin', params: { mount } }),
+      'plugin_uninstalled',
+    ).value;
+  }
+
+  async forgetDevice(deviceId: string): Promise<boolean> {
+    return expect(
+      await this.#call({ method: 'forget_device', params: { device_id: deviceId } }),
+      'bool',
+    ).value;
+  }
+
+  async renameDevice(deviceId: string, label: string): Promise<boolean> {
+    return expect(
+      await this.#call({ method: 'rename_device', params: { device_id: deviceId, label } }),
+      'bool',
+    ).value;
+  }
+
+  async scanDevice(root: string): Promise<DeviceScanDto> {
+    return expect(await this.#call({ method: 'scan_device', params: { root } }), 'device_scan')
+      .value;
+  }
+
+  async syncMount(mount: string): Promise<MountSyncDto> {
+    return expect(await this.#call({ method: 'sync_mount', params: { mount } }), 'mount_sync')
+      .value;
+  }
+
+  async importDeviceStatistics(mount: string): Promise<StatsImportReportDto> {
+    return expect(
+      await this.#call({ method: 'import_device_statistics', params: { mount } }),
+      'stats_import',
+    ).value;
+  }
+
+  async calibreStatus(): Promise<CalibreStatusDto> {
+    return expect(await this.#call({ method: 'calibre_status' }), 'calibre_status').value;
+  }
+
+  async calibreLibrary(library: string | null = null): Promise<CalibreBookDto[]> {
+    return expect(
+      await this.#call({ method: 'calibre_library', params: { library } }),
+      'calibre_library',
+    ).value;
+  }
+
+  /**
+   * Every field is stated on the wire whatever the caller passed. They are
+   * `#[serde(default)]` in the Rust and therefore optional over the socket, but
+   * `ts-rs` emits them as required TypeScript — so omitting one would not
+   * compile.
+   */
+  async importCalibreLibrary(
+    options: {
+      library?: string | null;
+      dryRun?: boolean;
+      createAmbiguous?: boolean;
+      only?: number[];
+    } = {},
+  ): Promise<CalibreReportDto> {
+    return expect(
+      await this.#call({
+        method: 'import_calibre_library',
+        params: {
+          library: options.library ?? null,
+          dry_run: options.dryRun ?? false,
+          create_ambiguous: options.createAmbiguous ?? false,
+          only: options.only ?? [],
+        },
+      }),
+      'calibre_report',
     ).value;
   }
 }

@@ -40,7 +40,11 @@ pub fn reading_line(r: &Reading, nth: usize, of: usize) -> String {
 
 /// Unix seconds as a plain date. Times of day are noise here — a reading is a
 /// span of days.
-fn date(unix: i64) -> String {
+///
+/// `pub(crate)` since item 55: `ko plugin status` prints the day a reader was
+/// last in your hands, and a second date formatter would be a second answer to
+/// what a day is.
+pub(crate) fn date(unix: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp(unix)
         .ok()
         .map(|d| format!("{:04}-{:02}-{:02}", d.year(), d.month() as u8, d.day()))

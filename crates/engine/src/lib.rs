@@ -56,8 +56,8 @@ pub use calibre::{
 pub use config::EngineConfig;
 pub use crash::CrashContext;
 pub use device::{
-    DeviceBook, DeviceScan, DeviceState, candidate_mounts, is_koreader_mount, koreader_dir,
-    mount_roots, offers_reader,
+    DeviceBook, DeviceScan, DeviceState, MountSync, candidate_mounts, is_koreader_mount,
+    koreader_dir, mount_roots, offers_reader,
 };
 pub use diagnostic::{Diagnostic, DiagnosticKind, ErrorClass, Severity};
 pub use edition::{EditionShape, ShapeSource};
@@ -82,7 +82,8 @@ pub use notes::{CreatedNote, NewNoteInput, NoteKind, VaultReconcile};
 pub use partial_md5::partial_md5;
 pub use pdf::{PdfInfo, pdf_info};
 pub use plugin::{
-    InstallReport, PLUGIN_DIR_NAME, PLUGIN_VERSION, PluginRefusal, PluginStatus, UninstallReport,
+    InstallReport, PLUGIN_DIR_NAME, PLUGIN_VERSION, PluginCondition, PluginRefusal, PluginStatus,
+    UninstallReport,
 };
 pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
@@ -1168,15 +1169,31 @@ impl Engine {
     /// What readingbuddy's plugin looks like on this reader, and whether we
     /// know the reader it says it is paired with.
     ///
-    /// Read-only. The one thing it adds over [`plugin::inspect`] is `paired`,
-    /// which is a fact about *our* database rather than about the mount: a
-    /// `pairing.lua` naming a device we have no row for is a reader that was
-    /// paired with some other copy of readingbuddy.
+    /// Read-only **about the mount**, and that is the whole of the promise
+    /// `docs/decisions.md` makes: nothing here writes to somebody else's
+    /// hardware. It does write one row of ours — see below.
+    ///
+    /// The one thing it adds over [`plugin::inspect`] is `paired`, which is a
+    /// fact about *our* database rather than about the mount: a `pairing.lua`
+    /// naming a device we have no row for is a reader that was paired with some
+    /// other copy of readingbuddy.
+    ///
+    /// **Recognising a paired reader stamps `last_seen_at`** (item 55). Seeing
+    /// a device is an event and the only one that can record it is whoever
+    /// looked, so this is where it belongs rather than in a
+    /// `note_device_seen` every frontend has to remember to call — a stamp the
+    /// CLI made and the GUI did not would be a column meaning something
+    /// different depending on which app you had been using. Before this,
+    /// `last_seen_at` moved only on install, so *last connected* was really
+    /// *last time you installed the plugin*.
     #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
     pub async fn plugin_status(&self, mount: &Path) -> Result<plugin::PluginStatus> {
         let mut status = plugin::inspect(mount)?;
         if let Some(id) = &status.device_id {
-            status.paired = self.storage.paired_device(id).await?.is_some();
+            // `touch_device_seen` answers `false` for a reader we have no row
+            // for, which is exactly the `paired` we are about to report — one
+            // statement rather than a read followed by a conditional write.
+            status.paired = self.storage.touch_device_seen(id, mount.to_str()).await?;
         }
         Ok(status)
     }
@@ -1252,6 +1269,81 @@ impl Engine {
     /// Every reader we have paired with, whether or not it is plugged in.
     pub async fn paired_devices(&self) -> Result<Vec<PairedDevice>> {
         self.storage.list_paired_devices().await
+    }
+
+    /// Forget a pairing **without the reader in hand** (item 55).
+    ///
+    /// Deliberately not a second door onto [`Engine::uninstall_plugin`], and the
+    /// difference is the whole reason it exists: uninstall is *exact* — it takes
+    /// the files off the device and then drops our row — and it therefore needs
+    /// the mount. This drops our row and nothing else, because a reader that has
+    /// been sold, lost or reformatted cannot be reached and a list you can only
+    /// leave by plugging something in is a list with no exit.
+    ///
+    /// **A caller must say so.** The plugin is still on that device and it still
+    /// holds the token; if it ever comes back, installing again mints a fresh
+    /// identity rather than resuming this one. Copy that says *removed* without
+    /// saying *from here* is the failure mode.
+    pub async fn forget_device(&self, device_id: &str) -> Result<bool> {
+        self.storage.forget_pairing(device_id).await
+    }
+
+    /// Name a reader (item 55).
+    ///
+    /// The default is the mount's directory name, which is a fact about a
+    /// filesystem — `KOBOeReader`, `Kindle` — and not about the object on the
+    /// bedside table. Blank clears it; see [`Storage::set_device_label`].
+    pub async fn rename_device(&self, device_id: &str, label: &str) -> Result<bool> {
+        self.storage.set_device_label(device_id, label).await
+    }
+
+    /// Bring across everything one mounted reader has to offer (item 55).
+    ///
+    /// Scan, then sync every book the scan calls syncable, then stamp
+    /// `last_synced_at` if the mount turns out to be a reader we know.
+    ///
+    /// **A verb of its own rather than an argument to [`Engine::sync_device`]**,
+    /// for two reasons that are really one. `sync_device` takes sidecar *paths*
+    /// and so cannot know whose they are — there is no device to stamp — and a
+    /// caller that scanned, held the paths, and sent them back is holding a
+    /// handle across a round trip that the volume may have changed underneath.
+    /// This re-scans below the seam, which is `crates/api`'s own rule that
+    /// handles do not cross applied to a filesystem.
+    ///
+    /// It does **not** import measured reading time: that is
+    /// [`Engine::import_device_statistics`], for the reason that method's own
+    /// doc gives.
+    #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
+    pub async fn sync_mount(&self, mount: &Path) -> Result<device::MountSync> {
+        let scan = self.scan_device(mount).await?;
+        let paths: Vec<PathBuf> = scan.syncable().map(|b| b.path.clone()).collect();
+        let reports = self.sync_device(&paths).await?;
+
+        // The pairing is read *after* the sync rather than before it: a sync
+        // that failed should not have stamped, and `?` above is what says so.
+        let device_id = match plugin::inspect(mount) {
+            Ok(status) => status.device_id,
+            // Not a KOReader mount, a symlink, an unreadable `_meta.lua`. None
+            // of them is a reason to fail a sync that already succeeded — the
+            // import path has never needed a pairing, and a library tree on a
+            // disk is a legitimate argument to this method.
+            Err(_) => None,
+        };
+        let device_id = match device_id {
+            Some(id) if self.storage.stamp_device_sync(&id).await? => Some(id),
+            // A `pairing.lua` we have no row for. The books came across; the
+            // reader is somebody else's pairing and we record nothing about it.
+            _ => None,
+        };
+
+        Ok(device::MountSync {
+            mount: mount.to_path_buf(),
+            device_id,
+            found: scan.books.len(),
+            synced: paths.len(),
+            reports,
+            warnings: scan.warnings,
+        })
     }
 
     /// Import measured reading time from a mounted device's
@@ -2066,5 +2158,165 @@ mod tests {
             device.installed_at, 1_700_000_000,
             "pairing.lua and paired_devices.installed_at must not drift"
         );
+    }
+
+    async fn engine_at(tmp: &std::path::Path) -> Engine {
+        Engine::open(EngineConfig {
+            db_url: "sqlite::memory:".into(),
+            images_dir: tmp.join("images"),
+            files_dir: tmp.join("files"),
+            vault_dir: tmp.join("vault"),
+            log_dir: tmp.join("logs"),
+            google_api_key: None,
+            calibre_bin_dir: None,
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Item 55's first gap, and the one that made the devices page dishonest:
+    /// before this, `last_seen_at` moved only on install, so a reader plugged in
+    /// every night still reported the date its plugin was put there.
+    ///
+    /// The clock is not supplied here on purpose — the assertion is about
+    /// *which timestamp moved*, not about its value, and `installed_at` being
+    /// pinned to a fixed instant is what makes the two distinguishable in the
+    /// same second.
+    #[tokio::test]
+    async fn looking_at_a_paired_reader_records_that_we_saw_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+
+        let mount = tempfile::tempdir().unwrap();
+        device::install_fake_reader(mount.path());
+        engine
+            .install_plugin_at(mount.path(), 1_700_000_000)
+            .await
+            .unwrap();
+
+        // Wipe the install's own stamp, so what we observe can only have come
+        // from the status call.
+        let id = engine.paired_devices().await.unwrap()[0].device_id.clone();
+        sqlx::query("UPDATE paired_devices SET last_seen_at = NULL, last_mount_path = NULL")
+            .execute(engine.storage().pool())
+            .await
+            .unwrap();
+
+        let status = engine.plugin_status(mount.path()).await.unwrap();
+        assert!(status.paired);
+
+        let d = &engine.paired_devices().await.unwrap()[0];
+        assert!(d.last_seen_at.is_some(), "seeing a reader is an event");
+        assert_eq!(d.last_mount_path.as_deref(), mount.path().to_str());
+        assert_eq!(
+            d.installed_at, 1_700_000_000,
+            "and the pairing did not move"
+        );
+        assert_eq!(
+            d.last_synced_at, None,
+            "looking at a reader is not syncing with it"
+        );
+        assert_eq!(d.device_id, id);
+    }
+
+    /// A reader carrying somebody else's `pairing.lua`. `paired` is false and —
+    /// the part worth pinning — no row is invented for it.
+    #[tokio::test]
+    async fn a_reader_paired_with_another_copy_of_readingbuddy_creates_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+
+        let mount = tempfile::tempdir().unwrap();
+        device::install_fake_reader(mount.path());
+        engine.install_plugin(mount.path()).await.unwrap();
+        // Keep the plugin, drop our half of the pairing — which is exactly the
+        // state `forget_device` leaves behind.
+        let id = engine.paired_devices().await.unwrap()[0].device_id.clone();
+        assert!(engine.forget_device(&id).await.unwrap());
+        assert!(!engine.forget_device(&id).await.unwrap());
+
+        let status = engine.plugin_status(mount.path()).await.unwrap();
+        assert!(status.installed, "the plugin is still on the reader");
+        assert_eq!(status.device_id.as_deref(), Some(id.as_str()));
+        assert!(!status.paired, "and we no longer know it");
+        assert!(engine.paired_devices().await.unwrap().is_empty());
+    }
+
+    /// `sync_mount` on a paired reader with nothing on it.
+    ///
+    /// The empty case is the one worth asserting: `found` and `synced` are both
+    /// zero, and the device is still identified — which is what lets a frontend
+    /// say *nothing new* rather than *no device*.
+    #[tokio::test]
+    async fn syncing_a_mount_stamps_the_reader_it_turned_out_to_be() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+
+        let mount = tempfile::tempdir().unwrap();
+        device::install_fake_reader(mount.path());
+        engine.install_plugin(mount.path()).await.unwrap();
+        let id = engine.paired_devices().await.unwrap()[0].device_id.clone();
+
+        let sync = engine.sync_mount(mount.path()).await.unwrap();
+        assert_eq!(sync.device_id.as_deref(), Some(id.as_str()));
+        assert_eq!(sync.found, 0);
+        assert_eq!(sync.synced, 0);
+        assert!(sync.reports.is_empty());
+
+        assert!(
+            engine.paired_devices().await.unwrap()[0]
+                .last_synced_at
+                .is_some()
+        );
+    }
+
+    /// The same verb against a tree that is nobody's reader — a library
+    /// directory on a disk. It must work, and it must stamp nothing.
+    #[tokio::test]
+    async fn syncing_an_unpaired_tree_is_ordinary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+
+        let tree = tempfile::tempdir().unwrap();
+        let sync = engine.sync_mount(tree.path()).await.unwrap();
+        assert_eq!(sync.device_id, None, "there is no reader here to stamp");
+        assert_eq!(sync.found, 0);
+        assert!(engine.paired_devices().await.unwrap().is_empty());
+    }
+
+    /// A rename is the user's, and a plugin upgrade must not undo it. Asserted
+    /// through the facade as well as in `storage::paired_devices` because the
+    /// mount's directory name is chosen *here* — `install_plugin_at` passes
+    /// `mount.file_name()` — so the two halves of the rule live in two files.
+    #[tokio::test]
+    async fn renaming_a_reader_survives_the_next_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = engine_at(tmp.path()).await;
+
+        let mount = tempfile::tempdir().unwrap();
+        device::install_fake_reader(mount.path());
+        engine
+            .install_plugin_at(mount.path(), 1_700_000_000)
+            .await
+            .unwrap();
+        let id = engine.paired_devices().await.unwrap()[0].device_id.clone();
+
+        assert!(
+            engine
+                .rename_device(&id, "  the bedside Kobo  ")
+                .await
+                .unwrap()
+        );
+        engine
+            .install_plugin_at(mount.path(), 1_700_086_400)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.paired_devices().await.unwrap()[0].label.as_deref(),
+            Some("the bedside Kobo"),
+            "the mount's directory name is a default, never an override"
+        );
+        assert!(!engine.rename_device("nobody", "x").await.unwrap());
     }
 }

@@ -27,6 +27,11 @@
    * somewhere you chose to go; it says *reading life* and never *stats*, and
    * *cards* — the object — and never *finished*.
    *
+   * **Devices is the entry most likely to grow one**, because *3 books waiting
+   * on your Kindle* is a genuinely useful sentence and putting it in the chrome
+   * would make it an inbox. Those numbers live on the page, per reader, and
+   * nothing sums them.
+   *
    * ## `aria-current`, not a class
    *
    * Which page you are on is a real state and assistive technology should get
@@ -39,19 +44,30 @@
   let { children } = $props();
 
   /**
-   * The four places. Order is deliberate — the shelf, the vault, the wall, the
-   * record — and it is the order they were built in as places rather than as
-   * screens.
+   * The five places. Order is deliberate — the shelf, the vault, the wall, the
+   * record, the edges — and it is the order they were built in as places rather
+   * than as screens.
    *
-   * **Library and Notes are the two this gained.** The wordmark alone as a home
-   * link is discoverable only by guessing, and the vault is being promoted from
-   * a band inside one book to a place of its own.
+   * **Library and Notes are the two the layout rework gained.** The wordmark
+   * alone as a home link is discoverable only by guessing, and the vault was
+   * promoted from a band inside one book to a place of its own.
+   *
+   * **Devices is the fifth, and it goes last on purpose** (item 55). The four
+   * before it are about your reading; this one is about the machinery under it,
+   * and it is the only entry you visit because something is plugged in rather
+   * than because you want to read. Putting it anywhere but the end would give
+   * the plumbing the same weight as the books.
+   *
+   * The row is still four links wide plus one and still needs no column — see
+   * the note above about why there is no sidebar. If a sixth ever wants in,
+   * that is a decision about the shell, not a place to squeeze one more.
    */
   const NAV = [
     { href: '/', label: 'Library' },
     { href: '/notes', label: 'Notes' },
     { href: '/cards', label: 'Cards' },
     { href: '/life', label: 'Reading life' },
+    { href: '/devices', label: 'Devices' },
   ];
 
   /**

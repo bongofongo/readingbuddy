@@ -3444,3 +3444,115 @@ because item 31 needed somewhere to put reading time.
       automatic and read-only *so that* mount → write can be an explicit act,
       and wiring `InstallPlugin` to a mount event would undo the decision rather
       than save a click. Both the request and the facade method say so.
+
+55. **Devices — the fifth place, and the four gaps drawing it exposed.**
+    Migration `0020` — one column on `paired_devices`; no `API_VERSION` move
+    (three new requests, two new fields on *response* DTOs, nothing existing
+    reshaped). Engine + API + CLI + GUI. Item 15a built the link and gave it no
+    frontend on purpose, so the surface would be provable before a screen was
+    shaped around it; this is the screen, and shaping it found four things the
+    wire could not honestly say.
+    - **An API audit before the markup is worth four engine items.** Every
+      request the page needs already existed — `PairedDevices`,
+      `CandidateMounts`, `PluginStatus`, `InstallPlugin`, `UninstallPlugin`,
+      `ScanDevice`, `ImportDeviceStatistics`, `CalibreStatus`,
+      `ImportCalibreLibrary` — and the page could have been drawn from them
+      *today*, saying four things that were false. That is the failure mode a
+      surface audit exists to catch, and it is not "a request is missing": it is
+      "the request answers a question next to the one the screen asks".
+    - **`last_seen_at` did not mean what its name said.** It moved on install
+      alone, so *last connected* was really *last time you installed the
+      plugin*, and a reader plugged in nightly reported a date from April. Now
+      `plugin_status` stamps it when the mount names a reader we know. That is a
+      **write inside a read**, deliberately: seeing a device is an event and the
+      only code that can record it is whoever looked, so putting it there rather
+      than in a `note_device_seen` every frontend must remember is what keeps
+      three apps from disagreeing about when a reader was last in hand. It stays
+      read-only about the *mount*, which is the promise `decisions.md` actually
+      makes.
+    - **`ForgetDevice` is not `UninstallPlugin` without a path**, and the copy
+      is the item. Uninstall is *exact* — it takes the files off and then drops
+      our row — so it needs the volume; a reader that has been sold, lost or
+      reformatted cannot be reached, and a list you can only leave by plugging
+      something in is a list with no exit. What forgetting does **not** do is
+      the sentence that matters: the plugin and the token stay on that device,
+      and a message reading *removed* without *from here* would tell somebody a
+      reader they lent out had been cleaned. The GUI offers it only on a reader
+      that is **not** plugged in, because with the volume in front of you the
+      exact move is the other one.
+    - **A rename inverted a `COALESCE` that had been right until it existed.**
+      `record_pairing` had `label = COALESCE(excluded.label, paired_devices.label)`
+      — harmless while the only writer of a label was that function, and a bug
+      the moment a person could type one, because `install_plugin_at` passes
+      `mount.file_name()` and every plugin upgrade would have quietly restored
+      `KOBOeReader` over whatever the reader was called. The mount's directory
+      name is a **default**: it fills an empty label and never replaces one. A
+      blank clears rather than storing `"   "`, so the frontend's fallback stays
+      reachable.
+    - **`last_synced_at` means *everything came across*, not *a sync ran*.**
+      Migration `0020`, and the narrowing is what makes the column useful:
+      `sync_device` takes sidecar **paths** and cannot know whose they are, so
+      only `sync_mount` — a new verb that scans, syncs and then stamps — can
+      write it. A one-book pull leaves the question the column answers (*is this
+      reader's reading here*) unchanged, so it deliberately does not stamp, and
+      `rb ko sync <mount> --all` was rerouted through the new verb so the CLI
+      and the GUI cannot disagree. **No back-fill and none was possible**: no
+      row anywhere attributes a past import to a device id, so `NULL` means *not
+      since we started recording* and the page says exactly that. Wording it
+      *never synced* would accuse a reader synced fifty times.
+    - **`PluginCondition` crossed the seam because the CLI had already spelled
+      it once.** `installed_version < our_version` is a domain rule with a name
+      — `is_version_upgrade` — and `commands/ko.rs` was comparing the two by
+      hand; TypeScript would have been the third spelling, which is item 17's
+      whole complaint. One typed verdict on `PluginStatusDto`, five arms,
+      `Obstructed` winning over every version case because it is the one that
+      gates the action. Both frontends now branch on it and neither compares
+      numbers.
+    - **`SyncMount` re-scans below the seam rather than taking the paths the
+      page is holding.** That is `crates/api`'s own *handles do not cross*
+      applied to a filesystem: a volume can change between the scan a screen
+      drew and the button a reader pressed. It costs a second walk, which the
+      `sidecar_seen` pre-filter makes nearly free, and it buys the only join
+      that can identify the device — which is what lets it stamp at all.
+    - **`found` and `synced` are both on the reply, and that is not
+      redundancy.** *Nothing to bring across* and *there is nothing on this
+      device* are different answers; a report carrying only the pull reports
+      renders a brand-new Kobo and a fully-synced Kindle as the same empty list.
+      The page says a different sentence for each, and `syncSentence` is where
+      the distinction is asserted.
+    - **Four things the rendered page corrected that no type checker reached.**
+      All four came from screenshotting it and looking. (i) The card carries a
+      *Plugged in* chip about the cable and the line under it read *Not
+      connected* — a flat contradiction about a thing sitting in a USB port; the
+      two facts now use two vocabularies, and the condition speaks about whether
+      readingbuddy is **on** the reader. (ii) The accent was on *Put the plugin
+      on again*, i.e. the least likely thing anybody wants; it now follows the
+      verb the reader actually needs, which on a current plugin is the sync.
+      (iii) `auto-fit` grids: three columns of unequal-height cards left a hole
+      the size of a card, and a lone card stretched to 1300px of nothing — both
+      grids are capped at two, which is the shape the content has. (iv) The
+      install's destination paragraph was a flex sibling of the buttons, so
+      *Write it* floated as a tall block beside three lines of prose.
+    - **A `??` swallowed a cleared name.** The fake overlaid renames with
+      `this.#labels[id] ?? d.label`, which cannot tell *cleared to NULL* from
+      *no rename happened* — so a blanked name rendered as the old one for ever.
+      Found by the test that asserts blank clears. The same keystroke is
+      available in any client and the fix is `in`, not `??`.
+    - **Counts are allowed here and the three that are not are asserted.** This
+      is a page you chose to open, so *3 books have something new on them* has
+      `/life`'s permission: past tense, one reader, its own contents. Forbidden
+      and checked in `tests/routes.spec.ts` — a number in the nav, the
+      completion vocabulary anywhere in the body, and any total **across**
+      readers. Zero renders as nothing at all rather than as a zero, because a
+      zero where a figure goes is a scoreboard reading zero.
+    - **A refusal offers no control at all.** A disabled button is a dead end
+      wearing a tooltip. A reader we will not write to gets a sentence naming
+      the file and the move, and the install verb is *absent* from the markup —
+      which is a claim about what is not there, so it is a Playwright assertion
+      rather than a screenshot.
+    - **`make dev-db` cannot produce a paired device**, and it never will: a
+      pairing is written to a mount, and there is no mount on a build machine.
+      So `crates/corpus/edge-cases.json` governs books and this page's fixture
+      has no database counterpart to drift from — and a real `pnpm tauri dev`
+      run against `dev-data/` shows the page's **empty** state. Worth knowing
+      before somebody wonders where their readers went.

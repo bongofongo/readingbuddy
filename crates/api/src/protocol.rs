@@ -403,6 +403,48 @@ pub enum Request {
     },
     /// Every reader we have paired with, plugged in or not.
     PairedDevices,
+    /// Forget a pairing **without the reader in hand** (item 55).
+    ///
+    /// Not a second door onto [`Request::UninstallPlugin`], and the difference
+    /// is the reason it exists: uninstall is *exact* — it takes the files off
+    /// the device and then drops our row — so it needs the mount. This drops
+    /// our row and **nothing else**, because a reader that has been sold, lost
+    /// or reformatted cannot be reached and a list you can only leave by
+    /// plugging something in is a list with no exit.
+    ///
+    /// A client's copy must say which happened. The plugin is still on that
+    /// device and still holds the token; if it ever comes back, installing
+    /// mints a fresh identity rather than resuming this one. The reply is
+    /// [`Response::Bool`] — `false` is *there was no such pairing*.
+    ForgetDevice {
+        device_id: String,
+    },
+    /// Name a reader (item 55).
+    ///
+    /// The default label is the mount's directory name — `KOBOeReader`,
+    /// `Kindle` — which is a fact about a filesystem rather than about the
+    /// object on the bedside table. An empty or whitespace-only `label`
+    /// **clears** the name rather than storing a blank, so a frontend's fallback
+    /// keeps working; `false` is *no such pairing*.
+    RenameDevice {
+        device_id: String,
+        label: String,
+    },
+    /// Bring across everything one mounted reader has to offer (item 55).
+    ///
+    /// **A method of its own rather than an argument to [`Request::SyncDevice`]**
+    /// for two reasons that are one: `SyncDevice` takes sidecar *paths* and so
+    /// cannot know whose they are — there is no device to stamp `last_synced_at`
+    /// on — and a client that scanned, held the paths and sent them back is
+    /// holding a handle across a round trip that the volume may have changed
+    /// underneath. This re-scans below the seam, which is this crate's own
+    /// "handles do not cross" applied to a filesystem.
+    ///
+    /// It does **not** import measured reading time; that is
+    /// [`Request::ImportDeviceStatistics`], for the reason stated there.
+    SyncMount {
+        mount: String,
+    },
 
     /// Measured reading time out of the device's `statistics.sqlite3`.
     ///
@@ -842,6 +884,7 @@ pub enum Response {
     PluginInstalled(InstallReportDto),
     PluginUninstalled(UninstallReportDto),
     PairedDevices(Vec<PairedDeviceDto>),
+    MountSync(MountSyncDto),
 
     GoodreadsReport(GoodreadsReportDto),
     /// The CSV, plus every honest failure along the way. The payload comes

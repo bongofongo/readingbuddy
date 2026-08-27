@@ -1,0 +1,44 @@
+-- When we last brought annotations across from a paired reader (item 55).
+--
+-- ## One column, one meaning, and the two neighbours it is not
+--
+-- `paired_devices` already carries two timestamps and neither answers the
+-- devices page's actual question. `installed_at` is when the *relationship*
+-- started and `0019` is explicit that a reinstall must not move it. `last_seen_at`
+-- is when the reader was last in hand — item 55 makes `plugin_status` stamp it,
+-- so it finally means what it says. Both are facts about the **link**.
+--
+-- This is a fact about the **data**: the last time *everything* this reader had
+-- was brought across. A frontend that inferred it from `last_seen_at` would tell
+-- somebody who plugged a Kobo in to charge it that their highlights are up to
+-- date.
+--
+-- **Everything, and so only `Engine::sync_mount` stamps it.** A one-book pull
+-- (`rb ko sync <mount> --book …`, `sync_device`) brings real data across and
+-- still leaves the question this column answers — *is this reader's reading here*
+-- — unchanged, so stamping on a partial would make "synced 3 minutes ago" mean
+-- "some of it, once". `sync_device` also takes sidecar paths and cannot know
+-- whose they are, which is the same fact arriving as a type.
+--
+-- Deliberately **not** stamped by a scan. A scan is read-only and happens on
+-- arrival — `docs/decisions.md` keeps mount → scan automatic precisely so that
+-- mount → write can be explicit — so a scan-stamped column would say "synced"
+-- about a reader nothing was taken from. It is not stamped by
+-- `import_device_statistics` either: measured minutes are a different datum with
+-- a different verb, and `0019`'s sibling decision (statistics is a method of its
+-- own and not part of `sync_device`) is the same argument one layer down.
+--
+-- ## No back-fill, and it could not have one
+--
+-- The repo's fourth deliberate non-back-fill, and the cleanest case of it:
+-- `sync_device` has never recorded which mount its paths came from, so there is
+-- no row anywhere — not in `device_books`, not in `sidecar_seen` — that could
+-- attribute a past import to a device id. `0012`'s rule applies exactly: a
+-- migration that guesses is worse than a NULL that says *not since we started
+-- recording*, which is what every caller has to handle anyway.
+--
+-- NULL is therefore ordinary and permanent for a reader paired before this
+-- migration, until the next sync. It is **not** "never synced" and a frontend
+-- must not phrase it that way.
+
+ALTER TABLE paired_devices ADD COLUMN last_synced_at INTEGER;

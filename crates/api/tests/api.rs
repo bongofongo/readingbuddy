@@ -1934,3 +1934,163 @@ async fn refusing_an_unrecognised_volume_is_its_own_error_code() {
     assert_eq!(err.code, ErrorCode::PluginRefused);
     assert_eq!(std::fs::read_dir(plain.path()).unwrap().count(), 0);
 }
+
+// ---- item 55: the devices page's four gaps ---------------------------------
+
+/// The three new methods, through `dispatch`, in the order a devices page uses
+/// them: look (which stamps *seen*), sync (which stamps *synced*), rename,
+/// forget.
+///
+/// The two stamps are asserted **apart**, because that separation is the whole
+/// of migration `0020`: a page that read `last_seen_at` as "your highlights are
+/// here" would tell somebody who plugged a Kobo in to charge it that it had
+/// synced.
+#[tokio::test]
+async fn the_devices_seam_round_trips_through_dispatch() {
+    let (api, _tmp) = api().await;
+    let reader = tempfile::tempdir().unwrap();
+    fake_reader(reader.path());
+    let mount = reader.path().display().to_string();
+
+    let report = match ok(api
+        .dispatch(Request::InstallPlugin {
+            mount: mount.clone(),
+        })
+        .await)
+    {
+        Response::PluginInstalled(r) => r,
+        other => panic!("{other:?}"),
+    };
+
+    // Looking is what records that the reader was in our hands.
+    ok(api
+        .dispatch(Request::PluginStatus {
+            mount: mount.clone(),
+        })
+        .await);
+    let seen = api.paired_devices().await.unwrap();
+    assert!(seen[0].last_seen_at.is_some());
+    assert_eq!(
+        seen[0].last_synced_at, None,
+        "looking at a reader is not syncing with it"
+    );
+    assert_eq!(seen[0].last_mount_path.as_deref(), Some(mount.as_str()));
+
+    // Syncing is what records that the data came across. The reader is empty,
+    // which is the case worth pinning: `found` and `synced` are both zero and
+    // the device is still identified, so a page can say *nothing new* rather
+    // than *no device*.
+    let sync = match ok(api
+        .dispatch(Request::SyncMount {
+            mount: mount.clone(),
+        })
+        .await)
+    {
+        Response::MountSync(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(sync.device_id.as_deref(), Some(report.device_id.as_str()));
+    assert_eq!((sync.found, sync.synced), (0, 0));
+    assert!(sync.reports.is_empty());
+    assert!(
+        api.paired_devices().await.unwrap()[0]
+            .last_synced_at
+            .is_some()
+    );
+
+    // A name of your own, and a blank one puts the fallback back.
+    match ok(api
+        .dispatch(Request::RenameDevice {
+            device_id: report.device_id.clone(),
+            label: "the bedside Kobo".into(),
+        })
+        .await)
+    {
+        Response::Bool(done) => assert!(done),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        api.paired_devices().await.unwrap()[0].label.as_deref(),
+        Some("the bedside Kobo")
+    );
+    ok(api
+        .dispatch(Request::RenameDevice {
+            device_id: report.device_id.clone(),
+            label: "  ".into(),
+        })
+        .await);
+    assert_eq!(api.paired_devices().await.unwrap()[0].label, None);
+
+    // Forgetting is our side only — and this is the assertion that says so.
+    match ok(api
+        .dispatch(Request::ForgetDevice {
+            device_id: report.device_id.clone(),
+        })
+        .await)
+    {
+        Response::Bool(done) => assert!(done),
+        other => panic!("{other:?}"),
+    }
+    assert!(api.paired_devices().await.unwrap().is_empty());
+    let still = api.plugin_status(reader.path()).await.unwrap();
+    assert!(
+        still.installed && !still.paired,
+        "forgetting must not reach the reader — the plugin is still on it"
+    );
+
+    // And it says whether there was anything to forget.
+    match ok(api
+        .dispatch(Request::ForgetDevice {
+            device_id: report.device_id,
+        })
+        .await)
+    {
+        Response::Bool(done) => assert!(!done),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `SyncMount` against a tree that is nobody's reader — a library directory on
+/// a disk. It must work and it must stamp nothing.
+///
+/// The refusal it would be easy to add here is the bug: `plugin::inspect`
+/// failing is not a reason to fail a sync, because importing sidecars has never
+/// needed a pairing.
+#[tokio::test]
+async fn syncing_a_tree_that_is_not_a_reader_is_ordinary() {
+    let (api, _tmp) = api().await;
+    let tree = tempfile::tempdir().unwrap();
+    let sync = match ok(api
+        .dispatch(Request::SyncMount {
+            mount: tree.path().display().to_string(),
+        })
+        .await)
+    {
+        Response::MountSync(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(sync.device_id, None);
+    assert_eq!((sync.found, sync.synced), (0, 0));
+    assert!(api.paired_devices().await.unwrap().is_empty());
+}
+
+/// Item 55 is additive: three new methods and one new field on a **response**
+/// DTO. A payload written before it still parses to the request it meant.
+///
+/// The field is the half worth stating. `ts-rs` emits a new field as required
+/// TypeScript however `#[serde(default)]` the Rust is, which is why a field may
+/// never be added to an existing `Request` — and why adding one to
+/// `PairedDeviceDto`, which no request carries, is safe.
+#[test]
+fn a_payload_written_before_the_devices_page_still_parses() {
+    let before: Request =
+        serde_json::from_str(r#"{"method":"sync_device","params":{"paths":["/mnt/k"]}}"#).unwrap();
+    assert!(matches!(before, Request::SyncDevice { .. }));
+    let before: Request = serde_json::from_str(r#"{"method":"paired_devices"}"#).unwrap();
+    assert!(matches!(before, Request::PairedDevices));
+    assert_eq!(
+        readingbuddy_api::API_VERSION,
+        2,
+        "item 55 added methods and reshaped none"
+    );
+}

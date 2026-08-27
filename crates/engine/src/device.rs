@@ -245,6 +245,32 @@ impl DeviceScan {
     }
 }
 
+/// What one whole-device sync did (item 55).
+///
+/// The reply to *bring everything across*, and it carries the scan it was
+/// decided from rather than only the imports: **"nothing to bring across" and
+/// "there is nothing on this device" are different answers**, and a report that
+/// held only `reports` would render them as the same empty list.
+#[derive(Debug, Default)]
+pub struct MountSync {
+    pub mount: PathBuf,
+    /// The paired reader this mount turned out to be, when it is one.
+    ///
+    /// `None` covers two ordinary cases and neither is an error: a KOReader
+    /// volume we have never installed onto, and one carrying a `pairing.lua`
+    /// minted by somebody else's copy of readingbuddy. The sync happens either
+    /// way — importing sidecars has never needed a pairing — and only the
+    /// `last_synced_at` stamp is skipped.
+    pub device_id: Option<String>,
+    /// Books the scan found, syncable or not.
+    pub found: usize,
+    /// Books that had something to bring across, and so were imported.
+    pub synced: usize,
+    pub reports: Vec<PullReport>,
+    /// The **scan's** warnings. Each report carries its own import's.
+    pub warnings: Vec<Diagnostic>,
+}
+
 /// Walk a mounted device (or any library tree) and report the state of every
 /// book on it. Read-only.
 ///

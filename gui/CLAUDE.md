@@ -43,8 +43,9 @@ gui/src/lib/book/             the desk's three columns + four pure modules (item
 gui/src/lib/moments/          the ceremony + its sentence (item 28)
 gui/src/lib/card/             one card, per reading (item 28)
 gui/src/lib/life/             the reading-life page's parts + its spans (item 28)
+gui/src/lib/devices/          the readers page: the join, its words, its two cards (item 55)
 gui/src/routes/(shell)/       the app with its header: +page (library), book/[id],
-                              book/[id]/cards, cards, notes, life
+                              book/[id]/cards, cards, notes, life, devices
 gui/src/routes/reading/       the app without one — reading mode (item 54)
 gui/src/lib/reading/          its panels and its one-panel-at-a-time rule
 gui/tests/routes.spec.ts      layer 2: every route, three viewports, WebKit
@@ -475,6 +476,58 @@ Three rules it carries:
   can be in the future — a Goodreads `Date Read`, a device clock — and the clamp
   turns that year into an inverted span the engine refuses, replacing the wall
   with an error.
+
+## Devices
+
+`/devices` (item 55) — the fifth place, and the only one about the app's edges
+rather than about a book. Every reader readingbuddy is paired with, what is
+plugged in now, the plugin install/upgrade/remove flow, and calibre.
+`../docs/decisions.md` entry 55 is the settled account.
+
+**The scan is automatic and the write never is**, and this screen is where that
+split is visible. `decisions.md` keeps mount → import automatic and read-only
+*so that* mount → install can be explicit and show its path; arriving here lists
+mounts, reads each plugin's status and scans each volume, all reads. **Do not
+add an auto-install.** It is the single most tempting change to the route and it
+would undo the decision the whole plugin design rests on.
+
+**The join is `device_id` and never `last_mount_path`.** Three requests answer
+three different questions — `pairedDevices` (readers you own, bag or not),
+`candidateMounts` (KOReader volumes plugged in), `pluginStatus` per mount (the
+only thing that reads a device id off a volume) — and migration `0019` is
+explicit that mount points move between sessions, ports and machines, so that
+column is a sentence about the past. Two Kobos plugged in one after the other
+share it. The join lives in `src/lib/devices/readers.ts` so its cases are
+reachable from vitest rather than only from a screenshot.
+
+**Branch on `PluginStatusDto.condition`, never on the version numbers beside
+it.** `installed_version < our_version` is a domain rule with a name, and item
+55 put the verdict below the seam precisely so this frontend does not become its
+third spelling — `crates/cli`'s `ko.rs` was already the second.
+
+**A refusal removes the control rather than disabling it.** A disabled button is
+a dead end wearing a tooltip. A reader we will not write to gets a sentence
+naming the file and the move; the install verb is *absent from the markup*,
+which is a claim about what is not there and therefore a Playwright assertion.
+
+**Counts are allowed and three shapes of them are not.** A figure about **one
+reader's own contents** has `/life`'s permission: a page you chose to open, past
+tense. Forbidden and asserted in `tests/routes.spec.ts` — a number in the nav,
+the completion vocabulary in the body, and any total *across* readers. Zero
+renders as nothing at all: a zero where a figure goes is a scoreboard reading
+zero.
+
+**`null` on `last_synced_at` is not *never*.** Migration `0020` shipped with no
+back-fill, so it means *not since readingbuddy started recording*, and
+`devices/words.test.ts` pins that the string never says *never*. `last_seen_at`
+is a different fact — plugging a reader in to charge it moves one and not the
+other — and the card draws them apart.
+
+**The fixture has no database counterpart and cannot get one.** `corpus
+gen-devdb` cannot mint a paired device: pairing writes to a mount and there is
+no mount on a build machine. So `crates/corpus/edge-cases.json` governs books
+only, this page's four readers live in `fake.ts` alone, and a real
+`pnpm tauri dev` against `dev-data/` shows the **empty** state.
 
 ## The tokens, and the two things measured about them
 

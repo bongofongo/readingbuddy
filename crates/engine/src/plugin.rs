@@ -134,7 +134,55 @@ pub struct PluginStatus {
     pub unrecognised: Vec<String>,
 }
 
+/// What an install onto this reader would do — the one question a screen
+/// branches on (item 55).
+///
+/// The three predicates below it are still the truth and still overlap by
+/// design; this collapses them into the **single mutually-exclusive** answer a
+/// frontend needs, so that comparing `installed_version` against `our_version`
+/// happens once, here, rather than once in `commands/ko.rs` and again in
+/// TypeScript. That second spelling is what item 17 exists to prevent, and the
+/// CLI had already grown the first.
+///
+/// **`Obstructed` wins over every version case**, because it is the one that
+/// gates the action: a reader carrying a plugin we edited, a stranger's file in
+/// our directory, or a version newer than ours is a reader we will not write
+/// to, and *which* of those it is comes from `modified` / `unrecognised` /
+/// `installed_version` beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginCondition {
+    /// Nothing of ours is there. An install writes.
+    Absent,
+    /// Ours, at the version we carry. An install rewrites it in place.
+    Current,
+    /// Ours, older. An install upgrades.
+    Upgradable,
+    /// Ours, carrying no version at all — a `_meta.lua` we could not read a
+    /// number out of. An install rewrites it, and this is deliberately not
+    /// folded into `Upgradable`: "older than ours" is a fact and "we cannot
+    /// tell" is not the same fact.
+    Unversioned,
+    /// We will not write here until the user resolves it.
+    Obstructed,
+}
+
 impl PluginStatus {
+    /// What an install here would do. See [`PluginCondition`].
+    pub fn condition(&self) -> PluginCondition {
+        if self.is_obstructed() {
+            return PluginCondition::Obstructed;
+        }
+        if !self.installed {
+            return PluginCondition::Absent;
+        }
+        match self.installed_version {
+            None => PluginCondition::Unversioned,
+            Some(v) if v < self.our_version => PluginCondition::Upgradable,
+            // `>` was taken by `is_obstructed` above, so this is equality.
+            Some(_) => PluginCondition::Current,
+        }
+    }
+
     /// An install here would land on top of a plugin that is already there.
     ///
     /// Says nothing about *versions* — a reinstall of the same version is one

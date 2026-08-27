@@ -491,6 +491,23 @@ impl Api {
         Ok(map(self.engine.paired_devices().await?))
     }
 
+    /// Drop our half of a pairing. See [`Request::ForgetDevice`] for why this is
+    /// not `uninstall_plugin` without a path.
+    pub async fn forget_device(&self, device_id: &str) -> ApiResult<bool> {
+        Ok(self.engine.forget_device(device_id).await?)
+    }
+
+    /// Name a reader. Blank clears it; `false` is *no such pairing*.
+    pub async fn rename_device(&self, device_id: &str, label: &str) -> ApiResult<bool> {
+        Ok(self.engine.rename_device(device_id, label).await?)
+    }
+
+    /// Bring across everything one mounted reader has to offer, and record that
+    /// we did. See [`Request::SyncMount`].
+    pub async fn sync_mount(&self, mount: &Path) -> ApiResult<MountSyncDto> {
+        Ok(self.engine.sync_mount(mount).await?.into())
+    }
+
     /// Measured reading time out of a mounted device's `statistics.sqlite3`
     /// (item 31), as rows in the activity log.
     ///
@@ -1085,6 +1102,13 @@ impl Api {
                 Response::PluginUninstalled(self.uninstall_plugin(Path::new(&mount)).await?)
             }
             R::PairedDevices => Response::PairedDevices(self.paired_devices().await?),
+            R::ForgetDevice { device_id } => Response::Bool(self.forget_device(&device_id).await?),
+            R::RenameDevice { device_id, label } => {
+                Response::Bool(self.rename_device(&device_id, &label).await?)
+            }
+            R::SyncMount { mount } => {
+                Response::MountSync(self.sync_mount(Path::new(&mount)).await?)
+            }
             R::SyncDevice { paths } => {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 Response::PullReports(self.sync_device(&paths).await?)

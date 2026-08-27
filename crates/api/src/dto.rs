@@ -48,12 +48,12 @@ use readingbuddy::{
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
     ImportReport, InstallReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment,
-    MomentKind, MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink,
-    PairedDevice, PluginStatus, Progress, PullReport, RankedResult, Rating, RatingScale, Reading,
-    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingState, ReadingYears,
-    RefillReport, SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource,
-    Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry,
-    UninstallReport, UnmatchedRow,
+    MomentKind, MonthActivity, MountSync, NewNoteInput, NoteCitations, NoteKind, NoteRecord,
+    OutgoingLink, PairedDevice, PluginCondition, PluginStatus, Progress, PullReport, RankedResult,
+    Rating, RatingScale, Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow,
+    ReadingSort, ReadingState, ReadingYears, RefillReport, SearchHit, SearchOutcome, SearchRequest,
+    SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents,
+    TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -2599,6 +2599,33 @@ impl From<DeviceScan> for DeviceScanDto {
     derive(ts_rs::TS),
     ts(export, export_to = "bindings.ts")
 )]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginConditionDto {
+    Absent,
+    Current,
+    Upgradable,
+    Unversioned,
+    Obstructed,
+}
+
+impl From<PluginCondition> for PluginConditionDto {
+    fn from(c: PluginCondition) -> Self {
+        match c {
+            PluginCondition::Absent => PluginConditionDto::Absent,
+            PluginCondition::Current => PluginConditionDto::Current,
+            PluginCondition::Upgradable => PluginConditionDto::Upgradable,
+            PluginCondition::Unversioned => PluginConditionDto::Unversioned,
+            PluginCondition::Obstructed => PluginConditionDto::Obstructed,
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginStatusDto {
     pub mount: String,
@@ -2613,11 +2640,25 @@ pub struct PluginStatusDto {
     pub device_id: Option<String>,
     pub modified: Vec<String>,
     pub unrecognised: Vec<String>,
+    /// What an install here would do — **the field a screen branches on**
+    /// (item 55).
+    ///
+    /// The four booleans and two numbers above are the evidence and this is the
+    /// verdict. It is here rather than recomputed above the seam for item 17's
+    /// reason: `installed_version < our_version` is a domain rule with a name,
+    /// the CLI had already spelled it once, and a second spelling in TypeScript
+    /// is how two frontends come to disagree about whether a reader needs an
+    /// upgrade with neither looking wrong.
+    pub condition: PluginConditionDto,
 }
 
 impl From<PluginStatus> for PluginStatusDto {
     fn from(s: PluginStatus) -> Self {
+        // The verdict is read before the struct is taken apart: `condition()`
+        // borrows fields the moves below consume.
+        let condition = s.condition().into();
         PluginStatusDto {
+            condition,
             mount: path_str(&s.mount),
             plugin_dir: path_str(&s.plugin_dir),
             installed: s.installed,
@@ -2702,7 +2743,19 @@ pub struct PairedDeviceDto {
     /// Where it was last plugged in. A sentence about the past — mount points
     /// move, and nothing may key on this.
     pub last_mount_path: Option<String>,
+    /// When this reader was last in our hands. Item 55 made it mean that:
+    /// `plugin_status` stamps it, so it is no longer a synonym for
+    /// `installed_at`.
     pub last_seen_at: Option<i64>,
+    /// When *everything* this reader had was last brought across.
+    ///
+    /// A different fact from `last_seen_at` and the reason migration `0020`
+    /// exists: plugging a reader in to charge it moves the first and not the
+    /// second. Only [`crate::Request::SyncMount`] stamps it — a one-book pull
+    /// leaves the question it answers unchanged. `None` is **not** *never synced* — the column arrived with no
+    /// back-fill, because nothing recorded which device a past sync read from,
+    /// so it means *not since we started recording* and copy must say so.
+    pub last_synced_at: Option<i64>,
 }
 
 impl From<PairedDevice> for PairedDeviceDto {
@@ -2714,6 +2767,50 @@ impl From<PairedDevice> for PairedDeviceDto {
             installed_at: d.installed_at,
             last_mount_path: d.last_mount_path,
             last_seen_at: d.last_seen_at,
+            last_synced_at: d.last_synced_at,
+        }
+    }
+}
+
+/// What one whole-device sync did (item 55).
+///
+/// **`found` and `synced` are both here on purpose.** *Nothing to bring across*
+/// and *there is nothing on this device* are different answers, and a report
+/// carrying only `reports` renders them as the same empty list — which is the
+/// difference between a reader that is up to date and one whose sidecars we
+/// could not see.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MountSyncDto {
+    pub mount: String,
+    /// The paired reader this mount turned out to be, when it is one.
+    ///
+    /// `None` is ordinary twice over: a KOReader volume we have never installed
+    /// onto, and one carrying a `pairing.lua` minted by another copy of
+    /// readingbuddy. The books come across either way — importing sidecars has
+    /// never needed a pairing — and only the `last_synced_at` stamp is skipped,
+    /// so a client must not read this as a failure.
+    pub device_id: Option<String>,
+    pub found: usize,
+    pub synced: usize,
+    pub reports: Vec<PullReportDto>,
+    /// The **scan's** warnings. Each entry in `reports` carries its import's.
+    pub warnings: Vec<DiagnosticDto>,
+}
+
+impl From<MountSync> for MountSyncDto {
+    fn from(s: MountSync) -> Self {
+        MountSyncDto {
+            mount: path_str(&s.mount),
+            device_id: s.device_id,
+            found: s.found,
+            synced: s.synced,
+            reports: s.reports.into_iter().map(Into::into).collect(),
+            warnings: s.warnings.into_iter().map(Into::into).collect(),
         }
     }
 }

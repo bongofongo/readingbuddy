@@ -27,18 +27,26 @@ import type {
   BookFileDto,
   BookSortDto,
   BookTagDto,
+  CalibreBookDto,
+  CalibreReportDto,
+  CalibreStatusDto,
   CreatedNoteDto,
+  DeviceScanDto,
   FieldSourceDto,
   FlashcardDto,
   HighlightDto,
+  InstallReportDto,
   MomentDto,
   MonthActivityDto,
+  MountSyncDto,
   NewNoteDto,
   NoteCitationsDto,
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
+  PairedDeviceDto,
   PathsDto,
+  PluginStatusDto,
   RatingDto,
   RatingScaleDto,
   ReadingDto,
@@ -47,7 +55,9 @@ import type {
   ReadingYearsDto,
   SearchHitDto,
   SearchSourceDto,
+  StatsImportReportDto,
   TableOfContentsDto,
+  UninstallReportDto,
 } from './bindings';
 import type {
   LibraryClient,
@@ -1026,6 +1036,241 @@ const READINGS: Record<number, ReadingDto[]> = {
  * fresh library and one page session accumulates its own edits. That is what
  * makes an edit in the running app visible without a database.
  */
+// ---------------------------------------------------------------------------
+// Item 55's readers. Not part of `crates/corpus/edge-cases.json` and that is
+// not an oversight: `gen-devdb` builds a real library out of a real engine and
+// **cannot mint a paired device**, because pairing writes to a mount and there
+// is no mount on a build machine. So this half of the fixture has no database
+// counterpart to drift from — and the consequence, worth knowing before you
+// wonder where your readers went, is that a real `make dev-db` run shows this
+// page's *empty* state.
+//
+// Four readers, each the shape a different branch would render wrong.
+// ---------------------------------------------------------------------------
+
+const KINDLE = '/run/media/oliver/Kindle';
+const KOBO = '/run/media/oliver/KOBOeReader';
+const POCKETBOOK = '/run/media/oliver/PB632';
+const BORROWED = '/media/oliver/Reader';
+
+/**
+ * Volumes that hold a KOReader install. The engine filters this below the seam;
+ * here it is a list, because the *filtering* is not what a screen renders.
+ */
+const MOUNTS = [KINDLE, KOBO, POCKETBOOK, BORROWED];
+
+const PAIRED: PairedDeviceDto[] = [
+  // 1. The ordinary reader: named, plugged in, up to date, everything across.
+  //    The case every other one is a departure from.
+  {
+    device_id: 'd1f0c2ae9b7645bc',
+    label: 'Kindle',
+    plugin_version: 1,
+    installed_at: 1_745_000_000,
+    last_mount_path: KINDLE,
+    last_seen_at: 1_756_200_000,
+    last_synced_at: 1_756_199_000,
+  },
+  // 2. A name the user typed, and a long one. The label is the only field on
+  //    this page a person controls, so it is the only one that can be any
+  //    length at all — and a card laid out for `Kindle` breaks here.
+  {
+    device_id: 'b7c3e1049fa2d8e6',
+    label: 'the Kobo I keep by the bed and lend to absolutely everybody',
+    plugin_version: 1,
+    installed_at: 1_700_000_000,
+    last_mount_path: KOBO,
+    last_seen_at: 1_756_100_000,
+    last_synced_at: null,
+  },
+  // 3. **No label at all**, so the name falls back to the id — and `last_seen`
+  //    is old, because this is the reader in a bag. `last_synced_at: null` here
+  //    is the case the copy is most likely to get wrong: it means *not since
+  //    readingbuddy started recording*, never *never*.
+  {
+    device_id: '3a9d5f7e2c1b4088',
+    label: null,
+    plugin_version: 1,
+    installed_at: 1_690_000_000,
+    last_mount_path: '/run/media/oliver/KOBOeReader',
+    last_seen_at: 1_692_000_000,
+    last_synced_at: null,
+  },
+  // 4. Plugged in, and we will not write to it: a file of ours was edited on
+  //    the device. The refusal has to name the file and the next move.
+  {
+    device_id: 'ff02aa4411bb99cc',
+    label: 'the one I lent Sam',
+    plugin_version: 1,
+    installed_at: 1_752_000_000,
+    last_mount_path: BORROWED,
+    last_seen_at: 1_756_000_000,
+    last_synced_at: 1_752_100_000,
+  },
+];
+
+/** What each mount's plugin says. Keyed by mount, because that is what is asked. */
+const PLUGINS: Record<string, PluginStatusDto> = {
+  [KINDLE]: {
+    mount: KINDLE,
+    plugin_dir: `${KINDLE}/koreader/plugins/readingbuddy.koplugin`,
+    installed: true,
+    installed_version: 1,
+    our_version: 1,
+    paired: true,
+    device_id: 'd1f0c2ae9b7645bc',
+    modified: [],
+    unrecognised: [],
+    condition: 'current',
+  },
+  [KOBO]: {
+    mount: KOBO,
+    plugin_dir: `${KOBO}/.adds/koreader/plugins/readingbuddy.koplugin`,
+    installed: true,
+    // An older plugin than this build carries. The upgrade is the one write
+    // that is safe to offer prominently, since it is our own directory.
+    installed_version: 1,
+    our_version: 2,
+    paired: true,
+    device_id: 'b7c3e1049fa2d8e6',
+    modified: [],
+    unrecognised: [],
+    condition: 'upgradable',
+  },
+  // A KOReader volume with nothing of ours on it — the *connect a new reader*
+  // case, and the one whose flow must show `plugin_dir` before it writes.
+  [POCKETBOOK]: {
+    mount: POCKETBOOK,
+    plugin_dir: `${POCKETBOOK}/applications/koreader/plugins/readingbuddy.koplugin`,
+    installed: false,
+    installed_version: null,
+    our_version: 2,
+    paired: false,
+    device_id: null,
+    modified: [],
+    unrecognised: [],
+    condition: 'absent',
+  },
+  [BORROWED]: {
+    mount: BORROWED,
+    plugin_dir: `${BORROWED}/koreader/plugins/readingbuddy.koplugin`,
+    installed: true,
+    installed_version: 1,
+    our_version: 2,
+    paired: true,
+    device_id: 'ff02aa4411bb99cc',
+    modified: ['main.lua'],
+    unrecognised: ['notes.txt'],
+    condition: 'obstructed',
+  },
+};
+
+/**
+ * What a scan of each mount finds.
+ *
+ * The Kindle has something to bring across and the Kobo does not, which is the
+ * pair that matters: *nothing new* and *nothing here* must not render as the
+ * same sentence, and a device with `books: []` is the second.
+ */
+const SCANS: Record<string, DeviceScanDto> = {
+  [KINDLE]: {
+    root: KINDLE,
+    books: [
+      {
+        path: `${KINDLE}/documents/Piranesi.sdr/metadata.epub.lua`,
+        title: 'Piranesi',
+        authors: 'Susanna Clarke',
+        partial_md5: 'aa11',
+        book_id: 3,
+        matched_by: 'md5',
+        state: { state: 'updated', new_highlights: 4, refreshed: 1 },
+        ko_percent: 0.41,
+        ko_status: { status: 'reading' },
+      },
+      {
+        path: `${KINDLE}/documents/Solaris.sdr/metadata.epub.lua`,
+        title: 'Solaris',
+        authors: 'Stanisław Lem',
+        partial_md5: 'bb22',
+        book_id: null,
+        matched_by: null,
+        state: { state: 'new', candidates: [] },
+        ko_percent: 0.02,
+        ko_status: null,
+      },
+      {
+        path: `${KINDLE}/documents/Dune.sdr/metadata.epub.lua`,
+        title: 'Dune',
+        authors: 'Frank Herbert',
+        partial_md5: 'cc33',
+        book_id: 12,
+        matched_by: 'md5',
+        state: { state: 'unchanged' },
+        ko_percent: 1,
+        ko_status: { status: 'complete' },
+      },
+    ],
+    warnings: [],
+    parsed: 3,
+    cached: 0,
+  },
+  // Nothing on it at all. Not an error, and not the same picture as *up to
+  // date* — a reader you have never read on is a reader you have never read on.
+  [KOBO]: { root: KOBO, books: [], warnings: [], parsed: 0, cached: 0 },
+  [POCKETBOOK]: {
+    root: POCKETBOOK,
+    books: [
+      {
+        path: `${POCKETBOOK}/Books/Ubik.sdr/metadata.epub.lua`,
+        title: 'Ubik',
+        authors: 'Philip K. Dick',
+        partial_md5: 'dd44',
+        book_id: null,
+        matched_by: null,
+        state: { state: 'new', candidates: [] },
+        ko_percent: 0.6,
+        ko_status: { status: 'reading' },
+      },
+    ],
+    warnings: [],
+    parsed: 1,
+    cached: 0,
+  },
+  [BORROWED]: {
+    root: BORROWED,
+    books: [
+      {
+        path: `${BORROWED}/koreader/help/Quickstart.sdr/metadata.epub.lua`,
+        title: null,
+        authors: null,
+        partial_md5: 'ee55',
+        book_id: null,
+        matched_by: null,
+        // One unreadable sidecar must not cost the view of the rest, and it is
+        // the only place a `DiagnosticDto` renders on this page.
+        state: {
+          state: 'unreadable',
+          // `display` is the engine's own `Display`, carried rather than
+          // re-derived — three clients formatting the same warning is three
+          // chances to disagree with the CLI about it. A screen renders that.
+          diagnostic: {
+            kind: 'sidecar_unparsable',
+            path: 'koreader/help/Quickstart.sdr/metadata.epub.lua',
+            severity: 'warning',
+            detail: 'attempt to call a nil value',
+            display: 'could not parse koreader/help/Quickstart.sdr/metadata.epub.lua',
+          },
+        },
+        ko_percent: null,
+        ko_status: null,
+      },
+    ],
+    warnings: [],
+    parsed: 1,
+    cached: 0,
+  },
+};
+
 export class FakeClient implements LibraryClient {
   #notes: NoteDto[] = NOTES.map((n) => ({ ...n }));
   #bodies: Record<number, string> = { ...BODIES };
@@ -1047,6 +1292,14 @@ export class FakeClient implements LibraryClient {
   /** Moments already handed back. Acknowledging is idempotent, so this is a set. */
   #surfaced = new Set<string>();
   #device: boolean;
+  /** Item 55's readers, and the three overlays that make the page's writes real. */
+  #paired = PAIRED;
+  #forgotten = new Set<string>();
+  #labels: Record<string, string | null> = {};
+  #installed: Record<string, Partial<PluginStatusDto>> = {};
+  #synced = new Set<string>();
+  #plugged: boolean;
+  #calibre: boolean;
 
   /**
    * `device: false` is **a reader, not an edge case** — the required fixture.
@@ -1061,8 +1314,14 @@ export class FakeClient implements LibraryClient {
    * It is a constructor argument rather than a twenty-second fixture book
    * because it is a property of the whole library and not of one row.
    */
-  constructor(options: { device?: boolean } = {}) {
+  constructor(options: { device?: boolean; plugged?: boolean; calibre?: boolean } = {}) {
     this.#device = options.device ?? true;
+    // Both default to *present*, so the route suite renders the populated page
+    // — the one with four readers and every branch in it. The empty states are
+    // reached from vitest, which is where they are asserted; layer 2 picks its
+    // fake by URL alone and has no way to construct one.
+    this.#plugged = options.plugged ?? true;
+    this.#calibre = options.calibre ?? true;
   }
 
   async paths(): Promise<PathsDto> {
@@ -1763,6 +2022,184 @@ export class FakeClient implements LibraryClient {
   /** The hero shot's bytes are withheld for `coverSrc`'s reason. */
   heroSrc(): string | null {
     return null;
+  }
+
+  // ---- the devices page (items 15a, 55) -----------------------------------
+
+  async pairedDevices(): Promise<PairedDeviceDto[]> {
+    // Newest-seen first, which is the engine's own order
+    // (`COALESCE(last_seen_at, installed_at) DESC`). Stated here rather than
+    // left to array order, because a screen that re-sorted would look right
+    // against a fixture that happened to already be sorted.
+    return (
+      this.#paired
+        .filter((d) => !this.#forgotten.has(d.device_id))
+        // `in`, never `?? d.label`. A **cleared** name is stored as `null`, and
+        // `??` cannot tell that apart from *no rename happened* — so the blank
+        // that the engine deliberately stores as NULL would render as the old
+        // name for ever. The same trap is one keystroke away in any client.
+        .map((d) => ({
+          ...d,
+          label: d.device_id in this.#labels ? this.#labels[d.device_id]! : d.label,
+        }))
+        .sort((a, b) => (b.last_seen_at ?? b.installed_at) - (a.last_seen_at ?? a.installed_at))
+    );
+  }
+
+  async candidateMounts(): Promise<string[]> {
+    return this.#plugged ? [...MOUNTS] : [];
+  }
+
+  async pluginStatus(mount: string): Promise<PluginStatusDto> {
+    const status = PLUGINS[mount];
+    // The real engine refuses a path that is not a KOReader install, and it is
+    // an *error* rather than an empty status — a screen that treated the two
+    // the same would offer to install onto a USB stick.
+    if (status === undefined) throw new Error(`${mount} is not a KOReader install`);
+    return { ...status, ...(this.#installed[mount] ?? {}) };
+  }
+
+  async installPlugin(mount: string): Promise<InstallReportDto> {
+    const status = await this.pluginStatus(mount);
+    if (status.condition === 'obstructed') {
+      throw new Error('readingbuddy will not write over a plugin it did not put here');
+    }
+    const deviceId = status.device_id ?? `fake${mount.length}0000000000`;
+    this.#installed[mount] = {
+      installed: true,
+      installed_version: status.our_version,
+      paired: true,
+      device_id: deviceId,
+      condition: 'current',
+    };
+    this.#forgotten.delete(deviceId);
+    return {
+      plugin_dir: status.plugin_dir,
+      device_id: deviceId,
+      version: status.our_version,
+      written: ['_meta.lua', 'main.lua', 'manifest.lua', 'pairing.lua'],
+      upgraded_from: status.installed ? status.installed_version : null,
+    };
+  }
+
+  async uninstallPlugin(mount: string): Promise<UninstallReportDto> {
+    const status = await this.pluginStatus(mount);
+    this.#installed[mount] = {
+      installed: false,
+      installed_version: null,
+      paired: false,
+      device_id: null,
+      condition: 'absent',
+    };
+    if (status.device_id !== null) this.#forgotten.add(status.device_id);
+    return {
+      plugin_dir: status.plugin_dir,
+      removed: ['_meta.lua', 'main.lua', 'manifest.lua', 'pairing.lua'],
+      forgot_device: status.device_id,
+    };
+  }
+
+  async forgetDevice(deviceId: string): Promise<boolean> {
+    if (this.#forgotten.has(deviceId)) return false;
+    if (!this.#paired.some((d) => d.device_id === deviceId)) return false;
+    this.#forgotten.add(deviceId);
+    return true;
+  }
+
+  async renameDevice(deviceId: string, label: string): Promise<boolean> {
+    if (!this.#paired.some((d) => d.device_id === deviceId)) return false;
+    if (this.#forgotten.has(deviceId)) return false;
+    // Blank **clears**, exactly as the engine does — a row holding `"   "` is
+    // what a screen's fallback could not recover from.
+    this.#labels[deviceId] = label.trim() === '' ? null : label.trim();
+    return true;
+  }
+
+  async scanDevice(root: string): Promise<DeviceScanDto> {
+    const scan = SCANS[root];
+    if (scan === undefined) throw new Error(`${root} is not a KOReader install`);
+    if (this.#synced.has(root)) {
+      // After a sync, everything the scan found is here. `books` keeps its
+      // length: *nothing new* is a device with books in an `unchanged` state,
+      // and `books: []` is a different sentence.
+      return {
+        ...scan,
+        books: scan.books.map((b) =>
+          b.state.state === 'unreadable' ? b : { ...b, state: { state: 'unchanged' } },
+        ),
+        parsed: 0,
+        cached: scan.books.length,
+      };
+    }
+    return scan;
+  }
+
+  async syncMount(mount: string): Promise<MountSyncDto> {
+    const scan = await this.scanDevice(mount);
+    const syncable = scan.books.filter(
+      (b) => b.state.state === 'new' || b.state.state === 'updated',
+    );
+    this.#synced.add(mount);
+    const status = PLUGINS[mount];
+    return {
+      mount,
+      // `null` when the mount is nobody's paired reader — the books still came
+      // across, and only the stamp is skipped.
+      device_id: status?.paired ? (status.device_id ?? null) : null,
+      found: scan.books.length,
+      synced: syncable.length,
+      reports: syncable.map((b) => ({
+        stats: {
+          book_id: b.book_id ?? 0,
+          book_title: b.title ?? 'Untitled',
+          inserted: 4,
+          updated: 1,
+          skipped: 0,
+          flashcards: 0,
+          matched_by: b.book_id === null ? 'new' : 'md5',
+          percent_finished: b.ko_percent,
+          status: b.ko_status,
+          rating: null,
+        },
+        warnings: [],
+      })),
+      warnings: scan.warnings,
+    };
+  }
+
+  async importDeviceStatistics(_mount: string): Promise<StatsImportReportDto> {
+    return {
+      schema_version: 20221111,
+      books_in_db: 42,
+      books_matched: 12,
+      days: 96,
+      events: { inserted: 96, updated: 3 },
+      warnings: [],
+    };
+  }
+
+  // ---- calibre ------------------------------------------------------------
+
+  async calibreStatus(): Promise<CalibreStatusDto> {
+    return this.#calibre
+      ? { ebook_convert: '/usr/bin/ebook-convert', calibredb: '/usr/bin/calibredb' }
+      : // Both absent is a perfectly good answer and **not an error**: calibre
+        // is feature-detected and nothing in this app asks anybody to install it.
+        { ebook_convert: null, calibredb: null };
+  }
+
+  async calibreLibrary(): Promise<CalibreBookDto[]> {
+    return [];
+  }
+
+  async importCalibreLibrary(options: { dryRun?: boolean } = {}): Promise<CalibreReportDto> {
+    return {
+      dry_run: options.dryRun ?? false,
+      rows: 214,
+      books: [],
+      unmatched: [],
+      warnings: [],
+    };
   }
 }
 

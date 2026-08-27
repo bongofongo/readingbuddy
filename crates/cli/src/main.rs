@@ -416,6 +416,26 @@ enum PluginCmd {
         /// The mount. Omitted, a mounted KOReader device is looked for
         path: Option<PathBuf>,
     },
+    /// Give a paired reader a name of your own (item 55)
+    ///
+    /// The default is the mount's directory name — `KOBOeReader`, `Kindle` —
+    /// which describes a filesystem rather than the thing on your bedside
+    /// table. An empty name puts the default back.
+    Rename {
+        /// The device id, or enough of its start to be unambiguous
+        device: String,
+        /// The name
+        label: String,
+    },
+    /// Forget a reader you do not have in hand (item 55)
+    ///
+    /// Our side only. `uninstall` is exact — it takes the files off the device
+    /// — so it needs the reader plugged in; this is for one that has been sold,
+    /// lost or reformatted, and it leaves the plugin where it is.
+    Forget {
+        /// The device id, or enough of its start to be unambiguous
+        device: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -606,6 +626,12 @@ async fn main() -> Result<()> {
                 }
                 PluginCmd::Uninstall { path } => {
                     commands::ko::plugin_uninstall(&engine, path.as_deref()).await?
+                }
+                PluginCmd::Rename { device, label } => {
+                    commands::ko::plugin_rename(&engine, &device, &label).await?
+                }
+                PluginCmd::Forget { device } => {
+                    commands::ko::plugin_forget(&engine, &device).await?
                 }
             },
             KoCmd::Sync { path, all, books } => {

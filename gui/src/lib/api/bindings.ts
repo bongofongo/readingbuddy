@@ -720,6 +720,31 @@ books: number,
  */
 activity_days: number, minutes: number | null, pages: number | null, };
 
+/**
+ * What one whole-device sync did (item 55).
+ *
+ * **`found` and `synced` are both here on purpose.** *Nothing to bring across*
+ * and *there is nothing on this device* are different answers, and a report
+ * carrying only `reports` renders them as the same empty list — which is the
+ * difference between a reader that is up to date and one whose sidecars we
+ * could not see.
+ */
+export type MountSyncDto = { mount: string, 
+/**
+ * The paired reader this mount turned out to be, when it is one.
+ *
+ * `None` is ordinary twice over: a KOReader volume we have never installed
+ * onto, and one carrying a `pairing.lua` minted by another copy of
+ * readingbuddy. The books come across either way — importing sidecars has
+ * never needed a pairing — and only the `last_synced_at` stamp is skipped,
+ * so a client must not read this as a failure.
+ */
+device_id: string | null, found: number, synced: number, reports: Array<PullReportDto>, 
+/**
+ * The **scan's** warnings. Each entry in `reports` carries its import's.
+ */
+warnings: Array<DiagnosticDto>, };
+
 export type NewNoteDto = { book_id: number | null, reading_id: number | null, highlight_id: number | null, page: number | null, location: string | null, kind: NoteKindDto, title: string | null, body: string, };
 
 /**
@@ -796,7 +821,24 @@ export type PairedDeviceDto = { device_id: string, label: string | null, plugin_
  * Where it was last plugged in. A sentence about the past — mount points
  * move, and nothing may key on this.
  */
-last_mount_path: string | null, last_seen_at: number | null, };
+last_mount_path: string | null, 
+/**
+ * When this reader was last in our hands. Item 55 made it mean that:
+ * `plugin_status` stamps it, so it is no longer a synonym for
+ * `installed_at`.
+ */
+last_seen_at: number | null, 
+/**
+ * When *everything* this reader had was last brought across.
+ *
+ * A different fact from `last_seen_at` and the reason migration `0020`
+ * exists: plugging a reader in to charge it moves the first and not the
+ * second. Only [`crate::Request::SyncMount`] stamps it — a one-book pull
+ * leaves the question it answers unchanged. `None` is **not** *never synced* — the column arrived with no
+ * back-fill, because nothing recorded which device a past sync read from,
+ * so it means *not since we started recording* and copy must say so.
+ */
+last_synced_at: number | null, };
 
 /**
  * The paths a settings screen shows. Not handles — a client that is not on
@@ -804,13 +846,27 @@ last_mount_path: string | null, last_seen_at: number | null, };
  */
 export type PathsDto = { db_url: string, images_dir: string, vault_dir: string, files_dir: string, log_dir: string, };
 
+export type PluginConditionDto = "absent" | "current" | "upgradable" | "unversioned" | "obstructed";
+
 export type PluginStatusDto = { mount: string, 
 /**
  * Exactly where an install would write. A client shows this *before* it
  * asks, which is what makes putting something on a reader an explicit act
  * rather than a convenience.
  */
-plugin_dir: string, installed: boolean, installed_version: number | null, our_version: number, paired: boolean, device_id: string | null, modified: Array<string>, unrecognised: Array<string>, };
+plugin_dir: string, installed: boolean, installed_version: number | null, our_version: number, paired: boolean, device_id: string | null, modified: Array<string>, unrecognised: Array<string>, 
+/**
+ * What an install here would do — **the field a screen branches on**
+ * (item 55).
+ *
+ * The four booleans and two numbers above are the evidence and this is the
+ * verdict. It is here rather than recomputed above the seam for item 17's
+ * reason: `installed_version < our_version` is a domain rule with a name,
+ * the CLI had already spelled it once, and a second spelling in TypeScript
+ * is how two frontends come to disagree about whether a reader needs an
+ * upgrade with neither looking wrong.
+ */
+condition: PluginConditionDto, };
 
 /**
  * How far into a book a reading is. The mirror of [`readingbuddy::Progress`],
@@ -1156,7 +1212,7 @@ filter: ReadingFilterDto | null, } } | { "method": "get_reading", "params": { id
  * Create a book even over a near-miss candidate. Without it an
  * ambiguous file comes back as `Unmatched` with **nothing written**.
  */
-new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "plugin_status", "params": { mount: string, } } | { "method": "install_plugin", "params": { mount: string, } } | { "method": "uninstall_plugin", "params": { mount: string, } } | { "method": "paired_devices" } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "activity_by_month", "params": { from: string, to: string, } } | { "method": "pending_moments", "params": { limit: number | null, } } | { "method": "acknowledge_moment", "params": { id: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, reading_id: number | null, limit: number | null, } } | { "method": "search_marks", "params": { query: string, source: SearchSourceDto | null, book_id: number | null, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "citations_for_notes", "params": { note_ids: Array<number>, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
+new: boolean, } } | { "method": "add_file_to_book", "params": { book_id: number, path: string, } } | { "method": "identify_file", "params": { path: string, } } | { "method": "book_files", "params": { book_id: number, } } | { "method": "table_of_contents", "params": { book_id: number, } } | { "method": "file_path", "params": { sha256: string, } } | { "method": "remove_file", "params": { sha256: string, } } | { "method": "import_koreader", "params": { path: string, dry_run: boolean, } } | { "method": "pull_book_from_sidecar", "params": { path: string, } } | { "method": "sidecar_candidates", "params": { path: string, } } | { "method": "link_sidecar", "params": { path: string, book_id: number, } } | { "method": "candidate_mounts" } | { "method": "is_koreader_mount", "params": { path: string, } } | { "method": "scan_device", "params": { root: string, } } | { "method": "sync_device", "params": { paths: Array<string>, } } | { "method": "plugin_status", "params": { mount: string, } } | { "method": "install_plugin", "params": { mount: string, } } | { "method": "uninstall_plugin", "params": { mount: string, } } | { "method": "paired_devices" } | { "method": "forget_device", "params": { device_id: string, } } | { "method": "rename_device", "params": { device_id: string, label: string, } } | { "method": "sync_mount", "params": { mount: string, } } | { "method": "import_device_statistics", "params": { mount: string, } } | { "method": "refill_reading_events" } | { "method": "reading_events", "params": { book_id: number, } } | { "method": "activity_summary", "params": { from: string, to: string, } } | { "method": "activity_by_day", "params": { from: string, to: string, } } | { "method": "activity_by_month", "params": { from: string, to: string, } } | { "method": "pending_moments", "params": { limit: number | null, } } | { "method": "acknowledge_moment", "params": { id: string, } } | { "method": "create_note", "params": { note: NewNoteDto, } } | { "method": "list_notes", "params": { book_id: number | null, reading_id: number | null, limit: number | null, } } | { "method": "search_marks", "params": { query: string, source: SearchSourceDto | null, book_id: number | null, limit: number, } } | { "method": "get_note", "params": { id: number, } } | { "method": "note_for_reading", "params": { reading_id: number, kind: NoteKindDto, } } | { "method": "note_path", "params": { note_id: number, } } | { "method": "note_body", "params": { note_id: number, } } | { "method": "update_note_body", "params": { note_id: number, body: string, } } | { "method": "delete_note", "params": { note_id: number, } } | { "method": "refresh_note_from_disk", "params": { note_id: number, } } | { "method": "outgoing_links", "params": { note_id: number, } } | { "method": "backlinks", "params": { note_id: number, } } | { "method": "open_reflection", "params": { book_id: number, reading_id: number | null, } } | { "method": "open_review", "params": { book_id: number, reading_id: number | null, } } | { "method": "set_rating", "params": { note_id: number, value: number, } } | { "method": "review_rating", "params": { note_id: number, } } | { "method": "clear_review_rating", "params": { note_id: number, } } | { "method": "goodreads_rating", "params": { note_id: number, } } | { "method": "put_rating_scale", "params": { name: string, min: number, max: number, step: number, } } | { "method": "rating_scales" } | { "method": "active_rating_scale" } | { "method": "rating_scale_by_name", "params": { name: string, } } | { "method": "rating_map", "params": { scale_id: number, } } | { "method": "map_rating", "params": { scale_id: number, value: number, goodreads: number, } } | { "method": "cite", "params": { note_id: number, highlight_id: number, } } | { "method": "uncite", "params": { note_id: number, highlight_id: number, } } | { "method": "citations_for", "params": { note_id: number, } } | { "method": "citations_for_notes", "params": { note_ids: Array<number>, } } | { "method": "import_goodreads", "params": { path: string, dry_run: boolean, create_ambiguous: boolean, } } | { "method": "export_goodreads" } | { "method": "link_goodreads_row", "params": { external_id: string, book_id: number, } } | { "method": "calibre_status" } | { "method": "convert_ebook", "params": { input: string, output: string, overwrite: boolean, } } | { "method": "calibre_library", "params": { library: string | null, } } | { "method": "import_calibre_library", "params": { library: string | null, dry_run: boolean, create_ambiguous: boolean, 
 /**
  * Import only these calibre rows. Empty — and so an absent field — is
  * the whole library, which is what keeps an older client's request
@@ -1167,7 +1223,7 @@ only: Array<number>, } } | { "method": "link_calibre_book", "params": { uuid: st
 /**
  * What came back, by shape. See [`Request`] on the size of these variants.
  */
-export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "reading_rows", "value": Array<ReadingRowDto> } | { "shape": "reading_years", "value": ReadingYearsDto } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "highlight", "value": HighlightDto | null } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "note_citations", "value": Array<NoteCitationsDto> } | { "shape": "search_hits", "value": Array<SearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "moments", "value": Array<MomentDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "activity_by_month", "value": Array<MonthActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "plugin_status", "value": PluginStatusDto } | { "shape": "plugin_installed", "value": InstallReportDto } | { "shape": "plugin_uninstalled", "value": UninstallReportDto } | { "shape": "paired_devices", "value": Array<PairedDeviceDto> } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
+export type Response = { "shape": "unit" } | { "shape": "bool", "value": boolean } | { "shape": "id", "value": number } | { "shape": "text", "value": string } | { "shape": "maybe_path", "value": string | null } | { "shape": "paths", "value": Array<string> } | { "shape": "version", "value": { api: number, crate_version: string, } } | { "shape": "where", "value": PathsDto } | { "shape": "count", "value": number } | { "shape": "book", "value": BookDto | null } | { "shape": "books", "value": Array<BookDto> } | { "shape": "book_summaries", "value": Array<BookSummaryDto> } | { "shape": "book_tags", "value": Array<BookTagDto> } | { "shape": "open_readings", "value": Array<OpenReadingDto> } | { "shape": "merge_report", "value": MergeReportDto } | { "shape": "reading", "value": ReadingDto | null } | { "shape": "readings", "value": Array<ReadingDto> } | { "shape": "reading_rows", "value": Array<ReadingRowDto> } | { "shape": "reading_years", "value": ReadingYearsDto } | { "shape": "highlights", "value": Array<HighlightDto> } | { "shape": "highlight", "value": HighlightDto | null } | { "shape": "search_outcome", "value": SearchOutcomeDto } | { "shape": "note", "value": NoteDto | null } | { "shape": "notes", "value": Array<NoteDto> } | { "shape": "note_citations", "value": Array<NoteCitationsDto> } | { "shape": "search_hits", "value": Array<SearchHitDto> } | { "shape": "links", "value": Array<OutgoingLinkDto> } | { "shape": "created_note", "value": CreatedNoteDto } | { "shape": "rating", "value": RatingDto | null } | { "shape": "goodreads_rating", "value": number | null } | { "shape": "rating_scale", "value": RatingScaleDto | null } | { "shape": "rating_scales", "value": Array<RatingScaleDto> } | { "shape": "rating_map", "value": Array<RatingMapEntryDto> } | { "shape": "book_files", "value": Array<BookFileDto> } | { "shape": "file_identity", "value": FileIdentityDto } | { "shape": "file_import", "value": FileImportReportDto } | { "shape": "table_of_contents", "value": TableOfContentsDto | null } | { "shape": "enrich_report", "value": EnrichReportDto } | { "shape": "field_provenance", "value": Array<FieldSourceDto> } | { "shape": "reading_events", "value": Array<ReadingEventDto> } | { "shape": "moments", "value": Array<MomentDto> } | { "shape": "refill_report", "value": RefillReportDto } | { "shape": "activity_summary", "value": ActivitySummaryDto } | { "shape": "activity_by_day", "value": Array<DayActivityDto> } | { "shape": "activity_by_month", "value": Array<MonthActivityDto> } | { "shape": "stats_import", "value": StatsImportReportDto } | { "shape": "import_report", "value": ImportReportDto } | { "shape": "pull_report", "value": PullReportDto } | { "shape": "pull_reports", "value": Array<PullReportDto> } | { "shape": "candidates", "value": Array<MatchCandidateDto> } | { "shape": "device_scan", "value": DeviceScanDto } | { "shape": "plugin_status", "value": PluginStatusDto } | { "shape": "plugin_installed", "value": InstallReportDto } | { "shape": "plugin_uninstalled", "value": UninstallReportDto } | { "shape": "paired_devices", "value": Array<PairedDeviceDto> } | { "shape": "mount_sync", "value": MountSyncDto } | { "shape": "goodreads_report", "value": GoodreadsReportDto } | { "shape": "goodreads_export", "value": { csv: string, warnings: Array<DiagnosticDto>, } } | { "shape": "calibre_status", "value": CalibreStatusDto } | { "shape": "calibre_library", "value": Array<CalibreBookDto> } | { "shape": "calibre_report", "value": CalibreReportDto } | { "shape": "flashcards", "value": Array<FlashcardDto> } | { "shape": "flashcard_export", "value": { tsv: string, count: number, } };
 
 /**
  * One hit in the one ranked list, carrying whichever row matched.

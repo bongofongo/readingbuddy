@@ -65,6 +65,13 @@ const ROUTES = [
   // A `?book=` naming a book that is not open. It must land on an open read
   // rather than on an error, and this is the only place that branch renders.
   { name: 'reading-stale-book', path: '/reading?book=9999' },
+  // Item 55. The fifth place, and the fixture behind it is four readers chosen
+  // for four different failures: an ordinary one, a name long enough to break a
+  // card laid out for `Kindle`, a volume with nothing of ours on it (the
+  // install flow, whose destination path must be on screen before it writes),
+  // and one readingbuddy refuses to write to because a file of ours was edited
+  // on the device. Plus a reader in a bag with no name at all.
+  { name: 'devices', path: '/devices' },
 ];
 
 for (const route of ROUTES) {
@@ -77,7 +84,7 @@ for (const route of ROUTES) {
     // The screens fetch in an `$effect`, so "rendered" means the placeholder is
     // gone — not that the document loaded.
     await expect(page.locator('main')).not.toContainText(
-      /Reading the shelf…|Opening…|Reading the log…/,
+      /Reading the shelf…|Opening…|Reading the log…|Looking for readers…/,
     );
 
     // Nothing is a dead end: every screen shows a next move. On the library that
@@ -1230,3 +1237,126 @@ for (const panel of PANELS) {
     await expect(page).toHaveScreenshot(`${panel.name}.png`, { fullPage: true });
   });
 }
+
+/**
+ * The devices page's working state — item 55.
+ *
+ * The resting state is in `ROUTES`, and it is **half the design**: the
+ * install's destination path and the rename box are only reachable by pressing
+ * something, and item 54 shipped exactly that half rendered in no test. So the
+ * two states a write goes through are screenshotted like a route.
+ *
+ * The assertion that matters is not the picture. `docs/decisions.md` requires
+ * the destination be shown *before* an install, and a path shown afterwards is
+ * not the same promise — so this presses the verb, checks the path is on
+ * screen, and checks **nothing has been written**, which is the half a
+ * screenshot cannot make a claim about.
+ */
+test('the install shows where it will write before it writes', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/devices');
+  await expect(page.locator('main')).not.toContainText('Looking for readers…');
+
+  // The one volume with nothing of ours on it.
+  const card = page.locator('article').filter({ hasText: 'PB632' });
+  await expect(card).toContainText('readingbuddy is not on this reader');
+  await card.getByRole('button', { name: 'Connect this reader' }).click();
+
+  // The exact path, before anything happens.
+  await expect(card).toContainText('/applications/koreader/plugins/readingbuddy.koplugin');
+  // And it says what it will *not* touch, which is the other half of the promise.
+  await expect(card).toContainText('nothing else on this reader');
+  // Still not installed: the first step wrote nothing.
+  await expect(card).toContainText('readingbuddy is not on this reader');
+
+  // The other write on the card, opened at the same time, so one screenshot
+  // carries both states this page can be in.
+  await page
+    .locator('article')
+    .filter({ hasText: 'Kindle' })
+    .getByRole('button', { name: 'Give it a name' })
+    .click();
+
+  expect(problems, 'the console must be clean').toEqual([]);
+  await expect(page).toHaveScreenshot('devices-working.png', { fullPage: true });
+});
+
+/**
+ * A reader readingbuddy will not write to offers **no way to write to it**.
+ *
+ * A disabled button is a dead end with a tooltip. The refusal is a sentence
+ * that names the file and the move, and the control is simply absent — which is
+ * a claim about what is *not* in the markup, and therefore not one a screenshot
+ * can make.
+ */
+test('a reader we are leaving alone has no install control at all', async ({ page }) => {
+  await page.goto('/devices');
+  await expect(page.locator('main')).not.toContainText('Looking for readers…');
+
+  const card = page.locator('article').filter({ hasText: 'the one I lent Sam' });
+  await expect(card).toContainText('readingbuddy is leaving this reader alone');
+  await expect(card).toContainText('main.lua');
+  await expect(card).toContainText('move it aside');
+
+  // Not disabled — absent. Every verb that would write the plugin.
+  await expect(card.getByRole('button', { name: /Connect this reader/ })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: /Update the plugin/ })).toHaveCount(0);
+  await expect(card.getByRole('button', { name: /Put the plugin on again/ })).toHaveCount(0);
+  // Reading from it is still offered: the refusal is about writing.
+  await expect(card.getByRole('button', { name: 'Bring everything across' })).toHaveCount(1);
+});
+
+/**
+ * Forgetting is our side only, and the page has to say so.
+ *
+ * `ForgetDevice` drops our row and cannot reach the device — the plugin and the
+ * token stay where they are. Copy that said *removed* without saying *from
+ * here* would leave somebody believing a reader they lent out had been cleaned,
+ * which is the one sentence on this page that could mislead about a secret.
+ */
+test('forgetting a reader says the plugin stays on it', async ({ page }) => {
+  await page.goto('/devices');
+  await expect(page.locator('main')).not.toContainText('Looking for readers…');
+
+  // The reader in a bag — the only one that offers it, because with the volume
+  // in front of you the exact move is taking the plugin off.
+  const away = page.locator('article').filter({ hasText: 'Forget this reader' });
+  await expect(away).toHaveCount(1);
+  await expect(away).toContainText('only on this computer');
+  await expect(away).toContainText('the plugin stays on the reader');
+
+  // The chip **exactly**, and not `hasText: 'plugged in'`: the away card's own
+  // *Last plugged in at* contains that substring, and `hasText` is a
+  // case-insensitive substring match — so the loose selector picked up the one
+  // card the assertion is about and passed while checking nothing.
+  const here = page
+    .locator('article')
+    .filter({ has: page.getByText('Plugged in', { exact: true }) });
+  await expect(here).toHaveCount(4);
+  await expect(here.getByRole('button', { name: 'Forget this reader' })).toHaveCount(0);
+});
+
+/**
+ * The axiom, on the surface most likely to break it.
+ *
+ * A device page is where an inbox grows: *3 books waiting*, a badge in the nav,
+ * a total across readers. Numbers about **one reader's own contents** are
+ * allowed here for `/life`'s reason — a page you chose to open, past tense —
+ * and the three things that are not allowed are asserted rather than reviewed.
+ */
+test('the devices page counts no work you have left', async ({ page }) => {
+  await page.goto('/devices');
+  await expect(page.locator('main')).not.toContainText('Looking for readers…');
+
+  // No number in the chrome. The nav is the place a badge would appear.
+  await expect(page.locator('header nav')).not.toContainText(/\d/);
+  // None of the completion vocabulary, anywhere on the page.
+  await expect(page.locator('main')).not.toContainText(
+    /pending|remaining|to do|overdue|unsynced|out of date/i,
+  );
+  // And no total across readers: every figure names one reader's own contents.
+  await expect(page.locator('main')).not.toContainText(/across (all|your) (readers|devices)/i);
+});
