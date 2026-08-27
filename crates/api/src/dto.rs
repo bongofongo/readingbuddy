@@ -47,12 +47,13 @@ use readingbuddy::{
     EditionShape, EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, ErrorClass,
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
-    ImportReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment, MomentKind,
-    MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink, Progress,
-    PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent, ReadingFilter,
-    ReadingQuery, ReadingRow, ReadingSort, ReadingState, ReadingYears, RefillReport, SearchHit,
-    SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, Source, StatsImportReport,
-    StatusFilter, TableOfContents, TextOutcome, TocEntry, UnmatchedRow,
+    ImportReport, InstallReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment,
+    MomentKind, MonthActivity, NewNoteInput, NoteCitations, NoteKind, NoteRecord, OutgoingLink,
+    PairedDevice, PluginStatus, Progress, PullReport, RankedResult, Rating, RatingScale, Reading,
+    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingState, ReadingYears,
+    RefillReport, SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource,
+    Source, StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry,
+    UninstallReport, UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -2587,6 +2588,132 @@ impl From<DeviceScan> for DeviceScanDto {
             warnings: s.warnings.into_iter().map(Into::into).collect(),
             parsed: s.parsed,
             cached: s.cached,
+        }
+    }
+}
+
+// ---- the plugin (item 15a) -------------------------------------------------
+
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginStatusDto {
+    pub mount: String,
+    /// Exactly where an install would write. A client shows this *before* it
+    /// asks, which is what makes putting something on a reader an explicit act
+    /// rather than a convenience.
+    pub plugin_dir: String,
+    pub installed: bool,
+    pub installed_version: Option<i64>,
+    pub our_version: i64,
+    pub paired: bool,
+    pub device_id: Option<String>,
+    pub modified: Vec<String>,
+    pub unrecognised: Vec<String>,
+}
+
+impl From<PluginStatus> for PluginStatusDto {
+    fn from(s: PluginStatus) -> Self {
+        PluginStatusDto {
+            mount: path_str(&s.mount),
+            plugin_dir: path_str(&s.plugin_dir),
+            installed: s.installed,
+            installed_version: s.installed_version,
+            our_version: s.our_version,
+            paired: s.paired,
+            device_id: s.device_id,
+            modified: s.modified,
+            unrecognised: s.unrecognised,
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallReportDto {
+    pub plugin_dir: String,
+    pub device_id: String,
+    pub version: i64,
+    /// Relative paths, so a client can print the footprint against
+    /// `plugin_dir` without joining strings it did not build.
+    pub written: Vec<String>,
+    pub upgraded_from: Option<i64>,
+}
+
+impl From<InstallReport> for InstallReportDto {
+    fn from(r: InstallReport) -> Self {
+        InstallReportDto {
+            plugin_dir: path_str(&r.plugin_dir),
+            device_id: r.device_id,
+            version: r.version,
+            written: r.written,
+            upgraded_from: r.upgraded_from,
+        }
+    }
+}
+
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UninstallReportDto {
+    pub plugin_dir: String,
+    pub removed: Vec<String>,
+    pub forgot_device: Option<String>,
+}
+
+impl From<UninstallReport> for UninstallReportDto {
+    fn from(r: UninstallReport) -> Self {
+        UninstallReportDto {
+            plugin_dir: path_str(&r.plugin_dir),
+            removed: r.removed,
+            forgot_device: r.forgot_device,
+        }
+    }
+}
+
+/// A paired reader **without its token**.
+///
+/// The omission is the point and not an oversight: the token is a shared
+/// secret that exists so the reader can prove itself to us later, and a wire
+/// format that carried it would put it in every client's memory, every log a
+/// client writes, and every devtools panel. Nothing outside the engine has any
+/// use for it. `PairedDevice`'s own `Debug` redacts it for the same reason.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDeviceDto {
+    pub device_id: String,
+    pub label: Option<String>,
+    pub plugin_version: i64,
+    pub installed_at: i64,
+    /// Where it was last plugged in. A sentence about the past — mount points
+    /// move, and nothing may key on this.
+    pub last_mount_path: Option<String>,
+    pub last_seen_at: Option<i64>,
+}
+
+impl From<PairedDevice> for PairedDeviceDto {
+    fn from(d: PairedDevice) -> Self {
+        PairedDeviceDto {
+            device_id: d.device_id,
+            label: d.label,
+            plugin_version: d.plugin_version,
+            installed_at: d.installed_at,
+            last_mount_path: d.last_mount_path,
+            last_seen_at: d.last_seen_at,
         }
     }
 }

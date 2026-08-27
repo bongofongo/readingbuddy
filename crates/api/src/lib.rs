@@ -467,6 +467,30 @@ impl Api {
         Ok(map(self.engine.sync_device(paths).await?))
     }
 
+    // ---- the plugin (item 15a) ---------------------------------------------
+
+    /// What readingbuddy's plugin looks like on a mounted reader. Read-only.
+    pub async fn plugin_status(&self, mount: &Path) -> ApiResult<PluginStatusDto> {
+        Ok(self.engine.plugin_status(mount).await?.into())
+    }
+
+    /// Install or upgrade the plugin, and pair with the reader.
+    ///
+    /// **Never call this on a mount event.** See the request's doc.
+    pub async fn install_plugin(&self, mount: &Path) -> ApiResult<InstallReportDto> {
+        Ok(self.engine.install_plugin(mount).await?.into())
+    }
+
+    /// Remove exactly what was installed, and forget the pairing.
+    pub async fn uninstall_plugin(&self, mount: &Path) -> ApiResult<UninstallReportDto> {
+        Ok(self.engine.uninstall_plugin(mount).await?.into())
+    }
+
+    /// Every paired reader, without its token — see [`PairedDeviceDto`].
+    pub async fn paired_devices(&self) -> ApiResult<Vec<PairedDeviceDto>> {
+        Ok(map(self.engine.paired_devices().await?))
+    }
+
     /// Measured reading time out of a mounted device's `statistics.sqlite3`
     /// (item 31), as rows in the activity log.
     ///
@@ -1051,6 +1075,16 @@ impl Api {
             R::ScanDevice { root } => {
                 Response::DeviceScan(self.scan_device(Path::new(&root)).await?)
             }
+            R::PluginStatus { mount } => {
+                Response::PluginStatus(self.plugin_status(Path::new(&mount)).await?)
+            }
+            R::InstallPlugin { mount } => {
+                Response::PluginInstalled(self.install_plugin(Path::new(&mount)).await?)
+            }
+            R::UninstallPlugin { mount } => {
+                Response::PluginUninstalled(self.uninstall_plugin(Path::new(&mount)).await?)
+            }
+            R::PairedDevices => Response::PairedDevices(self.paired_devices().await?),
             R::SyncDevice { paths } => {
                 let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
                 Response::PullReports(self.sync_device(&paths).await?)

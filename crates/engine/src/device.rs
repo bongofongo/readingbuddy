@@ -564,17 +564,30 @@ async fn sync_one(storage: &Storage, sidecar: &Path) -> Result<PullReport> {
     Ok(pulled)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Build a plausible KOReader install under `root`.
+///
+/// One definition of "this is really a reader", because that is the whole point
+/// of [`is_koreader_mount`]: it gates the read path and the write path alike,
+/// and two fixture builders would be two opinions about what it gates on.
+/// `plugin.rs`'s unit tests and `crates/engine/tests/` both build their mounts
+/// with it.
+///
+/// **Test-only**, behind the same `internals` feature that carries
+/// `Engine::storage` and `pdf::synthetic_pdf`, for that function's own reason —
+/// a fixture builder is what the feature is for, and a plain
+/// `cargo check --workspace` is what keeps it out of a shipped build.
+#[cfg(any(test, feature = "internals"))]
+pub fn install_fake_reader(root: &Path) {
+    let dir = root.join("koreader");
+    std::fs::create_dir_all(dir.join("frontend")).unwrap();
+    std::fs::create_dir_all(dir.join("plugins")).unwrap();
+    std::fs::write(dir.join("reader.lua"), "-- entry point\n").unwrap();
+}
 
-    /// Build a plausible KOReader install under `root`.
-    fn install(root: &Path) {
-        let dir = root.join("koreader");
-        std::fs::create_dir_all(dir.join("frontend")).unwrap();
-        std::fs::create_dir_all(dir.join("plugins")).unwrap();
-        std::fs::write(dir.join("reader.lua"), "-- entry point\n").unwrap();
-    }
+#[cfg(test)]
+pub(crate) mod tests {
+    pub(crate) use super::install_fake_reader as install;
+    use super::*;
 
     #[test]
     fn a_real_install_is_recognised_wherever_the_platform_puts_it() {

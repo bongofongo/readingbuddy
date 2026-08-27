@@ -68,6 +68,13 @@ pub enum ErrorCode {
     Database,
     /// The platform has no filesystem-notification service to offer.
     Watch,
+    /// readingbuddy declined to write to a mounted reader (item 15a).
+    ///
+    /// **A decision, not a fault**, and its own code for `CalibreMissing`'s
+    /// reason: a client shows what the reader is in and what the next move is —
+    /// a file the user edited, a newer plugin, a volume that is not a reader —
+    /// and never an error dialog with a stack of prose in it.
+    PluginRefused,
     /// The request itself was malformed — bad JSON, or a method this build does
     /// not have. Produced by the transport, never by the engine.
     BadRequest,
@@ -136,6 +143,7 @@ fn code_for(e: &EngineError) -> ErrorCode {
         EngineError::Io(_) => ErrorCode::Io,
         EngineError::Epub(_) | EngineError::Pdf(_) | EngineError::Sidecar(_) => ErrorCode::Parse,
         EngineError::Watch(_) => ErrorCode::Watch,
+        EngineError::PluginRefused(_) => ErrorCode::PluginRefused,
         EngineError::Timeout { .. } => ErrorCode::Timeout,
         EngineError::Provider { .. } | EngineError::Http(_) => match ErrorClass::from(e) {
             ErrorClass::RateLimited => ErrorCode::RateLimited,

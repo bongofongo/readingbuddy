@@ -164,40 +164,61 @@ pub struct KoStats {
     pub total_time_in_sec: Option<i64>,
 }
 
+/// A Lua VM with no standard library and a bounded instruction count.
+///
+/// `StdLib::NONE` takes away the standard library but NOT the ability to loop:
+/// `return (function() while true do end end)()` is a valid chunk that never
+/// returns, and every file this VM is pointed at is one we did not write.
+/// Without a budget, one such file hangs the whole run forever.
+///
+/// A real sidecar is a table literal — it executes in thousands of
+/// instructions, not millions — so this ceiling is far above any legitimate
+/// input while still bounding a hostile one.
+///
+/// Shared with `plugin.rs`, which reads a `.koplugin`'s `_meta.lua`,
+/// `pairing.lua` and `installed.lua` back off a device. Those are table
+/// literals of exactly this shape, and giving them their own VM would be a
+/// second sandbox to get right.
+pub(crate) fn sandboxed_lua() -> Result<Lua> {
+    let lua = Lua::new_with(StdLib::NONE, LuaOptions::default())
+        .map_err(|e| EngineError::Sidecar(format!("lua init: {e}")))?;
+    lua.set_hook(
+        mlua::HookTriggers::new().every_nth_instruction(LUA_INSTRUCTION_BUDGET),
+        |_lua, _debug| {
+            Err(mlua::Error::RuntimeError(
+                "chunk exceeded its instruction budget (runaway loop?)".to_string(),
+            ))
+        },
+    );
+    Ok(lua)
+}
+
+/// Evaluate `return { ... }` and hand back the table. `what` names the file in
+/// the error, since the same VM now reads four different ones.
+pub(crate) fn eval_table(lua: &Lua, src: &str, what: &str) -> Result<mlua::Table> {
+    // Name the chunk, or mlua names it after *this* Rust file and a bad sidecar
+    // reports itself as `[string "crates/engine/src/koreader.rs:200:10"]:11`.
+    // The user is being told which of their files is unreadable.
+    let value: Value = lua
+        .load(src)
+        .set_name(what)
+        .eval()
+        .map_err(|e| EngineError::Sidecar(format!("{what} lua eval: {e}")))?;
+    match value {
+        Value::Table(t) => Ok(t),
+        _ => Err(EngineError::Sidecar(format!(
+            "{what} did not return a table"
+        ))),
+    }
+}
+
 /// Evaluate a sidecar chunk (`return { ... }`) in a sandboxed Lua VM (no
 /// stdlib loaded) and walk the returned table. Handles both the modern
 /// (2024+) flat `annotations` array and the legacy `highlight`+`bookmarks`
 /// page-keyed layout.
 pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
-    let lua = Lua::new_with(StdLib::NONE, LuaOptions::default())
-        .map_err(|e| EngineError::Sidecar(format!("lua init: {e}")))?;
-
-    // `StdLib::NONE` takes away the standard library but NOT the ability to
-    // loop: `return (function() while true do end end)()` is a valid chunk that
-    // never returns, and a sidecar is a file we did not write. Without a
-    // budget, pointing an import at one such file hangs the whole run forever.
-    //
-    // A real sidecar is a table literal — it executes in thousands of
-    // instructions, not millions — so this ceiling is far above any legitimate
-    // input while still bounding a hostile one.
-    lua.set_hook(
-        mlua::HookTriggers::new().every_nth_instruction(LUA_INSTRUCTION_BUDGET),
-        |_lua, _debug| {
-            Err(mlua::Error::RuntimeError(
-                "sidecar exceeded its instruction budget (runaway loop?)".to_string(),
-            ))
-        },
-    );
-
-    let value: Value = lua
-        .load(src)
-        .eval()
-        .map_err(|e| EngineError::Sidecar(format!("lua eval: {e}")))?;
-    let Value::Table(root) = value else {
-        return Err(EngineError::Sidecar(
-            "sidecar did not return a table".into(),
-        ));
-    };
+    let lua = sandboxed_lua()?;
+    let root = eval_table(&lua, src, "sidecar")?;
 
     let mut sidecar = KoSidecar {
         partial_md5: get_str(&root, "partial_md5_checksum"),
@@ -232,14 +253,14 @@ pub fn parse_sidecar(src: &str) -> Result<KoSidecar> {
     Ok(sidecar)
 }
 
-fn get_str(t: &Table, key: &str) -> Option<String> {
+pub(crate) fn get_str(t: &Table, key: &str) -> Option<String> {
     t.get::<Option<String>>(key)
         .ok()
         .flatten()
         .filter(|s| !s.is_empty())
 }
 
-fn get_int(t: &Table, key: &str) -> Option<i64> {
+pub(crate) fn get_int(t: &Table, key: &str) -> Option<i64> {
     t.get::<Option<i64>>(key).ok().flatten()
 }
 
@@ -664,11 +685,29 @@ fn collect_sidecars_at(path: &Path, out: &mut Vec<PathBuf>, depth: usize) -> Res
 /// Reading it would resurrect highlights the user deleted on the device. The
 /// `.lua` suffix test already refuses it; this doc comment and the tests around
 /// it are what stop the exclusion from being re-lost as an accident.
+///
+/// **Bare `metadata.lua` is excluded too, and that one was found on hardware.**
+/// `DocSettings.getSidecarFilename` (`docsettings.lua:143-146`) builds the name
+/// from `doc_path:match(".*%.(.+)")`, so the extension is never empty and a
+/// sidecar is always `metadata.<ext>.lua`. A `metadata.` + `.lua` test alone
+/// also accepts `metadata.lua` — and KOReader itself ships one, at
+/// `plugins/calibre.koplugin/metadata.lua`, which is a Lua *module* that
+/// `require`s four others. Every scan of a real device therefore reported a
+/// spurious unreadable book called "calibre", the sandbox refusing the
+/// `require` exactly as designed. Requiring a non-empty extension segment is
+/// the whole fix; keying on a `.sdr` parent would not work, since KOReader's
+/// `dir` and `hash` layouts file sidecars away from the book.
 pub fn is_sidecar_file(p: &Path) -> bool {
     let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    name.starts_with("metadata.") && name.ends_with(".lua")
+    let Some(ext) = name
+        .strip_prefix("metadata.")
+        .and_then(|rest| rest.strip_suffix(".lua"))
+    else {
+        return false;
+    };
+    !ext.is_empty()
 }
 
 /// Match a sidecar to a library book: (a) a recorded `device_books` link on the
@@ -1945,6 +1984,32 @@ return {{
         let found = find_sidecars(tmp.path()).unwrap();
         assert_eq!(found.len(), 1, "the .old backup must not be imported");
         assert!(found[0].ends_with("metadata.epub.lua"));
+    }
+
+    /// KOReader ships `plugins/calibre.koplugin/metadata.lua`, a Lua *module*
+    /// that `require`s four others. A `metadata.` + `.lua` test accepts it, so
+    /// every scan of a real Kindle reported an unreadable book called
+    /// "calibre" — the sandbox refusing the `require` exactly as designed,
+    /// about a file that was never a sidecar. `getSidecarFilename` builds the
+    /// name from `doc_path:match(".*%.(.+)")`, so the extension is never empty.
+    #[test]
+    fn the_walker_ignores_koreaders_own_metadata_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin = tmp.path().join("plugins/calibre.koplugin");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("metadata.lua"), "return require(\"x\")").unwrap();
+        let sdr = tmp.path().join("1Q84.sdr");
+        std::fs::create_dir_all(&sdr).unwrap();
+        std::fs::write(sdr.join("metadata.epub.lua"), DEVICE_STATE).unwrap();
+
+        let found = find_sidecars(tmp.path()).unwrap();
+        assert_eq!(found.len(), 1, "metadata.lua is not a sidecar");
+        assert!(found[0].ends_with("metadata.epub.lua"));
+
+        assert!(!is_sidecar_file(Path::new("metadata.lua")));
+        assert!(is_sidecar_file(Path::new("metadata.epub.lua")));
+        assert!(is_sidecar_file(Path::new("metadata.pdf.lua")));
+        assert!(!is_sidecar_file(Path::new("metadata.epub.lua.old")));
     }
 
     #[test]

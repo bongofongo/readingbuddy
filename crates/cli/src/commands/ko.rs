@@ -390,3 +390,157 @@ pub async fn stats(engine: &Engine, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+// ---- the plugin (item 15a) -------------------------------------------------
+
+/// What is on the reader, and — when no reader is named — every reader we have
+/// ever paired with.
+///
+/// The second half is the point of the `paired_devices` table: a reader in a
+/// bag is still paired, and an answer that could only be produced by walking a
+/// mount would have no way to say so.
+pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
+    if path.is_none() && readingbuddy::candidate_mounts().is_empty() {
+        let paired = engine.paired_devices().await?;
+        if paired.is_empty() {
+            println!("no reader is plugged in, and none has been paired.");
+            println!("    plug one in, then: readingbuddy ko plugin install");
+            return Ok(());
+        }
+        println!("no reader is plugged in. paired readers:");
+        for d in &paired {
+            println!(
+                "  {} — plugin v{}, last seen at {}",
+                d.label
+                    .as_deref()
+                    .unwrap_or(&d.device_id[..8.min(d.device_id.len())]),
+                d.plugin_version,
+                d.last_mount_path.as_deref().unwrap_or("an unknown path"),
+            );
+        }
+        return Ok(());
+    }
+
+    let mount = resolve_mount(path)?;
+    let status = engine.plugin_status(&mount).await?;
+    println!("reader     : {}", status.mount.display());
+    println!("plugin dir : {}", status.plugin_dir.display());
+
+    match status.installed_version {
+        None if !status.installed => println!(
+            "installed  : no (this readingbuddy carries v{})",
+            status.our_version
+        ),
+        Some(v) => println!(
+            "installed  : v{v}{}",
+            match v.cmp(&status.our_version) {
+                std::cmp::Ordering::Less =>
+                    format!(" (this readingbuddy carries v{})", status.our_version),
+                std::cmp::Ordering::Greater => " — newer than this readingbuddy".to_string(),
+                std::cmp::Ordering::Equal => " (up to date)".to_string(),
+            }
+        ),
+        None => println!("installed  : yes, but it carries no version"),
+    }
+
+    match (&status.device_id, status.paired) {
+        (Some(id), true) => println!("paired     : yes, as {id}"),
+        // A reader that says it is paired with a readingbuddy that is not this
+        // one. Reinstalling is the whole repair, so say that rather than
+        // reporting a state.
+        (Some(id), false) => {
+            println!("paired     : with another readingbuddy, as {id}");
+            println!("    take it over: readingbuddy ko plugin install");
+        }
+        (None, _) => println!("paired     : no"),
+    }
+
+    for m in &status.modified {
+        println!("edited here: {m} — readingbuddy will not overwrite or remove it");
+    }
+    for u in &status.unrecognised {
+        println!("not ours   : {u} — readingbuddy will not remove it");
+    }
+    if !status.installed && !status.is_obstructed() {
+        println!("    install it : readingbuddy ko plugin install");
+    }
+    Ok(())
+}
+
+/// Install or upgrade the plugin. Explicit, never automatic, and it prints
+/// where it is about to write before it writes — `docs/decisions.md` requires
+/// the path to be shown, and a path shown afterwards is not the same promise.
+pub async fn plugin_install(engine: &Engine, path: Option<&Path>, yes: bool) -> Result<()> {
+    let mount = resolve_mount(path)?;
+    let status = engine.plugin_status(&mount).await?;
+
+    // Three verbs, not two. A reinstall of the same version is not an upgrade,
+    // and saying so on a device that already has v1 reads as if readingbuddy
+    // had something newer to give it.
+    println!(
+        "{} readingbuddy's plugin into:",
+        match () {
+            _ if status.is_version_upgrade() => "upgrade",
+            _ if status.is_reinstall() => "reinstall",
+            _ => "install",
+        }
+    );
+    println!("    {}", status.plugin_dir.display());
+    println!(
+        "nothing else on the reader is written to, and `ko plugin uninstall` removes exactly this."
+    );
+    if !yes && !confirm()? {
+        println!("nothing was written.");
+        return Ok(());
+    }
+
+    let report = engine.install_plugin(&mount).await?;
+    for f in &report.written {
+        println!("wrote {}", report.plugin_dir.join(f).display());
+    }
+    match report.upgraded_from {
+        Some(from) if from < report.version => println!(
+            "upgraded v{from} → v{}, paired as {}",
+            report.version, report.device_id
+        ),
+        Some(_) => println!(
+            "reinstalled v{}, still paired as {}",
+            report.version, report.device_id
+        ),
+        None => println!(
+            "installed v{}, paired as {}",
+            report.version, report.device_id
+        ),
+    }
+    println!("the reader has no address for readingbuddy yet, so it sends nothing.");
+    Ok(())
+}
+
+/// Remove exactly what we installed, and forget the pairing.
+pub async fn plugin_uninstall(engine: &Engine, path: Option<&Path>) -> Result<()> {
+    let mount = resolve_mount(path)?;
+    let report = engine.uninstall_plugin(&mount).await?;
+    if report.removed.is_empty() {
+        println!("nothing of readingbuddy's was on {}.", mount.display());
+        return Ok(());
+    }
+    for f in &report.removed {
+        println!("removed {}", report.plugin_dir.join(f).display());
+    }
+    if let Some(id) = &report.forgot_device {
+        println!("forgot the pairing with {id}.");
+    }
+    Ok(())
+}
+
+/// A y/n on stdin. Not a prompt library: this is the only question the CLI
+/// asks, and it asks it because the alternative is writing to somebody's
+/// hardware without saying so.
+fn confirm() -> Result<bool> {
+    use std::io::Write as _;
+    print!("go ahead? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}

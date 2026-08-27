@@ -381,6 +381,29 @@ pub enum Request {
     SyncDevice {
         paths: Vec<String>,
     },
+    // ---- the plugin (item 15a) ----
+    /// What readingbuddy's plugin looks like on a mounted reader, and whether
+    /// the reader it names is one we are paired with. Read-only.
+    PluginStatus {
+        mount: String,
+    },
+    /// Install or upgrade the plugin, and pair with the reader.
+    ///
+    /// **Never on an automatic path.** `docs/decisions.md` keeps mount →
+    /// import automatic and read-only precisely so mount → write can be an
+    /// explicit act; a client that called this on a mount event would be
+    /// undoing that rather than saving a click. Show
+    /// [`Response::PluginStatus`]'s `plugin_dir` first.
+    InstallPlugin {
+        mount: String,
+    },
+    /// Remove exactly what was installed, and forget the pairing.
+    UninstallPlugin {
+        mount: String,
+    },
+    /// Every reader we have paired with, plugged in or not.
+    PairedDevices,
+
     /// Measured reading time out of the device's `statistics.sqlite3`.
     ///
     /// **A method of its own, and deliberately not part of `sync_device`** —
@@ -814,6 +837,11 @@ pub enum Response {
     PullReports(Vec<PullReportDto>),
     Candidates(Vec<MatchCandidateDto>),
     DeviceScan(DeviceScanDto),
+
+    PluginStatus(PluginStatusDto),
+    PluginInstalled(InstallReportDto),
+    PluginUninstalled(UninstallReportDto),
+    PairedDevices(Vec<PairedDeviceDto>),
 
     GoodreadsReport(GoodreadsReportDto),
     /// The CSV, plus every honest failure along the way. The payload comes

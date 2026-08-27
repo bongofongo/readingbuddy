@@ -4178,6 +4178,7 @@ dependencies = [
  "csv",
  "epub",
  "futures",
+ "getrandom 0.3.4",
  "image",
  "lopdf",
  "md-5 0.10.6",

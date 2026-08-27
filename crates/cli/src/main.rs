@@ -375,6 +375,14 @@ enum KoCmd {
         /// The mount to read `statistics.sqlite3` from
         path: PathBuf,
     },
+    /// Install, inspect or remove readingbuddy's plugin on a reader (item 15a)
+    ///
+    /// Never automatic: plugging a reader in imports from it, read-only, and
+    /// putting something *onto* it is always something you asked for.
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
     /// Pull books in from a mounted reader
     Sync {
         /// The mount to sync from
@@ -385,6 +393,28 @@ enum KoCmd {
         /// Sync one book: part of its title, or its sidecar path. Repeatable
         #[arg(long = "book")]
         books: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// What is on the reader, or — with none plugged in — which are paired
+    Status {
+        /// The mount. Omitted, a mounted KOReader device is looked for
+        path: Option<PathBuf>,
+    },
+    /// Install or upgrade the plugin, and pair with the reader
+    Install {
+        /// The mount. Omitted, a mounted KOReader device is looked for
+        path: Option<PathBuf>,
+        /// Skip the confirmation
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Remove exactly what was installed, and forget the pairing
+    Uninstall {
+        /// The mount. Omitted, a mounted KOReader device is looked for
+        path: Option<PathBuf>,
     },
 }
 
@@ -567,6 +597,17 @@ async fn main() -> Result<()> {
             KoCmd::Scan { path } => commands::ko::scan(&engine, path.as_deref()).await?,
             KoCmd::Watch => commands::ko::watch(&engine).await?,
             KoCmd::Stats { path } => commands::ko::stats(&engine, &path).await?,
+            KoCmd::Plugin { cmd } => match cmd {
+                PluginCmd::Status { path } => {
+                    commands::ko::plugin_status(&engine, path.as_deref()).await?
+                }
+                PluginCmd::Install { path, yes } => {
+                    commands::ko::plugin_install(&engine, path.as_deref(), yes).await?
+                }
+                PluginCmd::Uninstall { path } => {
+                    commands::ko::plugin_uninstall(&engine, path.as_deref()).await?
+                }
+            },
             KoCmd::Sync { path, all, books } => {
                 commands::ko::sync(&engine, &path, all, &books).await?
             }

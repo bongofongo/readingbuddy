@@ -83,6 +83,19 @@ pub enum EngineError {
     /// as a startup failure would be trading a whole app for a convenience.
     #[error("cannot watch for devices: {0}")]
     Watch(String),
+    /// A write to a mounted reader that readingbuddy declined to make.
+    ///
+    /// Its own variant, and carrying an enum rather than a string, because
+    /// every arm of [`crate::plugin::PluginRefusal`] is a line in
+    /// `docs/decisions.md` that a caller is meant to act on differently: a
+    /// wrong volume is a different conversation from a file the user edited,
+    /// and a frontend cannot tell them apart by reading prose.
+    // `transparent`, not `"{0}"`: `#[from]` makes the refusal this error's
+    // *source*, so an identical Display renders it twice — the CLI printed
+    // "Error: …edited on the device…" followed by "Caused by: …edited on the
+    // device…", the same sentence in both halves of an anyhow report.
+    #[error(transparent)]
+    PluginRefused(#[from] crate::plugin::PluginRefusal),
     /// Last resort. Prefer a specific variant — anything that a caller might
     /// plausibly want to branch on does not belong here.
     #[error("{0}")]

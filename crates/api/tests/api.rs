@@ -1805,3 +1805,132 @@ fn the_two_reading_query_defaults_are_one_query() {
     assert_eq!(engine, readingbuddy::ReadingQuery::default());
     assert!(dto.limit < 0, "the whole-library read has one spelling");
 }
+
+// ---- the plugin (item 15a) -------------------------------------------------
+
+/// A plausible KOReader install. Deliberately hand-rolled rather than reaching
+/// for the engine's own test helper: `crates/api` links `readingbuddy` as a
+/// dependency, so its `#[cfg(test)]` modules do not exist here — and this is
+/// also the only place the *dispatch* path is exercised end to end.
+fn fake_reader(root: &std::path::Path) {
+    let dir = root.join("koreader");
+    std::fs::create_dir_all(dir.join("frontend")).unwrap();
+    std::fs::create_dir_all(dir.join("plugins")).unwrap();
+    std::fs::write(dir.join("reader.lua"), "-- entry point\n").unwrap();
+}
+
+/// Claim 1 again, for the three writes on the plugin seam — and the round trip
+/// a frontend actually makes: look, install, look, remove.
+#[tokio::test]
+async fn the_plugin_seam_round_trips_through_dispatch() {
+    let (api, _tmp) = api().await;
+    let reader = tempfile::tempdir().unwrap();
+    fake_reader(reader.path());
+    let mount = reader.path().display().to_string();
+
+    let before = match ok(api
+        .dispatch(Request::PluginStatus {
+            mount: mount.clone(),
+        })
+        .await)
+    {
+        Response::PluginStatus(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert!(!before.installed);
+    assert!(!before.paired);
+    assert!(before.plugin_dir.ends_with("readingbuddy.koplugin"));
+
+    let report = match ok(api
+        .dispatch(Request::InstallPlugin {
+            mount: mount.clone(),
+        })
+        .await)
+    {
+        Response::PluginInstalled(r) => r,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(report.version, before.our_version);
+    assert_eq!(report.upgraded_from, None);
+
+    let after = match ok(api
+        .dispatch(Request::PluginStatus {
+            mount: mount.clone(),
+        })
+        .await)
+    {
+        Response::PluginStatus(s) => s,
+        other => panic!("{other:?}"),
+    };
+    assert!(after.installed && after.paired);
+    assert_eq!(after.device_id.as_deref(), Some(report.device_id.as_str()));
+
+    let paired = match ok(api.dispatch(Request::PairedDevices).await) {
+        Response::PairedDevices(d) => d,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(paired.len(), 1);
+    assert_eq!(paired[0].device_id, report.device_id);
+
+    match ok(api.dispatch(Request::UninstallPlugin { mount }).await) {
+        Response::PluginUninstalled(r) => {
+            assert_eq!(r.forgot_device.as_deref(), Some(report.device_id.as_str()))
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(api.paired_devices().await.unwrap().is_empty());
+}
+
+/// The token is a shared secret and the wire is the one place it must not be.
+/// A `PairedDeviceDto` has no field for it, so this is really a test that
+/// nobody adds one — serialize the whole reply and look.
+#[tokio::test]
+async fn no_reply_ever_carries_the_pairing_token() {
+    let (api, _tmp) = api().await;
+    let reader = tempfile::tempdir().unwrap();
+    fake_reader(reader.path());
+    let mount = reader.path().display().to_string();
+
+    api.dispatch(Request::InstallPlugin {
+        mount: mount.clone(),
+    })
+    .await
+    .unwrap();
+
+    // The token is on the device, so read it from there rather than trusting a
+    // constant: this has to fail if the value ever starts travelling.
+    let pairing = std::fs::read_to_string(
+        reader
+            .path()
+            .join("koreader/plugins/readingbuddy.koplugin/pairing.lua"),
+    )
+    .unwrap();
+    let token = pairing
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("token     = \""))
+        .and_then(|l| l.strip_suffix("\","))
+        .expect("the installer wrote a token");
+    assert_eq!(token.len(), 64);
+
+    for request in [Request::PairedDevices, Request::PluginStatus { mount }] {
+        let reply = serde_json::to_string(&ok(api.dispatch(request).await)).unwrap();
+        assert!(!reply.contains(token), "a reply carried the token: {reply}");
+    }
+}
+
+/// A refusal is a decision, and it reaches a client as its own code rather than
+/// as prose to be pattern-matched.
+#[tokio::test]
+async fn refusing_an_unrecognised_volume_is_its_own_error_code() {
+    let (api, _tmp) = api().await;
+    let plain = tempfile::tempdir().unwrap();
+
+    let err = api
+        .dispatch(Request::InstallPlugin {
+            mount: plain.path().display().to_string(),
+        })
+        .await
+        .expect_err("an ordinary directory is not a reader");
+    assert_eq!(err.code, ErrorCode::PluginRefused);
+    assert_eq!(std::fs::read_dir(plain.path()).unwrap().count(), 0);
+}

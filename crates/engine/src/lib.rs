@@ -34,6 +34,7 @@ pub mod partial_md5;
 /// a divide by a sentinel.
 pub mod pdf;
 /// How far into a book a reading is, as a value — item 17b.
+pub mod plugin;
 pub mod progress;
 pub mod providers;
 pub mod search;
@@ -80,6 +81,9 @@ pub use koreader::{
 pub use notes::{CreatedNote, NewNoteInput, NoteKind, VaultReconcile};
 pub use partial_md5::partial_md5;
 pub use pdf::{PdfInfo, pdf_info};
+pub use plugin::{
+    InstallReport, PLUGIN_DIR_NAME, PLUGIN_VERSION, PluginRefusal, PluginStatus, UninstallReport,
+};
 pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
 pub use providers::{ProviderId, SearchRequest};
@@ -88,9 +92,9 @@ pub use storage::{
     ActivitySummary, BookFile, BookFilter, BookQuery, BookSort, BookSummary, BookTag, Confidence,
     DayActivity, DayRange, FieldSource, FillStats, FlashcardRow, Highlight, MergeReport, Moment,
     MomentKind, MonthActivity, NewHighlight, NewReadingEvent, NoteCitations, NoteRecord, NoteScope,
-    OutgoingLink, RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering, Reading,
-    ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingYears, RefillReport,
-    SearchHit, SearchSource, Source, StatusFilter, Storage,
+    OutgoingLink, PairedDevice, RUN_MIN_DAYS, Rating, RatingScale, ReadCount, ReadNumbering,
+    Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingYears,
+    RefillReport, SearchHit, SearchSource, Source, StatusFilter, Storage,
 };
 pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
@@ -1159,6 +1163,97 @@ impl Engine {
         device::sync_device(&self.storage, paths).await
     }
 
+    // ---- the plugin --------------------------------------------------------
+
+    /// What readingbuddy's plugin looks like on this reader, and whether we
+    /// know the reader it says it is paired with.
+    ///
+    /// Read-only. The one thing it adds over [`plugin::inspect`] is `paired`,
+    /// which is a fact about *our* database rather than about the mount: a
+    /// `pairing.lua` naming a device we have no row for is a reader that was
+    /// paired with some other copy of readingbuddy.
+    #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
+    pub async fn plugin_status(&self, mount: &Path) -> Result<plugin::PluginStatus> {
+        let mut status = plugin::inspect(mount)?;
+        if let Some(id) = &status.device_id {
+            status.paired = self.storage.paired_device(id).await?.is_some();
+        }
+        Ok(status)
+    }
+
+    /// Install (or upgrade) the plugin on a mounted reader, and pair with it.
+    ///
+    /// **Never called automatically.** `docs/decisions.md` keeps mount →
+    /// import automatic and read-only precisely so that mount → *write* can be
+    /// an explicit act, and a caller that wired this to the device watcher
+    /// would be undoing that decision rather than adding a convenience.
+    ///
+    /// The identity is minted here and nowhere else, so that the value written
+    /// into the device's `pairing.lua` and the value stored in
+    /// `paired_devices` cannot drift. A reader that is already paired keeps its
+    /// id **and its token**: reinstalling a newer plugin is an upgrade, not a
+    /// re-pairing.
+    #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
+    pub async fn install_plugin(&self, mount: &Path) -> Result<plugin::InstallReport> {
+        self.install_plugin_at(mount, storage::now_unix()).await
+    }
+
+    /// [`Engine::install_plugin`] with the clock supplied.
+    ///
+    /// Private, so it adds no product surface — the reason it exists is that
+    /// "a reinstall keeps the pairing it already had" is a claim about *which
+    /// timestamp is chosen*, and a test that calls the public method twice
+    /// reads the same second twice and passes whether or not the rule holds.
+    /// That is exactly how the rule came to be broken while looking tested.
+    async fn install_plugin_at(&self, mount: &Path, now: i64) -> Result<plugin::InstallReport> {
+        let seen = plugin::inspect(mount)?;
+        let existing = match &seen.device_id {
+            Some(id) => self.storage.paired_device(id).await?,
+            None => None,
+        };
+        // `paired_at` is carried over too, not just the id and the token. It is
+        // the *pairing's* timestamp, and stamping `now` on an upgrade made the
+        // device's `pairing.lua` disagree with `paired_devices.installed_at`,
+        // which `record_pairing` correctly leaves alone — found by reinstalling
+        // onto a real Kindle and reading the file back.
+        let (device_id, token, paired_at) = match existing {
+            Some(d) => (d.device_id, d.token, d.installed_at),
+            None => (plugin::mint_id(16)?, plugin::mint_id(32)?, now),
+        };
+
+        let report = plugin::install(mount, &device_id, &token, paired_at)?;
+        self.storage
+            .record_pairing(
+                &device_id,
+                mount.file_name().and_then(|n| n.to_str()),
+                &token,
+                report.version,
+                mount.to_str(),
+                paired_at,
+            )
+            .await?;
+        Ok(report)
+    }
+
+    /// Remove the plugin and forget the pairing.
+    ///
+    /// Both halves, because a pairing row whose device no longer holds the
+    /// token is a link that exists only on our side — the state
+    /// `docs/decisions.md` means by "uninstall is exact".
+    #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
+    pub async fn uninstall_plugin(&self, mount: &Path) -> Result<plugin::UninstallReport> {
+        let report = plugin::uninstall(mount)?;
+        if let Some(id) = &report.forgot_device {
+            self.storage.forget_pairing(id).await?;
+        }
+        Ok(report)
+    }
+
+    /// Every reader we have paired with, whether or not it is plugged in.
+    pub async fn paired_devices(&self) -> Result<Vec<PairedDevice>> {
+        self.storage.list_paired_devices().await
+    }
+
     /// Import measured reading time from a mounted device's
     /// `statistics.sqlite3` into the activity log.
     ///
@@ -1906,5 +2001,70 @@ impl Engine {
         let ids: Vec<i64> = cards.iter().map(|c| c.id).collect();
         self.storage.mark_flashcards_exported(&ids).await?;
         Ok((tsv, ids.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **An upgrade is not a re-pairing**, and this is the only place it can be
+    /// asserted. `plugin::install` is handed the id, the token and the pairing
+    /// timestamp and cannot tell a first install from a reinstall; the facade
+    /// is where all three are chosen. The clock is supplied here because two
+    /// calls to the public method land in the same second and would agree by
+    /// accident — which is how a real Kindle came to hold a `pairing.lua`
+    /// claiming a `paired_at` its `paired_devices` row disagreed with.
+    #[tokio::test]
+    async fn reinstalling_the_plugin_keeps_the_pairing_it_already_had() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = Engine::open(EngineConfig {
+            db_url: "sqlite::memory:".into(),
+            images_dir: tmp.path().join("images"),
+            files_dir: tmp.path().join("files"),
+            vault_dir: tmp.path().join("vault"),
+            log_dir: tmp.path().join("logs"),
+            google_api_key: None,
+            calibre_bin_dir: None,
+        })
+        .await
+        .unwrap();
+
+        let mount = tempfile::tempdir().unwrap();
+        device::install_fake_reader(mount.path());
+
+        let first = engine
+            .install_plugin_at(mount.path(), 1_700_000_000)
+            .await
+            .unwrap();
+        assert_eq!(first.upgraded_from, None);
+        let pairing = first.plugin_dir.join("pairing.lua");
+        let before = std::fs::read_to_string(&pairing).unwrap();
+        assert!(before.contains("paired_at = 1700000000"));
+
+        // A day later, and the same plugin.
+        let again = engine
+            .install_plugin_at(mount.path(), 1_700_086_400)
+            .await
+            .unwrap();
+        assert_eq!(again.device_id, first.device_id, "the id is not re-minted");
+        assert!(again.upgraded_from.is_some(), "it landed on our own plugin");
+
+        let after = std::fs::read_to_string(&pairing).unwrap();
+        assert_eq!(
+            before, after,
+            "the token and paired_at both survive a reinstall"
+        );
+
+        // And the device's own file agrees with the row we keep about it.
+        let devices = engine.paired_devices().await.unwrap();
+        let device = devices
+            .iter()
+            .find(|d| d.device_id == first.device_id)
+            .expect("paired");
+        assert_eq!(
+            device.installed_at, 1_700_000_000,
+            "pairing.lua and paired_devices.installed_at must not drift"
+        );
     }
 }

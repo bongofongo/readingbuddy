@@ -394,8 +394,19 @@ costs nothing. `Gen-Summary-Legacy.sdr` pins it.
 `<Book Name>.sdr/metadata.<ext>.lua`, where `<ext>` is the document's own
 extension — `DocSettings.getSidecarFilename` (`docsettings.lua:143-146`) does a
 literal `doc_path:match(".*%.(.+)")`. So `metadata.epub.lua`, `metadata.pdf.lua`,
-and in principle anything else. `is_sidecar_file` (`koreader.rs:299`) matches on
-`metadata.` + `.lua`, which is the right shape.
+and in principle anything else. `is_sidecar_file` matches `metadata.` + a
+**non-empty** extension + `.lua`.
+
+That "non-empty" was learned on hardware, 2026-08-27. The rule had been read as
+`metadata.` + `.lua` — which also accepts bare `metadata.lua`, and KOReader
+itself ships one at `plugins/calibre.koplugin/metadata.lua`, a Lua *module* that
+`require`s four others. Every `ko scan` of a real Kindle therefore reported a
+23rd, unreadable book called "calibre": the sidecar sandbox refusing the
+`require` exactly as designed, about a file that was never a sidecar. The match
+above is the whole fix, and it follows from `getSidecarFilename` rather than
+from the observation — the extension comes from a `.+` capture and is never
+empty. Keying on a `.sdr` parent would **not** work, since the `dir` and `hash`
+storage layouts file sidecars away from the book.
 
 **`.old` backups.** Every flush writes one first — `docsettings.lua:340`,
 `LuaSettings:backup(sidecar_file) -- "*.old"`. 9 of the user's 10 `.sdr` dirs

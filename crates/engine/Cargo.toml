@@ -32,6 +32,9 @@ async-trait.workspace = true
 strsim.workspace = true
 mlua.workspace = true
 sha2.workspace = true
+# System randomness for the pairing token and device id (item 15a). Already in
+# the graph via `rand_core`; MIT/Apache-2.0, so `cargo deny` is unaffected.
+getrandom = "0.3"
 md-5.workspace = true
 # Item 20: covers are measured (width, height, border accent) and downscaled
 # once, at the moment they are written, so a shelf of three hundred spines is

@@ -3359,3 +3359,88 @@ because item 31 needed somewhere to put reading time.
       reading. `finished` is on the client method because the request has it, and
       `FakeClient` states in as many words that its arm is unimplemented rather
       than quietly pretending.
+
+15. **The plugin, installed and paired (slice a).** Migration `0019` — one table, the
+    readers we have written to; no `API_VERSION` move (four new requests, one
+    new `ErrorCode`, nothing existing changed shape). Engine + CLI + API; no TUI
+    and no GUI, so the surface is provable before a frontend is shaped around
+    it. **Slice a of item 15**: the link, and nothing that travels over it.
+    - **"Needs hardware" had stopped being true.** The item sat in
+      `docs/spec-11-16.md` for a wave on that ground. The installer's whole
+      surface is a directory on a filesystem, `tempfile` builds a mount tree,
+      and KOReader ships a desktop build that runs the same plugin loader —
+      `datastorage.lua:20` reads **`KO_HOME`** before every other branch, so
+      `KO_HOME=/tmp/ko-test` gives the Lua an edit loop with no device in it.
+      What genuinely needs hardware is confirming the three mount layouts and
+      the FAT32 behaviour, which is a smaller claim than the one that deferred
+      the item.
+    - **Four facts from the KOReader source, each of which changed the code.**
+      Read from a checked-out tree, which is `docs/koreader-format.md` §1's
+      order of authority applied a second time. (i) On a device
+      `{data_dir}/plugins/` **is** `koreader/plugins/` — `getDataDir()` returns
+      `"."` and `pluginloader.lua:196` registers the extra path only
+      `if data_dir ~= "."` — so we never write `extra_plugin_paths`, which would
+      be editing `settings.reader.lua` for nothing. (ii) **Our directory
+      survives an OTA update**: the update is a tar unpack with no `--delete`
+      and the only removal is a manifest diff (`grep -xvFf .../package.index`),
+      identical across Kobo, Kindle, Cervantes and remarkable, so a path that
+      never appeared in a KOReader manifest is untouched. That was the risk that
+      could have moved the install target, and it is now written down in
+      `plugin.rs` rather than left to be re-derived. (iii) The loader **gates on
+      nothing** in `_meta.lua` and merges every field but `name`, so our
+      `version` rides along inert. (iv) `kosync` keeps its credentials in
+      `settings/kosync.lua`, **outside** its own directory — the one convention
+      we break, because it would leave a token behind after an uninstall we have
+      promised is exact.
+    - **`_meta.lua` may never `require("gettext")`, and that is load-bearing.**
+      Every KOReader plugin's does. Ours is a pure table literal so the
+      installer can read an installed plugin's version through **the sidecar
+      sandbox `koreader.rs` already has** — which is what makes "refuse to
+      overwrite a newer plugin" cost no manifest format and no second parser.
+      `the_shipped_meta_is_readable_by_the_sidecar_sandbox` is the guard, and it
+      skips comment lines: the file's header *explains* the rule, so a bare
+      `contains("require(")` failed on the explanation.
+    - **sha256 and never mtime.** These are FAT32 volumes — two-second timestamp
+      granularity, no permissions, no symlinks — so a modification check resting
+      on mtime is subtly wrong on hardware and perfectly green in `tempfile`.
+    - **The strongest test is the one that snapshots the whole volume.** "Write
+      only inside our own plugin directory" is a claim about every *other* byte
+      on the reader, and only a before/after hash of the entire tree checks it
+      rather than asserting it. It is also a proptest: install-then-uninstall is
+      the identity on any tree, not just on the one the example fixes.
+    - **Six refusals, and every one leaves the reader alone.** Not a KOReader
+      mount; a symlinked mount (checked *before* the contents, since a symlink's
+      target can be a perfectly good install somewhere we were never pointed
+      at); a newer plugin already there; a file of ours the user edited; a file
+      we did not write; a plugin with no manifest of ours. The last three refuse
+      *uninstall* as well as install — leaving a plugin in place is recoverable
+      and deleting a person's work is not — and `remove_dir` rather than
+      `remove_dir_all` is the belt to that braces.
+    - **Pairing happens over USB, and carries no endpoint.** `pairing.lua` holds
+      a device id, a token and a timestamp, and deliberately **no host and no
+      port**: we do not know our LAN address, there is no listener to name, and
+      inventing the endpoint's shape before the protocol exists is how it gets
+      designed twice. The plugin reads a missing endpoint as *not configured*
+      and does nothing — which is `docs/decisions.md`'s "fails closed" in its
+      degenerate case, and is the whole of what the on-device Lua does today.
+      The point of minting the token now is that **item 15b requires nothing
+      typed**: the reader was in the user's hand once, and that was the pairing.
+    - **The token never crosses the wire and never reaches a log.**
+      `PairedDeviceDto` has no field for it; `PairedDevice`'s `Debug` is
+      hand-written to redact it, because `tracing::debug!(?device)` is one
+      keystroke and a derived `Debug` is exactly how it would escape. The test
+      reads the token *off the fake device* rather than from a constant and
+      asserts it appears in no reply, so it fails if the value ever starts
+      travelling.
+    - **An upgrade is not a re-pairing.** Reinstalling keeps the device id
+      **and** the token and does not move `installed_at`; rotating the secret on
+      every plugin upgrade would silently invalidate whatever 15b builds on it.
+    - **A refusal is its own `ErrorCode`, for `CalibreMissing`'s reason.** The
+      client shows what the reader is in and what the next move is; prose to be
+      pattern-matched is not a taxonomy.
+    - **What it deliberately cannot do.** No listener, no HTTP, no wire format,
+      no annotation push, no auto-install on mount. That last one is the
+      decision most at risk from a helpful frontend: mount → import stays
+      automatic and read-only *so that* mount → write can be an explicit act,
+      and wiring `InstallPlugin` to a mount event would undo the decision rather
+      than save a click. Both the request and the facade method say so.
