@@ -13,7 +13,52 @@ targets = [
 
 [advisories]
 version = 2
-ignore = []
+
+# Every entry below is an `unmaintained` advisory whose own text ends "Solution:
+# No safe upgrade is available!" — none is a vulnerability, and none of them is
+# reachable by a `cargo update` from here. They are listed individually rather
+# than waved through with a blanket `unmaintained = "warn"`, for the same reason
+# the licence allowlist names every licence: a *new* unmaintained crate arriving
+# with a routine update must still turn this job red.
+#
+# Re-read this list whenever Tauri's Linux stack moves. Fourteen of the
+# seventeen disappear the day Tauri v2 targets GTK4 instead of GTK3, and the
+# right response then is to delete them, not to renew them.
+ignore = [
+    # --- the gtk-rs GTK3 bindings, archived upstream in favour of gtk4-rs. ---
+    # Tauri v2 renders on Linux through GTK3 + WebKitGTK (tauri -> wry/tao/muda
+    # -> gtk 0.18), so this whole family arrives with `readingbuddy-gui` and
+    # leaves only when Tauri does. It is also Linux-only: the macOS build links
+    # WKWebView and none of this.
+    { id = "RUSTSEC-2024-0411", reason = "gdkwayland-sys, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0412", reason = "gdk, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0413", reason = "atk, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0414", reason = "gdkx11-sys, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0415", reason = "gtk, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0416", reason = "atk-sys, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0417", reason = "gdkx11, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0418", reason = "gdk-sys, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0419", reason = "gtk3-macros, via tauri's GTK3 stack" },
+    { id = "RUSTSEC-2024-0420", reason = "gtk-sys, via tauri's GTK3 stack" },
+
+    # proc-macro-error, reached through glib-macros — the same GTK3 stack, so
+    # it goes when that does.
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, via glib-macros in tauri's GTK3 stack" },
+
+    # The unic-* family, all reached through urlpattern -> tauri-utils. A
+    # build-time Unicode table; nothing here parses user data with it.
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version, via urlpattern in tauri-utils" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident, via urlpattern in tauri-utils" },
+
+    # The one entry that is NOT the GUI's fault: `paste` is a macro-only crate
+    # pulled in by ratatui, and so rides on the TUI rather than on tauri. It
+    # expands to token concatenation at compile time and is absent from the
+    # shipped binary; it clears when ratatui drops it.
+    { id = "RUSTSEC-2024-0436", reason = "paste, via ratatui; proc-macro only, not in the shipped binary" },
+]
 
 [licenses]
 version = 2

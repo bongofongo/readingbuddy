@@ -27,7 +27,7 @@ rand_chacha = "0.9"
 rand_core = "0.9"
 # epub XHTML is well-formed XML, so a pull parser is enough; a full HTML5
 # parser would be a much larger dependency for no gain.
-quick-xml = "0.37"
+quick-xml = "0.41"
 # Dev-library covers. Already in the graph for the TUI's `--dump-png`, so this
 # costs no new dependency — and a hand-rolled PNG writer would be a deflate
 # implementation in a fixture generator.

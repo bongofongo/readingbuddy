@@ -28,7 +28,7 @@
     { "id": 1656, "title": "論語", "author": "Confucius", "language": "zh", "_why": "Chinese — same space-less property, different script" },
     { "id": 30235, "title": "Il Decamerone", "author": "Giovanni Boccaccio", "language": "it", "_why": "Italian" },
 
-    { "id": 33283, "title": "The Federalist Papers", "author": "Alexander Hamilton, John Jay, James Madison", "language": "en", "_why": "multiple authors" },
+    { "id": 1404, "title": "The Federalist Papers", "author": "Alexander Hamilton, John Jay, James Madison", "language": "en", "_why": "multiple authors. Gutenberg id 1404 — 33283 was wrong from the start (it is Calculus Made Easy) and has no epub at any URL, which is why this job failed every night rather than intermittently." },
     { "id": 100, "title": "The Complete Works of William Shakespeare", "author": "William Shakespeare", "language": "en", "_why": "enormous spine" },
     { "id": 25344, "title": "The Scarlet Letter", "author": "Nathaniel Hawthorne", "language": "en" },
     { "id": 74, "title": "The Adventures of Tom Sawyer", "author": "Mark Twain", "language": "en" },

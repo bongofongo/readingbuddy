@@ -199,6 +199,12 @@ ifeq ($(GUI_PKG),)
 else ifeq ($(GUI_DEPS),)
 	@echo "SKIPPED: gui/node_modules absent — run 'pnpm install' in gui/ first."
 else
+	@# `.svelte-kit/` is generated and gitignored, and gui/tsconfig.json extends
+	@# the tsconfig inside it. There is no `prepare` script, so `pnpm install`
+	@# does not create it — on a fresh clone (i.e. every CI run) both
+	@# svelte-check and tsc fail on a missing base config, while a dev machine
+	@# passes because some earlier `pnpm dev` left the directory behind.
+	cd gui && pnpm exec svelte-kit sync
 	cd gui && pnpm exec svelte-check --threshold error
 	cd gui && pnpm exec tsc --noEmit
 	cd gui && pnpm exec eslint .

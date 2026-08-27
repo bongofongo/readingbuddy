@@ -209,7 +209,7 @@ fn paragraphs_of(xhtml: &str, fragment: usize) -> Vec<Para> {
             }
             Ok(Event::Text(t)) => {
                 if capturing.is_some() {
-                    current.push_str(&t.unescape().unwrap_or_default());
+                    current.push_str(&t.xml10_content().unwrap_or_default());
                     current.push(' ');
                 }
             }

@@ -32,7 +32,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - uses: taiki-e/install-action@cargo-fuzz
+      # The explicit `tool:` form, not the `@cargo-fuzz` tool-name tag. That tag
+      # stopped resolving — the action ran, reported "no tool specified", and
+      # installed nothing, so every run since died on `no such command: fuzz`
+      # after paying for a nightly toolchain and a cache restore.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
 
       # `-timeout=10` is load-bearing for parse_sidecar: it is how a
       # non-terminating Lua chunk is detected at all. Without it a runaway loop

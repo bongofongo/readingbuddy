@@ -45,8 +45,20 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      # Same reason as the `check` job in ci.yml, which carries the argument:
+      # resolving the whole workspace pulls in the GUI's Tauri backend, and the
+      # runner ships no GTK3/WebKit headers. Repeated rather than shared because
+      # the Actions parser has no anchors — keep the four copies in step.
+      - name: GTK + WebKit headers for the Tauri backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
 
       # A tag that disagrees with Cargo.toml ships archives named for a version
       # the binary's own `--version` denies. Cheap to check, silent for ever if
