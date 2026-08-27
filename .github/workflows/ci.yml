@@ -202,9 +202,14 @@ jobs:
       # migration whose recorded checksum no longer describes it.
       - name: refuse a modified, deleted or renamed migration
         run: |
+          # `*.sql` only, not the whole directory. What sqlx checksums is the
+          # migration files; `crates/engine/migrations/CLAUDE.md` lives in here
+          # too, and editing the documentation about migrations is not editing
+          # an applied migration. Without the glob this gate fails any PR that
+          # improves that file — which is exactly what it did.
           changed=$(git diff --diff-filter=MDR --name-only \
             "${{ github.event.pull_request.base.sha }}...HEAD" \
-            -- crates/engine/migrations/)
+            -- 'crates/engine/migrations/*.sql')
           if [ -n "$changed" ]; then
             echo "::error::an applied migration was changed, not added:"
             echo "$changed"

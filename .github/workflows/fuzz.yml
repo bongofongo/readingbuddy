@@ -40,6 +40,13 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      # `--target x86_64-unknown-linux-gnu` is not decoration. cargo-fuzz
+      # defaults to the triple it was *itself* compiled for, and the prebuilt
+      # binary install-action fetches is musl-linked — so it tried to build the
+      # fuzz targets for musl, a target the nightly toolchain here does not have
+      # std for, and died on "can't find crate for `core`". Name the host triple
+      # and the default never applies.
+      #
       # `-timeout=10` is load-bearing for parse_sidecar: it is how a
       # non-terminating Lua chunk is detected at all. Without it a runaway loop
       # reads as a slow input rather than a hang.
@@ -55,7 +62,7 @@ jobs:
         env:
           SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '300' }}
         run: |
-          cargo fuzz run -s none "${{ matrix.target }}" \
+          cargo fuzz run -s none --target x86_64-unknown-linux-gnu "${{ matrix.target }}" \
             -- -max_total_time="$SECONDS_PER_TARGET" \
                -timeout=10 \
                -rss_limit_mb=2048 \
