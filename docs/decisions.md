@@ -222,13 +222,40 @@ it copies.**
   frontend displays a Rust-rendered image; the renderer survives the frontend
   change intact.
 
+## LLM and AI — v2, and separate
+
+- **Every LLM/AI surface is v2.** Recommendations, quiz/discussion, and an MCP
+  server are not three features but one subsystem — a model client, a privacy
+  posture, a storage story and a prompt-versioning story, shared. v1 ships with
+  **no model dependency, no model config, no model-derived rows, and no vendor in
+  its graph.**
+- **No seam is stubbed ahead of time.** No trait, no `EngineConfig` field, no
+  `Request` variant, no migration, no feature flag. `ts-rs` emits a new
+  `Request` field as required TypeScript however `#[serde(default)]` the Rust
+  is, so a placeholder costs the GUI now and buys nothing later.
+- **The API surface is the whole v2 unlock, and keeping it complete is already
+  the rule.** `crates/api` carries the surface as DTOs and `readingbuddyd` proves
+  a transport can sit over it branching on no method name; an MCP server is a
+  second such transport. Every gap `api-surface-auditor` closes for the GUI buys
+  v2 too.
+- **The vocabulary is reserved.** *suggestion*, *quiz* and *discussion* stay
+  unclaimed as nouns in schema, DTOs and UI copy — "card" already means both a
+  vocabulary flashcard (`flashcards.rs`) and a cited passage (items 45–48), and
+  that is one collision too many already.
+- **The privacy floor does not move.** Highlight text, note bodies and search
+  queries are the user's private reading; v2 inherits that as its floor rather
+  than renegotiating it.
+- The reasoning, the two directions, and the four problems that are **not**
+  settled live in `docs/spec-llm-v2.md`.
+
 ## Out of scope for now
 
 Excerpt view (and when it lands: **search the epub for the highlight's text**,
 not `pos0` resolution — a `pos0` is a cre-engine xpointer and resolving it means
 reimplementing enough of that engine to agree with it). Orphan queue. Graph view.
 Author/corpus view. Shelf view. Publishing the public review. Two-way sync.
-Provider enrichment on device pull. Non-numeric rating scales.
+Provider enrichment on device pull. Non-numeric rating scales. Every LLM/AI
+surface — see the section above.
 
 ## Build order
 
