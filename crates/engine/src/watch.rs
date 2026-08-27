@@ -1121,10 +1121,33 @@ mod vault_tests {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("vault");
             std::fs::create_dir_all(&root).unwrap();
+            // A FILE, and in this module only — everywhere else in the engine
+            // `sqlite::memory:` is right and stays.
+            //
+            // An in-memory database is per-connection, which is why the pool is
+            // capped at 1 for it (storage/mod.rs), and it therefore lives
+            // exactly as long as that one connection. These tests **drop
+            // futures mid-query on purpose** — that is the thing under test —
+            // and a dropped query is exactly when sqlx discards a connection
+            // whose protocol state it can no longer trust. The pool then opens
+            // a fresh, *unmigrated* in-memory database and the next call dies
+            // with `no such table: notes_fts`: a harness artefact wearing the
+            // costume of a real bug, and one that reads as a scary FTS failure.
+            //
+            // It bit `cancelling_the_wait_does_not_lose_the_edit` on two of
+            // three macOS CI runs and passed in between, which is the worst
+            // cadence a failure can have. A file survives losing its connection
+            // — and durability across a dropped write is the property these
+            // tests exist to assert, so the file is also the more honest
+            // fixture.
+            let db = dir.path().join("notes.db");
+            let storage = Storage::connect(&format!("sqlite:{}", db.display()))
+                .await
+                .unwrap();
             Vault {
                 _dir: dir,
                 root,
-                storage: Storage::connect("sqlite::memory:").await.unwrap(),
+                storage,
             }
         }
 
