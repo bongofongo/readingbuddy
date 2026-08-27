@@ -160,6 +160,30 @@ export interface LibraryClient {
   listNotes(bookId: number | null, limit?: number | null): Promise<NoteDto[]>;
   listReadings(bookId: number): Promise<ReadingDto[]>;
 
+  /**
+   * Where you have got to — **the writer for the one number reading mode owns**
+   * (item 54).
+   *
+   * It takes a **book** and never a reading, which is not a shortcut: the engine
+   * writes to the book's open read, and picking between a reread's two would be
+   * exactly the choice item 27 refuses to let a frontend make. A book with no
+   * open reading is not a case to guard for here either — the engine opens one.
+   *
+   * `page` and `finished` are independent and both optional on the wire, so
+   * `null` in either means *leave that alone* rather than *clear it*. There is
+   * no request that unsets a page.
+   *
+   * It answers with the **book, re-read** — so the `ProgressDto` that comes back
+   * is the engine's arithmetic over the page just written, and a caller renders
+   * that rather than the number it sent. Those are different values whenever
+   * `page_count` is absent or zero, which is two books in the dev library.
+   */
+  updateProgress(
+    bookId: number,
+    page?: number | null,
+    finished?: boolean | null,
+  ): Promise<StoredBook | null>;
+
   // ---- one card, per reading (item 28) ------------------------------------
 
   /**
@@ -672,6 +696,24 @@ export class TauriClient implements LibraryClient {
       await this.#call({ method: 'list_readings', params: { book_id: bookId } }),
       'readings',
     ).value;
+  }
+
+  /**
+   * Both parameters are stated on the wire whatever the caller passed. They are
+   * `#[serde(default)]` in the Rust and therefore optional over the socket, but
+   * `ts-rs` emits them as required TypeScript — the trap `docs/decisions.md`
+   * names by name — so omitting one here would not compile.
+   */
+  async updateProgress(
+    bookId: number,
+    page: number | null = null,
+    finished: boolean | null = null,
+  ): Promise<StoredBook | null> {
+    const r = expect(
+      await this.#call({ method: 'update_progress', params: { book_id: bookId, page, finished } }),
+      'book',
+    );
+    return r.value === null ? null : (r.value as StoredBook);
   }
 
   // ---- item 28 ------------------------------------------------------------

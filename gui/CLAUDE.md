@@ -21,6 +21,10 @@ by the year a reading closed and its tiles are 86px with no captions, the book
 page is three columns rather than a three-depth pane, `/notes` exists, and the
 accent is spent only on state you can act on.
 
+**Then item 54 added the first surface outside the shell.** Reading mode
+(`/reading`) is the book with the window to itself, which is what turned the one
+layout into a `(shell)/` group — see the section below, and entry 54.
+
 Read first: [`../docs/gui/gui-vision.md`](../docs/gui/gui-vision.md) (what the
 product is), [`../docs/decisions.md`](../docs/decisions.md) entry 53 (the layout,
 settled), [`../docs/gui/testing.md`](../docs/gui/testing.md) (the four layers),
@@ -39,7 +43,10 @@ gui/src/lib/book/             the desk's three columns + four pure modules (item
 gui/src/lib/moments/          the ceremony + its sentence (item 28)
 gui/src/lib/card/             one card, per reading (item 28)
 gui/src/lib/life/             the reading-life page's parts + its spans (item 28)
-gui/src/routes/               +page (library), book/[id], book/[id]/cards, cards, notes, life
+gui/src/routes/(shell)/       the app with its header: +page (library), book/[id],
+                              book/[id]/cards, cards, notes, life
+gui/src/routes/reading/       the app without one — reading mode (item 54)
+gui/src/lib/reading/          its panels and its one-panel-at-a-time rule
 gui/tests/routes.spec.ts      layer 2: every route, three viewports, WebKit
 gui/tests/shots/              committed PNGs — a reviewable artifact
 gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
@@ -333,6 +340,37 @@ markup** — `>>`/`<<` around the terms, un-mixed by `book/snippet.ts`, with
 
 **`heroSrc` is `cover_path`; `coverSrc` is `cover_shelf_path`.** Two methods, so
 a call site says which it meant.
+
+## Reading mode
+
+`/reading?book=3` — the book you are reading, with the window to itself, and the
+four things you can do to it: **Note**, **Page**, **Passages**, **Books**. Item
+54; `docs/decisions.md` entry 54 is the settled account.
+
+**It is outside the shell, via a route group.** `(shell)/` is the app with its
+header and `reading/` is the app without one. The URLs did not move — a group's
+directory name is not a path segment — and the group was taken over a conditional
+in the shell because the conditional puts knowledge of reading mode into the
+chrome reading mode exists to escape.
+
+**Four things make it a place rather than a mode**, and they are the check to
+make before adding anything to it: a URL that survives a reload; state that is
+the engine's (`currently_reading`, not a flag); both exits on screen in *every*
+state; and no count and no target anywhere. Lose one and the surface has become
+what the axiom forbids.
+
+**One panel at a time, and `$lib/reading/mode.ts` holds that as a type.** Do not
+merge it with `$lib/book/desk.ts`'s identically-shaped `Centre`: the desk's rails
+are permanent *so that* nothing is modal, and this one covers the book on
+purpose. Two values, two arguments; one type would hide the difference.
+
+Three things it deliberately cannot do — start a read, close a read, annotate a
+passage. All three have a home on the book's page. If a future item wants one
+here, that is a decision about what this surface is, not a gap to fill.
+
+The **working state is screenshotted** (all four panels, three widths) and the
+resting state is in `ROUTES`. It shipped with half its design rendered in no
+test; keep both halves covered.
 
 ## The vault, as a place
 

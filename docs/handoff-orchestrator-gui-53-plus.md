@@ -20,8 +20,10 @@ previous conversation.
 - Highest applied migration is **`0018`**. **Nothing is outstanding** — item 51
   wanted no migration, and `idx_readings_finished_at` covers its one statement.
 - `API_VERSION` is **2** and must not move.
-- Routes today: `/`, `/book/[id]`, `/book/[id]/cards`, `/cards`, `/life`.
-- Next free item number is **53**. `grep '^[0-9]\+\. \*\*' docs/decisions.md` is
+- Routes today: `/`, `/book/[id]`, `/book/[id]/cards`, `/cards`, `/notes`,
+  `/life` — all under `src/routes/(shell)/` — plus `/reading` outside it.
+- Next free item number is **55**. Entry 53 is the layout rework and entry 54 is
+  reading mode; both landed after this file was written. `grep '^[0-9]\+\. \*\*' docs/decisions.md` is
   the register; `docs/prompts/` is not and under-reports permanently — **items
   50–52 were minted from this file rather than from a spec row and have no
   prompt file**, which is item 33's shape and will keep recurring.

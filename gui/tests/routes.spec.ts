@@ -58,6 +58,13 @@ const ROUTES = [
   // panes' widths have to look right in.
   { name: 'notes', path: '/notes' },
   { name: 'life', path: '/life' },
+  // Item 54. The book you are reading, with the window to itself — the first
+  // route outside `(shell)/`, so it is also the only screenshot in the suite
+  // that proves the header is genuinely absent rather than merely unstyled.
+  { name: 'reading', path: '/reading' },
+  // A `?book=` naming a book that is not open. It must land on an open read
+  // rather than on an error, and this is the only place that branch renders.
+  { name: 'reading-stale-book', path: '/reading?book=9999' },
 ];
 
 for (const route of ROUTES) {
@@ -968,3 +975,258 @@ test('a moment puts no number on the home surface', async ({ page }) => {
   const chrome = await page.locator('header').innerText();
   expect(chrome).not.toMatch(/\d/);
 });
+
+/**
+ * Reading mode at rest — the whole claim of the route, asserted (item 54).
+ *
+ * The claim is that the surface shows the book and the four things you can do to
+ * it, and nothing else. Three of these four assertions are about what is *not*
+ * there, which is the half a screenshot review reads past: an extra region, a
+ * count on a verb and a stray shell header all look plausible in a PNG.
+ */
+test('reading mode shows the book, four verbs, and both ways out', async ({ page }) => {
+  const problems: string[] = [];
+  page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+  page.on('pageerror', (e) => problems.push(e.message));
+
+  await page.goto('/reading');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  // The shell's header is a route group away, and this is the assertion that
+  // says so. `(shell)/+layout.svelte` draws a nav labelled *Places*; if the
+  // group ever collapsed back into one layout, every other test here would pass.
+  await expect(page.getByRole('navigation', { name: 'Places' })).toHaveCount(0);
+
+  // Four verbs, and each carries the letter that reaches it — a shortcut nobody
+  // can discover is a shortcut nobody uses.
+  const verbs = page.getByRole('group', { name: 'What you can do' }).getByRole('button');
+  await expect(verbs).toHaveCount(4);
+  const KEYS: [string, string][] = [
+    ['Note', 'n'],
+    ['Page', 'p'],
+    ['Passages', 's'],
+    ['Books', 'b'],
+  ];
+  for (const [label, key] of KEYS) {
+    const verb = verbs.filter({ hasText: label });
+    await expect(verb).toHaveAttribute('aria-keyshortcuts', key);
+  }
+
+  // Nothing is up until it is asked for.
+  for (const name of ['Note', 'Page', 'Passages', 'Books']) {
+    await expect(page.getByRole('button', { name, exact: false })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  }
+
+  // Both exits, at rest.
+  await expect(page.getByRole('link', { name: 'The book' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'The library' })).toBeVisible();
+
+  expect(problems, 'the console must be clean').toEqual([]);
+});
+
+/**
+ * One panel at a time, and the way out survives it.
+ *
+ * The second half is the one that matters. *Nothing is a dead end* is satisfied
+ * trivially at rest — the exits are right there — and the state where it is
+ * actually at risk is with a panel covering the surface.
+ */
+test('one panel is open at a time, and the exits stay on screen', async ({ page }) => {
+  await page.goto('/reading');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  const note = page.getByRole('button', { name: /^Note/ });
+  const books = page.getByRole('button', { name: /^Books/ });
+
+  await note.click();
+  await expect(note).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('textbox', { name: 'Note' })).toBeVisible();
+
+  await books.click();
+  await expect(books).toHaveAttribute('aria-pressed', 'true');
+  // Opening one closes the last — the single-slot rule, which is the design and
+  // not an incidental consequence of how the markup happens to be nested.
+  await expect(note).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('textbox', { name: 'Note' })).toHaveCount(0);
+
+  // With a panel open, both ways out are still there.
+  await expect(page.getByRole('link', { name: 'The book' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'The library' })).toBeVisible();
+
+  // And pressing the lit verb again puts the surface back to the book.
+  await books.click();
+  await expect(books).toHaveAttribute('aria-pressed', 'false');
+});
+
+/**
+ * The page a reader types, and the answer that comes back from below the seam.
+ *
+ * Book 3 is the doorstop: 1408 pages, so it is the one open read with an honest
+ * denominator. The assertion is deliberately on `of 1408` and on a percentage
+ * the box was never given — a panel that echoed its own input would show `p.
+ * 214` and pass every other check on this page.
+ */
+test('a page can be said, and what comes back is the engine’s arithmetic', async ({ page }) => {
+  await page.goto('/reading?book=3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('The Doorstop');
+  await expect(page.locator('.where')).toHaveText('p. 500 of 1408 · 35%');
+
+  await page.getByRole('button', { name: /^Page/ }).click();
+  const box = page.getByRole('textbox', { name: 'Page you are on' });
+  // The box starts at the record, so a reader correcting a page does not retype
+  // it from nothing.
+  await expect(box).toHaveValue('500');
+
+  await box.fill('704');
+  await page.getByRole('button', { name: 'Say so' }).click();
+
+  // 704 * 100 / 1408 = 50. The frontend sent a page and nothing else.
+  await expect(page.locator('.where')).toHaveText('p. 704 of 1408 · 50%');
+  // Past tense, about a thing just done.
+  await expect(page.locator('.said')).toContainText('p. 704 of 1408 · 50%');
+  // The panel closes on a successful write: the surface goes back to the book.
+  await expect(page.getByRole('button', { name: /^Page/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+});
+
+/**
+ * A page nobody meant is refused, and the refusal says what would work.
+ *
+ * The engine takes an `i64` and would store `0` without complaint, so this is
+ * the frontend's own refusal and it has to be tested here — there is no engine
+ * test that would fail if this went away.
+ */
+test('a page that is not a page is refused with the move that would work', async ({ page }) => {
+  await page.goto('/reading?book=3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  await page.getByRole('button', { name: /^Page/ }).click();
+  await page.getByRole('textbox', { name: 'Page you are on' }).fill('nowhere');
+  await page.getByRole('button', { name: 'Say so' }).click();
+
+  await expect(page.getByRole('alert')).toContainText('whole number');
+  // Nothing was written: the record still says where it said.
+  await expect(page.locator('.where')).toHaveText('p. 500 of 1408 · 35%');
+});
+
+/**
+ * Reading mode counts nothing.
+ *
+ * The surface a reader leaves open while reading is the last place in this app
+ * that may put a number on them. `mode.ts` asserts the verb labels carry no
+ * digit; this asserts the rendered surface carries none of the completion
+ * vocabulary either — including with the passages panel open, which is the one
+ * place a `.length` would be one keystroke away.
+ */
+test('reading mode says what you did and never what is left of it', async ({ page }) => {
+  await page.goto('/reading?book=3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  await page.getByRole('button', { name: /^Passages/ }).click();
+  await expect(page.getByRole('heading', { name: 'Come across' })).toBeVisible();
+
+  const body = (await page.locator('main').innerText()).toLowerCase();
+  for (const word of ['unread', 'remaining', 'left', 'goal', 'streak', 'target', 'yet']) {
+    expect(body, `"${word}" is completion framing`).not.toMatch(new RegExp(`\\b${word}\\b`));
+  }
+});
+
+/**
+ * The books you have open, as links — and the one you are on is still in the
+ * list.
+ *
+ * A panel that removed the current entry would change length as the reader moved
+ * through it, which is the shape of a list that cannot be scanned.
+ */
+test('reading mode switches book by URL, and marks the one you are on', async ({ page }) => {
+  await page.goto('/reading?book=3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  await page.getByRole('button', { name: /^Books/ }).click();
+  const here = page.locator('a[aria-current="page"]');
+  await expect(here).toHaveCount(1);
+  await expect(here).toContainText('The Doorstop');
+
+  await page.getByRole('link', { name: /A Book I Went Back To/ }).click();
+  await expect(page).toHaveURL(/\/reading\?book=12$/);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('A Book I Went Back To');
+  // Picking closes the panel: you asked to read something, not to keep browsing.
+  await expect(page.getByRole('button', { name: /^Books/ })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+});
+
+/**
+ * The keyboard, which is most of the reason this surface is worth leaving open.
+ *
+ * The two rejections are the interesting half: a modified keystroke belongs to
+ * the platform, and a letter typed into the note box is text — or the note box
+ * could not contain the word *note*.
+ */
+test('the verbs have keys, and a key typed into a field is text', async ({ page }) => {
+  await page.goto('/reading?book=3');
+  await expect(page.locator('main')).not.toContainText('Opening…');
+
+  await page.keyboard.press('n');
+  const box = page.getByRole('textbox', { name: 'Note' });
+  await expect(box).toBeVisible();
+
+  await box.fill('');
+  await box.pressSequentially('note on page b');
+  // Every one of those letters is a verb key. None of them fired.
+  await expect(box).toHaveValue('note on page b');
+  await expect(page.getByRole('button', { name: /^Note/ })).toHaveAttribute('aria-pressed', 'true');
+
+  // Escape is exempt from that rule, or a panel would be a trap for a keyboard.
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: /^Note/ })).toHaveAttribute('aria-pressed', 'false');
+});
+
+/**
+ * The other half of reading mode, rendered — every panel, looked at.
+ *
+ * The resting state is in `ROUTES` and the working state was in nothing, which
+ * is this repo's standing complaint in a new costume: the surface that swaps its
+ * whole layout had one of its two layouts covered by a screenshot. A panel that
+ * overflows the window, or a book row that collapses on a 220-character title,
+ * looks exactly like a passing run from here.
+ *
+ * Book 3 rather than the default, because it is the open read that has
+ * passages, notes and an honest page count — the three panels are empty on the
+ * book the route lands on by default, and an empty panel is not the case the
+ * layout has to survive.
+ */
+const PANELS = [
+  { verb: 'Page', name: 'reading-page' },
+  { verb: 'Note', name: 'reading-note' },
+  { verb: 'Passages', name: 'reading-passages' },
+  { verb: 'Books', name: 'reading-books' },
+];
+
+for (const panel of PANELS) {
+  test(`${panel.name} renders`, async ({ page }) => {
+    const problems: string[] = [];
+    page.on('console', (m) => m.type() === 'error' && problems.push(m.text()));
+    page.on('pageerror', (e) => problems.push(e.message));
+
+    await page.goto('/reading?book=3');
+    await expect(page.locator('main')).not.toContainText('Opening…');
+    await page.getByRole('button', { name: new RegExp(`^${panel.verb}`) }).click();
+
+    // The book is still on screen with a panel up — it is the thing the panel is
+    // about, and a surface that hid it would be a dialog with better manners.
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('The Doorstop');
+    // And the surface is still not a dead end.
+    expect(await page.locator('a').count()).toBeGreaterThan(0);
+
+    expect(problems, 'the console must be clean').toEqual([]);
+    await expect(page).toHaveScreenshot(`${panel.name}.png`, { fullPage: true });
+  });
+}

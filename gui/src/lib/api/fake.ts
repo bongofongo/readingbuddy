@@ -1033,6 +1033,14 @@ export class FakeClient implements LibraryClient {
   #citations: { note: number; highlight: number }[] = CITATIONS.map((c) => ({ ...c }));
   #flashcards: FlashcardDto[] = FLASHCARDS.map((c) => ({ ...c }));
   #annotations: Record<number, string | null> = {};
+  /**
+   * Pages written by [`updateProgress`], overlaid on the book — item 54.
+   *
+   * An overlay for `#annotations`' reason: `BOOKS` is module state shared by
+   * every instance, and a test that turned a page would otherwise change the
+   * fixture for the whole suite.
+   */
+  #pages: Record<number, number> = {};
   #ratings: Record<number, number> = { ...RATINGS };
   #nextNoteId = 100;
   #nextCardId = 100;
@@ -1091,13 +1099,71 @@ export class FakeClient implements LibraryClient {
     for (const book of BOOKS) {
       if (book.reading_state?.state !== 'reading') continue;
       const r = (await this.listReadings(book.id)).find((x) => x.status.state === 'reading');
-      if (r) open.push({ book, reading: r });
+      if (r) open.push({ book: this.#turned(book), reading: r });
     }
     return open.slice(0, limit);
   }
 
   async getBook(id: number): Promise<StoredBook | null> {
-    return BOOKS.find((b) => b.id === id) ?? null;
+    const b = BOOKS.find((x) => x.id === id);
+    return b === undefined ? null : this.#turned(b);
+  }
+
+  /**
+   * A book with whatever page this instance has been told about.
+   *
+   * **The arithmetic is reproduced here, and that is the point of it.** The real
+   * `update_progress` answers with the book re-read, so `percent` comes back off
+   * the engine's own division — which is why [`LibraryClient.updateProgress`]
+   * returns a book at all instead of the caller keeping the number it sent. A
+   * fake that echoed the page without recomputing the percentage would let a
+   * screen render its own input and pass.
+   *
+   * It follows `ProgressDto`'s two rules rather than inventing softer ones: a
+   * `page_count` of zero is a false denominator and is **absence** by the time
+   * it reaches a DTO, and a page with no length has no percentage — so no track
+   * is drawn over one. Book 5 in this fixture is that case on purpose.
+   */
+  #turned(b: StoredBook): StoredBook {
+    const page = this.#pages[b.id];
+    if (page === undefined) return b;
+    const of = b.page_count !== null && b.page_count > 0 ? b.page_count : null;
+    const fraction = of === null ? null : Math.min(1, page / of);
+    return {
+      ...b,
+      current_page: page,
+      progress: {
+        progress: 'started',
+        page,
+        of,
+        fraction,
+        // Integer division over the pages, not `Math.floor(fraction * 100)` —
+        // `ProgressDto` says so and the fixture rows above already follow it.
+        // The two agree on almost every input, which is exactly what makes the
+        // wrong one survive.
+        percent: of === null ? null : Math.floor((page * 100) / of),
+        source: fraction === null ? null : 'pages',
+      },
+    };
+  }
+
+  /**
+   * Writes the page and hands the book back re-read, like the engine.
+   *
+   * `finished` is accepted and **not implemented**, and that is stated rather
+   * than silently true: nothing in this app closes a read yet, so a fake arm for
+   * it would be a claim no screen exercises — the shape this repo keeps writing
+   * down as worse than an absence. It is on the wire and on the interface
+   * because the request has it; the day a screen closes a read, this is the line
+   * that has to grow.
+   */
+  async updateProgress(
+    bookId: number,
+    page: number | null = null,
+    _finished: boolean | null = null,
+  ): Promise<StoredBook | null> {
+    if (page !== null) this.#pages[bookId] = page;
+    return this.getBook(bookId);
   }
 
   async listHighlights(bookId: number): Promise<HighlightDto[]> {

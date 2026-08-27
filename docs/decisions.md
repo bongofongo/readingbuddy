@@ -3266,3 +3266,69 @@ because item 31 needed somewhere to put reading time.
       in a book fetched to draw one line — and there is no note rename, so the
       editor's title is stated rather than offered. Both are recorded in the
       files that pay for them rather than hidden behind a client-side aggregate.
+
+54. **Reading mode — the book, and the four things you can do to it.** No engine
+    change, no migration, no `API_VERSION` move and no new request:
+    `update_progress` has been on the wire since the beginning and had no client
+    method above it, which is the whole of what this item found in the API.
+    `/reading?book=3`, outside the shell, with a route group as the mechanism.
+    - **It is a place, not a mode, and the four counts are the test.** A
+      full-window surface that covers the app is what *nothing is
+      modal-by-default* is usually about. This one is legitimate because it has
+      a **URL** that survives a reload; because the state is the **engine's**
+      (`currently_reading`, an open reading in the database, not a flag the route
+      invented); because **both exits are on screen in every state**, panel open
+      or not; and because it carries **no count and no target** anywhere. If any
+      of the four stops being true it has become the thing the axiom forbids, and
+      that is the check to make before adding to it.
+    - **One panel at a time — the opposite of the book page, and not in tension
+      with it.** The desk's three columns are permanent *so that* nothing is
+      modal; here, opening one of the four verbs closes the last. The difference
+      is what the two surfaces are: a desk shows its instruments, a book does
+      not. `$lib/reading/mode.ts` holds the single-slot rule as a type rather
+      than as four booleans, and it is deliberately **not** merged with
+      `$lib/book/desk.ts`'s identically-shaped `Centre` — sharing the type would
+      make the difference invisible the day one of them grew a second open panel.
+    - **A route group, not a conditional in the shell.** `(shell)/` is the app
+      with its header and `reading/` is the app without one; the URLs did not
+      move, because a group's directory name is not a path segment. The
+      conditional was rejected for putting knowledge of reading mode into the
+      chrome that reading mode exists to escape.
+    - **The page a reader types goes down; the arithmetic comes back up.**
+      `update_progress` answers with the book re-read, so the percentage on
+      screen after a write is the engine's integer division and never the
+      route's — different values for the two books in the fixture whose
+      `page_count` is zero or absent. `parsePage` refuses what a reader plainly
+      did not mean (blank, non-numeric, zero, unsafe) and every refusal names the
+      move that would work; it is not standing in for the engine's validation,
+      which does not exist because an `i64` is an `i64`.
+    - **A note written here is a different object from the composer's.** It
+      carries `reading_id` and `page`, which is what puts it on the right card
+      of a reread and draws as `p. 214` wherever it is shown afterwards. **No
+      title field**: a note you sit down to write has a name you mean, a thought
+      you had at page 214 does not, and asking for one before the thought is how
+      the thought is lost.
+    - **Passages are reading-scoped, and the two notes stay apart.** The verb
+      asks *what has come across*, and the honest scope for that is the pass you
+      are in — `highlights_for_reading`, in the engine's order, unsorted here.
+      `ko_note` is drawn as the device's and `annotation` as yours, never merged
+      into "note", because that is the whole of the ownership seam.
+    - **Two defects the screenshots found and the tests could not.** The
+      composition was pinned to the bottom edge under a field of nothing — auto
+      margins in a flex column do not compose, and `justify-content` was the
+      property being approximated. And the page box said *The record says p. 500
+      of 1408 · 35%* three lines under the same string in the accent: on a
+      surface whose claim is that it shows you only what you need, saying one
+      fact twice is the defect. **The working state is now screenshotted**, all
+      four panels at three widths — it was half the design and was rendered in no
+      test at all, which is this repo's standing complaint in a new costume.
+    - **The door is in the *Reading now* band, not in the header.** It is only a
+      place to go when something is open, and that band already renders nothing
+      when nothing is. A permanent nav entry would be a link to an empty state
+      most of the time.
+    - **What it deliberately cannot do.** Start a read, close a read, or annotate
+      a passage. All three are acts with a proper home on the book's page and
+      none of them belongs one keystroke from the surface you leave open while
+      reading. `finished` is on the client method because the request has it, and
+      `FakeClient` states in as many words that its arm is unimplemented rather
+      than quietly pretending.

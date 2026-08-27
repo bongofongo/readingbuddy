@@ -220,7 +220,20 @@
       `promoted`'s — capped at four, cut in silence.
     -->
     <section class="band reading">
-      <h2 class="band-title">Reading now</h2>
+      <div class="band-head">
+        <h2 class="band-title">Reading now</h2>
+        <!--
+          The door to reading mode (item 54), and it is in this band rather than
+          in the header on purpose: it is only a place to go when something is
+          open, and this band is the part of the app that already knows that —
+          it renders nothing at all when nothing is. A permanent nav entry would
+          be a link to an empty state most of the time.
+
+          The arrow says it leaves, the same way `Cards →` does on the book's
+          rail. No count beside it, here of all places.
+        -->
+        <a class="into" href="/reading">Reading mode →</a>
+      </div>
       <div class="previews">
         {#each band as p (p.reading.reading.id)}
           <Preview book={p.reading.book} reading={p.reading.reading} mark={p.mark} />
@@ -253,8 +266,18 @@
     flex-wrap: wrap;
     margin-bottom: 1.3rem;
   }
-  .reading h2 {
+  .reading .band-head {
     margin-bottom: 1.3rem;
+  }
+  /* Dim at rest like every other secondary link in the app; the accent is spent
+     on state you can act on, and *there is a place over there* is not that. */
+  .into {
+    font-size: 0.85rem;
+    color: var(--ink-dim);
+    white-space: nowrap;
+  }
+  .into:hover {
+    color: var(--accent-text);
   }
   /*
    * A wrapping grid on the page's own ground — not the strip this replaces.
