@@ -115,12 +115,13 @@ names. Launch them; do not reimplement what they do.
   caught only on main. **Prefer adding a new request over changing one**, and
   when you must change one, say so in the report.
 
-Three skills:
+Four skills:
 
 | skill | for |
 |---|---|
 | `new-wave-item` | starting a numbered item — pre-allocate the migration, write the prompt file, then build. Opens a session. |
 | `gui-component` | a new Svelte component or route, to one dialect rather than twelve. |
+| `run-readingbuddy` | launching and driving any of the four binaries — `driver.sh gui\|tui\|cli\|api`, screenshots included. The thing to reach for when the question is "does it actually work", not "do the tests pass". |
 | `wrap-session` | verify → session log → commit. Closes a session. |
 
 Two hooks (`.claude/settings.json`):
