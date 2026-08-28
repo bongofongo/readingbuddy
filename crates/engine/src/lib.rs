@@ -1369,6 +1369,52 @@ impl Engine {
         Ok(self.wireless.stop().await)
     }
 
+    /// Fetch from a paired reader whose window is open (item 15b, stage 3).
+    ///
+    /// **The same rendezvous, dialled the other way.** The desktop broadcasts
+    /// the same `HELLO`, the reader answers the same `HERE`, and this verifies
+    /// the same MAC before connecting — so a rogue that answers first cannot
+    /// make us open a session with it. Once connected the entries travel reader
+    /// → desktop exactly as they do in a push, which is why the transfer is
+    /// literally the same function: **wireless is read-only toward us** is the
+    /// shape of the protocol rather than a rule somebody enforces.
+    ///
+    /// It does **not** need [`Engine::start_listening`]: a seeker sends first,
+    /// so the reply comes back to the ephemeral port it sent from, and pulling
+    /// while the door is shut is the ordinary case rather than a special one.
+    ///
+    /// Refuses with `ReaderNotFound` when nothing answers — the reader's window
+    /// is shut, it is on another subnet, or the AP dropped the broadcast, and a
+    /// caller must not guess between them.
+    #[tracing::instrument(skip(self))]
+    pub async fn pull_from_reader(&self, device_id: &str) -> Result<Vec<koreader::PullReport>> {
+        let device = self
+            .storage
+            .paired_device(device_id)
+            .await?
+            .ok_or(wireless::WirelessRefusal::UnknownDevice)?;
+        let bind = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        let beacon = wireless::UdpBeacon::bind_ephemeral(bind)
+            .await?
+            // Three seconds, which is `calibre.koplugin/wireless.lua`'s own
+            // figure for the same exchange on the same class of device. Not a
+            // knob, for `RENDEZVOUS_PORT`'s reason.
+            .deadline(std::time::Duration::from_secs(3));
+        let broadcast = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST),
+            wireless::RENDEZVOUS_PORT,
+        );
+        let report = wireless::pull_from(
+            &self.storage,
+            &device,
+            &beacon,
+            broadcast,
+            &plugin::mint_id(16)?,
+        )
+        .await?;
+        Ok(report.pulled)
+    }
+
     /// The listener itself, for a host that wants to drive it directly.
     ///
     /// Behind `internals` for [`Engine::storage`]'s reason — it is how this

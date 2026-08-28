@@ -392,6 +392,14 @@ enum KoCmd {
         #[arg(long, default_value_t = 5)]
         minutes: u32,
     },
+    /// Fetch from a paired reader over the LAN, while its window is open
+    ///
+    /// The other direction from `ko listen`. Open the window on the reader
+    /// first — Tools -> readingbuddy -> Open the window — then run this.
+    Fetch {
+        /// The reader: its device id, or enough of the start of one
+        device: String,
+    },
     /// Pull books in from a mounted reader
     Sync {
         /// The mount to sync from
@@ -627,6 +635,7 @@ async fn main() -> Result<()> {
             KoCmd::Watch => commands::ko::watch(&engine).await?,
             KoCmd::Stats { path } => commands::ko::stats(&engine, &path).await?,
             KoCmd::Listen { minutes } => commands::ko::listen(&engine, minutes).await?,
+            KoCmd::Fetch { device } => commands::ko::fetch(&engine, &device).await?,
             KoCmd::Plugin { cmd } => match cmd {
                 PluginCmd::Status { path } => {
                     commands::ko::plugin_status(&engine, path.as_deref()).await?

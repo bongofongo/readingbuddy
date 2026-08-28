@@ -422,6 +422,48 @@ what they captured, which imports idempotently. Remembering nonces across a
 closed door buys nothing and costs an unbounded set on a desktop left in
 `Always` for weeks.
 
+## What stage 3 actually found
+
+**The beacon was refused, and this file proposed it.** *"The reader announces …
+rather than the desktop scanning"* buys a passive *ready* state and costs the
+thing the whole design rests on: an unsolicited announcement carries **no fresh
+nonce from the party checking it**, so it can only sign something the reader
+chose — which makes it **replayable**, and makes *the seeker verifies identity
+before sending a byte* true in one direction only. It would also have been a
+fourth message serving a fifth. Pull therefore reuses `HELLO`/`HERE` with the
+roles swapped, and the page's *ready* state is a pull attempt whose refusal
+names the one cause the user can act on. One datagram sent when somebody asks
+is not a scan.
+
+**The transfer needed no new frames at all**, which is more than "roles
+swapped". Entries always travel **reader → desktop** — writing to a device over
+the wire is out of scope by decision — so the only thing that differs between
+push and pull is *who dialled*. `receive_entries` is literally the same
+function on both paths, and "wireless is read-only toward us" stops being a
+rule somebody enforces and becomes the shape of the protocol.
+
+**A Kindle firewalls inbound ports.** `httpinspector` punches an explicit
+`iptables` hole for its port on `Device:isKindle()` and removes it on stop.
+That does not touch push, where the reader dials out, and it lands squarely on
+pull, where the reader must accept. Untested on hardware and noted rather than
+copied: shelling `iptables` out of our plugin is a bigger decision than this
+item should make quietly, and on a Kindle the honest fallback is push.
+
+**Four stop hooks, not one.** This file named `onEnterStandby`; `httpinspector`
+handles `onEnterStandby`, `onSuspend`, `onExit` and `onCloseWidget`, and it is
+right — a device suspends, it also exits, and a widget closing over an open
+socket leaks it. A window left open across a suspend is a listening port on a
+device in somebody's bag.
+
+**`SimpleTCPServer` is polled by `UIManager:insertZMQ`**, which is the run loop
+it does not have of its own — the list the main loop drains each cycle. That is
+also why the window must be short and self-closing: once a client connects,
+`waitEvent` reads header lines *in line* with a 100 ms socket timeout and then
+holds 500 ms for the response, so a stalled peer stalls the UI thread for up to
+six tenths of a second per connection. The reader's UDP responder is polled from
+the same place with a **zero** timeout, and dies with the TCP server for the
+reason the desktop's does.
+
 ## Explicitly not in this item
 
 Auto-push on any event. Two-way sync. Writing anything to the reader over the
@@ -446,7 +488,8 @@ on one protocol produce three dialects of it — items 26–28's lesson.
    API requests, the plugin's menu verb and its discovery ladder. **Landed** —
    see *What stage 2 actually found* below.
 3. **Pull.** The reader's window and beacon, the desktop's seeker, the devices
-   page's *ready* state.
+   page's *ready* state. **Landed** — see *What stage 3 actually found* below,
+   including why the beacon was refused.
 
 Stage 1 has value even if 2 and 3 slip: it makes a reader paired to two
 computers stop being silently broken.

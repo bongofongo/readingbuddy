@@ -205,6 +205,53 @@ pub async fn listen(engine: &Engine, minutes: u32) -> Result<()> {
     }
 }
 
+/// Fetch from a reader whose own window is open (item 15b, stage 3).
+///
+/// `listen`'s mirror, and the reason both exist: push is one tap on the reader
+/// and pull is one click here, and which is convenient depends entirely on
+/// which device is already in your hand. This one needs **no listener of ours**
+/// — a seeker sends first, so the reply comes back to the port it sent from.
+pub async fn fetch(engine: &Engine, typed: &str) -> Result<()> {
+    let device = resolve_device(engine, typed).await?;
+    println!("looking for {} on the network…", device_name(&device));
+
+    let reports = match engine.pull_from_reader(&device.device_id).await {
+        Ok(r) => r,
+        // A refusal is a decision with a next move in it, never a stack of
+        // prose — `ko plugin`'s tone, and the same shape the reader's own
+        // failure message takes in the other direction.
+        Err(e) => {
+            println!("{e}");
+            println!("    on the reader : Tools → readingbuddy → Open the window");
+            println!("    then          : readingbuddy ko fetch {typed}");
+            return Ok(());
+        }
+    };
+
+    if reports.is_empty() {
+        println!("{} had nothing to send.", device_name(&device));
+        return Ok(());
+    }
+    let mut inserted = 0;
+    let mut updated = 0;
+    for r in &reports {
+        inserted += r.stats.inserted;
+        updated += r.stats.updated;
+        for w in &r.warnings {
+            println!("  {w}");
+        }
+    }
+    println!(
+        "{} book{} came across: {inserted} new, {updated} updated.",
+        reports.len(),
+        if reports.len() == 1 { "" } else { "s" }
+    );
+    // The distinction migration `0020` exists for, said out loud rather than
+    // left to be inferred from a timestamp somewhere else.
+    println!("what the reader had open to send — plug it in for everything.");
+    Ok(())
+}
+
 pub async fn watch(engine: &Engine) -> Result<()> {
     let mut watcher = readingbuddy::watch_mounts()?;
 

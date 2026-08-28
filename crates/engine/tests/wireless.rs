@@ -629,3 +629,273 @@ async fn a_bad_sidecar_is_reported_and_the_session_continues() {
         1
     );
 }
+
+// ---- stage 3: pull ---------------------------------------------------------
+
+/// The reader's half of a pull, spoken by hand the way the plugin's Lua does.
+///
+/// It exists because the *reader* is the opener here, and there is no Rust
+/// implementation of that side to reuse — which is the point rather than a
+/// shortcut around it: this is the only place the two implementations of one
+/// protocol are checked against each other.
+async fn fake_reader(
+    token: String,
+    bodies: Vec<(String, String)>,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let open: Open = serde_json::from_str(line.trim_end()).unwrap();
+        // The reader verifies the desktop exactly as the desktop verifies the
+        // reader. The symmetry is the design, not a nicety.
+        assert_eq!(open.mac, mac(&token, &open_challenge(&open.nonce)));
+        write.write_all(b"{\"ok\":true}\n").await.unwrap();
+
+        for (name, body) in &bodies {
+            use sha2::{Digest, Sha256};
+            let hex = Sha256::digest(body.as_bytes())
+                .iter()
+                .fold(String::new(), |mut s, b| {
+                    use std::fmt::Write as _;
+                    let _ = write!(s, "{b:02x}");
+                    s
+                });
+            let frame = PushFrame::Entry {
+                name: name.clone(),
+                len: body.len() as u64,
+                sha256: hex.clone(),
+                mac: mac(&token, &body_challenge(&open.nonce, &hex)),
+            };
+            let mut out = serde_json::to_vec(&frame).unwrap();
+            out.push(b'\n');
+            write.write_all(&out).await.unwrap();
+            write.write_all(body.as_bytes()).await.unwrap();
+            write.flush().await.unwrap();
+            let mut ack = String::new();
+            reader.read_line(&mut ack).await.unwrap();
+        }
+        let mut out = serde_json::to_vec(&PushFrame::Done).unwrap();
+        out.push(b'\n');
+        write.write_all(&out).await.unwrap();
+        write.flush().await.unwrap();
+    });
+    (port, task)
+}
+
+/// A beacon that answers one `HELLO` with a `HERE` pointing at a loopback port.
+/// **No packet leaves the machine** — the datagram never reaches a socket.
+#[derive(Debug)]
+struct Responder {
+    token: String,
+    tcp_port: u16,
+    /// Sign the reply with this instead, to play a rogue.
+    key: Option<String>,
+    replies: Mutex<Vec<(Vec<u8>, SocketAddr)>>,
+}
+
+impl Responder {
+    fn new(token: &str, tcp_port: u16) -> Self {
+        Responder {
+            token: token.into(),
+            tcp_port,
+            key: None,
+            replies: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Beacon for Responder {
+    async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
+        if let Some(next) = self.replies.lock().await.pop() {
+            return Some(next);
+        }
+        // Nothing queued: the seeker's own deadline ends this, and parking is
+        // what a real socket does meanwhile.
+        std::future::pending().await
+    }
+    async fn send_to(&self, bytes: &[u8], _to: SocketAddr) -> std::io::Result<()> {
+        let hello: Hello = serde_json::from_slice(bytes).unwrap();
+        let key = self.key.clone().unwrap_or_else(|| self.token.clone());
+        let here = Here {
+            v: 1,
+            name: "Kindle".into(),
+            tcp_port: self.tcp_port,
+            mac: mac(&key, &here_challenge(&hello.nonce, self.tcp_port)),
+        };
+        self.replies.lock().await.push((
+            serde_json::to_vec(&here).unwrap(),
+            SocketAddr::new(LOOPBACK, 61862),
+        ));
+        Ok(())
+    }
+}
+
+async fn device_row(engine: &Engine, device_id: &str) -> readingbuddy::PairedDevice {
+    engine
+        .paired_devices()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.device_id == device_id)
+        .unwrap()
+}
+
+/// The whole verb, the other way round: the desktop seeks, the reader answers,
+/// and the highlights land through the identical import.
+#[tokio::test]
+async fn the_desktop_can_pull_from_a_reader_whose_window_is_open() {
+    let (tmp, engine) = engine().await;
+    let (device_id, token) = pair(&engine, tmp.path()).await;
+    let body = std::fs::read_to_string(SIDECAR).unwrap();
+    let (port, task) = fake_reader(
+        token.clone(),
+        vec![("Multi-Chapter.sdr/metadata.epub.lua".into(), body)],
+    )
+    .await;
+
+    let device = device_row(&engine, &device_id).await;
+    let beacon = Responder::new(&token, port);
+    let report = readingbuddy::wireless::pull_from(
+        engine.storage(),
+        &device,
+        &beacon,
+        SocketAddr::new(LOOPBACK, 61862),
+        "pull-1",
+    )
+    .await
+    .unwrap();
+    task.await.unwrap();
+
+    assert_eq!(report.pulled.len(), 1);
+    let books = engine.list_books(&Default::default()).await.unwrap();
+    assert_eq!(books.len(), 1);
+    assert!(
+        !engine
+            .list_highlights(books[0].id.unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Pull stamps the breadcrumb a push does — same wire, same reader — and is
+    // no more a *sync* than a push is.
+    let after = device_row(&engine, &device_id).await;
+    assert!(after.last_wireless_at.is_some());
+    assert_eq!(after.last_lan_addr.as_deref(), Some("127.0.0.1"));
+    assert_eq!(after.last_synced_at, None);
+
+    // No listener was ever started: a seeker sends first, so pulling with the
+    // door shut is the ordinary case rather than a special one.
+    assert_eq!(
+        engine.listener_status().await.unwrap().mode,
+        ListenerMode::Off
+    );
+}
+
+/// The property that makes the whole design worth its complexity, asserted from
+/// the seeking side this time: **a rogue that answers first gets nothing.**
+#[tokio::test]
+async fn a_responder_that_cannot_prove_the_token_is_never_connected_to() {
+    let (tmp, engine) = engine().await;
+    let (device_id, token) = pair(&engine, tmp.path()).await;
+
+    // A port that records any connection we might wrongly make to it.
+    let trap = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = trap.local_addr().unwrap().port();
+    let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&connected);
+    tokio::spawn(async move {
+        if trap.accept().await.is_ok() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+
+    let device = device_row(&engine, &device_id).await;
+    let mut beacon = Responder::new(&token, port);
+    beacon.key = Some("a-rogue-on-the-cafe-lan".into());
+
+    // The seeker keeps reading rather than trusting whoever replied first, so
+    // with only a rogue answering it never stops waiting — which is what the
+    // real socket's deadline turns into a refusal.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        readingbuddy::wireless::pull_from(
+            engine.storage(),
+            &device,
+            &beacon,
+            SocketAddr::new(LOOPBACK, 61862),
+            "n",
+        ),
+    )
+    .await;
+    if let Ok(r) = outcome {
+        assert!(r.is_err(), "a rogue's answer was believed");
+    }
+    assert!(
+        !connected.load(std::sync::atomic::Ordering::SeqCst),
+        "the desktop dialled a responder that could not prove the token"
+    );
+    assert!(
+        engine
+            .list_books(&Default::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Nobody answering is a refusal with an action in it — not a hang, and not a
+/// silent success.
+#[tokio::test]
+async fn a_reader_whose_window_is_shut_is_a_refusal_that_says_what_to_do() {
+    let (tmp, engine) = engine().await;
+    let (device_id, _) = pair(&engine, tmp.path()).await;
+
+    /// A LAN where the reader's window is shut.
+    #[derive(Debug)]
+    struct Silence;
+    #[async_trait::async_trait]
+    impl Beacon for Silence {
+        async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
+            None
+        }
+        async fn send_to(&self, _: &[u8], _: SocketAddr) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let device = device_row(&engine, &device_id).await;
+    let err = readingbuddy::wireless::pull_from(
+        engine.storage(),
+        &device,
+        &Silence,
+        SocketAddr::new(LOOPBACK, 61862),
+        "n",
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("window"), "{err}");
+
+    // And nothing was stamped: a pull that found nobody is not a contact.
+    assert_eq!(device_row(&engine, &device_id).await.last_wireless_at, None);
+}
+
+/// A reader we have no row for cannot be pulled from, and the refusal lands
+/// **before any packet is built** — there is no token to challenge with.
+#[tokio::test]
+async fn pulling_from_a_reader_we_never_paired_with_is_refused() {
+    let (_tmp, engine) = engine().await;
+    let err = engine.pull_from_reader("nobody").await.unwrap_err();
+    assert!(err.to_string().contains("paired"), "{err}");
+}

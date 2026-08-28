@@ -553,6 +553,13 @@ a reason for the page's readers to fail to appear. The state line is **ink and
 not accent** — the accent is for state you can act on, and *open on port 51862*
 is a fact about what already happened.
 
+**Fetching over wifi is offered only for a reader that is *not* here**, and
+that is a judgement rather than a limitation: with the volume in front of you
+the cable is better in every way, and a wireless button beside a plugged-in
+reader is a slower path to the same place. The failure message is the useful
+half — *no reader answered; is its window open?* names the one cause the user
+can act on, and the page must not improve on it by guessing at the other two.
+
 **`PluginStatusDto.pairings` is who else this reader is paired with.** A reader
 can be paired with several computers; `device_id` is *ours* and is `null` when
 none of them is. Adding that field broke `tsc` in `fake.ts` and
