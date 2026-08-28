@@ -83,9 +83,41 @@ seeker  → tcp connect         (verify hmac before sending one byte)
 ```
 
 **HMAC-SHA256 is available on the device**: `require("ffi/sha2")` exports `hmac`
-alongside `sha256` and `bin_to_hex` (koreader-base `ffi/sha2.lua`). So the token
-minted in 15a becomes a challenge-response credential and **never crosses the
-wire**. Both sides prove possession; neither transmits it.
+alongside `sha256`, `bin_to_hex` and `hex_to_bin` (koreader-base `ffi/sha2.lua`,
+verified — `sha.hmac` at `:4787`, exported at `:5625`, and `block_size_for_HMAC`
+initialised at the foot of the module). So the token minted in 15a becomes a
+challenge-response credential and **never crosses the wire**. Both sides prove
+possession; neither transmits it.
+
+> **Correction, measured (item 15b, stage 1).** Three things about that module
+> are not what a caller assumes, and the third is a live trap.
+>
+> 1. `sha.sha256(msg)` returns a **64-character hex string**, not raw bytes.
+> 2. `sha.hmac(hash_func, key, msg)` therefore also returns **hex**, lowercase.
+>    Its signature is `hmac(hash_func, key, message)` — the hash *function*
+>    first, so it is `sha.hmac(sha.sha256, token, nonce)` and never
+>    `sha.hmac(token, nonce)`.
+> 3. **The key encoding is a silent fork and must be pinned.** Our token is 32
+>    random bytes written into `pairing.lua` as 64 hex characters, so "the
+>    token" is two different keys depending on which end you ask. Both produce a
+>    perfectly valid MAC and neither side looks wrong:
+>
+>    ```
+>    token = "0123456789abcdef" x4   nonce = "nonce-0001"
+>    key = the 64 hex CHARS  -> a38b20860c54b13a06e1fac37207b4ca1120db8946e82848818567a07d7a7cae
+>    key = the 32 raw BYTES  -> 26ae9d255e7a30de01b32de4544430f32a4bdf4dea6907f07c3c604311a599fe
+>    ```
+>
+>    Both were produced by koreader-base's own `sha2.lua` under lua5.4 and both
+>    agree byte-for-byte with a reference HMAC-SHA256, so the module is correct
+>    and the choice is ours alone. **Take the hex characters as the key** — the
+>    top line — because that is the string as `pairing.lua` literally holds it,
+>    so the Lua side needs no `hex_to_bin` and cannot get the decode wrong on a
+>    device nobody can debug. Rust's side is then `Hmac::new_from_slice(token
+>    .as_bytes())`, on a `&str` rather than on decoded bytes, and the vector
+>    above is what pins it. `partial_md5.rs`'s `agrees_with_the_device` is the
+>    pattern: a vector produced by the device's own implementation, not one we
+>    computed and then agreed with ourselves about.
 
 That buys the property that matters more than confidentiality: **the reader
 verifies identity, not address.** A rogue responder on a café LAN that answers a
@@ -167,6 +199,17 @@ The reader's server side is core, not ours to invent:
 (`socket.bind`, `settimeout(0.01)`, header lines to a blank line), and
 `plugins/httpinspector.koplugin` runs exactly it on port 8080. Copy that shape.
 
+> **Correction, read from the source (item 15b, stage 1).** `SimpleTCPServer`
+> **has no run loop**. It exposes `start`, `stop`, `send` and a `waitEvent`
+> that does exactly one non-blocking `accept`; whoever uses it must poll it, and
+> `httpinspector` is where to read how. Worse for us: once a client *does*
+> connect, `waitEvent` sets a 100 ms socket timeout and reads header lines **in
+> line**, then 500 ms for the response — so a stalled peer blocks whatever
+> thread is polling for up to six tenths of a second. That is fine inside
+> `UIManager`'s own loop and is *not* fine as a claim that the server is
+> non-blocking. The spec's "the UI must never block" therefore binds the pull
+> side too, not just the push side's HTTP client.
+
 **The window must close itself** — on its timer, and on `onEnterStandby`. The
 device will suspend under a transfer otherwise; `autosuspend` and
 `onEnterStandby` are what `httpinspector` already handles.
@@ -200,6 +243,46 @@ currently correct, and each will otherwise be discovered as a bug.
 
 3. **The daemon's TCP argument is overturned, not ignored** — see *The desktop
    listener* above.
+
+### What stage 1 actually found
+
+Built, landed, and reported here because the spec had two of these wrong and
+missed a third entirely.
+
+- **The list entry's `label` is the *computer's* name, not the reader's.**
+  `paired_devices.label` is what you call the Kobo; this is what you call the
+  laptop, and they sit two lines apart in any screen that shows both. Shipped as
+  `name` for that reason. It is the **hostname**, which is not a detail: it is
+  the same string the router registers, so the menu label and rung 4 of the
+  ladder are one value rather than two that can disagree.
+- **The entry carries no endpoint hint, and the spec asked for one.** *"id,
+  token, label, endpoint hint per computer"* contradicts the `endpoint.lua`
+  half of the same stage. The two files have two authors — `pairing.lua` is what
+  we told the reader over the cable, `endpoint.lua` is what the reader learned —
+  and collapsing them would put a device-written value inside a file whose whole
+  point is that we wrote every byte of it. The wired hint is the hostname; the
+  learned address is `endpoint.lua`'s.
+- **The identity question the spec never asks: there is no *computer* id.**
+  `device_id` is the id of the **reader**, minted per computer, so two computers
+  hold two different ids for one Kobo — which means it doubles as the handle a
+  computer recognises its own entry by, and no new identity was needed. But the
+  installer cannot resolve it alone: `plugin::inspect` has no database, so
+  *which of these entries is ours* is answered on the facade by looking each id
+  up, and `plugin::install` is told the answer. Anything in stage 2 that wants
+  to know which computer a message is from gets `device_id` and looks it up the
+  same way.
+- **A hostname is the first value in that file that is not hex**, so the raw
+  `format!("\"{x}\"")` interpolation that had been safe by accident stopped
+  being safe. A name carrying a quote writes a `pairing.lua` that does not
+  parse; the reader reports *not paired* and the installer, reading its own
+  output back, reports a fresh device — two wrong answers from one missing
+  escape.
+- **`PluginStatus.device_id` had to change meaning**, and the old meaning was
+  already wrong: it held whatever id the file named, so a reader belonging to
+  another install reported a stranger's id under a heading that reads *our* id
+  everywhere else. Harmless with one pairing, unreadable with several. No DTO
+  changed — the field kept its name and type — so `bindings.ts` was not
+  regenerated and the GUI needs no edit.
 
 ## Migration `0021`
 
@@ -299,7 +382,10 @@ on one protocol produce three dialects of it — items 26–28's lesson.
 
 1. **The plumbing, no network.** `pairing.lua` becomes a list, `endpoint.lua`
    becomes a permitted runtime file, migration `0021`. Entirely offline,
-   entirely testable, and it is what unblocks everything else.
+   entirely testable, and it is what unblocks everything else. **Landed** —
+   see *What stage 1 actually found* above, and the HMAC correction, which was
+   settled here rather than in stage 2 because it is the one thing that would
+   otherwise have been discovered on hardware.
 2. **The listener and push.** Daemon TCP + UDP responder, the three states, the
    API requests, the plugin's menu verb and its discovery ladder.
 3. **Pull.** The reader's window and beacon, the desktop's seeker, the devices
