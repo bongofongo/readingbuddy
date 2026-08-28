@@ -1189,11 +1189,24 @@ impl Engine {
     #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
     pub async fn plugin_status(&self, mount: &Path) -> Result<plugin::PluginStatus> {
         let mut status = plugin::inspect(mount)?;
-        if let Some(id) = &status.device_id {
-            // `touch_device_seen` answers `false` for a reader we have no row
-            // for, which is exactly the `paired` we are about to report — one
-            // statement rather than a read followed by a conditional write.
-            status.paired = self.storage.touch_device_seen(id, mount.to_str()).await?;
+        // A reader can be paired with several computers, so *which* of its ids
+        // is ours is a question only this side can answer — `plugin::inspect`
+        // guessed the file's first entry. `touch_device_seen` answers `false`
+        // for a reader we have no row for, which is exactly the `paired` we are
+        // about to report, so the loop is one statement per candidate rather
+        // than a read followed by a conditional write.
+        status.paired = false;
+        status.device_id = None;
+        for pairing in &status.pairings {
+            if self
+                .storage
+                .touch_device_seen(&pairing.device_id, mount.to_str())
+                .await?
+            {
+                status.paired = true;
+                status.device_id = Some(pairing.device_id.clone());
+                break;
+            }
         }
         Ok(status)
     }
@@ -1224,10 +1237,19 @@ impl Engine {
     /// That is exactly how the rule came to be broken while looking tested.
     async fn install_plugin_at(&self, mount: &Path, now: i64) -> Result<plugin::InstallReport> {
         let seen = plugin::inspect(mount)?;
-        let existing = match &seen.device_id {
-            Some(id) => self.storage.paired_device(id).await?,
-            None => None,
-        };
+        // **Our** entry is the one we have a row for, and finding it is the
+        // whole of what stopped a second readingbuddy stealing a reader. The
+        // old code read the file's single `device_id`, found no row for it
+        // because that id belonged to somebody else's install, minted a fresh
+        // identity and overwrote the file — leaving the first machine holding a
+        // `paired_devices` row for a token the device no longer had.
+        let mut existing = None;
+        for pairing in &seen.pairings {
+            if let Some(d) = self.storage.paired_device(&pairing.device_id).await? {
+                existing = Some(d);
+                break;
+            }
+        }
         // `paired_at` is carried over too, not just the id and the token. It is
         // the *pairing's* timestamp, and stamping `now` on an upgrade made the
         // device's `pairing.lua` disagree with `paired_devices.installed_at`,
@@ -1238,7 +1260,13 @@ impl Engine {
             None => (plugin::mint_id(16)?, plugin::mint_id(32)?, now),
         };
 
-        let report = plugin::install(mount, &device_id, &token, paired_at)?;
+        let report = plugin::install(
+            mount,
+            &device_id,
+            &token,
+            paired_at,
+            plugin::this_computer().as_deref(),
+        )?;
         self.storage
             .record_pairing(
                 &device_id,
@@ -1259,9 +1287,18 @@ impl Engine {
     /// `docs/decisions.md` means by "uninstall is exact".
     #[tracing::instrument(skip(self), fields(mount = %mount.display()))]
     pub async fn uninstall_plugin(&self, mount: &Path) -> Result<plugin::UninstallReport> {
-        let report = plugin::uninstall(mount)?;
-        if let Some(id) = &report.forgot_device {
-            self.storage.forget_pairing(id).await?;
+        let mut report = plugin::uninstall(mount)?;
+        // `forgot_device` arrives holding the file's first entry, which
+        // `plugin::uninstall` cannot do better than. Taking the plugin off ends
+        // every computer's pairing — the file went with it, which is what
+        // `removed_pairings` says — but the only row *we* may drop is our own,
+        // and a reader paired to another install leaves us nothing to forget.
+        report.forgot_device = None;
+        for id in &report.removed_pairings {
+            if self.storage.forget_pairing(id).await? {
+                report.forgot_device = Some(id.clone());
+                break;
+            }
         }
         Ok(report)
     }
@@ -2221,6 +2258,14 @@ mod tests {
 
     /// A reader carrying somebody else's `pairing.lua`. `paired` is false and —
     /// the part worth pinning — no row is invented for it.
+    ///
+    /// **`device_id` is `None` here, and that is item 15b's correction.** The
+    /// field used to hold whatever id the file named, so a reader belonging to
+    /// another readingbuddy reported a stranger's id under a heading that reads
+    /// *our* id everywhere else — harmless while a reader could hold only one
+    /// pairing, and unreadable the moment it can hold several. It now answers
+    /// *which of this reader's computers are we*, and the honest answer here is
+    /// none; `pairings` is where the rest live.
     #[tokio::test]
     async fn a_reader_paired_with_another_copy_of_readingbuddy_creates_nothing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2237,9 +2282,32 @@ mod tests {
 
         let status = engine.plugin_status(mount.path()).await.unwrap();
         assert!(status.installed, "the plugin is still on the reader");
-        assert_eq!(status.device_id.as_deref(), Some(id.as_str()));
+        assert_eq!(
+            status.device_id, None,
+            "no pairing on this reader is ours any more"
+        );
         assert!(!status.paired, "and we no longer know it");
+        assert_eq!(
+            status
+                .pairings
+                .iter()
+                .map(|p| p.device_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![id.as_str()],
+            "the reader still names the computer it was paired with"
+        );
         assert!(engine.paired_devices().await.unwrap().is_empty());
+
+        // And installing again does **not** resume the dead pairing: no row
+        // matches, so a fresh identity is minted — and it is *appended*, which
+        // is the whole of the fix. The old entry stays where it is, because it
+        // is another computer's as far as this one can tell.
+        engine.install_plugin(mount.path()).await.unwrap();
+        let after = engine.plugin_status(mount.path()).await.unwrap();
+        assert_eq!(after.pairings.len(), 2);
+        assert!(after.paired);
+        assert_ne!(after.device_id.as_deref(), Some(id.as_str()));
+        assert_eq!(after.pairings[0].device_id, id, "and it kept the first");
     }
 
     /// `sync_mount` on a paired reader with nothing on it.

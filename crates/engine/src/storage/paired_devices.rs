@@ -32,6 +32,18 @@ pub struct PairedDevice {
     /// with no back-fill because nothing recorded which device a past
     /// `sync_device` read from. Phrase it as *not since we started recording*.
     pub last_synced_at: Option<i64>,
+    /// When this reader last reached us **over the network** (migration
+    /// `0021`).
+    ///
+    /// The fourth timestamp here and a next-door question to the other three:
+    /// `last_seen_at` is a cable, this is a LAN. Folding them would tell
+    /// somebody whose reader pushed from the next room that it had been plugged
+    /// in. `None` carries `0020`'s phrasing — *not since we started recording*.
+    pub last_wireless_at: Option<i64>,
+    /// Where it reached us from. A breadcrumb, exactly like `last_mount_path`,
+    /// and **nothing may join on it**: a lease moves and the reader is the
+    /// same reader at a different number.
+    pub last_lan_addr: Option<String>,
 }
 
 impl std::fmt::Debug for PairedDevice {
@@ -45,12 +57,15 @@ impl std::fmt::Debug for PairedDevice {
             .field("last_mount_path", &self.last_mount_path)
             .field("last_seen_at", &self.last_seen_at)
             .field("last_synced_at", &self.last_synced_at)
+            .field("last_wireless_at", &self.last_wireless_at)
+            .field("last_lan_addr", &self.last_lan_addr)
             .finish()
     }
 }
 
 const COLUMNS: &str = "device_id, label, token, plugin_version, installed_at, \
-                       last_mount_path, last_seen_at, last_synced_at";
+                       last_mount_path, last_seen_at, last_synced_at, \
+                       last_wireless_at, last_lan_addr";
 
 fn row_to_device(row: &sqlx::sqlite::SqliteRow) -> Result<PairedDevice> {
     Ok(PairedDevice {
@@ -62,6 +77,8 @@ fn row_to_device(row: &sqlx::sqlite::SqliteRow) -> Result<PairedDevice> {
         last_mount_path: row.try_get("last_mount_path")?,
         last_seen_at: row.try_get("last_seen_at")?,
         last_synced_at: row.try_get("last_synced_at")?,
+        last_wireless_at: row.try_get("last_wireless_at")?,
+        last_lan_addr: row.try_get("last_lan_addr")?,
     })
 }
 
@@ -194,6 +211,49 @@ impl Storage {
             .bind(device_id)
             .execute(self.pool())
             .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Record that this reader reached us **over the network** (migration
+    /// `0021`).
+    ///
+    /// [`Storage::touch_device_seen`]'s sibling, and separate from it for
+    /// exactly the reason that one is separate from
+    /// [`Storage::stamp_device_sync`]: until item 15b, *we saw this reader* and
+    /// *this reader was plugged in* were one event, and they are now two. A
+    /// reader that pushed from the next room was never in anybody's hand, so
+    /// stamping `last_seen_at` here would report a cable that did not happen.
+    ///
+    /// It stamps **no sync**. What arrived over the wire is whatever the reader
+    /// chose to send, and `0020`'s argument is unchanged one transport over: a
+    /// push of one book leaves *is this reader's reading here* exactly where it
+    /// was. Whoever brings *everything* across calls `stamp_device_sync` beside
+    /// this, the way `sync_mount` already does over a cable.
+    ///
+    /// `addr` refreshes with the time because the two are one observation —
+    /// *reached, from there* — and it stays advisory: see the migration, and
+    /// `last_mount_path` before it. `None` leaves the previous hint alone, so a
+    /// contact whose source address we could not name does not erase the one
+    /// that worked.
+    ///
+    /// Returns whether there was a row. `false` is ordinary and is the answer
+    /// for a reader paired with some other copy of readingbuddy.
+    pub async fn stamp_wireless_contact(
+        &self,
+        device_id: &str,
+        addr: Option<&str>,
+    ) -> Result<bool> {
+        let done = sqlx::query(
+            "UPDATE paired_devices
+                SET last_wireless_at = ?,
+                    last_lan_addr    = COALESCE(?, last_lan_addr)
+              WHERE device_id = ?",
+        )
+        .bind(now_unix())
+        .bind(addr)
+        .bind(device_id)
+        .execute(self.pool())
+        .await?;
         Ok(done.rows_affected() > 0)
     }
 
@@ -401,6 +461,56 @@ mod tests {
         );
     }
 
+    /// The fourth timestamp, and the pair of confusions migration `0021` exists
+    /// to prevent: a reader that reached us over the LAN was **not in anybody's
+    /// hand**, and what it sent is **not everything it had**.
+    #[tokio::test]
+    async fn reaching_us_over_the_network_is_neither_a_cable_nor_a_sync() {
+        let s = store().await;
+        s.record_pairing("dev-1", None, "tok", 1, Some("/mnt/k"), 1_700_000_000)
+            .await
+            .unwrap();
+        let before = s.paired_device("dev-1").await.unwrap().unwrap();
+        assert_eq!(before.last_wireless_at, None);
+        assert_eq!(before.last_lan_addr, None);
+
+        assert!(
+            s.stamp_wireless_contact("dev-1", Some("192.168.1.20"))
+                .await
+                .unwrap()
+        );
+        let after = s.paired_device("dev-1").await.unwrap().unwrap();
+        assert!(after.last_wireless_at.is_some());
+        assert_eq!(after.last_lan_addr.as_deref(), Some("192.168.1.20"));
+        assert_eq!(
+            after.last_seen_at, before.last_seen_at,
+            "a push from the next room is not a reader in your hand"
+        );
+        assert_eq!(
+            after.last_synced_at, None,
+            "what it chose to send is not everything it had"
+        );
+        assert_eq!(
+            after.last_mount_path.as_deref(),
+            Some("/mnt/k"),
+            "and nothing over the wire says where a cable last was"
+        );
+
+        // A contact whose source address we could not name keeps the hint that
+        // did work — `touch_device_seen`'s rule for `last_mount_path`, one
+        // column over.
+        assert!(s.stamp_wireless_contact("dev-1", None).await.unwrap());
+        assert_eq!(
+            s.paired_device("dev-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .last_lan_addr
+                .as_deref(),
+            Some("192.168.1.20")
+        );
+    }
+
     #[tokio::test]
     async fn a_device_we_never_paired_with_stamps_nothing() {
         let s = store().await;
@@ -409,6 +519,11 @@ mod tests {
         assert!(!s.touch_device_seen("dev-x", Some("/mnt/k")).await.unwrap());
         assert!(!s.stamp_device_sync("dev-x").await.unwrap());
         assert!(!s.set_device_label("dev-x", "nope").await.unwrap());
+        assert!(
+            !s.stamp_wireless_contact("dev-x", Some("10.0.0.1"))
+                .await
+                .unwrap()
+        );
         assert!(s.list_paired_devices().await.unwrap().is_empty());
     }
 

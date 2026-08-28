@@ -520,16 +520,30 @@ pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
         },
     }
 
-    match (&status.device_id, status.paired) {
-        (Some(id), true) => println!("paired     : yes, as {id}"),
-        // A reader that says it is paired with a readingbuddy that is not this
-        // one. Reinstalling is the whole repair, so say that rather than
-        // reporting a state.
-        (Some(id), false) => {
-            println!("paired     : with another readingbuddy, as {id}");
-            println!("    take it over: readingbuddy ko plugin install");
+    // A reader can be paired with several computers (item 15b), so the two
+    // questions have come apart: `device_id` is *ours* and `pairings` is who
+    // else is there. Naming the others matters — installing here adds a
+    // computer rather than taking the reader over, and a line that said
+    // "with another readingbuddy" would now be describing a state that is
+    // ordinary rather than a conflict to resolve.
+    match &status.device_id {
+        Some(id) => println!("paired     : yes, as {id}"),
+        None if status.pairings.is_empty() => println!("paired     : no"),
+        None => println!("paired     : not with this readingbuddy"),
+    }
+    let others: Vec<&readingbuddy::plugin::Pairing> = status
+        .pairings
+        .iter()
+        .filter(|p| Some(p.device_id.as_str()) != status.device_id.as_deref())
+        .collect();
+    for p in &others {
+        match &p.name {
+            Some(name) => println!("also paired: {name} ({})", p.device_id),
+            None => println!("also paired: {}", p.device_id),
         }
-        (None, _) => println!("paired     : no"),
+    }
+    if status.device_id.is_none() && !others.is_empty() {
+        println!("    pair it here too: readingbuddy ko plugin install");
     }
 
     for m in &status.modified {
