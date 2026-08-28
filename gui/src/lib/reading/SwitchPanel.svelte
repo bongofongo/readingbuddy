@@ -65,7 +65,7 @@
        shape a reader reads as two destinations. This one names what is at the
        other end — the shelf is the library page's own word for its second
        band. -->
-  <p class="hint">A book that is not open gets opened <a href="/">on the shelf</a>.</p>
+  <p class="hint">A book that is not open gets opened <a href="/library">on the shelf</a>.</p>
 </div>
 
 <style>

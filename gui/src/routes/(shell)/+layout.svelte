@@ -44,26 +44,29 @@
   let { children } = $props();
 
   /**
-   * The five places. Order is deliberate — the shelf, the vault, the wall, the
-   * record, the edges — and it is the order they were built in as places rather
-   * than as screens.
+   * The six places. Order is deliberate — what you are reading, the shelf, the
+   * vault, the wall, the record, the edges — and it is roughly the order they
+   * were built in as places rather than as screens.
    *
-   * **Library and Notes are the two the layout rework gained.** The wordmark
-   * alone as a home link is discoverable only by guessing, and the vault was
-   * promoted from a band inside one book to a place of its own.
+   * **"Reading now" is first and is the entrance.** It used to be a band on top
+   * of the wall, and the wall used to be `/`. Splitting them gave each the page
+   * it needed: two or three open books is a daily question, and a wall of
+   * everything you have ever read is a browsing one. The app opens on the
+   * daily one.
    *
-   * **Devices is the fifth, and it goes last on purpose** (item 55). The four
-   * before it are about your reading; this one is about the machinery under it,
-   * and it is the only entry you visit because something is plugged in rather
-   * than because you want to read. Putting it anywhere but the end would give
-   * the plumbing the same weight as the books.
+   * **Devices goes last on purpose** (item 55). The five before it are about
+   * your reading; this one is about the machinery under it, and it is the only
+   * entry you visit because something is plugged in rather than because you want
+   * to read. Putting it anywhere but the end would give the plumbing the same
+   * weight as the books.
    *
-   * The row is still four links wide plus one and still needs no column — see
-   * the note above about why there is no sidebar. If a sixth ever wants in,
-   * that is a decision about the shell, not a place to squeeze one more.
+   * Six links, and still no column — see the note above about why there is no
+   * sidebar. The sixth was a decision about the shell rather than a place
+   * squeezed in, and a seventh has to be the same.
    */
   const NAV = [
-    { href: '/', label: 'Library' },
+    { href: '/', label: 'Reading now' },
+    { href: '/library', label: 'Library' },
     { href: '/notes', label: 'Notes' },
     { href: '/cards', label: 'Cards' },
     { href: '/life', label: 'Reading life' },
@@ -74,9 +77,9 @@
    * Whether a nav entry names where you are.
    *
    * `/` matches only itself: every route starts with it, so a prefix test would
-   * light *Library* on every page in the app. Everything else matches its own
-   * subtree, so `/book/3` is not in the nav at all and lights nothing — which is
-   * correct, and is why the wordmark is also a link home.
+   * light *Reading now* on every page in the app. Everything else matches its
+   * own subtree, so `/book/3` is not in the nav at all and lights nothing —
+   * which is correct, and is why the wordmark is also a link home.
    */
   function here(href: string): boolean {
     const path = page.url.pathname;

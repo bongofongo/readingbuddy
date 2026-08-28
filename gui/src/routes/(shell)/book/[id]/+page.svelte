@@ -48,6 +48,7 @@
    * made in parallel and grouped by what their failure *means*: the **book**
    * failing is this page failing, and the ornaments failing are not.
    */
+  import { afterNavigate } from '$app/navigation';
   import { page } from '$app/state';
   import type {
     BookFileDto,
@@ -68,6 +69,7 @@
   import Passages from '$lib/book/Passages.svelte';
   import Rail from '$lib/book/Rail.svelte';
   import Jacket from '$lib/components/Jacket.svelte';
+  import { backTarget } from '$lib/nav';
   import {
     authorsLabel,
     countLabel,
@@ -79,6 +81,24 @@
   } from '$lib/phrasing';
 
   const id = $derived(Number(page.params.id));
+
+  /**
+   * Where the back link goes: the page this one was opened from.
+   *
+   * This page is a leaf reached from four places — the wall, reading mode, a
+   * moment and the vault — so a fixed *← Library* sent three of those four
+   * readers somewhere they had not been. `?note=` and `?compose=1` navigate to
+   * this same path and are ignored, so opening a note does not make *back* mean
+   * *this book*.
+   */
+  let from = $state<URL | null>(null);
+  const back = $derived(backTarget(page.url, from));
+
+  afterNavigate((nav) => {
+    const previous = nav.from?.url ?? null;
+    if (previous !== null && previous.pathname === nav.to?.url.pathname) return;
+    from = previous;
+  });
 
   /**
    * What the URL asked for, read once on arrival.
@@ -387,8 +407,11 @@
 <svelte:head><title>{book ? titleLabel(book.title) : 'Book'} — readingbuddy</title></svelte:head>
 
 <!-- Nothing is a dead end: every screen shows its next move, and on a leaf that
-     move is back to where you came from. -->
-<a class="back" href="/">← Library</a>
+     move is back to where you came from — **literally**, since this page is
+     reached from the wall, from reading mode, from a moment and from the vault.
+     `$lib/nav.ts` names the page and falls back to the entrance on a reload,
+     where there is no previous page to name. -->
+<a class="back" href={back.href}>← {back.label}</a>
 
 {#if failure}
   <p class="note">This book did not open: {failure}</p>

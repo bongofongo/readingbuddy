@@ -322,7 +322,8 @@
         nothing typed when it arrives.
       </p>
       <p class="hint">
-        A file at a time works too: <a href="/">the library</a> takes an EPUB or a PDF straight in.
+        A file at a time works too: <a href="/library">the library</a> takes an EPUB or a PDF straight
+        in.
       </p>
     </article>
   </div>

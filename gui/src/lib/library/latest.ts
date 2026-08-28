@@ -1,8 +1,8 @@
 /**
  * The newest thing you wrote against a book you have open — and the order the
- * "Reading now" band is in.
+ * "Reading now" page is in.
  *
- * ## Why the band is ordered by this, and capped
+ * ## Why the order is this and not "recently started"
  *
  * A "continue reading" shelf is populated by **starting** and drained only by
  * **finishing**. People start far more than they finish, so its steady state is
@@ -11,26 +11,19 @@
  * "remove from this row", which is a confession that the automatic population
  * rule was wrong.
  *
- * An uncapped band is this app's largest live exposure to the framing
- * `docs/decisions.md` bans. No number appears anywhere on it; the arithmetic is
- * done by the reader, on the highest-salience region of the home surface, every
- * time they open the app.
+ * That is this app's largest live exposure to the framing `docs/decisions.md`
+ * bans. No number appears anywhere on the page; the arithmetic is done by the
+ * reader, on the surface the app opens on, every time they open it.
  *
- * Two rules answer it, and they are here rather than in the component because
- * they are the substance rather than the layout:
+ * **Ordering by the newest mark is the answer, and it is here rather than in the
+ * component because it is the substance rather than the layout.** Stale readings
+ * sink *without any act of dismissal*, so nothing ever asks the reader to decide,
+ * on the entrance, whether they are going to finish something. It is also simply
+ * the most useful order: the book you touched yesterday is the book you are
+ * reading.
  *
- * 1. **Ordered by the newest mark, not by when the reading began.** Stale
- *    readings fall off the visible end *without any act of dismissal*, so
- *    nothing ever asks the reader to decide, on the home screen, whether they
- *    are going to finish something. It is also simply the most useful order: the
- *    book you touched yesterday is the book you are reading.
- * 2. **Four, and the cut is silent.** No "and 3 others" — that would be a count
- *    of what is left, and it would be the only such count in the app. The
- *    overflow is on the wall immediately below, in the group that says *Still
- *    reading*. Nothing is hidden; it is just not promoted.
- *
- * The cap costs the fourth-most-recent book its preview, which is a real loss
- * and is worth knowing as a choice rather than discovering as a bug.
+ * The other half of the old answer was a cap of four, and [`ordered`] records
+ * why the page dropped it when it stopped being a band on top of the wall.
  *
  * ## The call this is fed from is an N+1, and that is recorded rather than hidden
  *
@@ -88,12 +81,9 @@ export type Preview<T> = {
   touched: number;
 };
 
-/** How many previews the band promotes. See the header — the cut is silent. */
-export const PROMOTED = 4;
-
 /**
- * The band's order: newest mark first, then the readings nothing is written
- * against, newest-touched first.
+ * The order the open books are shown in: newest mark first, then the readings
+ * nothing is written against, newest-touched first.
  *
  * The fallback is `Reading::last_modified`, which is the engine's record of when
  * the reading itself last changed — a page turn imported from a device is a real
@@ -101,11 +91,20 @@ export const PROMOTED = 4;
  * mixed with the mark timestamps into one number: a reading with a mark always
  * sorts above one without, because *you wrote something* is a stronger statement
  * about what you are reading than *a sync moved a page number*.
+ *
+ * **Nothing is cut.** This used to keep four, because the band sat on top of the
+ * wall and an uncapped queue of half-read books was the largest live exposure
+ * this app had to the framing `docs/decisions.md` bans. Now that "Reading now"
+ * *is* the page, a cut would be worse than the exposure: the overflow used to be
+ * on the wall immediately below and is now a scroll and a click away, so hiding
+ * the fifth book would make the entrance a surface that does not show you what
+ * you are reading. The ordering still does the work the cap was there for —
+ * stale readings sink without anybody dismissing them.
  */
-export function promoted<T>(previews: Preview<T>[]): Preview<T>[] {
+export function ordered<T>(previews: Preview<T>[]): Preview<T>[] {
   const marked = previews.filter((p) => p.mark !== null);
   const bare = previews.filter((p) => p.mark === null);
   marked.sort((a, b) => b.mark!.at - a.mark!.at);
   bare.sort((a, b) => b.touched - a.touched);
-  return [...marked, ...bare].slice(0, PROMOTED);
+  return [...marked, ...bare];
 }

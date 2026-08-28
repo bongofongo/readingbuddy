@@ -51,10 +51,12 @@
    * are different values for the two books in the dev library whose `page_count`
    * is zero or absent.
    */
+  import { afterNavigate } from '$app/navigation';
   import { page as pageState } from '$app/state';
   import type { HighlightDto } from '$lib/api/bindings';
   import { client, type OpenReading } from '$lib/api/client';
   import Jacket from '$lib/components/Jacket.svelte';
+  import { backTarget, LIBRARY } from '$lib/nav';
   import { authorsLabel, progressDetail, titleLabel } from '$lib/phrasing';
   import NotePanel from '$lib/reading/NotePanel.svelte';
   import PagePanel from '$lib/reading/PagePanel.svelte';
@@ -62,6 +64,25 @@
   import SwitchPanel from '$lib/reading/SwitchPanel.svelte';
   import Verbs from '$lib/reading/Verbs.svelte';
   import { chooseReading, type Panel, panelForKey, paramBook } from '$lib/reading/mode';
+
+  /**
+   * The page this route was opened from, for the way back.
+   *
+   * **Kept across a book switch.** The Books panel navigates `/reading?book=…`
+   * → `/reading?book=…`, and taking *that* as the previous page would quietly
+   * rewrite the way out to the entrance the first time a reader changed book.
+   * So a navigation whose destination is this same surface leaves it alone, and
+   * `backTarget` refuses a same-pathname referrer as well — the guard is in both
+   * places because they fail differently: this one preserves history, that one
+   * refuses a dead end.
+   */
+  let from = $state<URL | null>(null);
+
+  afterNavigate((nav) => {
+    const previous = nav.from?.url ?? null;
+    if (previous !== null && previous.pathname === nav.to?.url.pathname) return;
+    from = previous;
+  });
 
   let open = $state<OpenReading[]>([]);
   let loading = $state(true);
@@ -81,6 +102,7 @@
    * following it is correct — and it is what makes the Books panel a list of
    * ordinary links instead of a handler.
    */
+  const back = $derived(backTarget(pageState.url, from));
   const wanted = $derived(paramBook(pageState.url.searchParams));
   const current = $derived(chooseReading(open, wanted));
   const book = $derived(current?.book ?? null);
@@ -157,13 +179,24 @@
 </svelte:head>
 
 <main class="reading" class:working={panel !== 'none'}>
+  <!--
+    The way back, and it is outside the `{#if}` on purpose: it is on screen while
+    the route is loading, while it is failing, and when nothing is open, which is
+    what *nothing is a dead end* means on a surface with no header above it.
+
+    A real link rather than `history.back()` — it can be middle-clicked, a screen
+    reader reads where it goes, and it still works on the reload where the
+    history stack is empty. `$lib/nav.ts` decides both halves of it.
+  -->
+  <a class="back" href={back.href}>← {back.label}</a>
+
   {#if loading}
     <p class="hint">Opening…</p>
   {:else if failure}
     <p class="refusal">The library did not open: {failure}</p>
     <p class="hint">
-      <a href="/">The library</a> is the way back, and <code>rb open</code> reads the same database
-      from the terminal.
+      <a href={LIBRARY}>The library</a> is the way back, and <code>rb open</code> reads the same
+      database from the terminal.
     </p>
   {:else if current === null || book === null}
     <!-- Idle is not blank, and an empty state names the moves that fill it. No
@@ -174,7 +207,7 @@
       <p class="hint">
         Reading mode follows the book you have open. Start one from the library and it is here.
       </p>
-      <p><a class="way" href="/">The library</a></p>
+      <p><a class="way" href={LIBRARY}>The library</a></p>
     </div>
   {:else}
     <section class="book" aria-label="What you are reading">
@@ -230,7 +263,28 @@
    * `(shell)/`, so there is no header row above it and no `--shell` gutter
    * around it. `100dvh` rather than `100vh` because a webview's chrome moves.
    */
+  /*
+   * The back link is positioned out of the flow rather than being the column's
+   * first child: `justify-content: center` composes the book, the verbs and the
+   * panel, and a link in that stack would push the whole composition down by its
+   * own height and off-centre it.
+   */
+  .back {
+    position: absolute;
+    top: 1.1rem;
+    left: 1.25rem;
+    font-size: 0.85rem;
+    color: var(--ink-dim);
+    border-bottom: 1px solid transparent;
+    padding-bottom: 1px;
+  }
+  .back:hover {
+    color: var(--ink);
+    border-bottom-color: var(--line);
+  }
+
   .reading {
+    position: relative;
     min-height: 100dvh;
     display: flex;
     flex-direction: column;
@@ -245,7 +299,9 @@
      * was being approximated.
      */
     justify-content: center;
-    padding: 2rem 1.5rem 2.5rem;
+    /* The top padding clears the back link, which is absolutely positioned over
+       this box and must not overlap a panel scrolled to the top of it. */
+    padding: 3.4rem 1.5rem 2.5rem;
     gap: 1.5rem;
   }
   .reading.working {
@@ -368,7 +424,7 @@
      window this whole app is designed to sit next to. */
   @media (max-width: 620px) {
     .reading {
-      padding: 1.25rem 1rem 1.5rem;
+      padding: 3rem 1rem 1.5rem;
     }
     .hero {
       width: 140px;

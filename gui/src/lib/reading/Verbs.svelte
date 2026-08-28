@@ -25,6 +25,8 @@
    * half that says why the assertion is there. A count here would be the library
    * counting itself at the one moment it is supposed to be out of the way.
    */
+  import { LIBRARY } from '$lib/nav';
+
   import { type Panel, VERBS } from './mode';
 
   let {
@@ -54,7 +56,10 @@
 
   <div class="ways">
     <a href="/book/{bookId}">The book</a>
-    <a href="/">The library</a>
+    <!-- `/library` and not `/`: the entrance is *Reading now*, which is the page
+         listing the books this surface is already showing one of. The way out of
+         a book is the whole collection. -->
+    <a href={LIBRARY}>The library</a>
   </div>
 </div>
 

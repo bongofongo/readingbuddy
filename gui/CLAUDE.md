@@ -38,14 +38,15 @@ gui/src/lib/api/client.ts     the LibraryClient interface + TauriClient
 gui/src/lib/api/fake.ts       the in-memory library layers 1 and 2 render
 gui/src/lib/phrasing.ts       words for values the engine already decided
 gui/src/lib/shelf/            the wall: its arrangements, its groups (item 26, the layout rework)
-gui/src/lib/library/          the "Reading now" band and what it promotes
+gui/src/lib/nav.ts            where a book link goes, and what *back* means
+gui/src/lib/library/          the "Reading now" page's preview and its order
 gui/src/lib/book/             the desk's three columns + four pure modules (items 27, 50)
 gui/src/lib/moments/          the ceremony + its sentence (item 28)
 gui/src/lib/card/             one card, per reading (item 28)
 gui/src/lib/life/             the reading-life page's parts + its spans (item 28)
 gui/src/lib/devices/          the readers page: the join, its words, its two cards (item 55)
-gui/src/routes/(shell)/       the app with its header: +page (library), book/[id],
-                              book/[id]/cards, cards, notes, life, devices
+gui/src/routes/(shell)/       the app with its header: +page (reading now), library,
+                              book/[id], book/[id]/cards, cards, notes, life, devices
 gui/src/routes/reading/       the app without one — reading mode (item 54)
 gui/src/lib/reading/          its panels and its one-panel-at-a-time rule
 gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
@@ -190,10 +191,27 @@ accident:
   a broken image. The fields are stated anyway, so a component asking what box a
   tile reserves gets a real answer in a bare browser.
 
-## The shelf
+## The entrance, and the shelf behind it
 
-Home surface. Two bands: **Reading now**, the books you have open with a real
-preview of each, and **The shelf**, the wall of everything, grouped.
+**Two pages since entry 56**, and they used to be two bands on one. `/` is
+**Reading now** — the books you have open, each with a real preview — and it is
+what the app opens on. `/library` is **the shelf**, the wall of everything,
+grouped. *What am I reading* is a daily question with three answers; *what have I
+read* is a browsing question with hundreds. One surface made the first a strip
+and the second a scroll past a preamble.
+
+**A book you are in the middle of opens into reading mode**, from the entrance's
+previews and from the wall's *Still reading* tiles alike. That rule is
+`src/lib/nav.ts` and never an `href` in a component: a destination that depends
+on the state of the row is a decision, and it is taken in three places.
+
+**Back is a link, not `history.back()`.** `backTarget` in the same module names
+the page you came from — the book page and reading mode are each reachable from
+four places, and a fixed *← Library* sent most of their visitors somewhere they
+had not been. It collapses to the entrance for three referrers, and the one that
+bites is *the surface you are standing on*: `?note=` and `?book=` navigate to
+their own path, so without that guard opening a note would make *back* mean
+*this book*.
 
 **The wall is grouped by the year a reading closed**, at 86px tiles with the
 captions off. That is the direct answer to *the books are too large and take too
@@ -225,14 +243,17 @@ four true groups (*Still reading*, *Put down*, *Read, undated*, *No reading
 recorded*) rather than inventing a date from `last_modified`. A put-down date is
 an engine item.
 
-**The band above it is capped at four and ordered by the newest mark**
+**The entrance is ordered by the newest mark and no longer capped**
 (`src/lib/library/latest.ts`). A continue shelf is filled by starting and drained
-only by finishing, so uncapped it puts that arithmetic on the home surface with
-no number for a test to catch; recency ordering drains it with no act of
-dismissal, and the cut is **silent** — *and 3 others* would be a count of what is
-left. Getting the mark costs `listHighlights` + `listNotes` per open reading,
-which is an N+1 with no request behind it: it is left visible and written down
-rather than hidden behind a client-side aggregate.
+only by finishing, so on top of the wall it put that arithmetic on the home
+surface with no number for a test to catch — and the *ordering* is the half that
+answers it, since recency drains the queue with no act of dismissal. The cap of
+four went with the band: on a page whose whole subject is the open books, the
+overflow is no longer one scroll below, and a silent cut would be the entrance
+declining to show you what you are reading. Getting the mark costs
+`listHighlights` + `listNotes` per open reading, which is an N+1 with no request
+behind it: it is left visible and written down rather than hidden behind a
+client-side aggregate.
 
 **The WebGL spine shelf was deferred, not abandoned** — `docs/decisions.md` entry
 26. What changed with the layout rework is where it plugs in: the old seam owned

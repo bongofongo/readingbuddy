@@ -28,6 +28,7 @@
    */
   import { client, type StoredBook } from '$lib/api/client';
   import Jacket from '$lib/components/Jacket.svelte';
+  import { bookHref } from '$lib/nav';
   import { authorsLabel, titleLabel } from '$lib/phrasing';
 
   let { book, caption = false }: { book: StoredBook; caption?: boolean } = $props();
@@ -50,9 +51,20 @@
    * artwork. It is also the `title` attribute, which is the hover the mouse has.
    */
   const name = $derived(authors ? `${title} — ${authors}` : title);
+
+  /**
+   * Where the tile goes — its page, or reading mode if this book is one you are
+   * in the middle of.
+   *
+   * The wall holds both, so the destination is a property of the *row* and not
+   * of the wall: a tile in the *Still reading* group leads into the book, and
+   * every tile in a year group leads to its page. `$lib/nav.ts` holds the rule
+   * so the tile and the "Reading now" preview cannot disagree about it.
+   */
+  const into = $derived(bookHref(book));
 </script>
 
-<a class="tile" class:captioned={caption} href={`/book/${book.id}`} title={name} aria-label={name}>
+<a class="tile" class:captioned={caption} href={into} title={name} aria-label={name}>
   <div class="art">
     <!-- The three states — bytes, a plate in this jacket's own colour, the hatch
          — live in `Jacket`, so a coverless book cannot come to look like two

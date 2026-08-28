@@ -1,13 +1,13 @@
 /**
- * The "Reading now" band's two rules, which are the axiom's largest live
- * exposure on the home surface: what the newest mark is, and how many books get
- * promoted.
+ * The "Reading now" page's two rules, which are the axiom's largest live
+ * exposure on the surface the app opens on: what the newest mark is, and what
+ * order the open books come in.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { HighlightDto, NoteDto } from '$lib/api/bindings';
 
-import { latestMark, PROMOTED, promoted, type Preview } from './latest';
+import { latestMark, ordered, type Preview } from './latest';
 
 function highlight(id: number, at: number, text = `passage ${id}`): HighlightDto {
   return { id, text, created_at: at } as HighlightDto;
@@ -50,9 +50,9 @@ describe('latestMark', () => {
   });
 });
 
-describe('promoted', () => {
+describe('ordered', () => {
   it('orders by the newest mark, so a stale reading falls off without being dismissed', () => {
-    const band = promoted([
+    const band = ordered([
       preview(1, { kind: 'note', title: 'a', at: 10 }),
       preview(2, { kind: 'passage', text: 'b', at: 90 }),
       preview(3, { kind: 'passage', text: 'c', at: 50 }),
@@ -60,22 +60,22 @@ describe('promoted', () => {
     expect(band.map((p) => p.reading)).toEqual([2, 3, 1]);
   });
 
-  it('caps at four and says nothing about the ones it cut', () => {
-    // Silent on purpose. "And 3 others" is a count of what is left and would be
-    // the only such count in the app; the overflow is on the wall immediately
-    // below, in the group that says *Still reading*.
+  it('keeps every open book, because this page is the only place they are', () => {
+    // The cap of four went with the band. On a page whose whole subject is the
+    // books you have open, a silent cut is not restraint — it is the entrance
+    // declining to show you what you are reading, with the overflow no longer
+    // one scroll below on the same surface.
     const many = Array.from({ length: 9 }, (_, i) =>
       preview(i, { kind: 'passage', text: 'x', at: i }),
     );
-    expect(promoted(many)).toHaveLength(PROMOTED);
-    expect(PROMOTED).toBe(4);
+    expect(ordered(many)).toHaveLength(9);
   });
 
   it('puts a reading you have written against above one only a sync touched', () => {
     // The two timestamps are never mixed into one number: *you wrote something*
     // is a stronger statement about what you are reading than *a device moved a
     // page*, however recent the second is.
-    const band = promoted([
+    const band = ordered([
       preview(1, null, 9_000),
       preview(2, { kind: 'passage', text: 'b', at: 1 }),
     ]);
@@ -83,7 +83,7 @@ describe('promoted', () => {
   });
 
   it('falls back to the engine’s own recency for readings with no marks', () => {
-    const band = promoted([preview(1, null, 10), preview(2, null, 40), preview(3, null, 30)]);
+    const band = ordered([preview(1, null, 10), preview(2, null, 40), preview(3, null, 30)]);
     expect(band.map((p) => p.reading)).toEqual([2, 3, 1]);
   });
 });

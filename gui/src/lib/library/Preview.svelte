@@ -30,6 +30,7 @@
   import type { ReadingDto } from '$lib/api/bindings';
   import { client, type StoredBook } from '$lib/api/client';
   import Jacket from '$lib/components/Jacket.svelte';
+  import { bookHref } from '$lib/nav';
   import { authorsLabel, dayLabel, progressDetail, titleLabel } from '$lib/phrasing';
 
   import type { Mark } from './latest';
@@ -41,6 +42,14 @@
   }: { book: StoredBook; reading: ReadingDto; mark: Mark | null } = $props();
 
   const cover = $derived(client().coverSrc(book));
+  /**
+   * Where the jacket and the title go: **reading mode**, not the book's page.
+   *
+   * Every book in this band has an open reading, so `bookHref` sends all of them
+   * to `/reading?book=…` — the rule is in `$lib/nav.ts` rather than spelt here
+   * because the wall's tiles obey the same one, and two copies of it drift.
+   */
+  const into = $derived(bookHref(book));
   const title = $derived(titleLabel(book.title));
   const untitled = $derived(!book.title || book.title.trim() === '');
   const authors = $derived(authorsLabel(book.authors_display));
@@ -64,12 +73,12 @@
 </script>
 
 <article class="preview">
-  <a class="art" href={`/book/${book.id}`} tabindex="-1" aria-hidden="true">
+  <a class="art" href={into} tabindex="-1" aria-hidden="true">
     <Jacket src={cover} accent={book.cover_accent} />
   </a>
 
   <div class="body">
-    <h3><a href={`/book/${book.id}`} class:untitled>{title}</a></h3>
+    <h3><a href={into} class:untitled>{title}</a></h3>
     {#if authors}
       <p class="by">{authors}</p>
     {/if}
@@ -104,8 +113,9 @@
     {/if}
 
     <div class="acts">
-      <!-- Two moves, both of them into the book: the surface it exists for, and
-           the passages beside it. Neither is a task and neither counts.
+      <!-- The jacket and the title lead into reading mode, so these two are the
+           other door: the book's own page, and that page opened on a note.
+           Neither is a task and neither counts.
 
            `?compose=1` opens the book page's centre column on an empty note. It
            is a **view state in a URL**, not a write: nothing is created until
@@ -113,7 +123,7 @@
            `?note=` follows. A link that minted a note on navigation would put a
            row in the vault every time somebody middle-clicked. -->
       <a href={`/book/${book.id}?compose=1`} class="act">Write</a>
-      <a href={`/book/${book.id}`} class="act">Passages</a>
+      <a href={`/book/${book.id}`} class="act">The book</a>
     </div>
   </div>
 </article>

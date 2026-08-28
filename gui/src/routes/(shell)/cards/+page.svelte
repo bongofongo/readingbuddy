@@ -148,7 +148,8 @@
        because its audience is whoever mis-set the data dir. -->
   <p class="note">These cards did not open: {failure}</p>
   <p class="hint">
-    Every card is also on the book that minted it — the <a href="/">library</a> is the way there.
+    Every card is also on the book that minted it — the <a href="/library">library</a> is the way
+    there.
   </p>
 {:else}
   <WallControls {years} {anyOpen} {scope} {sort} onscope={pickScope} onsort={pickSort} />
@@ -186,7 +187,7 @@
     <p class="note">No cards here.</p>
     <p class="hint">
       A card is one read of one book — its cover, its dates, and a passage you marked. Reading
-      something in the <a href="/">library</a> is what mints one.
+      something in the <a href="/library">library</a> is what mints one.
     </p>
   {:else}
     <div class="wall">

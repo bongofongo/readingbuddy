@@ -3556,3 +3556,55 @@ because item 31 needed somewhere to put reading time.
       has no database counterpart to drift from — and a real `pnpm tauri dev`
       run against `dev-data/` shows the page's **empty** state. Worth knowing
       before somebody wonders where their readers went.
+
+56. **The entrance is what you are reading, and the library is a place you go.**
+    No engine change, no migration, no `API_VERSION` move and no new request —
+    two routes, one shared module, and the deletion of a cap.
+    - **They were one page and they are two questions.** *What am I reading* has
+      two or three answers and is asked every day; *what have I read* has
+      hundreds and is asked when browsing. Sharing a surface made the first a
+      strip above the second and gave the second a preamble. So the open books
+      are `/` and the wall is `/library`, and the app opens on the daily
+      question. It is the same argument that split the calm home surface from
+      the dense book page, applied one level up.
+    - **A book you are in the middle of opens into reading mode.** Everywhere —
+      the entrance's previews and the wall's *Still reading* tiles both. The
+      thing you do with a book you are reading is read it; the thing you do with
+      one you are not is look at it. The rule is `gui/src/lib/nav.ts` and not an
+      `href` in three components, because a destination that depends on the state
+      of the row is a decision, and three copies of a decision drift.
+      `reading_state` cannot say *which* of a reread's readings is open, and does
+      not need to: `/reading` resolves the book against the engine's own open set
+      and falls back rather than refusing, so a stale state costs a redirect and
+      never a dead end.
+    - **The cap of four is gone with the band.** It existed because an uncapped
+      "continue reading" queue on top of the wall is this app's largest exposure
+      to the framing the axiom bans — the reader doing the arithmetic on the
+      highest-salience region of the home screen. The *ordering* was always the
+      half that did the work: newest mark first, so stale readings sink with no
+      act of dismissal. On a page whose entire subject is the open books, a
+      silent cut is no longer restraint — the overflow used to be one scroll
+      below on the same surface and is now a click away, so hiding the fifth
+      book would be the entrance declining to show you what you are reading.
+    - **Back is a link that names where it goes, not `history.back()`.** Reading
+      mode and the book page are both reachable from four places, so a fixed
+      *← Library* sent most of their visitors somewhere they had not been.
+      `backTarget` takes the previous page and the current one and answers with
+      an href and a word; an anchor can be middle-clicked, is read properly by a
+      screen reader, and still works on the reload where the history stack is
+      empty — which is exactly when a back *button* silently does nothing.
+    - **Three referrers collapse to the entrance, and each is real**: no previous
+      page (a reload, a pasted URL), an off-site one, and *the surface you are
+      standing on*. The third is the one that bites: reading mode's Books panel
+      and the book page's `?note=` both navigate to their own path, so without
+      that guard changing book would rewrite the way out. The routes also decline
+      to *record* a same-path navigation, so switching book keeps the way you
+      came in. Two guards, because they fail differently — one preserves history,
+      the other refuses a dead end.
+    - **The nav has six entries now**, and *Reading now* is the first. That is a
+      decision about the shell rather than a link squeezed into it: the row is
+      still text, still needs no sidebar, and a seventh has to be argued the same
+      way. Reading mode's door moved with it — it used to be a link in the band,
+      justified by the band rendering nothing when nothing was open, and it is
+      now the click on the book itself, which is better than a link that says
+      where it goes.
