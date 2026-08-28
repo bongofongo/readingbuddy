@@ -589,19 +589,46 @@ pub async fn plugin_install(engine: &Engine, path: Option<&Path>, yes: bool) -> 
     for f in &report.written {
         println!("wrote {}", report.plugin_dir.join(f).display());
     }
+    // `upgraded_from` is about the plugin **files** and `paired` is about the
+    // **pairing**, and item 15b pulled the two apart: a reader can already
+    // carry the plugin because another computer put it there, in which case
+    // "reinstalled, still paired as …" claims a relationship this machine has
+    // never had. `status` is the reading from *before* the install, so it is
+    // the only thing that can tell the difference.
+    let was_ours = status.paired;
     match report.upgraded_from {
-        Some(from) if from < report.version => println!(
+        Some(from) if from < report.version && was_ours => println!(
             "upgraded v{from} → v{}, paired as {}",
             report.version, report.device_id
         ),
-        Some(_) => println!(
+        Some(_) if was_ours => println!(
             "reinstalled v{}, still paired as {}",
             report.version, report.device_id
+        ),
+        // The plugin was already there and none of its pairings was ours.
+        // Nothing was taken over: the other computers' entries are untouched
+        // and this one was added beside them.
+        Some(_) => println!(
+            "the plugin was already installed; this computer is now paired too, as {}",
+            report.device_id
         ),
         None => println!(
             "installed v{}, paired as {}",
             report.version, report.device_id
         ),
+    }
+    let others = status
+        .pairings
+        .iter()
+        .filter(|p| p.device_id != report.device_id)
+        .count();
+    if others > 0 {
+        println!(
+            "this reader is also paired with {others} other computer{}, and \
+             readingbuddy left {} alone.",
+            if others == 1 { "" } else { "s" },
+            if others == 1 { "it" } else { "them" }
+        );
     }
     println!("the reader has no address for readingbuddy yet, so it sends nothing.");
     Ok(())
@@ -620,6 +647,26 @@ pub async fn plugin_uninstall(engine: &Engine, path: Option<&Path>) -> Result<()
     }
     if let Some(id) = &report.forgot_device {
         println!("forgot the pairing with {id}.");
+    }
+    // The plugin is one directory, so taking it off ends **every** computer's
+    // pairing with this reader — and the other computers cannot be told,
+    // because readingbuddy has no way to reach them. Their rows will go on
+    // claiming a pairing the device no longer has. That is a real consequence
+    // and it is the user's to know about, so it is said rather than left to be
+    // discovered when a push stops working.
+    let others = report
+        .removed_pairings
+        .iter()
+        .filter(|id| Some(id.as_str()) != report.forgot_device.as_deref())
+        .count();
+    if others > 0 {
+        println!(
+            "this also ended {others} other computer{} pairing with this reader. \
+             readingbuddy cannot tell {}, so install again from {} to restore it.",
+            if others == 1 { "'s" } else { "s'" },
+            if others == 1 { "it" } else { "them" },
+            if others == 1 { "there" } else { "each" }
+        );
     }
     Ok(())
 }
