@@ -144,6 +144,67 @@ pub async fn scan(engine: &Engine, path: Option<&Path>) -> Result<()> {
 ///
 /// **Scans, never syncs**, like everything else on the automatic path: it prints
 /// the command that brings books across rather than running it.
+/// Open the door and wait, printing what arrives (item 15b).
+///
+/// The one command in this file that **blocks on purpose**: the listener is
+/// runtime state, so a one-shot process that opened a window and exited would
+/// have closed it on the way out. This is therefore the CLI's honest shape for
+/// a feature that is otherwise the daemon's or the GUI's — and it names which
+/// readers could use the door before it opens one, because a door held open for
+/// a reader that is not paired is a door nothing can come through.
+pub async fn listen(engine: &Engine, minutes: u32) -> Result<()> {
+    let paired = engine.paired_devices().await?;
+    if paired.is_empty() {
+        println!("no reader is paired, so nothing can reach this computer.");
+        println!("    pair one : plug it in, then readingbuddy ko plugin install");
+        return Ok(());
+    }
+
+    let status = engine.start_listening(Some(minutes)).await?;
+    let port = status
+        .tcp_port
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "?".into());
+    match minutes {
+        0 => println!("listening on port {port} — ctrl-c to stop"),
+        1 => println!("listening on port {port} for a minute, or until a reader pushes"),
+        m => println!("listening on port {port} for {m} minutes, or until a reader pushes"),
+    }
+    for d in &paired {
+        println!("  {} can reach it", device_name(d));
+    }
+    println!("on the reader: Tools → readingbuddy → Push");
+
+    // Polled rather than notified, because the engine emits no stream for this
+    // — the same reason the mount watcher is absent from the API. A second is
+    // far below human patience and costs one lock.
+    let mut seen = status.pushes;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let now = engine.listener_status().await?;
+        if now.pushes > seen {
+            seen = now.pushes;
+            println!("a reader pushed.");
+            for d in engine.paired_devices().await? {
+                if d.last_wireless_at.is_some() {
+                    println!(
+                        "  from {} at {}",
+                        device_name(&d),
+                        d.last_lan_addr
+                            .as_deref()
+                            .unwrap_or("an address we could not read")
+                    );
+                }
+            }
+        }
+        if !matches!(now.mode, readingbuddy::ListenerMode::Off) {
+            continue;
+        }
+        println!("the door is shut.");
+        return Ok(());
+    }
+}
+
 pub async fn watch(engine: &Engine) -> Result<()> {
     let mut watcher = readingbuddy::watch_mounts()?;
 

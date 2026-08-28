@@ -43,6 +43,12 @@ md-5.workspace = true
 # this changes nothing about the graph; Apache-2.0/MIT, so `cargo deny` is
 # unaffected.
 gethostname = "1"
+# Item 15b: the pairing token is a challenge-response credential, so the
+# rendezvous needs HMAC-SHA256 on this side of the language boundary. `sha2` is
+# already a direct dependency and `hmac` is already resolved in `Cargo.lock`
+# via a transitive path, so this changes nothing about the graph;
+# MIT/Apache-2.0, so `cargo deny` is unaffected.
+hmac = "0.12"
 # Item 20: covers are measured (width, height, border accent) and downscaled
 # once, at the moment they are written, so a shelf of three hundred spines is
 # one query rather than three hundred image decodes. The same crate the TUI's

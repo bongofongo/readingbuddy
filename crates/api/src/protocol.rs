@@ -446,6 +446,36 @@ pub enum Request {
         mount: String,
     },
 
+    // ---- the wireless listener (item 15b) ----
+    /// Whether a paired reader could reach this computer over the LAN.
+    ///
+    /// `Off` is the default and the answer for every host that has not asked.
+    /// Read-only; a client polls it after starting or stopping, and on the
+    /// devices page's own load.
+    ListenerStatus,
+    /// Open the door, for `minutes`.
+    ///
+    /// Absent means five. **`Some(0)` means until asked to stop** — the shape a
+    /// desktop that lives on the LAN wants — rather than a window of zero
+    /// minutes, which is a listener that shuts before a reader finishes
+    /// probing and is a thing nobody has ever wanted.
+    ///
+    /// The window also closes on the **first completed push**, because one tap
+    /// on the reader is one session and the door has then done its job. A
+    /// session is every book that tap carried, not one file.
+    ///
+    /// **Never on an automatic path.** `docs/decisions.md` keeps arrival
+    /// read-only precisely so that anything reaching outward is an explicit
+    /// act, and a client that called this on startup would have made the
+    /// control a lie.
+    StartListening {
+        #[serde(default)]
+        minutes: Option<u32>,
+    },
+    /// Close it. Idempotent — a client cannot know the window did not expire
+    /// between drawing the button and the user pressing it.
+    StopListening,
+
     /// Measured reading time out of the device's `statistics.sqlite3`.
     ///
     /// **A method of its own, and deliberately not part of `sync_device`** —
@@ -881,6 +911,7 @@ pub enum Response {
     DeviceScan(DeviceScanDto),
 
     PluginStatus(PluginStatusDto),
+    ListenerStatus(ListenerStatusDto),
     PluginInstalled(InstallReportDto),
     PluginUninstalled(UninstallReportDto),
     PairedDevices(Vec<PairedDeviceDto>),

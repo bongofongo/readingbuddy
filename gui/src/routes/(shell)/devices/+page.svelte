@@ -42,6 +42,7 @@
     CalibreReportDto,
     CalibreStatusDto,
     DeviceScanDto,
+    ListenerStatusDto,
     PluginStatusDto,
   } from '$lib/api/bindings';
   import { client } from '$lib/api/client';
@@ -65,13 +66,52 @@
   /** What the last action did, in the past tense. One line, never a log. */
   let said = $state<string | null>(null);
 
+  /**
+   * Whether a paired reader could reach this computer over the LAN (item 15b).
+   *
+   * `off` until somebody asks, and that is the feature: with nothing bound
+   * there is no service to find and nothing to leak, so the control is a door
+   * you open rather than a risk you are warned about.
+   */
+  let listener = $state<ListenerStatusDto | null>(null);
+  let listenerBusy = $state(false);
+
   const here = $derived(list.filter(isHere));
   const away = $derived(list.filter((r) => !isHere(r)));
 
   $effect(() => {
     void load();
     void loadCalibre();
+    void loadListener();
   });
+
+  async function loadListener(): Promise<void> {
+    // Its own read, not part of `load()`: a daemon that could not take the
+    // rendezvous port is a reason to draw the door shut, never a reason for the
+    // page's readers to fail to appear.
+    try {
+      listener = await client().listenerStatus();
+    } catch {
+      listener = null;
+    }
+  }
+
+  async function toggleListening(): Promise<void> {
+    listenerBusy = true;
+    try {
+      const api = client();
+      listener =
+        listener !== null && listener.mode.kind !== 'off'
+          ? await api.stopListening()
+          : await api.startListening();
+      said =
+        listener.mode.kind === 'off' ? 'The door is shut.' : 'Readers can reach this computer.';
+    } catch (e) {
+      said = e instanceof Error ? e.message : String(e);
+    } finally {
+      listenerBusy = false;
+    }
+  }
 
   async function load(): Promise<void> {
     const api = client();
@@ -309,18 +349,33 @@
         device between sessions. It writes into one folder of its own and can be taken off exactly.
       </p>
       <!--
-        Wireless is item 15b and does not exist. Saying so is better than a
-        greyed-out control, which is a dead end with a tooltip — and better than
-        silence, which leaves somebody hunting for a setting.
+        Item 15b. The door is a control rather than a setting buried elsewhere,
+        because *discovery only works while this is open* is the whole security
+        model and hiding it would make the guarantee invisible.
 
-        **No "yet"** — `axiom.test.ts` bans the word across every component, and
-        it is right to here too: this is a sentence about what readingbuddy does
-        today, not about something it owes you.
+        The copy says what is true now and never what is owed: with the door
+        shut there is nothing to find, and that is a state rather than a lack.
       -->
       <p class="hint">
-        Over wifi, one day. The pairing readingbuddy does over the cable is what will make that need
-        nothing typed when it arrives.
+        Over wifi, a paired reader sends its highlights straight here. Open the door, then choose
+        <em>Push</em> on the reader. Nothing on the network can find this computer while it is shut.
       </p>
+      {#if listener !== null}
+        <div class="door">
+          <button onclick={() => void toggleListening()} disabled={listenerBusy}>
+            {listener.mode.kind === 'off' ? 'Open the door' : 'Shut the door'}
+          </button>
+          <span class="hint">
+            {#if listener.mode.kind === 'off'}
+              Shut.
+            {:else if listener.tcp_port !== null}
+              Open on port {listener.tcp_port}. It shuts itself once a reader has sent.
+            {:else}
+              Open.
+            {/if}
+          </span>
+        </div>
+      {/if}
       <p class="hint">
         A file at a time works too: <a href="/library">the library</a> takes an EPUB or a PDF straight
         in.
@@ -375,6 +430,20 @@
   }
   .ways a {
     color: var(--accent-text);
+  }
+  /*
+   * The wireless door (item 15b). The button and its state sit on one line so
+   * *open* is read as a property of the control rather than as a separate
+   * announcement — and the state is ink, not accent: the accent is for state
+   * you can act on, and "open on port 51862" is a fact about what already
+   * happened.
+   */
+  .door {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
   }
   /*
    * What the last action did. `role="status"` so it is announced rather than

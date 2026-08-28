@@ -4170,6 +4170,7 @@ dependencies = [
  "futures",
  "gethostname",
  "getrandom 0.3.4",
+ "hmac",
  "image",
  "lopdf",
  "md-5 0.10.6",

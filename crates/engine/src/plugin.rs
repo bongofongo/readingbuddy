@@ -1272,6 +1272,119 @@ mod tests {
         }
     }
 
+    /// The discovery ladder's **ordering and fallback**, run as the device runs
+    /// it. This is the part with bugs in it, and a ladder that can only be
+    /// exercised by carrying a laptop between subnets is a ladder with no
+    /// tests — `watch.rs`'s sentence about `notify`, one subsystem over.
+    #[test]
+    fn the_ladder_tries_the_cheap_rungs_first_and_degrades() {
+        let rungs = |cached: &str, name: &str| {
+            run_plugin_lua(&format!(
+                "local out = {{}}
+                 for _, r in ipairs(RB.ladder({cached}, {name})) do
+                     table.insert(out, r.kind .. ':' .. r.host)
+                 end
+                 return table.concat(out, ' ')"
+            ))
+            .unwrap()
+        };
+
+        // Everything known: the cached address, then the two broadcasts — the
+        // global one and the cached /24's, for the APs that filter one and pass
+        // the other — then the name, bare and with each suffix.
+        assert_eq!(
+            rungs(r#"{ host = "192.168.1.20", port = 51000 }"#, r#""desk""#),
+            "cached:192.168.1.20 broadcast:255.255.255.255 broadcast:192.168.1.255 \
+             dns:desk dns:desk.lan dns:desk.home.arpa"
+        );
+
+        // A first run has no cache, so the ladder starts at the broadcast — and
+        // there is no /24 to derive a directed broadcast from.
+        assert_eq!(
+            rungs("nil", r#""desk""#),
+            "broadcast:255.255.255.255 dns:desk dns:desk.lan dns:desk.home.arpa"
+        );
+
+        // An entry written before there were names (item 15a's flat file) still
+        // gets the rungs that do not need one, rather than no ladder at all.
+        assert_eq!(
+            rungs(r#"{ host = "10.0.0.5" }"#, "nil"),
+            "cached:10.0.0.5 broadcast:255.255.255.255 broadcast:10.0.0.255"
+        );
+
+        // A cached *hostname* has no subnet to broadcast into, so the directed
+        // rung is skipped rather than built out of a regex that half-matched.
+        assert_eq!(
+            rungs(r#"{ host = "desk.lan" }"#, "nil"),
+            "cached:desk.lan broadcast:255.255.255.255"
+        );
+
+        // A hostname that is really an address would make the DNS rungs a
+        // second copy of rung 1 — and `10.0.0.5.lan` resolves nowhere.
+        assert_eq!(rungs("nil", r#""10.0.0.5""#), "broadcast:255.255.255.255");
+    }
+
+    /// `endpoint.lua` round-trips through the plugin's own writer and reader,
+    /// and the installer's parser is not involved — this file is the device's.
+    #[test]
+    fn the_endpoint_cache_round_trips_and_is_stable() {
+        let script = "local written = RB.serialiseEndpoints({\n\
+             \x20 [\"bbb\"] = { host = \"10.0.0.9\", port = 51001, seen_at = 20 },\n\
+             \x20 [\"aaa\"] = { host = \"192.168.1.20\", port = 51000, seen_at = 10 },\n\
+             })\n\
+             local back = RB.parseEndpoints(load(written)())\n\
+             local again = RB.serialiseEndpoints(back)\n\
+             return (written == again and 'stable ' or 'UNSTABLE ')\n\
+                 .. back.aaa.host .. ':' .. back.aaa.port\n\
+                 .. ' ' .. back.bbb.host .. ':' .. back.bbb.port";
+        assert_eq!(
+            run_plugin_lua(script).unwrap(),
+            "stable 192.168.1.20:51000 10.0.0.9:51001"
+        );
+
+        // Absent, unreadable and half-written are one answer, and the answer is
+        // a table — never a nil the caller has to test for.
+        for bad in [
+            "nil",
+            r#""not a table""#,
+            r#"{ ["a"] = { port = 1 } }"#,
+            r#"{ ["a"] = { host = "" } }"#,
+            r#"{ [1] = { host = "10.0.0.1" } }"#,
+        ] {
+            let n = run_plugin_lua(&format!(
+                "local n = 0
+                 for _ in pairs(RB.parseEndpoints({bad})) do n = n + 1 end
+                 return n"
+            ))
+            .unwrap();
+            assert_eq!(n, "0", "{bad}");
+        }
+    }
+
+    /// The challenge strings the plugin builds must be byte-identical to the
+    /// ones the listener signs — they are the only thing keeping the two
+    /// implementations of the same protocol honest, and they are built by
+    /// `string.format` on one side and `format!` on the other.
+    #[test]
+    fn the_challenges_the_plugin_builds_match_the_listeners() {
+        use crate::wireless::{body_challenge, here_challenge, open_challenge};
+        let built = run_plugin_lua(
+            "return string.format('here:%d:%s:%d', 1, 'n1', 51000) .. '|' ..
+                    string.format('open:%d:%s', 1, 'n1') .. '|' ..
+                    string.format('body:%d:%s:%s', 1, 'n1', 'deadbeef')",
+        )
+        .unwrap();
+        assert_eq!(
+            built,
+            format!(
+                "{}|{}|{}",
+                here_challenge("n1", 51000),
+                open_challenge("n1"),
+                body_challenge("n1", "deadbeef")
+            )
+        );
+    }
+
     #[test]
     fn minted_ids_are_the_length_asked_for_and_not_each_other() {
         let a = mint_id(16).unwrap();

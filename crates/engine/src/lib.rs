@@ -42,6 +42,7 @@ pub mod search;
 pub mod sort;
 pub mod storage;
 pub mod watch;
+pub mod wireless;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -82,8 +83,8 @@ pub use notes::{CreatedNote, NewNoteInput, NoteKind, VaultReconcile};
 pub use partial_md5::partial_md5;
 pub use pdf::{PdfInfo, pdf_info};
 pub use plugin::{
-    InstallReport, PLUGIN_DIR_NAME, PLUGIN_VERSION, PluginCondition, PluginRefusal, PluginStatus,
-    UninstallReport,
+    InstallReport, PLUGIN_DIR_NAME, PLUGIN_VERSION, Pairing, PluginCondition, PluginRefusal,
+    PluginStatus, UninstallReport,
 };
 pub use progress::{Fraction, FractionSource, Progress};
 pub use providers::googlebooks::verify_key as verify_google_key;
@@ -101,6 +102,7 @@ pub use watch::{
     MOUNT_QUIET, MountEvent, MountStir, MountWatcher, VAULT_QUIET, VaultEvent, VaultStir,
     VaultWatcher, watch_mounts,
 };
+pub use wireless::{ListenerMode, ListenerStatus, WirelessRefusal};
 
 use providers::googlebooks::GoogleBooksProvider;
 use providers::openlibrary::OpenLibraryProvider;
@@ -170,6 +172,14 @@ pub struct Engine {
     /// that `storage` and `config` are public fields both frontends reach past
     /// the facade through, and a new subsystem must not add a third.
     calibre: Calibre,
+    /// The wireless rendezvous (item 15b).
+    ///
+    /// **Nothing is bound until a caller asks**, so an `Engine` opened by
+    /// `rb list` holds an idle struct and no socket. `Arc` because
+    /// [`wireless::Listener::start`] hands clones of it to the tasks it spawns
+    /// — see that type's doc for why this one subsystem spawns at all when
+    /// `watch.rs` says the engine never does.
+    wireless: Arc<wireless::Listener>,
 }
 
 impl Engine {
@@ -200,6 +210,7 @@ impl Engine {
             google_api_key: RwLock::new(key),
             client,
             calibre,
+            wireless: Arc::new(wireless::Listener::new()),
         })
     }
 
@@ -1306,6 +1317,66 @@ impl Engine {
     /// Every reader we have paired with, whether or not it is plugged in.
     pub async fn paired_devices(&self) -> Result<Vec<PairedDevice>> {
         self.storage.list_paired_devices().await
+    }
+
+    // ---- the wireless listener (item 15b) ----
+
+    /// Whether a paired reader could reach this computer over the LAN.
+    ///
+    /// `Off` is the default and the answer for every host that has not asked,
+    /// which is what makes the whole design fail closed: with nothing bound
+    /// there is no service to find, nothing to fingerprint and nothing to leak.
+    pub async fn listener_status(&self) -> Result<wireless::ListenerStatus> {
+        Ok(self.wireless.status(storage::now_unix()).await)
+    }
+
+    /// Open the door, for `minutes` (default five; `Some(0)` means until asked
+    /// to stop).
+    ///
+    /// **Never on an automatic path**, and for `install_plugin`'s reason one
+    /// layer out: `docs/decisions.md` keeps arrival read-only precisely so that
+    /// anything reaching outward is an explicit act. A host that called this on
+    /// startup would have made the toggle a lie.
+    ///
+    /// The window also closes on the **first completed push**, because one tap
+    /// on the reader is one session and the door has then done its job. A
+    /// session is every book that tap carried, not one file — closing after the
+    /// first would strand the rest.
+    #[tracing::instrument(skip(self))]
+    pub async fn start_listening(&self, minutes: Option<u32>) -> Result<wireless::ListenerStatus> {
+        // `0.0.0.0` and the real socket: this is the one call in the subsystem
+        // that cannot run in CI, and it is deliberately the *only* one — see
+        // `wireless::UdpBeacon`, which is `watch.rs`'s `watch_mounts` in a
+        // different costume.
+        let bind = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        let beacon = wireless::UdpBeacon::bind(bind).await?;
+        self.wireless
+            .start(
+                self.storage.clone(),
+                plugin::this_computer().unwrap_or_else(|| "readingbuddy".into()),
+                bind,
+                Arc::new(beacon),
+                minutes,
+                storage::now_unix(),
+            )
+            .await
+    }
+
+    /// Close it. Idempotent: stopping a listener that is already off is not an
+    /// error, because a frontend cannot know the window did not expire between
+    /// drawing the button and the user pressing it.
+    pub async fn stop_listening(&self) -> Result<wireless::ListenerStatus> {
+        Ok(self.wireless.stop().await)
+    }
+
+    /// The listener itself, for a host that wants to drive it directly.
+    ///
+    /// Behind `internals` for [`Engine::storage`]'s reason — it is how this
+    /// crate's own tests reach a `serve_push` without a real broadcast socket,
+    /// and it is not a door a frontend may use to grow a second protocol.
+    #[cfg(feature = "internals")]
+    pub fn wireless(&self) -> &Arc<wireless::Listener> {
+        &self.wireless
     }
 
     /// Forget a pairing **without the reader in hand** (item 55).

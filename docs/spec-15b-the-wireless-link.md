@@ -366,6 +366,56 @@ unconfirmed from 15a.
   punching, no port forwarding, and nothing that works from a coffee shop. If
   that is wanted it is a different item with a different threat model.
 
+## What stage 2 actually found
+
+Five corrections, three of them to this file.
+
+- **The listener cannot be the daemon's state, and the pushback offered above is
+  the right one.** `crates/api` depends on the engine and serde and nothing
+  else, and the GUI links it **in-process with no daemon anywhere** — so a
+  listener owned by `readingbuddyd` is a listener the devices page can never
+  turn on, and the devices page is this feature's frontend. It is the engine's.
+  **No settings table was built**: `Window` is runtime state that must not
+  survive a restart, and `Always` is the daemon's `--listen` flag rather than a
+  persisted row, so nothing was invented silently.
+- **The engine now spawns a task, and `watch.rs` says it never does.** A
+  deliberate exception on item 24's pattern: `MountWatcher` must not act alone
+  because a mount's consequence is a *decision*, and a responder's is not. And a
+  listening socket has no pull-shaped surface across an API seam — a
+  `StartListening` that travels as JSON cannot hand back an object to poll.
+- **"Closing on the first completed push" is right at the granularity of a
+  *session*, not a file.** One tap is one session carrying every book the reader
+  has; closing after the first sidecar would strand the other thirty-nine.
+- **"Idempotence, which the sidecar payload should give you for free" is
+  overstated.** It is free only for a sidecar carrying a `partial_md5_checksum`.
+  Without one, `import_book_from_sidecar` has nothing to key a mapping on and
+  duplicates — over a cable and, necessarily, over the wire. The transport
+  inherits the import's properties including this one, and
+  `a_sidecar_with_no_checksum_is_no_more_idempotent_over_the_wire` pins it.
+- **KOReader has no API that enumerates a device's sidecars.** `DocSettings`
+  answers *where is this document's sidecar* and nothing wider; the only
+  whole-device list covers one of the three layouts. The source of books is
+  therefore `readhistory`, which is what `plugins/exporter.koplugin/clip.lua`
+  uses for the same job — with the explicit cost that a book whose history entry
+  was cleared is not pushed until it is opened again.
+
+Two bugs the tests found rather than review, both in shutdown ordering, and both
+the same shape: **a window closes from inside the accept loop, and closing it
+aborts that very task.** An abort lands at the next `.await`, so anything after
+the drop may never run. `stop()` therefore settles its state *before* dropping
+the sockets — otherwise a push that closed its own window left `pushes`
+unincremented and the mode still open, a listener reporting itself available on
+a socket it had just destroyed — and `serve_push` writes its final ack *before*
+shutting the door, or the reader sees a failure it never had.
+
+And one scope that was got right by getting the test wrong first: **the replay
+nonce set belongs to one open door and is cleared when it shuts.** A body
+frame's MAC covers the body's *hash*, so an attacker replaying a captured `open`
+cannot follow it with bytes of their own — the only thing they can resend is
+what they captured, which imports idempotently. Remembering nonces across a
+closed door buys nothing and costs an unbounded set on a desktop left in
+`Always` for weeks.
+
 ## Explicitly not in this item
 
 Auto-push on any event. Two-way sync. Writing anything to the reader over the
@@ -387,7 +437,8 @@ on one protocol produce three dialects of it — items 26–28's lesson.
    settled here rather than in stage 2 because it is the one thing that would
    otherwise have been discovered on hardware.
 2. **The listener and push.** Daemon TCP + UDP responder, the three states, the
-   API requests, the plugin's menu verb and its discovery ladder.
+   API requests, the plugin's menu verb and its discovery ladder. **Landed** —
+   see *What stage 2 actually found* below.
 3. **Pull.** The reader's window and beacon, the desktop's seeker, the devices
    page's *ready* state.
 

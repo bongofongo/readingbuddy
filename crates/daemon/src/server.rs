@@ -16,6 +16,32 @@
 //! router and a middleware stack in the dependency tree for a protocol with one
 //! endpoint, and would put a listening TCP port on a laptop for no gain.
 //!
+//! ## "For no gain" was overturned by item 15b, and only that clause
+//!
+//! There is now a gain, and it is the one thing a unix socket structurally
+//! cannot do: **a reader on the LAN is not on this machine**, so a paired Kobo
+//! pushing its highlights has no filesystem to be given permission on. That is
+//! not a better way to serve the API; it is a different peer.
+//!
+//! So the sentence above stands for *this* transport and the two rules that
+//! follow it are what keep the overturning narrow.
+//!
+//! **The wireless listener is not here.** It lives in the engine
+//! (`readingbuddy::wireless`), is `Off` by default, and is turned on through
+//! the ordinary API — `StartListening` — which means every host reaches it the
+//! same way and the GUI, which links `readingbuddy-api` with no daemon
+//! anywhere, is not locked out of the feature. This file grew **no second
+//! listener**; `--listen` on the binary is one call to that request before
+//! `bind`, and it is the *lifecycle* exception `daemon/CLAUDE.md` already
+//! carves for the vault watcher rather than a new one.
+//!
+//! **It speaks a different protocol on purpose, and must never accept
+//! [`Call`].** A reader is not a trusted local client. Three closed messages
+//! serve two verbs; exposing sixty methods to a LAN peer to do it would be the
+//! exact inverse of the rule below — that the transport names no method — since
+//! the whole reason that rule is safe here is that nothing untrusted can reach
+//! this socket.
+//!
 //! Framing is one JSON object per line. `serde_json::to_string` escapes
 //! newlines inside strings, so a note body full of them cannot break a frame —
 //! and [`Reply::to_line`] is where that guarantee and the terminator live

@@ -508,6 +508,27 @@ impl Api {
         Ok(self.engine.sync_mount(mount).await?.into())
     }
 
+    // ---- the wireless listener (item 15b) ----
+
+    /// Whether a paired reader could reach this computer over the LAN.
+    ///
+    /// See [`Request::ListenerStatus`]. `Off` is the default and the answer for
+    /// every host that has not asked for anything else.
+    pub async fn listener_status(&self) -> ApiResult<ListenerStatusDto> {
+        Ok(self.engine.listener_status().await?.into())
+    }
+
+    /// Open the door. See [`Request::StartListening`] for what `minutes` means
+    /// and why `Some(0)` is *always* rather than *never*.
+    pub async fn start_listening(&self, minutes: Option<u32>) -> ApiResult<ListenerStatusDto> {
+        Ok(self.engine.start_listening(minutes).await?.into())
+    }
+
+    /// Close it. Idempotent.
+    pub async fn stop_listening(&self) -> ApiResult<ListenerStatusDto> {
+        Ok(self.engine.stop_listening().await?.into())
+    }
+
     /// Measured reading time out of a mounted device's `statistics.sqlite3`
     /// (item 31), as rows in the activity log.
     ///
@@ -1106,6 +1127,11 @@ impl Api {
             R::RenameDevice { device_id, label } => {
                 Response::Bool(self.rename_device(&device_id, &label).await?)
             }
+            R::ListenerStatus => Response::ListenerStatus(self.listener_status().await?),
+            R::StartListening { minutes } => {
+                Response::ListenerStatus(self.start_listening(minutes).await?)
+            }
+            R::StopListening => Response::ListenerStatus(self.stop_listening().await?),
             R::SyncMount { mount } => {
                 Response::MountSync(self.sync_mount(Path::new(&mount)).await?)
             }

@@ -96,6 +96,11 @@ pub enum EngineError {
     // device…", the same sentence in both halves of an anyhow report.
     #[error(transparent)]
     PluginRefused(#[from] crate::plugin::PluginRefusal),
+    /// The wireless listener refused (item 15b). `PluginRefused`'s sibling and
+    /// `transparent` for the same reason: `#[from]` makes the refusal this
+    /// error's source, so an identical `Display` would print the sentence twice.
+    #[error(transparent)]
+    WirelessRefused(#[from] crate::wireless::WirelessRefusal),
     /// Last resort. Prefer a specific variant — anything that a caller might
     /// plausibly want to branch on does not belong here.
     #[error("{0}")]

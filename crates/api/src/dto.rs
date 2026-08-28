@@ -47,13 +47,14 @@ use readingbuddy::{
     EditionShape, EnrichCandidate, EnrichMatch, EnrichOutcome, EnrichReport, ErrorClass,
     FieldChange, FieldSource, FileIdentity, FileImportReport, FileMatch, FileOutcome, FillStats,
     FlashcardRow, FractionSource, GoodreadsBookReport, GoodreadsReport, HeldField, Highlight,
-    ImportReport, InstallReport, KoStatus, MatchCandidate, MatchMethod, MergeReport, Moment,
-    MomentKind, MonthActivity, MountSync, NewNoteInput, NoteCitations, NoteKind, NoteRecord,
-    OutgoingLink, PairedDevice, PluginCondition, PluginStatus, Progress, PullReport, RankedResult,
-    Rating, RatingScale, Reading, ReadingEvent, ReadingFilter, ReadingQuery, ReadingRow,
-    ReadingSort, ReadingState, ReadingYears, RefillReport, SearchHit, SearchOutcome, SearchRequest,
-    SearchSource, Severity, ShapeSource, Source, StatsImportReport, StatusFilter, TableOfContents,
-    TextOutcome, TocEntry, UninstallReport, UnmatchedRow,
+    ImportReport, InstallReport, KoStatus, ListenerMode, ListenerStatus, MatchCandidate,
+    MatchMethod, MergeReport, Moment, MomentKind, MonthActivity, MountSync, NewNoteInput,
+    NoteCitations, NoteKind, NoteRecord, OutgoingLink, PairedDevice, Pairing, PluginCondition,
+    PluginStatus, Progress, PullReport, RankedResult, Rating, RatingScale, Reading, ReadingEvent,
+    ReadingFilter, ReadingQuery, ReadingRow, ReadingSort, ReadingState, ReadingYears, RefillReport,
+    SearchHit, SearchOutcome, SearchRequest, SearchSource, Severity, ShapeSource, Source,
+    StatsImportReport, StatusFilter, TableOfContents, TextOutcome, TocEntry, UninstallReport,
+    UnmatchedRow,
 };
 
 /// A path, as far as JSON can carry one. See the module doc.
@@ -2637,7 +2638,23 @@ pub struct PluginStatusDto {
     pub installed_version: Option<i64>,
     pub our_version: i64,
     pub paired: bool,
+    /// **Our** id for this reader, and `None` when none of its pairings is
+    /// ours (item 15b).
+    ///
+    /// It used to hold whatever id the file named, which was the same thing
+    /// while a reader could be paired with only one computer and became a
+    /// stranger's id under a heading meaning *ours* the moment it could not.
     pub device_id: Option<String>,
+    /// Every computer this reader is paired with, ours included, in file order.
+    ///
+    /// Not `device_id`'s replacement — that answers *which of these is us* and
+    /// this answers *who else is there*, which is the question the
+    /// single-computer `pairing.lua` could not represent at all. It carries **no
+    /// token**: the credential exists so a reader can prove itself to us later,
+    /// and a wire format holding it would put it in every client's memory and
+    /// every devtools panel, which is `PairedDeviceDto`'s own omission applied
+    /// one level in.
+    pub pairings: Vec<PairingDto>,
     pub modified: Vec<String>,
     pub unrecognised: Vec<String>,
     /// What an install here would do — **the field a screen branches on**
@@ -2666,8 +2683,108 @@ impl From<PluginStatus> for PluginStatusDto {
             our_version: s.our_version,
             paired: s.paired,
             device_id: s.device_id,
+            pairings: s.pairings.into_iter().map(Into::into).collect(),
             modified: s.modified,
             unrecognised: s.unrecognised,
+        }
+    }
+}
+
+// ---- the wireless listener (item 15b) --------------------------------------
+
+/// Whether a paired reader could reach this computer over the LAN.
+///
+/// Three states and not a bool, because *open until 14:32* and *open until I
+/// say stop* are different promises and a frontend draws them differently — a
+/// countdown against a toggle.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ListenerModeDto {
+    /// Nothing is bound. The default, and what makes the design fail closed:
+    /// there is no service to find and nothing to fingerprint.
+    Off,
+    /// Bound until `until` (unix seconds) **or until a push completes**,
+    /// whichever is first.
+    Window { until: i64 },
+    /// Bound for as long as this host runs.
+    Always,
+}
+
+impl From<ListenerMode> for ListenerModeDto {
+    fn from(m: ListenerMode) -> Self {
+        match m {
+            ListenerMode::Off => ListenerModeDto::Off,
+            ListenerMode::Window { until } => ListenerModeDto::Window { until },
+            ListenerMode::Always => ListenerModeDto::Always,
+        }
+    }
+}
+
+/// What the listener is doing, for a screen to draw.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenerStatusDto {
+    pub mode: ListenerModeDto,
+    /// The port a reader would connect to. `None` when nothing is bound.
+    ///
+    /// Not fixed, and announced in every discovery reply — so a busy port is a
+    /// runtime fact rather than a support conversation. Only the **UDP**
+    /// rendezvous port is a constant.
+    pub tcp_port: Option<u16>,
+    /// Completed pushes since this host started.
+    ///
+    /// **A count of things done, never of things waiting.** `docs/decisions.md`
+    /// forbids a badge counting what you have not got round to, and the
+    /// distinction is the whole of why this field is allowed to exist: it is
+    /// the same shape as *synced 3 minutes ago*, not as *4 unread*.
+    pub pushes: u64,
+    pub last_push_at: Option<i64>,
+}
+
+impl From<ListenerStatus> for ListenerStatusDto {
+    fn from(s: ListenerStatus) -> Self {
+        ListenerStatusDto {
+            mode: s.mode.into(),
+            tcp_port: s.tcp_port,
+            pushes: s.pushes,
+            last_push_at: s.last_push_at,
+        }
+    }
+}
+
+/// One computer a reader is paired with, **without the token**.
+#[cfg_attr(
+    feature = "ts",
+    derive(ts_rs::TS),
+    ts(export, export_to = "bindings.ts")
+)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingDto {
+    /// Who this reader is *to that computer*. Each computer mints its own, so
+    /// it is also the handle a computer recognises its own entry by.
+    pub device_id: String,
+    /// What to call the computer — its hostname at install time. `None` for an
+    /// entry written before item 15b, where a client falls back to the id's
+    /// first bytes rather than inventing a name.
+    pub name: Option<String>,
+    pub paired_at: Option<i64>,
+}
+
+impl From<Pairing> for PairingDto {
+    fn from(p: Pairing) -> Self {
+        PairingDto {
+            device_id: p.device_id,
+            name: p.name,
+            paired_at: p.paired_at,
         }
     }
 }

@@ -541,6 +541,25 @@ back-fill, so it means *not since readingbuddy started recording*, and
 is a different fact — plugging a reader in to charge it moves one and not the
 other — and the card draws them apart.
 
+**The wireless door is a control on this page, not a setting elsewhere** (item
+15b). *Discovery only works while it is open* is the whole security model, so
+hiding it would make the guarantee invisible; with the door shut there is no
+service to find and nothing to leak, which is a **state rather than a lack** and
+is worded that way. It shuts itself after one reader has sent, so the copy says
+so — a control that silently stopped being true is worse than one that explains
+itself. `listenerStatus` is read on its own and not inside `load()`: a machine
+that could not take the rendezvous port is a reason to draw the door shut, never
+a reason for the page's readers to fail to appear. The state line is **ink and
+not accent** — the accent is for state you can act on, and *open on port 51862*
+is a fact about what already happened.
+
+**`PluginStatusDto.pairings` is who else this reader is paired with.** A reader
+can be paired with several computers; `device_id` is *ours* and is `null` when
+none of them is. Adding that field broke `tsc` in `fake.ts` and
+`readers.test.ts`, which is the `ts-rs`-emits-required trap working exactly as
+documented — the DTO change and the fixture updates are one commit, and there is
+no other honest way to make one from a worktree that cannot run `web-check`.
+
 **The fixture has no database counterpart and cannot get one.** `corpus
 gen-devdb` cannot mint a paired device: pairing writes to a mount and there is
 no mount on a build machine. So `crates/corpus/edge-cases.json` governs books
