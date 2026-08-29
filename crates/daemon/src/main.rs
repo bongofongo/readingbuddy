@@ -53,6 +53,22 @@ struct Cli {
     /// Log filter, e.g. `readingbuddyd=debug,readingbuddy=info`.
     #[arg(long, env = "RUST_LOG", default_value = "readingbuddyd=info")]
     log: String,
+
+    /// Also answer paired readers on the LAN, for this daemon's whole life
+    /// (item 15b).
+    ///
+    /// **Off by default, and that is the feature rather than a caution.** With
+    /// nothing bound there is no service to find, nothing to fingerprint and
+    /// nothing to leak, which is `docs/decisions.md`'s *fails closed* at the
+    /// transport layer — see `server.rs` for why the argument against a
+    /// listening TCP port was overturned in exactly one clause.
+    ///
+    /// This is the flag form of `ListenerStatus`'s `Always`, for the desktop
+    /// that lives on the LAN. It is **not** a second listener: it is one call
+    /// to the ordinary `start_listening` request before `bind`, so a GUI with
+    /// no daemon reaches the identical thing.
+    #[arg(long)]
+    listen: bool,
 }
 
 #[tokio::main]
@@ -102,6 +118,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let api = Api::new(engine);
+
+    // Before `bind`, so a daemon started with `--listen` is answering readers
+    // by the time it says it is listening. Degrades to a warning for the vault
+    // watcher's reason: a daemon that could not take the rendezvous port — most
+    // likely because another readingbuddy already has it — is still a daemon,
+    // and refusing to start over it would make the unix socket hostage to a
+    // feature that is off by default.
+    if cli.listen {
+        match api.start_listening(Some(0)).await {
+            Ok(status) => tracing::info!(
+                tcp_port = ?status.tcp_port,
+                "answering paired readers on the LAN"
+            ),
+            Err(e) => tracing::warn!(error = %e, "not answering readers on the LAN"),
+        }
+    }
 
     let listener = server::bind(&socket).await?;
     // After `bind`, so a refusal to start does not delete the socket of the

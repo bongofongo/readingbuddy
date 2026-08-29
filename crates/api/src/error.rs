@@ -75,6 +75,12 @@ pub enum ErrorCode {
     /// a file the user edited, a newer plugin, a volume that is not a reader —
     /// and never an error dialog with a stack of prose in it.
     PluginRefused,
+    /// The wireless listener refused (item 15b). `PluginRefused`'s sibling and
+    /// its own code for the same reason: a client shows *what the reader is in
+    /// and what the next move is* — nothing is listening, that reader is not
+    /// ours, that credential did not verify — and every one of those is a
+    /// different sentence with a different button under it.
+    WirelessRefused,
     /// The request itself was malformed — bad JSON, or a method this build does
     /// not have. Produced by the transport, never by the engine.
     BadRequest,
@@ -144,6 +150,7 @@ fn code_for(e: &EngineError) -> ErrorCode {
         EngineError::Epub(_) | EngineError::Pdf(_) | EngineError::Sidecar(_) => ErrorCode::Parse,
         EngineError::Watch(_) => ErrorCode::Watch,
         EngineError::PluginRefused(_) => ErrorCode::PluginRefused,
+        EngineError::WirelessRefused(_) => ErrorCode::WirelessRefused,
         EngineError::Timeout { .. } => ErrorCode::Timeout,
         EngineError::Provider { .. } | EngineError::Http(_) => match ErrorClass::from(e) {
             ErrorClass::RateLimited => ErrorCode::RateLimited,

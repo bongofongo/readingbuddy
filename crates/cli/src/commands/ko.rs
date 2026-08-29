@@ -144,6 +144,67 @@ pub async fn scan(engine: &Engine, path: Option<&Path>) -> Result<()> {
 ///
 /// **Scans, never syncs**, like everything else on the automatic path: it prints
 /// the command that brings books across rather than running it.
+/// Open the door and wait, printing what arrives (item 15b).
+///
+/// The one command in this file that **blocks on purpose**: the listener is
+/// runtime state, so a one-shot process that opened a window and exited would
+/// have closed it on the way out. This is therefore the CLI's honest shape for
+/// a feature that is otherwise the daemon's or the GUI's — and it names which
+/// readers could use the door before it opens one, because a door held open for
+/// a reader that is not paired is a door nothing can come through.
+pub async fn listen(engine: &Engine, minutes: u32) -> Result<()> {
+    let paired = engine.paired_devices().await?;
+    if paired.is_empty() {
+        println!("no reader is paired, so nothing can reach this computer.");
+        println!("    pair one : plug it in, then readingbuddy ko plugin install");
+        return Ok(());
+    }
+
+    let status = engine.start_listening(Some(minutes)).await?;
+    let port = status
+        .tcp_port
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "?".into());
+    match minutes {
+        0 => println!("listening on port {port} — ctrl-c to stop"),
+        1 => println!("listening on port {port} for a minute, or until a reader pushes"),
+        m => println!("listening on port {port} for {m} minutes, or until a reader pushes"),
+    }
+    for d in &paired {
+        println!("  {} can reach it", device_name(d));
+    }
+    println!("on the reader: Tools → readingbuddy → Push");
+
+    // Polled rather than notified, because the engine emits no stream for this
+    // — the same reason the mount watcher is absent from the API. A second is
+    // far below human patience and costs one lock.
+    let mut seen = status.pushes;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let now = engine.listener_status().await?;
+        if now.pushes > seen {
+            seen = now.pushes;
+            println!("a reader pushed.");
+            for d in engine.paired_devices().await? {
+                if d.last_wireless_at.is_some() {
+                    println!(
+                        "  from {} at {}",
+                        device_name(&d),
+                        d.last_lan_addr
+                            .as_deref()
+                            .unwrap_or("an address we could not read")
+                    );
+                }
+            }
+        }
+        if !matches!(now.mode, readingbuddy::ListenerMode::Off) {
+            continue;
+        }
+        println!("the door is shut.");
+        return Ok(());
+    }
+}
+
 pub async fn watch(engine: &Engine) -> Result<()> {
     let mut watcher = readingbuddy::watch_mounts()?;
 
@@ -520,16 +581,30 @@ pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
         },
     }
 
-    match (&status.device_id, status.paired) {
-        (Some(id), true) => println!("paired     : yes, as {id}"),
-        // A reader that says it is paired with a readingbuddy that is not this
-        // one. Reinstalling is the whole repair, so say that rather than
-        // reporting a state.
-        (Some(id), false) => {
-            println!("paired     : with another readingbuddy, as {id}");
-            println!("    take it over: readingbuddy ko plugin install");
+    // A reader can be paired with several computers (item 15b), so the two
+    // questions have come apart: `device_id` is *ours* and `pairings` is who
+    // else is there. Naming the others matters — installing here adds a
+    // computer rather than taking the reader over, and a line that said
+    // "with another readingbuddy" would now be describing a state that is
+    // ordinary rather than a conflict to resolve.
+    match &status.device_id {
+        Some(id) => println!("paired     : yes, as {id}"),
+        None if status.pairings.is_empty() => println!("paired     : no"),
+        None => println!("paired     : not with this readingbuddy"),
+    }
+    let others: Vec<&readingbuddy::plugin::Pairing> = status
+        .pairings
+        .iter()
+        .filter(|p| Some(p.device_id.as_str()) != status.device_id.as_deref())
+        .collect();
+    for p in &others {
+        match &p.name {
+            Some(name) => println!("also paired: {name} ({})", p.device_id),
+            None => println!("also paired: {}", p.device_id),
         }
-        (None, _) => println!("paired     : no"),
+    }
+    if status.device_id.is_none() && !others.is_empty() {
+        println!("    pair it here too: readingbuddy ko plugin install");
     }
 
     for m in &status.modified {
@@ -575,19 +650,46 @@ pub async fn plugin_install(engine: &Engine, path: Option<&Path>, yes: bool) -> 
     for f in &report.written {
         println!("wrote {}", report.plugin_dir.join(f).display());
     }
+    // `upgraded_from` is about the plugin **files** and `paired` is about the
+    // **pairing**, and item 15b pulled the two apart: a reader can already
+    // carry the plugin because another computer put it there, in which case
+    // "reinstalled, still paired as …" claims a relationship this machine has
+    // never had. `status` is the reading from *before* the install, so it is
+    // the only thing that can tell the difference.
+    let was_ours = status.paired;
     match report.upgraded_from {
-        Some(from) if from < report.version => println!(
+        Some(from) if from < report.version && was_ours => println!(
             "upgraded v{from} → v{}, paired as {}",
             report.version, report.device_id
         ),
-        Some(_) => println!(
+        Some(_) if was_ours => println!(
             "reinstalled v{}, still paired as {}",
             report.version, report.device_id
+        ),
+        // The plugin was already there and none of its pairings was ours.
+        // Nothing was taken over: the other computers' entries are untouched
+        // and this one was added beside them.
+        Some(_) => println!(
+            "the plugin was already installed; this computer is now paired too, as {}",
+            report.device_id
         ),
         None => println!(
             "installed v{}, paired as {}",
             report.version, report.device_id
         ),
+    }
+    let others = status
+        .pairings
+        .iter()
+        .filter(|p| p.device_id != report.device_id)
+        .count();
+    if others > 0 {
+        println!(
+            "this reader is also paired with {others} other computer{}, and \
+             readingbuddy left {} alone.",
+            if others == 1 { "" } else { "s" },
+            if others == 1 { "it" } else { "them" }
+        );
     }
     println!("the reader has no address for readingbuddy yet, so it sends nothing.");
     Ok(())
@@ -606,6 +708,26 @@ pub async fn plugin_uninstall(engine: &Engine, path: Option<&Path>) -> Result<()
     }
     if let Some(id) = &report.forgot_device {
         println!("forgot the pairing with {id}.");
+    }
+    // The plugin is one directory, so taking it off ends **every** computer's
+    // pairing with this reader — and the other computers cannot be told,
+    // because readingbuddy has no way to reach them. Their rows will go on
+    // claiming a pairing the device no longer has. That is a real consequence
+    // and it is the user's to know about, so it is said rather than left to be
+    // discovered when a push stops working.
+    let others = report
+        .removed_pairings
+        .iter()
+        .filter(|id| Some(id.as_str()) != report.forgot_device.as_deref())
+        .count();
+    if others > 0 {
+        println!(
+            "this also ended {others} other computer{} pairing with this reader. \
+             readingbuddy cannot tell {}, so install again from {} to restore it.",
+            if others == 1 { "'s" } else { "s'" },
+            if others == 1 { "it" } else { "them" },
+            if others == 1 { "there" } else { "each" }
+        );
     }
     Ok(())
 }

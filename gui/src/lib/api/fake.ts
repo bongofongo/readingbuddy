@@ -43,6 +43,7 @@ import type {
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
+  ListenerStatusDto,
   PairedDeviceDto,
   PathsDto,
   PluginStatusDto,
@@ -1118,6 +1119,7 @@ const PLUGINS: Record<string, PluginStatusDto> = {
     our_version: 1,
     paired: true,
     device_id: 'd1f0c2ae9b7645bc',
+    pairings: [{ device_id: 'd1f0c2ae9b7645bc', name: 'oliver-desk', paired_at: 1_745_000_000 }],
     modified: [],
     unrecognised: [],
     condition: 'current',
@@ -1132,6 +1134,12 @@ const PLUGINS: Record<string, PluginStatusDto> = {
     our_version: 2,
     paired: true,
     device_id: 'b7c3e1049fa2d8e6',
+    // Paired with this computer *and* with another one — the case the
+    // single-computer `pairing.lua` could not represent at all (item 15b).
+    pairings: [
+      { device_id: 'b7c3e1049fa2d8e6', name: 'oliver-desk', paired_at: 1_745_000_000 },
+      { device_id: '9a1b2c3d4e5f6071', name: 'the-laptop', paired_at: 1_750_000_000 },
+    ],
     modified: [],
     unrecognised: [],
     condition: 'upgradable',
@@ -1146,6 +1154,7 @@ const PLUGINS: Record<string, PluginStatusDto> = {
     our_version: 2,
     paired: false,
     device_id: null,
+    pairings: [],
     modified: [],
     unrecognised: [],
     condition: 'absent',
@@ -1158,6 +1167,7 @@ const PLUGINS: Record<string, PluginStatusDto> = {
     our_version: 2,
     paired: true,
     device_id: 'ff02aa4411bb99cc',
+    pairings: [{ device_id: 'ff02aa4411bb99cc', name: null, paired_at: null }],
     modified: ['main.lua'],
     unrecognised: ['notes.txt'],
     condition: 'obstructed',
@@ -2024,6 +2034,33 @@ export class FakeClient implements LibraryClient {
   }
 
   // ---- the devices page (items 15a, 55) -----------------------------------
+
+  // ---- item 15b: the wireless listener ------------------------------------
+  //
+  // Held as state rather than returned as a constant, because the whole of what
+  // a screen does here is watch it change: pressing *Listen* and seeing nothing
+  // move is the failure this fixture exists to make visible.
+  #listener: ListenerStatusDto = { mode: { kind: 'off' }, tcp_port: null, pushes: 0, last_push_at: null };
+
+  async listenerStatus(): Promise<ListenerStatusDto> {
+    return this.#listener;
+  }
+
+  async startListening(minutes?: number): Promise<ListenerStatusDto> {
+    const mins = minutes ?? 5;
+    this.#listener = {
+      ...this.#listener,
+      // `0` is *until stopped*, not a window of no minutes.
+      mode: mins === 0 ? { kind: 'always' } : { kind: 'window', until: Date.now() / 1000 + mins * 60 },
+      tcp_port: 51862,
+    };
+    return this.#listener;
+  }
+
+  async stopListening(): Promise<ListenerStatusDto> {
+    this.#listener = { ...this.#listener, mode: { kind: 'off' }, tcp_port: null };
+    return this.#listener;
+  }
 
   async pairedDevices(): Promise<PairedDeviceDto[]> {
     // Newest-seen first, which is the engine's own order

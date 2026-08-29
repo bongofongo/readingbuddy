@@ -1,0 +1,62 @@
+-- When a paired reader last reached us over the LAN, and from where (item 15b).
+--
+-- ## A fourth timestamp beside three that are easy to conflate
+--
+-- `paired_devices` already carries three, and `0020` is the file that argued
+-- why they are three rather than one. This is a fourth, and it means none of
+-- them:
+--
+--   * `installed_at`   — when the *relationship* started. A reinstall must not
+--                        move it, which `0019` settled.
+--   * `last_seen_at`   — when the reader was last **in hand**, over a cable.
+--                        Item 55 made `plugin_status` stamp it, so it finally
+--                        means that.
+--   * `last_synced_at` — when **everything** the reader had was brought across.
+--                        A fact about the data, not about the link.
+--   * `last_wireless_at` (this one) — when the reader last reached us **over
+--                        the network**, with nobody holding it.
+--
+-- The distinction that makes it a column rather than a reuse of `last_seen_at`
+-- is the whole of what item 15b adds: until now, *we saw this reader* and *this
+-- reader was plugged in* were the same event, and 15b makes them different
+-- ones. A reader that pushed from the next room this morning and has not been
+-- on a cable since April is correctly described by both columns and by neither
+-- alone, and a frontend that folded them would tell somebody their Kobo had
+-- been plugged in when it had not. `0020`'s rule applies unchanged: a column
+-- that answers a next-door question is not the same column.
+--
+-- It is **not** a synonym for `last_synced_at` either. A push carries what the
+-- reader chose to send, and the two verbs are separate for `0020`'s stated
+-- reason — a push of one book leaves *is this reader's reading here* exactly
+-- where it was. Only a push of everything stamps `last_synced_at`, and it
+-- stamps this one as well, because the two facts are one observation.
+--
+-- ## `last_lan_addr` is `last_mount_path`'s twin, and inherits its rule
+--
+-- **Nothing may ever join on it.** `0019` says that about `last_mount_path` and
+-- every word carries over: a DHCP lease moves, a laptop changes subnets, and a
+-- reader that came from `192.168.1.20` yesterday is the same reader today at a
+-- different number. Identity is `device_id` and only ever `device_id`. This
+-- column exists so the desktop's own pull has a rung-1 hint — try the address
+-- it worked from last — and so a frontend can say *last reached at …*, which is
+-- a sentence about the past and is allowed to be stale.
+--
+-- It is a plain TEXT address and deliberately **not** a host and a port in two
+-- columns. The port the reader listens on is announced in its beacon and is a
+-- runtime fact by design (a busy port must be a reconnection rather than a
+-- support conversation), so a stored port would be the stale half of a pair
+-- whose other half is refreshed every time.
+--
+-- ## No back-fill, and this one could not be more obviously right
+--
+-- The repo's fifth deliberate non-back-fill and the least arguable of the five:
+-- no reader has ever reached us over a network, because until this item there
+-- was nothing listening. `NULL` means *not since we started recording* — the
+-- phrasing `0020` requires — and here it also happens to mean *never*, which is
+-- a coincidence of this migration's timing and not something a caller may rely
+-- on: a reader paired today and pushed from tomorrow will carry a NULL for
+-- exactly as long as those two facts are true, and the wording has to hold for
+-- both.
+
+ALTER TABLE paired_devices ADD COLUMN last_wireless_at INTEGER;
+ALTER TABLE paired_devices ADD COLUMN last_lan_addr    TEXT;

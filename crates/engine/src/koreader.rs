@@ -1181,7 +1181,30 @@ pub async fn import_book_from_sidecar(storage: &Storage, sidecar: &Path) -> Resu
     // Degrading to a warning would leave them with a success message and no
     // book, so an unreadable or unparsable sidecar is an error here.
     let src = std::fs::read_to_string(sidecar)?;
-    let sc = parse_sidecar(&src)?;
+    import_book_from_sidecar_src(storage, &src, sidecar).await
+}
+
+/// [`import_book_from_sidecar`] with the bytes supplied.
+///
+/// **The seam that makes wireless a transport rather than a second import**
+/// (item 15b). A reader pushing over the LAN holds sidecar *bytes* and no path
+/// we can open, and the alternative to this function was a second parser for
+/// the same information — whose first divergence would appear as highlights
+/// importing differently depending on which cable they came down. There is one
+/// parser, one idempotency rule and one set of goldens, and a push walks
+/// straight into them.
+///
+/// `origin` names where the bytes came from and is used for **diagnostics
+/// only** — nothing opens it. Over a cable it is the real path; over the wire
+/// it is the name the reader sent, which is the honest answer to *which file is
+/// this warning about* and is not a handle anybody may follow.
+pub async fn import_book_from_sidecar_src(
+    storage: &Storage,
+    src: &str,
+    origin: &Path,
+) -> Result<PullReport> {
+    let sidecar = origin;
+    let sc = parse_sidecar(src)?;
 
     let mut warnings = Vec::new();
     let (book_id, matched_by) = match sc.partial_md5.as_deref() {

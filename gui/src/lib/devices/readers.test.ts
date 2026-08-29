@@ -33,6 +33,7 @@ function status(over: Partial<PluginStatusDto> = {}): PluginStatusDto {
     our_version: 1,
     paired: true,
     device_id: 'aaaa1111',
+    pairings: [{ device_id: 'aaaa1111', name: 'desk', paired_at: 1_700_000_000 }],
     modified: [],
     unrecognised: [],
     condition: 'current',

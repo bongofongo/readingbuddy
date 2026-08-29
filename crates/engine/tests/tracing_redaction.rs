@@ -304,3 +304,129 @@ fn a_search_query_never_reaches_a_log_above_trace() {
         }
     }
 }
+
+/// **The pairing token is never logged, at any level** — not even `trace!`.
+///
+/// Migration `0019` says so and is stricter than `CLAUDE.md`'s rule about
+/// highlight text and search queries, which permits `trace!`. Item 15b is where
+/// a debug line would be reached for: the wireless listener verifies a MAC and
+/// refuses, and *"expected a38b… got 26ae…"* is the first thing anybody writes
+/// when a credential will not verify on a device they cannot attach a debugger
+/// to. It is also the line that puts a reproducible forgery in a log file.
+///
+/// So the capture is unfiltered — every level, including `TRACE` — and it
+/// drives the whole rendezvous: a probe from a paired reader (which makes the
+/// listener compute a MAC under the real token), a connection that proves
+/// itself, and a connection that fails to. The refusal path matters most: the
+/// success path has no reason to mention the secret and the failure path has an
+/// excuse.
+#[tokio::test]
+async fn the_pairing_token_never_reaches_a_log_at_any_level() {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
+
+    use readingbuddy::wireless::{Beacon, Listener, mac, open_challenge};
+    use readingbuddy::{Engine, EngineConfig};
+    use tokio::io::AsyncWriteExt;
+
+    /// A beacon that replays one probe and records nothing. No packet leaves
+    /// the machine; see `tests/wireless.rs` for the same seam in full.
+    #[derive(Debug)]
+    struct OneProbe(tokio::sync::Mutex<Option<Vec<u8>>>);
+
+    #[async_trait::async_trait]
+    impl Beacon for OneProbe {
+        async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
+            match self.0.lock().await.take() {
+                Some(b) => Some((b, "192.168.1.9:61862".parse().unwrap())),
+                // Park rather than end: a real socket waits between datagrams.
+                None => std::future::pending().await,
+            }
+        }
+        async fn send_to(&self, _: &[u8], _: SocketAddr) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Engine::open(EngineConfig::rooted_at(tmp.path()))
+        .await
+        .unwrap();
+
+    let mount = tmp.path().join("reader");
+    std::fs::create_dir_all(mount.join("koreader/frontend")).unwrap();
+    std::fs::create_dir_all(mount.join("koreader/plugins")).unwrap();
+    std::fs::write(mount.join("koreader/reader.lua"), "").unwrap();
+    let device_id = engine.install_plugin(&mount).await.unwrap().device_id;
+    let token = std::fs::read_to_string(
+        mount
+            .join("koreader/plugins/readingbuddy.koplugin")
+            .join("pairing.lua"),
+    )
+    .unwrap()
+    .lines()
+    .find_map(|l| l.trim().strip_prefix("token     = "))
+    .unwrap()
+    .trim_matches(['"', ','])
+    .to_string();
+    assert_eq!(token.len(), 64, "the fixture stopped being a real token");
+
+    let captured = Captured::default();
+    // **No level filter at all.** This is the one secret `trace!` may not carry.
+    let subscriber = Registry::default().with(captured.clone());
+    let guard = tracing::subscriber::set_default(subscriber);
+
+    let listener = Arc::new(Listener::new());
+    let probe = serde_json::to_vec(&serde_json::json!({
+        "v": 1, "device_id": device_id, "nonce": "n1"
+    }))
+    .unwrap();
+    listener
+        .start(
+            engine.storage().clone(),
+            "desk".into(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            Arc::new(OneProbe(tokio::sync::Mutex::new(Some(probe)))),
+            Some(0),
+            1_700_000_000,
+        )
+        .await
+        .unwrap();
+    let port = listener.status(0).await.tcp_port.unwrap();
+
+    // A connection that proves itself, and one that does not.
+    for (nonce, key) in [("good", token.as_str()), ("bad", "not-the-token")] {
+        let mut s = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        let open = serde_json::json!({
+            "v": 1, "device_id": device_id, "nonce": nonce,
+            "mac": mac(key, &open_challenge(nonce)),
+        });
+        let mut line = serde_json::to_vec(&open).unwrap();
+        line.push(b'\n');
+        s.write_all(&line).await.unwrap();
+        s.flush().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+    listener.stop().await;
+    drop(guard);
+
+    for line in captured.contents() {
+        assert!(
+            !line.contains(&token),
+            "the pairing token reached a log: {line}"
+        );
+        // A MAC computed under the real token is not the token, but publishing
+        // one beside its challenge is a gift to anybody replaying it — and it
+        // is what a "why did this not verify" line would print.
+        assert!(
+            !line.contains(&mac(&token, &open_challenge("good"))),
+            "a MAC computed under the pairing token reached a log: {line}"
+        );
+    }
+    assert!(
+        !captured.contents().is_empty(),
+        "nothing was captured at all, so this test proves nothing"
+    );
+}

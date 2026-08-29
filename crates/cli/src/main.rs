@@ -383,6 +383,15 @@ enum KoCmd {
         #[command(subcommand)]
         cmd: PluginCmd,
     },
+    /// Open the door for a paired reader to push over the LAN (item 15b)
+    ///
+    /// Off by default and never automatic. Nothing is bound until you ask, so
+    /// with the door shut there is no service to find and nothing to leak.
+    Listen {
+        /// How long to stay open. `0` means until ctrl-c
+        #[arg(long, default_value_t = 5)]
+        minutes: u32,
+    },
     /// Pull books in from a mounted reader
     Sync {
         /// The mount to sync from
@@ -617,6 +626,7 @@ async fn main() -> Result<()> {
             KoCmd::Scan { path } => commands::ko::scan(&engine, path.as_deref()).await?,
             KoCmd::Watch => commands::ko::watch(&engine).await?,
             KoCmd::Stats { path } => commands::ko::stats(&engine, &path).await?,
+            KoCmd::Listen { minutes } => commands::ko::listen(&engine, minutes).await?,
             KoCmd::Plugin { cmd } => match cmd {
                 PluginCmd::Status { path } => {
                     commands::ko::plugin_status(&engine, path.as_deref()).await?

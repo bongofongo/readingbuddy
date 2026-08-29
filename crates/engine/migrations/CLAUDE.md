@@ -36,18 +36,36 @@ deliberately did *not* add, under "epub.rs" in [`../CLAUDE.md`](../CLAUDE.md);
 `0017` under "moments.rs" and `0018` under "Readings" in
 [`../src/storage/CLAUDE.md`](../src/storage/CLAUDE.md).
 
-`0019` and `0020` are the only migrations here that describe **a piece of
+`0019`, `0020` and `0021` are the only migrations here that describe **a piece of
 hardware** rather than a book or the app's own bookkeeping, and they split one
 subject on purpose: `0019` is the *relationship* (a reader we wrote a plugin to,
-identified by a uuid we minted — never by `last_mount_path`, which moves), and
-`0020` is *what has come off it*. They are the file to read before adding a
-fifth timestamp to `paired_devices`, because it already carries three that are
-easy to conflate: `installed_at` is when the pairing began and a reinstall must
-not move it, `last_seen_at` is when the reader was last in hand (item 55 made
-`plugin_status` stamp it, so it finally means that), and `last_synced_at` is when
-*everything* on it was last brought across. Reading either of the first two as
-the third is what tells somebody who plugged a Kobo in to charge it that their
-highlights are here.
+identified by a uuid we minted — never by `last_mount_path`, which moves),
+`0020` is *what has come off it*, and `0021` is *how it reached us*. They are
+the file to read before adding a fifth timestamp to `paired_devices`, because it
+already carries four that are easy to conflate: `installed_at` is when the
+pairing began and a reinstall must not move it, `last_seen_at` is when the
+reader was last in hand (item 55 made `plugin_status` stamp it, so it finally
+means that), `last_synced_at` is when *everything* on it was last brought
+across, and `last_wireless_at` is when it last reached us over the LAN with
+nobody holding it. Reading either of the first two as the third is what tells
+somebody who plugged a Kobo in to charge it that their highlights are here.
+
+`0021` is the one that made the set stop being obvious, and the reason is worth
+carrying: until item 15b, *we saw this reader* and *this reader was plugged in*
+were **one event**, so `last_seen_at` could carry both meanings without anybody
+noticing it held two. A wireless push splits them, and a column that answers a
+next-door question is not the same column — `0020`'s own argument, arriving a
+second time for a reason that has nothing to do with data versus link.
+`last_lan_addr` is `last_mount_path`'s twin and inherits its rule whole:
+**nothing may ever join on it**, because a lease moves and the reader at the new
+number is the same reader. It is one TEXT address rather than a host and a port,
+since the port is announced in the beacon by design and a stored one would be
+the stale half of a pair whose other half is refreshed on every contact. It is
+also the repo's **fifth deliberate non-back-fill** and the least arguable of the
+five — nothing was listening, so no reader has ever reached us this way — with
+the caveat written into the file: `NULL` still has to be worded *not since we
+started recording*, because the coincidence that it currently also means *never*
+expires the first time a reader is paired today and pushes tomorrow.
 
 `0020` is also the repo's **fourth deliberate non-back-fill**, and the cleanest
 case of the four: `0012` had signals that recorded who was *consulted* rather

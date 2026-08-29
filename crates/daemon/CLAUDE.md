@@ -21,6 +21,8 @@ carry. `Engine::reconcile_vault` runs once before `bind`, for the edits made
 while nothing was running. Both degrade to a `warn!`: a daemon that cannot watch
 a vault is still a daemon.
 
+**Item 15b overturned exactly one clause of the argument above, and `server.rs` carries the new one in prose.** "A listening TCP port on a laptop **for no gain**" — there is now a gain, and it is the thing a unix socket structurally cannot do: a reader on the LAN has no filesystem to be given permission on. Two rules keep the overturning narrow. **The wireless listener is not in this crate**: it is `readingbuddy::wireless`, `Off` by default, turned on through the ordinary `StartListening` request — so every host reaches it the same way and the GUI, which has no daemon, is not locked out. `--listen` is **one call to that request before `bind`**, not a second listener, and it is the *lifecycle* exception already carved for the vault watcher rather than a new one; it degrades to a `warn!` for that watcher's reason, since a daemon that could not take the rendezvous port is still a daemon and the unix socket must not be hostage to a feature that is off by default. And **it speaks a different protocol on purpose and must never accept a `Call`** — three closed messages for two verbs, because the rule that this transport names no method is only safe *because* nothing untrusted can reach this socket.
+
 Run it: `cargo run -p readingbuddyd -- --data-dir .` — listens on
 `<data-dir>/readingbuddyd.sock`. Poke it with
 `printf '{"id":1,"request":{"method":"list_books","params":{"limit":5}}}\n' | nc -U ./readingbuddyd.sock`.

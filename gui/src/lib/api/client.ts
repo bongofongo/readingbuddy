@@ -55,6 +55,7 @@ import type {
   NoteDto,
   NoteKindDto,
   OutgoingLinkDto,
+  ListenerStatusDto,
   PairedDeviceDto,
   PathsDto,
   PluginStatusDto,
@@ -593,6 +594,27 @@ export interface LibraryClient {
    * **not** *never synced*: the column arrived with no back-fill.
    */
   pairedDevices(): Promise<PairedDeviceDto[]>;
+
+  /**
+   * Whether a paired reader could reach this computer over the LAN (item 15b).
+   *
+   * `off` is the default and the answer for every session that has not asked:
+   * with nothing bound there is no service to find and nothing to leak, which
+   * is what makes the control a feature rather than a caution.
+   */
+  listenerStatus(): Promise<ListenerStatusDto>;
+
+  /**
+   * Open the door for `minutes`, or five when omitted.
+   *
+   * `0` means *until stopped* rather than a window of zero minutes. The window
+   * also closes on the **first completed push** — one tap on the reader is one
+   * session, carrying every book it has.
+   */
+  startListening(minutes?: number): Promise<ListenerStatusDto>;
+
+  /** Close it. Idempotent — the window may have expired since the button was drawn. */
+  stopListening(): Promise<ListenerStatusDto>;
   /**
    * Mounted volumes that hold a KOReader install.
    *
@@ -1201,6 +1223,21 @@ export class TauriClient implements LibraryClient {
   }
 
   // ---- items 15a and 55 ---------------------------------------------------
+
+  async listenerStatus(): Promise<ListenerStatusDto> {
+    return expect(await this.#call({ method: 'listener_status' }), 'listener_status').value;
+  }
+
+  async startListening(minutes?: number): Promise<ListenerStatusDto> {
+    return expect(
+      await this.#call({ method: 'start_listening', params: { minutes: minutes ?? null } }),
+      'listener_status',
+    ).value;
+  }
+
+  async stopListening(): Promise<ListenerStatusDto> {
+    return expect(await this.#call({ method: 'stop_listening' }), 'listener_status').value;
+  }
 
   async pairedDevices(): Promise<PairedDeviceDto[]> {
     return expect(await this.#call({ method: 'paired_devices' }), 'paired_devices').value;
