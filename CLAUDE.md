@@ -114,6 +114,13 @@ names. Launch them; do not reimplement what they do.
   variant breaks `gui/src/lib/api/client.ts` — invisible to the worker, and
   caught only on main. **Prefer adding a new request over changing one**, and
   when you must change one, say so in the report.
+  - **The orchestrator can check a worker's frontend without merging it**:
+    symlink the main checkout's `gui/node_modules` into the worktree and run
+    `make web-check` there. That is how item 15b's two GUI-touching stages were
+    verified on the branch. Two things that go with it — an editor's diagnostics
+    in a worktree with no `node_modules` are noise (missing `vitest`, `padStart
+    does not exist`), so read the file before believing one; and `ln -sfn` onto
+    an existing real directory fails safely rather than clobbering it.
 
 Four skills:
 

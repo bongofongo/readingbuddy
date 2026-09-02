@@ -344,9 +344,15 @@ is the obvious host for it.
 ### What still needs hardware
 
 Say so in the report rather than implying coverage: broadcast behaviour on the
-user's actual AP, wifi coming up via `NetworkMgr:beforeWifiAction`, suspend
-mid-transfer, and whether the menu entry appears at all — which is *still*
-unconfirmed from 15a.
+user's actual AP, wifi coming up via `NetworkMgr:beforeWifiAction`, and suspend
+mid-transfer.
+
+**The menu entry is confirmed** (2026-09-02, on the user's Kindle) — open since
+15a, and the one thing under everything else here, since a plugin the loader
+does not show can neither push nor be told to. `sorting_hint = "tools"` resolves
+and `is_doc_only = false` loads us in both menus, as the order tables said.
+Nothing else in this list has met hardware yet: the LAN push itself is still
+unrun.
 
 ## Constraints that eliminate designs
 
