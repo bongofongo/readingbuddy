@@ -3692,3 +3692,66 @@ because item 31 needed somewhere to put reading time.
       `/devices`' install verbs (they are the reason to be there), `/reading`'s
       four verbs, and the `mode.ts`/`desk.ts` split — two surfaces cover for
       different reasons and one type would hide the difference.
+
+58. **The reading life gets a second tab, and it is allowed to rank.** No engine
+    change and no new request in `crates/api` — `ActivityByDay` already existed
+    and was simply not on the TypeScript client. One new route-level control, one
+    new module, and a reversal that needs stating precisely because it undoes
+    text in this file.
+    - **`/life` is two surfaces.** *Timeline* is what the page opens on and is
+      the only thing it opens on: the six figures, then the months drawn as the
+      covers that closed in them. *Everything* is the full disclosure —
+      rankings, distributions, and comparisons across time. `views.ts` holds the
+      closed union and the ordered registry, shaped like `desk.ts`, so a third
+      view is one member and one `{#if}` arm.
+    - **The order is the permission, and it is the whole argument.** What was
+      refused before was not "a number about your reading"; it was being *met*
+      with one. Material a reader goes and asks for is a different act from
+      material drawn on arrival, and the tab is what makes the difference real
+      rather than rhetorical. Draw any of *Everything* on the timeline and this
+      entry no longer holds.
+    - **Ranking is lifted.** Authors, subjects and the longest books sort by
+      size. The prior rule — sets alphabetical, distributions on their own axis,
+      never by size — lived only in `facets.ts`, which named its own reversal as
+      "a product decision and not a sort order". This is that decision. Ties
+      break alphabetically, which is not cosmetic: `Map` iteration is
+      insertion-ordered, so an untied list would reshuffle when an unrelated row
+      was edited.
+    - **Self-comparison is lifted, and this is the half that undoes settled
+      text.** Entries 23 and 28 refused a best month and a run of days on the
+      grounds that both are streaks in costume. *Everything* now carries the
+      busiest month, the month-by-month trend, and the longest run — and it
+      keeps **entry 23's own condition** rather than discarding it: a run is
+      recognised only once it is **over**. `longestRunOf` refuses any run
+      touching today, because a run still going is a thing a reader can be made
+      to feel they must protect. The floor is two days, for entry 23's reason
+      again — two is what *consecutive* means, and a 3 or a 7 would be the app
+      deciding what counts as enough reading. The word is *busiest*, never
+      *best*: the first says what happened, the second grades it.
+    - **What did not move.** The axiom is *"the app tells you what you did; it
+      never tells you what you have left"*, and that is about forward pressure,
+      not about description. So: no goal, no target, no pace, no *on track*, no
+      *behind*, nothing counting what is undone, no mean presented as a standard
+      to hold, and **no figure on a control** — entry 51 stands, and *Everything*
+      never becomes *Everything (11)*. Note that `axiom.test.ts` enforces only
+      `\byet\b`; the rest of that vocabulary lost its test when the Playwright
+      suite went and is a review rule, so it is checked by reading.
+    - **The months lost their sentence and gained their covers.** *Finished
+      Hollow Weather, Distant Bell, Silent Letters…* is a string you have to
+      read; the jackets are things you recognise without reading, which is why a
+      shelf works at all. So the jackets went from 40px to 56px and became the
+      row, the prose went, and what is left is the month, the covers and the two
+      figures. Nothing became unreachable: every jacket links to its book and
+      carries the title as its accessible name, so a screen reader gets a list of
+      titles rather than a sentence assembled by `joinList`.
+    - **Two selection dialects share the page, on purpose.** The tabs are
+      `.choices`; the year rail keeps the left inset entry 57 left unchanged.
+      They are different questions — the horizontal row is *which surface*, the
+      vertical rail is *which period*, and the rail applies to both — and one
+      treatment would claim they were alternatives to each other.
+    - **The figures are still built above the seam, and that is still owed.**
+      Everything in `facets.ts` is derived in TypeScript from rows fetched for
+      another purpose, so every figure is bounded by the route's row ceiling and
+      cannot tell when it was truncated, and every one is over closed readings
+      only. An engine-side aggregate would have neither limitation. Recorded
+      rather than hidden, the way `latest.ts` records its N+1.

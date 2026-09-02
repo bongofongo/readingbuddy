@@ -30,6 +30,7 @@ import type {
   CalibreReportDto,
   CalibreStatusDto,
   CreatedNoteDto,
+  DayActivityDto,
   DeviceScanDto,
   FieldSourceDto,
   FlashcardDto,
@@ -887,6 +888,35 @@ const MOMENTS: MomentDto[] = [
  * - **Gaps** (no 2025-06 onward, nothing before 2024-11). Only months carrying
  *   an event come back; the empty ones are the client's to draw or to leave out.
  */
+/**
+ * The days behind some of the months above — the fixture the run panel needs.
+ *
+ * Only days carrying an event exist, which is the request's own rule, so the
+ * gaps here are the absences and the runs are what is left between them. Three
+ * shapes are stated on purpose:
+ *
+ * - **A run of five** (2025-03-04 … 03-08), the longest, and the one a reader
+ *   should see named.
+ * - **A run of two broken by one missing day** (2025-03-10, 03-11, then 03-13),
+ *   so a derivation that forgot to check adjacency reports six instead of five.
+ * - **A lone day** (2024-11-02). A run of one is not a run and must not tie.
+ *
+ * Every date here is far in the past, which matters: a run touching *today* is
+ * still running and `longestRunOf` refuses it. A fixture anchored near now would
+ * make that rule untestable and would change behaviour as the clock moved.
+ */
+const DAYS: DayActivityDto[] = [
+  { day: '2024-11-02', books: 1, minutes: null, pages: null },
+  { day: '2025-03-04', books: 1, minutes: 90, pages: 40 },
+  { day: '2025-03-05', books: 1, minutes: 60, pages: 30 },
+  { day: '2025-03-06', books: 2, minutes: 120, pages: 55 },
+  { day: '2025-03-07', books: 1, minutes: 30, pages: 12 },
+  { day: '2025-03-08', books: 1, minutes: 45, pages: 20 },
+  { day: '2025-03-10', books: 1, minutes: 25, pages: 10 },
+  { day: '2025-03-11', books: 1, minutes: 35, pages: 14 },
+  { day: '2025-03-13', books: 1, minutes: 20, pages: 8 },
+];
+
 const MONTHS: MonthActivityDto[] = [
   // **A year you read in and finished nothing** (item 47). It is a real shape —
   // `activity_by_month` reads `reading_events`, which a highlight or a note
@@ -1627,6 +1657,10 @@ export class FakeClient implements LibraryClient {
     const within = year === to.slice(0, 4) && from.endsWith('-01-01');
     const found: PeriodFigures = (within ? SUMMARIES[year] : undefined) ?? WHOLE_LIFE;
     return { range: { from, to }, ...this.#measured(found) };
+  }
+
+  async activityByDay(from: string, to: string): Promise<DayActivityDto[]> {
+    return DAYS.filter((d) => d.day >= from && d.day <= to).map((d) => this.#measured(d));
   }
 
   async activityByMonth(from: string, to: string): Promise<MonthActivityDto[]> {

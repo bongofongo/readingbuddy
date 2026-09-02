@@ -486,15 +486,45 @@ a selection predicate and item 44 put it in SQL. It is one call per card, which
 is right here and wrong for a wall across the library — that wall needs **item
 43** and this route is deliberately kept behind it.
 
-**The months are written as sentences, not as a stat block** (the layout
-rework). A grid of chips invites reading *down* a column, and a column of
-comparable numbers is a scoreboard one glance away. The figures are unchanged and
-still the engine's; what went is the grid that made them a series. **A month in
-which nothing was finished says nothing about finishing** — *Finished nothing.*
-is a deficit sentence wearing a fact. Which books closed in a month is one
+**`/life` is two tabs since entry 58, and the order of them is the argument.**
+*Timeline* is what the page opens on and the only thing it opens on; *Everything*
+is the full disclosure — rankings, distributions and comparisons across time — and
+a reader **goes** there. `$lib/life/views.ts` is the seam, shaped like `desk.ts`.
+What was refused before was not a number about your reading, it was being *met*
+with one, so drawing any of *Everything* on the timeline is what would break this.
+
+**Entry 58 lifted two bans and kept one condition.** Ranking is allowed on the
+second tab (authors, subjects, longest books, by size; ties alphabetical so the
+list cannot reshuffle on an unrelated edit). Self-comparison is allowed there too
+— the busiest month, the trend, the longest run — and that half undoes settled
+text in entries 23 and 28, so it keeps **entry 23's own condition**: a run is
+recognised only once it is **over**. `longestRunOf` refuses a run touching today.
+The floor is two days because that is what *consecutive* means. The word is
+*busiest*, never *best*. And what did **not** move: no goal, no target, no pace,
+nothing counting what is undone, and no figure on a control.
+
+**The months are the timeline, drawn as covers.** The prose sentence
+(*Finished Hollow Weather, Distant Bell…*) went and the jackets went from 40px to
+56px: a title is a string you have to read and a jacket is a thing you recognise
+without reading. Nothing became unreachable — each jacket links to its book and
+carries the title as its accessible name. **A month in which nothing was finished
+says nothing about finishing** — *Finished nothing.* is a deficit sentence wearing
+a fact — and a month with activity but no closed read keeps its row, its name and
+its figures, with no covers. Which books closed in a month is one
 `listReadingRows` with a `finished_in` span per year, placed by the reading's own
 `finished_at`: that is placing a date, not deriving a measure, which is the line
 the next rule draws.
+
+**`facets.ts` is derived above the seam and that is owed, not settled.** Every
+figure on the second tab is built in TypeScript from rows fetched for the months'
+sake, so each is bounded by the route's row ceiling, cannot tell when it was
+truncated, and covers closed readings only. An engine aggregate would have none
+of those limits. Written down rather than hidden, like `latest.ts`' N+1.
+
+**Two selection dialects share the page on purpose.** The tabs are `.choices`;
+the year rail keeps the left inset entry 57 left unchanged. Horizontal is *which
+surface*, vertical is *which period*, and the rail applies to both — one
+treatment would claim they were alternatives to each other.
 
 **The year rail comes from the months, not from `readingYears`.** The two answer
 different questions: `readingYears` is *which years a reading closed in*, right
