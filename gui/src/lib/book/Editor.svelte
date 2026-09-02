@@ -37,31 +37,44 @@
    * app telling you it did not capture your writing. The failure state below says
    * the same thing in words when a write is refused; this says it in the ordinary
    * case too, which is the case a reader is actually in.
+   *
+   * ## The connections came inside
+   *
+   * `Connections` used to be the page's right rail and is now drawn under this
+   * editor, because the rail's own justification was that the *Link to…* search
+   * is **an instrument acting on this box** rather than reference material beside
+   * it. An instrument belongs with the thing it acts on: it appears when a note
+   * is open, it is about *this* note without being told which, and it goes when
+   * the note does.
+   *
+   * The plumbing got shorter with it. The editor used to hand a writer out
+   * through `onready` so the page could give it to the rail; now it holds the
+   * writer itself and passes it one component down. Nothing above this file
+   * knows how the text is held, which was the point of the callback in the first
+   * place.
    */
-  import type { NoteDto, RatingDto, RatingScaleDto } from '$lib/api/bindings';
+  import type { HighlightDto, NoteDto, RatingDto, RatingScaleDto } from '$lib/api/bindings';
   import { client } from '$lib/api/client';
   import { noteKindLabel, ratingLabel, trimNumber } from '$lib/phrasing';
 
+  import Connections from './Connections.svelte';
   import { ratingSteps } from './rating';
 
   let {
     note,
+    cited,
     onreload,
     onclose,
-    onready,
+    onopennote,
+    onshowpassage,
   }: {
     note: NoteDto;
+    /** The passages this note quotes — handed straight down to `Connections`. */
+    cited: HighlightDto[];
     onreload: () => Promise<void>;
     onclose: () => void;
-    /**
-     * Hands the right rail a way to write into this box.
-     *
-     * The "Link to…" search is an **instrument acting on the editor**, not a
-     * list beside it, so the insertion has to reach the cursor. A callback out
-     * rather than a bound element in: the rail never touches the DOM node, and
-     * this file stays the only thing that knows how the text is held.
-     */
-    onready: (insert: ((text: string) => void) | null) => void;
+    onopennote: (id: number) => void;
+    onshowpassage: (id: number) => void;
   } = $props();
 
   let body = $state('');
@@ -122,12 +135,22 @@
       .catch(failed);
   });
 
-  // Handed out while this editor is mounted and taken back when it is not, so
-  // the rail cannot write into a box that has gone.
-  $effect(() => {
+  /**
+   * How `Connections` writes a `[[wikilink]]` into this box.
+   *
+   * `null` until the textarea is in the DOM, so the *Link to…* search cannot
+   * write into a box that is not there — the same guard the `onready` callback
+   * used to make across a component boundary, now a derived value inside the one
+   * component that owns the element.
+   */
+  const writer = $derived.by(() => {
+    // Bound to a local rather than closing over `box`: the closure re-reads the
+    // state on every call, so narrowing it at construction says nothing about
+    // what it holds when the link search fires — and svelte-check is right to
+    // say so. The element captured here is the one that was mounted when this
+    // writer was made, which is exactly the guarantee wanted.
     const el = box;
-    onready(el === null ? null : (text: string) => insert(el, text));
-    return () => onready(null);
+    return el === null ? null : (text: string) => insert(el, text);
   });
 
   /**
@@ -265,6 +288,17 @@
       {/if}
     </div>
   {/if}
+
+  <!-- The note's own material, under the note. It is not a rail and it is not
+       behind a button: it is what this note links to and quotes, which only
+       exists while this note is open. -->
+  <Connections
+    {note}
+    {cited}
+    oninsert={writer}
+    {onopennote}
+    {onshowpassage}
+  />
 </div>
 
 <style>
@@ -279,7 +313,7 @@
     margin-bottom: 0.7rem;
   }
   h2 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
     min-width: 0;
     overflow-wrap: anywhere;
     /* Space, and deliberately no rule under it: a rule here is what an editable
@@ -288,16 +322,14 @@
     padding-bottom: 0.35rem;
   }
   .kind {
-    font-size: 0.7rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     flex: none;
   }
   textarea {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     /* See the header: the largest body text in the app, not the smallest. */
-    font-size: 1rem;
+    font-size: var(--t-body);
     line-height: 1.75;
     width: 100%;
     min-height: 26rem;
@@ -317,12 +349,12 @@
   }
   .saved {
     margin: 0 auto 0 0;
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   button {
     font: inherit;
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     line-height: 1.4;
     color: var(--ink-dim);
     background: var(--bg-raised);
@@ -363,9 +395,7 @@
     margin-top: 1.4rem;
   }
   .rating-label {
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin-right: 0.3rem;
   }
@@ -373,17 +403,23 @@
     min-width: 2.2rem;
     text-align: center;
   }
-  /* The selected point is the one that has to read best — the same correction
-     `ShelfSwitch` records, where a white label on brass measured 2.95:1 while
-     its unselected sibling measured 5.61. */
+  /* The selected point is the one that has to read best. It used to be a brass
+     fill, on a surface whose *Save* button is also a brass fill — two of them a
+     few rems apart, one an action and one a value you already set. */
+  /* **Outlined, not filled** — the minimal pass's rule about the accent, which
+     `app.css` states in full: a *fill* is the one action a surface is for, and
+     everything else that is true right now is ink, a rule or an outline. A
+     toggle that fills goes on filling once per row, and a list with six brass
+     boxes down it has spent the colour that was supposed to point at one thing.
+     The outline is `--accent-text` rather than `--accent`: it carries a word,
+     and raw brass measures 2.78:1 on the light theme. */
   .point.on {
-    color: var(--accent-on);
-    background: var(--accent);
-    border-color: transparent;
+    color: var(--accent-text);
+    border-color: var(--accent-text);
     font-weight: 600;
   }
   .recorded {
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
   }
   .note {
     max-width: var(--column);

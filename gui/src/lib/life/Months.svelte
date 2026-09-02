@@ -144,7 +144,7 @@
     }
   }
   .month {
-    font-size: 0.92rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
   }
   .said {
@@ -152,7 +152,7 @@
   }
   p {
     margin: 0 0 0.2rem;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     overflow-wrap: anywhere;
   }
   .what {
@@ -162,7 +162,7 @@
   }
   .figures {
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   .figures span + span::before {
     content: ' · ';
@@ -176,7 +176,7 @@
   .absent {
     font-style: italic;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   .jackets {
     display: flex;

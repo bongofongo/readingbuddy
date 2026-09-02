@@ -27,6 +27,22 @@
    * makes by carrying a bool. A number of books-in-progress on a control is one
    * decision from the badge the axiom bans, and it would read as work
    * outstanding rather than as a place to go.
+   *
+   * ## It is `.choices` now, and it lives on `/cards/history`
+   *
+   * Two things changed in the minimal pass. The group moved with the wall to
+   * `/cards/history`, because quantity is that page's purpose and was never
+   * `/cards`'s — the reasoning is on the route.
+   *
+   * And the pills became the shell's underline treatment. Brass-filled pills
+   * were the loudest thing on the screen and there were **two lit at once**,
+   * side by side, saying different kinds of thing: a lit `All` is a filter and a
+   * lit `Finished` is an order. The label in front of each group is what tells
+   * them apart, and a fill that shouts equally on both was working against that
+   * label rather than with it. Underlined, the lit member reads as *this one of
+   * these* without competing with the group beside it — and the one accent fill
+   * this app allows per surface is spent on an action, which neither of these
+   * is.
    */
   import type { ReadingSortDto } from '$lib/api/bindings';
   import { SORTS, type WallScope } from './wall';
@@ -54,7 +70,7 @@
 <!-- Callback props, never `createEventDispatcher` (Svelte 5). -->
 <div class="controls">
   {#if years.length > 0 || anyOpen}
-    <nav aria-label="Which cards">
+    <nav class="choices" aria-label="Which cards">
       <!--
         **A visible label here too, and item 51 is what earned it.**
 
@@ -70,6 +86,7 @@
       -->
       <span class="what">Show</span>
       <button
+        class="choice"
         type="button"
         aria-pressed={scope.kind === 'all'}
         onclick={() => onscope({ kind: 'all' })}
@@ -78,6 +95,7 @@
       </button>
       {#each years as y (y)}
         <button
+          class="choice"
           type="button"
           aria-pressed={scope.kind === 'year' && scope.year === y}
           onclick={() => onscope({ kind: 'year', year: y })}
@@ -91,6 +109,7 @@
              reader is in rather than as *unfinished*, which would be the same
              fact framed as something owed. -->
         <button
+          class="choice"
           type="button"
           aria-pressed={scope.kind === 'open'}
           onclick={() => onscope({ kind: 'open' })}
@@ -101,7 +120,7 @@
     </nav>
   {/if}
 
-  <nav class="order" aria-label="Order">
+  <nav class="choices order" aria-label="Order">
     <!--
       **A visible label — and since item 51, both groups carry one.**
 
@@ -115,7 +134,7 @@
     -->
     <span class="what">Order</span>
     {#each SORTS as s (s)}
-      <button type="button" aria-pressed={sort === s} onclick={() => onsort(s)}>
+      <button class="choice" type="button" aria-pressed={sort === s} onclick={() => onsort(s)}>
         {readingSortLabel(s)}
       </button>
     {/each}
@@ -126,62 +145,32 @@
   .controls {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.6rem 1.6rem;
-    align-items: center;
-    margin: 0.4rem 0 1.6rem;
+    gap: var(--s-3) var(--s-5);
+    align-items: baseline;
+    margin: 0 0 var(--s-5);
   }
-  /* `/life`'s segmented switch, in the other place a small set of alternatives
-     is picked between. Deliberately still not promoted to `app.css`: the shelf's
-     `ShelfSwitch` is a component with its own behaviour, and these are buttons —
-     sharing the look is cheaper here than sharing a widget. */
-  nav {
-    display: flex;
-    gap: 0.3rem;
-    flex-wrap: wrap;
-    align-items: center;
-  }
+  /* The group's own label, in front of its members. `--t-micro` is the label
+     tier and this is the app's canonical use of it: a word naming what the
+     things after it are, never something read at length. */
   .what {
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
-    margin-right: 0.15rem;
   }
   /*
    * Pushed to the far side **only where there is a far side**.
    *
-   * The shelf's `band-head` arrangement, and it is what stops two pill groups
-   * 1.6rem apart reading as one control with two segments lit. But `margin-left:
-   * auto` survives the wrap: at 390px the order group landed alone on its own
-   * row, flush right, while the heading, the year pills, the prose and every
-   * card edge were flush left — stranded rather than deliberate, and with the
-   * two gold pills now diagonally adjacent and *closer* than the desktop
-   * reading relies on. Below the width where the two fit side by side they are
-   * simply two left-aligned rows, which the label above already tells apart.
+   * It is what stops two groups reading as one control with two members lit —
+   * less load-bearing than it was now that neither group is filled, and kept
+   * because the separation is still what the two labels rely on. But
+   * `margin-left: auto` survives the wrap: at 390px the order group landed alone
+   * on its own row, flush right, while the heading, the years, the prose and
+   * every card edge were flush left — stranded rather than deliberate. Below the
+   * width where the two fit side by side they are simply two left-aligned rows,
+   * which the label in front of each already tells apart.
    */
   @media (min-width: 40rem) {
     nav.order {
       margin-left: auto;
     }
-  }
-  nav button {
-    font: inherit;
-    font-size: 0.82rem;
-    padding: 0.25rem 0.7rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: transparent;
-    color: var(--ink-dim);
-    cursor: pointer;
-  }
-  nav button:hover {
-    color: var(--ink);
-  }
-  /* The label is `--accent-on` rather than white: item 26 measured white on
-     brass at 2.95:1, so the state whose only job is being visible was the harder
-     one to read. A dark label on the fill inverts that. */
-  nav button[aria-pressed='true'] {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-on);
-    font-weight: 600;
   }
 </style>

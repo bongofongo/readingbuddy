@@ -79,6 +79,12 @@ const PLACES: [RegExp, string][] = [
   [/^\/library$/, 'Library'],
   [/^\/notes$/, 'Notes'],
   [/^\/cards$/, 'Cards'],
+  // `/cards/history` before `/cards` would be redundant — the patterns are
+  // anchored, so order is not doing any work here — but the entry is required:
+  // the wall moved there in the minimal pass, and without a row of its own a
+  // book reached from the wall would offer *Back* rather than the place it came
+  // from. It is worded as the door that leads to it.
+  [/^\/cards\/history$/, 'Every card'],
   [/^\/life$/, 'Reading life'],
   [/^\/devices$/, 'Devices'],
   [/^\/book\/\d+\/cards$/, 'The cards'],

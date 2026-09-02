@@ -368,7 +368,7 @@
     min-width: 0;
   }
   .ways h3 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
   }
   .ways header {
     margin-bottom: 0.5rem;
@@ -385,7 +385,7 @@
     margin: 0 0 1rem;
     padding: 0.5rem 0.75rem;
     border-left: 2px solid var(--accent);
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     max-width: var(--column);
   }
 </style>

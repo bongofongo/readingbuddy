@@ -124,7 +124,7 @@
     min-width: 0;
   }
   .title {
-    font-size: 0.76rem;
+    font-size: var(--t-micro);
     line-height: 1.3;
     /* Two lines' worth of box whether or not the title fills it, so the authors
        under a row of tiles share a baseline. Without it a row has its captions
@@ -141,7 +141,7 @@
     overflow: hidden;
   }
   .authors {
-    font-size: 0.7rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     white-space: nowrap;
     overflow: hidden;

@@ -107,7 +107,7 @@
   .by {
     grid-column: 1;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -116,7 +116,7 @@
     grid-column: 2;
     grid-row: 1;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -131,7 +131,7 @@
   .hint {
     margin: 0;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   .hint a {
     color: var(--accent-text);

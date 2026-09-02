@@ -112,19 +112,26 @@
       </div>
     {/if}
 
-    <div class="acts">
-      <!-- The jacket and the title lead into reading mode, so these two are the
-           other door: the book's own page, and that page opened on a note.
-           Neither is a task and neither counts.
+    <!--
+      One door, and it used to be two.
 
-           `?compose=1` opens the book page's centre column on an empty note. It
-           is a **view state in a URL**, not a write: nothing is created until
-           the reader presses the button in front of them, which is the same rule
-           `?note=` follows. A link that minted a note on navigation would put a
-           row in the vault every time somebody middle-clicked. -->
-      <a href={`/book/${book.id}?compose=1`} class="act">Write</a>
-      <a href={`/book/${book.id}`} class="act">The book</a>
-    </div>
+      The jacket and the title already lead into reading mode, so a preview is a
+      link before it is anything else. It also carried *Write* (`?compose=1`) and
+      *The book* — which is three destinations per preview, and the entrance
+      draws one preview per open reading. On a real library that was **eighteen
+      controls on the calmest surface in the app**, over a band whose whole brief
+      is *less happening and more whitespace*.
+
+      *Write* is the one that went. It is not a lesser act — it is one click
+      further along a path this link already starts, and the book page puts it in
+      the row at the top. Nothing that was reachable stopped being reachable;
+      what went is the app asking, nine times down the page, whether you would
+      like to write something.
+
+      `?compose=1` still works and is still a view state in a URL rather than a
+      write, which is what a moment's link relies on.
+    -->
+    <a class="act" href={`/book/${book.id}`}>The book</a>
   </div>
 </article>
 
@@ -151,7 +158,7 @@
     min-width: 0;
   }
   h3 {
-    font-size: 0.95rem;
+    font-size: var(--t-fine);
     line-height: 1.3;
     font-weight: 600;
     overflow-wrap: anywhere;
@@ -164,7 +171,7 @@
     font-style: italic;
   }
   .by {
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin: 0.15rem 0 0;
   }
@@ -181,7 +188,7 @@
     background: var(--accent);
   }
   .where {
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin: 0.25rem 0 0;
   }
@@ -190,13 +197,13 @@
   }
   .mark .band-title {
     display: block;
-    font-size: 0.68rem;
+    font-size: var(--t-micro);
     margin-bottom: 0.2rem;
   }
   blockquote,
   .note-title {
     margin: 0;
-    font-size: 0.84rem;
+    font-size: var(--t-fine);
     line-height: 1.5;
     font-style: italic;
     overflow-wrap: anywhere;
@@ -214,14 +221,11 @@
   blockquote::after {
     content: '”';
   }
-  .acts {
-    display: flex;
-    gap: 0.9rem;
-    margin-top: 0.7rem;
-    font-size: 0.78rem;
-  }
+
+  /* `app.css`'s quiet control, as a link: only the placement is this file's. */
   .act {
-    color: var(--ink-dim);
+    display: inline-block;
+    margin-top: var(--s-2);
   }
   .act:hover {
     color: var(--accent-text);

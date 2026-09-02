@@ -208,7 +208,7 @@
   }
   nav button {
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     text-align: start;
     padding: 0.25rem 0.5rem;
     /* Stated on both states, so selecting a year does not move the column. */

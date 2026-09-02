@@ -348,12 +348,12 @@
   }
   blockquote {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--t-fine);
     line-height: 1.65;
     overflow-wrap: anywhere;
   }
   .where {
-    font-size: 0.75rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin: 0.25rem 0 0;
   }
@@ -380,7 +380,7 @@
      move, said in the reader's own voice. Smaller than the owner notes so it
      stays quieter than what was written. */
   .kept {
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     color: var(--ink);
     margin: 0.5rem 0 0;
     overflow-wrap: anywhere;
@@ -388,15 +388,13 @@
   /* Who wrote it, said in a word rather than implied by a shade. Two grey
      paragraphs is the state this screen exists to end. */
   .said {
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     margin: 0.5rem 0 0;
     overflow-wrap: anywhere;
   }
   .who {
     display: inline-block;
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: var(--t-micro);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     padding: 0 0.35rem;
@@ -454,7 +452,7 @@
   }
   button {
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--t-micro);
     line-height: 1.4;
     color: var(--ink-dim);
     background: var(--bg-raised);
@@ -474,10 +472,17 @@
   }
   /* A cited passage says so on the control that undoes it, so the state and the
      way out of it are one thing. */
+  /* **Outlined, not filled** — the minimal pass's rule about the accent, which
+     `app.css` states in full: a *fill* is the one action a surface is for, and
+     everything else that is true right now is ink, a rule or an outline. A
+     toggle that fills goes on filling once per row, and a list with six brass
+     boxes down it has spent the colour that was supposed to point at one thing.
+     The outline is `--accent-text` rather than `--accent`: it carries a word,
+     and raw brass measures 2.78:1 on the light theme. */
   button.on {
-    color: var(--accent-on);
-    background: var(--accent);
-    border-color: transparent;
+    color: var(--accent-text);
+    border-color: var(--accent-text);
+    font-weight: 600;
   }
   button.quiet {
     background: none;
@@ -486,7 +491,7 @@
   }
   textarea {
     font: inherit;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     width: 100%;
     margin-top: 0.5rem;
     color: var(--ink);

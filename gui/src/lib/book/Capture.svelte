@@ -214,12 +214,12 @@
    * is not a heading, so it is dressed as neither.
    */
   .lede {
-    font-size: 0.75rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   input {
     font: inherit;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     width: 14ch;
     color: var(--ink);
     background: var(--bg-raised);
@@ -235,7 +235,7 @@
   }
   button {
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--t-micro);
     line-height: 1.4;
     color: var(--ink-dim);
     background: var(--bg-raised);
@@ -282,7 +282,7 @@
     font-weight: inherit;
   }
   .outcome {
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin: 0.15rem 0 0;
   }

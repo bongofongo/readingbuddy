@@ -149,12 +149,12 @@
 <style>
   .back {
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     display: inline-block;
     margin-bottom: 1.1rem;
   }
   h1 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
     color: var(--ink-dim);
     font-weight: 500;
     margin-bottom: 1.4rem;

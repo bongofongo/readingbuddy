@@ -215,9 +215,24 @@
 {/if}
 
 <style>
+  /*
+   * The box sits above the list it searches, and it is deliberately narrower
+   * than the results under it.
+   *
+   * It lived in the book page's right rail until the minimal pass, where the
+   * rail's width was the constraint. On the work surface there is no such
+   * constraint, and a full-measure input above a list of passages reads as the
+   * page's subject rather than as an instrument on it. 26rem is enough for a
+   * phrase and small enough to stay a tool; the hits below take the whole
+   * column, because a snippet in a 26rem gutter is the thing this list exists
+   * not to be.
+   */
   .search {
-    margin-top: 1.6rem;
-    max-width: var(--column);
+    margin-bottom: var(--s-5);
+    max-width: var(--passages);
+  }
+  label {
+    max-width: 26rem;
   }
   label {
     display: block;
@@ -227,15 +242,13 @@
      what they are searching. */
   .what {
     display: block;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     margin-bottom: 0.3rem;
   }
   input {
     font: inherit;
-    font-size: 0.92rem;
+    font-size: var(--t-fine);
     width: 100%;
     color: var(--ink);
     background: var(--bg-raised);
@@ -254,7 +267,7 @@
   ul {
     list-style: none;
     padding: 0;
-    margin: 0.7rem 0 0;
+    margin: var(--s-3) 0 0;
   }
   li {
     border-bottom: 1px solid var(--line);
@@ -269,7 +282,7 @@
     width: 100%;
     text-align: start;
     font: inherit;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     background: none;
     border: 0;
     padding: 0.5rem 0.1rem;
@@ -281,9 +294,7 @@
   }
   .kind {
     grid-row: 1 / span 2;
-    font-size: 0.72rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     padding-top: 0.1rem;
   }
@@ -301,7 +312,7 @@
   }
   .whence {
     grid-column: 2;
-    font-size: 0.72rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     min-width: 0;
     overflow-wrap: anywhere;
