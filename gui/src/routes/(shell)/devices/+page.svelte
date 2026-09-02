@@ -257,7 +257,22 @@
 
   <section>
     <h2 class="band-title">Your readers</h2>
-    {#if away.length === 0}
+    {#if list.length === 0}
+      <!-- `away.length === 0` is true of two different libraries — one where
+           every paired reader happens to be plugged in, and one where nothing
+           has ever been paired — and the sentence below was written for the
+           first. Read against *Nothing is plugged in.* directly above it, the
+           second reads as a contradiction. So the empty case gets its own
+           sentence, and keeps the durable half of the other one.
+
+           It names the move rather than the absence — no *yet*, which the axiom
+           bans a few lines down and which turns an empty shelf into something
+           outstanding. -->
+      <p class="hint">
+        A reader becomes one of yours when readingbuddy's plugin goes on it. Once it is paired it is
+        listed here even when it is in a drawer — pairing is a relationship, not a cable.
+      </p>
+    {:else if away.length === 0}
       <p class="hint">
         Every reader readingbuddy has been introduced to is plugged in right now. One in a drawer
         would still be listed here — pairing is a relationship, not a cable.
