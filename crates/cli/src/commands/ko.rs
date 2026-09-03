@@ -585,6 +585,25 @@ pub async fn plugin_status(engine: &Engine, path: Option<&Path>) -> Result<()> {
                     None => "not since readingbuddy started recording it".to_string(),
                 }
             );
+            // **A push is not a sync, and this is the line that keeps that
+            // honest rather than merely true.** `last_synced_at` deliberately
+            // does not move when a reader pushes — a push carries what its
+            // reading history holds and a sync is the whole volume — so with
+            // only the line above, a reader that had just sent 491 highlights
+            // over the LAN reported *nothing brought across, ever*, which reads
+            // as a failure of the thing that had just worked. The column was
+            // already written; nothing outside `ko listen`'s own live output
+            // had ever read it.
+            if let Some(t) = d.last_wireless_at {
+                println!(
+                    "      over the air: {}{}",
+                    crate::render::date(t),
+                    match d.last_lan_addr.as_deref() {
+                        Some(addr) => format!(", from {addr}"),
+                        None => String::new(),
+                    }
+                );
+            }
         }
         println!();
         println!("    plug one in : readingbuddy ko sync <mount> --all");
@@ -738,7 +757,16 @@ pub async fn plugin_install(engine: &Engine, path: Option<&Path>, yes: bool) -> 
             if others == 1 { "it" } else { "them" }
         );
     }
-    println!("the reader has no address for readingbuddy yet, so it sends nothing.");
+    // 15a's line here was "the reader has no address for readingbuddy yet, so
+    // it sends nothing", which was true while there was no listener to name and
+    // is now merely alarming: the plugin finds this computer by broadcast and by
+    // hostname, and needs no address written into it. What is still true — and
+    // is the whole posture — is that nothing crosses the LAN unless both ends
+    // are asked, so say *that*, and say where the two asks are.
+    println!(
+        "nothing is sent by itself. open the door here with `readingbuddy ko listen`, \n\
+         then on the reader: Tools -> readingbuddy -> Push."
+    );
     Ok(())
 }
 

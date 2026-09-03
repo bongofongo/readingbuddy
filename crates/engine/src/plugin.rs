@@ -59,7 +59,15 @@ pub const PLUGIN_DIR_NAME: &str = "readingbuddy.koplugin";
 /// The version of the plugin this binary carries. An integer, because
 /// `_meta.lua` is compared with `>` and nothing about a plugin on a reader
 /// needs semver's ordering rules.
-pub const PLUGIN_VERSION: i64 = 1;
+///
+/// **2 since item 15b**, which rewrote `main.lua` from 73 lines to the network
+/// half. Bumping it is not bookkeeping: a reader carrying 15a's plugin is a
+/// reader that cannot push, and left at 1 every surface we have — `ko plugin
+/// status`, the devices page — reports it *up to date* and tells the user there
+/// is nothing to do. The number is the only thing that can tell those two
+/// plugins apart, since neither the manifest nor the menu is read from off the
+/// device.
+pub const PLUGIN_VERSION: i64 = 2;
 
 /// Written by us at install; read by the plugin at startup.
 const PAIRING_FILE: &str = "pairing.lua";
@@ -515,6 +523,119 @@ fn write_pairings(dir: &Path, computers: &[StoredPairing]) -> Result<()> {
     Ok(())
 }
 
+/// One computer's last-known address, as `endpoint.lua` records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredEndpoint {
+    device_id: String,
+    host: String,
+    /// The **TCP** port a listener last announced, and `0` for "not known".
+    ///
+    /// Zero is what an install writes, and it costs nothing: the cached rung
+    /// probes the *rendezvous* port like every other rung, and the TCP port is
+    /// announced in the reply. The field is kept because the plugin's own writer
+    /// has it and the two writers must produce the same bytes.
+    port: u16,
+    seen_at: i64,
+}
+
+/// Read `endpoint.lua`, through the same sandbox every other on-device file
+/// goes through. Absent, unreadable and empty are one answer: no endpoints.
+fn read_endpoints(dir: &Path) -> Result<Vec<StoredEndpoint>> {
+    let path = dir.join(ENDPOINT_FILE);
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return Ok(Vec::new());
+    };
+    let lua = sandboxed_lua()?;
+    let Ok(root) = eval_table(&lua, &body, ENDPOINT_FILE) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for pair in root.pairs::<String, mlua::Value>().flatten() {
+        let (device_id, mlua::Value::Table(t)) = pair else {
+            continue;
+        };
+        let Some(host) = get_str(&t, "host").filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        out.push(StoredEndpoint {
+            device_id,
+            host,
+            port: get_int(&t, "port").unwrap_or(0).clamp(0, 65535) as u16,
+            seen_at: get_int(&t, "seen_at").unwrap_or(0),
+        });
+    }
+    // Sorted for `serialiseEndpoints`' reason, and because `pairs` has no order.
+    out.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    Ok(out)
+}
+
+/// Write the whole file back, **byte-for-byte as the plugin's own
+/// `serialiseEndpoints` would write it**.
+///
+/// That is not tidiness. This file now has two writers — the device, after a
+/// successful discovery, and the installer, over the cable — and if they
+/// disagreed about spacing then every install would rewrite what the device
+/// wrote and every push would rewrite what the installer wrote, which on a
+/// FAT32 volume is a write nobody asked for on every connection. The round-trip
+/// is asserted against the plugin's own writer under mlua.
+fn write_endpoints(dir: &Path, endpoints: &[StoredEndpoint]) -> Result<()> {
+    let mut body = String::from(
+        "-- Written by the readingbuddy plugin on this device.\n\
+         -- Where each paired computer was last actually reached. Safe to delete:\n\
+         -- it is a cache, and discovery rebuilds it.\n\
+         return {\n",
+    );
+    let mut sorted: Vec<&StoredEndpoint> = endpoints.iter().collect();
+    sorted.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    for e in sorted {
+        body.push_str(&format!(
+            "    [{}] = {{ host = {}, port = {}, seen_at = {} }},\n",
+            lua_quote(&e.device_id),
+            lua_quote(&e.host),
+            e.port,
+            e.seen_at
+        ));
+    }
+    body.push_str("}\n");
+    std::fs::write(dir.join(ENDPOINT_FILE), body)?;
+    Ok(())
+}
+
+/// This computer's address on the network it would be reached over.
+///
+/// **A UDP socket that connects and sends nothing.** `connect` on a datagram
+/// socket only picks a route, so this asks the kernel *which of my addresses
+/// would be the source if I talked to the world* without a packet, a
+/// dependency, or an interface-enumeration crate. The literal is TEST-NET-1
+/// (RFC 5737), which exists to be unroutable — nothing is ever sent to it, and
+/// naming a real host here would put someone else's address in our source for
+/// no reason.
+///
+/// `None` when there is no route (a laptop with the wifi off, which is an
+/// ordinary state to install a plugin in) or when the answer is loopback. Both
+/// mean *do not stamp*: a wrong address is worse than none, since the reader
+/// would spend its first rung probing it before it ever reached the others.
+///
+/// **Read by the facade and passed in, never called from `install`.** That is
+/// `paired_at`'s rule one field over: ambient state read inside the function is
+/// state no test can set, and this one is worse than the clock — a test would
+/// stamp whatever address the machine running it happens to have, so it would
+/// pass on a laptop, pass differently on a runner, and assert nothing on either.
+pub fn this_lan_address() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("192.0.2.1:9").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    match ip {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => {
+            Some(v4.to_string())
+        }
+        // Deliberately IPv4 only: the plugin's ladder derives a `/24` broadcast
+        // address from a cached host by matching four dotted decimals, and
+        // `socket.udp4()` is what carries every probe.
+        _ => None,
+    }
+}
+
 /// What to call this computer in the reader's menu.
 ///
 /// The hostname, because it is the name the *router* already knows this machine
@@ -640,6 +761,7 @@ pub fn install(
     token: &str,
     paired_at: i64,
     name: Option<&str>,
+    endpoint: Option<&str>,
 ) -> Result<InstallReport> {
     let status = inspect(mount)?;
     refuse_if_obstructed(&status)?;
@@ -684,6 +806,37 @@ pub fn install(
     write_pairings(dir, &computers)?;
     written.push(MANIFEST_FILE.to_string());
     written.push(PAIRING_FILE.to_string());
+
+    // **Stamp where this computer can be reached, if we can tell.**
+    //
+    // The spec asked for exactly this — *re-stamp the endpoint on every USB
+    // connection* — and it is worth more than it looks, because of what was
+    // measured on a Kindle: a broadcast probe's reply is dropped by the
+    // device's own firewall and a *unicast* probe's reply is not. A stamped
+    // endpoint makes rung 1 unicast, so the first push after a cable works on a
+    // stock reader on any network, with no hostname to resolve and no rule to
+    // punch. Without it the first push is a broadcast, which is the one rung
+    // that needs the firewall's cooperation.
+    //
+    // It is a *hint and not a fact*: the device overwrites it with what it
+    // actually reached, which is the file's original meaning, and a wrong guess
+    // costs one timed-out rung. That is why a missing address is not an error —
+    // installing with the wifi off is ordinary.
+    if let Some(host) = endpoint.filter(|h| !h.is_empty()) {
+        let mut endpoints = read_endpoints(dir)?;
+        let ours = StoredEndpoint {
+            device_id: device_id.to_string(),
+            host: host.to_string(),
+            port: 0,
+            seen_at: paired_at,
+        };
+        match endpoints.iter().position(|e| e.device_id == device_id) {
+            Some(i) => endpoints[i] = ours,
+            None => endpoints.push(ours),
+        }
+        write_endpoints(dir, &endpoints)?;
+        written.push(ENDPOINT_FILE.to_string());
+    }
     written.sort();
 
     Ok(InstallReport {
@@ -795,7 +948,12 @@ mod tests {
     }
 
     fn install_here(m: &Path) -> InstallReport {
-        install(m, "dev-1", "tok-1", 1_700_000_000, Some("desk")).unwrap()
+        install(m, "dev-1", "tok-1", 1_700_000_000, Some("desk"), None).unwrap()
+    }
+
+    /// An install that also stamps where this computer can be reached.
+    fn install_here_from(m: &Path, host: &str) -> InstallReport {
+        install(m, "dev-1", "tok-1", 1_700_000_000, Some("desk"), Some(host)).unwrap()
     }
 
     fn refusal(e: crate::error::EngineError) -> PluginRefusal {
@@ -820,9 +978,69 @@ mod tests {
         assert!(dir_of(tmp.path()).join("main.lua").is_file());
         assert_eq!(
             report.written,
-            vec!["_meta.lua", "installed.lua", "main.lua", "pairing.lua"]
+            vec!["_meta.lua", "installed.lua", "main.lua", "pairing.lua"],
+            "with no address to offer, no endpoint is written"
         );
         assert_eq!(report.upgraded_from, None);
+    }
+
+    /// The stamped endpoint, and why an install writes a file it does not own.
+    ///
+    /// Measured on a Kindle: the reply to a *broadcast* probe is dropped by the
+    /// device's firewall and the reply to a *unicast* one is not. A stamped
+    /// address is what makes the reader's first rung unicast, so the first push
+    /// after a cable needs neither a resolvable hostname nor a firewall rule.
+    /// It is a hint the device is free to overwrite with what it really
+    /// reached, which is the file's original meaning.
+    #[test]
+    fn an_install_stamps_where_this_computer_can_be_reached() {
+        let tmp = mount();
+        let report = install_here_from(tmp.path(), "192.168.1.63");
+        let dir = dir_of(tmp.path());
+
+        assert!(report.written.contains(&ENDPOINT_FILE.to_string()));
+        assert_eq!(
+            read_endpoints(&dir).unwrap(),
+            vec![StoredEndpoint {
+                device_id: "dev-1".into(),
+                host: "192.168.1.63".into(),
+                // Not known over a cable, and not needed: every rung probes the
+                // rendezvous port and the TCP port arrives in the reply.
+                port: 0,
+                seen_at: 1_700_000_000,
+            }]
+        );
+
+        // It is unhashed and unrecognised-free, or the installer it was written
+        // by would refuse the next install *and* the next uninstall.
+        let status = inspect(tmp.path()).unwrap();
+        assert!(status.unrecognised.is_empty(), "{status:?}");
+        assert!(status.modified.is_empty(), "{status:?}");
+        assert!(!status.is_obstructed());
+    }
+
+    /// The two writers of `endpoint.lua` must produce the same bytes.
+    ///
+    /// The installer writes it over the cable and the plugin rewrites it after
+    /// every successful discovery. If their formatting differed, each would
+    /// undo the other's file on every connection — a pointless write to a FAT32
+    /// volume every time, and a diff that never settles.
+    #[test]
+    fn both_writers_of_the_endpoint_cache_agree_byte_for_byte() {
+        let tmp = mount();
+        install_here_from(tmp.path(), "192.168.1.63");
+        let ours = std::fs::read_to_string(dir_of(tmp.path()).join(ENDPOINT_FILE)).unwrap();
+
+        let theirs = run_plugin_lua(
+            r#"return RB.serialiseEndpoints({
+                   ["dev-1"] = { host = "192.168.1.63", port = 0, seen_at = 1700000000 },
+               })"#,
+        )
+        .unwrap();
+
+        // `run_plugin_lua` hands back the string the plugin built; the file has
+        // the trailing newline `serialiseEndpoints` ends its last line with.
+        assert_eq!(ours.trim_end(), theirs.trim_end());
     }
 
     #[test]
@@ -844,7 +1062,7 @@ mod tests {
     #[test]
     fn an_ordinary_directory_is_refused() {
         let plain = tempfile::tempdir().unwrap();
-        let err = refusal(install(plain.path(), "d", "t", 0, None).unwrap_err());
+        let err = refusal(install(plain.path(), "d", "t", 0, None, None).unwrap_err());
         assert!(matches!(err, PluginRefusal::NotAKoreaderMount { .. }));
         assert_eq!(
             std::fs::read_dir(plain.path()).unwrap().count(),
@@ -864,7 +1082,7 @@ mod tests {
         // The target really is a KOReader install: the refusal is about the
         // path we were handed, not about what is at the end of it.
         assert!(is_koreader_mount(&link));
-        let err = refusal(install(&link, "d", "t", 0, None).unwrap_err());
+        let err = refusal(install(&link, "d", "t", 0, None, None).unwrap_err());
         assert!(matches!(err, PluginRefusal::MountIsASymlink { .. }));
         assert!(!dir_of(tmp.path()).exists());
     }
@@ -887,7 +1105,7 @@ mod tests {
         );
         write_manifest(&dir, PLUGIN_VERSION + 1, &manifest).unwrap();
 
-        let err = refusal(install(tmp.path(), "d", "t", 0, None).unwrap_err());
+        let err = refusal(install(tmp.path(), "d", "t", 0, None, None).unwrap_err());
         assert_eq!(
             err,
             PluginRefusal::NewerAlreadyInstalled {
@@ -915,7 +1133,7 @@ mod tests {
         assert!(status.is_obstructed());
 
         for err in [
-            install(tmp.path(), "d", "t", 0, None).unwrap_err(),
+            install(tmp.path(), "d", "t", 0, None, None).unwrap_err(),
             uninstall(tmp.path()).unwrap_err(),
         ] {
             assert!(matches!(refusal(err), PluginRefusal::Modified { .. }));
@@ -966,7 +1184,15 @@ mod tests {
     fn an_upgrade_reports_what_it_replaced() {
         let tmp = mount();
         install_here(tmp.path());
-        let again = install(tmp.path(), "dev-1", "tok-1", 1_700_000_001, Some("desk")).unwrap();
+        let again = install(
+            tmp.path(),
+            "dev-1",
+            "tok-1",
+            1_700_000_001,
+            Some("desk"),
+            None,
+        )
+        .unwrap();
         assert_eq!(again.upgraded_from, Some(PLUGIN_VERSION));
         assert_eq!(
             inspect(tmp.path()).unwrap().device_id.as_deref(),
@@ -1001,7 +1227,15 @@ mod tests {
     #[test]
     fn the_pairing_we_write_reads_back() {
         let tmp = mount();
-        install(tmp.path(), "abc123", "s3cret", 1_700_000_000, Some("desk")).unwrap();
+        install(
+            tmp.path(),
+            "abc123",
+            "s3cret",
+            1_700_000_000,
+            Some("desk"),
+            None,
+        )
+        .unwrap();
         let dir = dir_of(tmp.path());
         let src = std::fs::read_to_string(dir.join(PAIRING_FILE)).unwrap();
 
@@ -1031,8 +1265,24 @@ mod tests {
     #[test]
     fn a_second_computer_does_not_steal_the_reader_from_the_first() {
         let tmp = mount();
-        install(tmp.path(), "dev-a", "tok-a", 1_700_000_000, Some("laptop")).unwrap();
-        install(tmp.path(), "dev-b", "tok-b", 1_700_000_100, Some("desktop")).unwrap();
+        install(
+            tmp.path(),
+            "dev-a",
+            "tok-a",
+            1_700_000_000,
+            Some("laptop"),
+            None,
+        )
+        .unwrap();
+        install(
+            tmp.path(),
+            "dev-b",
+            "tok-b",
+            1_700_000_100,
+            Some("desktop"),
+            None,
+        )
+        .unwrap();
 
         let dir = dir_of(tmp.path());
         let stored = read_stored_pairings(&dir).unwrap();
@@ -1052,7 +1302,15 @@ mod tests {
 
         // And re-installing the first rewrites *its* entry in place, so the
         // menu's order does not shuffle under the user on every upgrade.
-        install(tmp.path(), "dev-a", "tok-a", 1_700_000_000, Some("laptop2")).unwrap();
+        install(
+            tmp.path(),
+            "dev-a",
+            "tok-a",
+            1_700_000_000,
+            Some("laptop2"),
+            None,
+        )
+        .unwrap();
         let again = read_stored_pairings(&dir).unwrap();
         assert_eq!(
             again
@@ -1097,6 +1355,7 @@ mod tests {
             "old-token",
             1_690_000_000,
             Some("desk"),
+            None,
         )
         .unwrap();
         let stored = read_stored_pairings(&dir).unwrap();
@@ -1143,7 +1402,15 @@ mod tests {
     fn a_name_that_could_break_the_file_is_escaped() {
         let tmp = mount();
         let hostile = "o\"liver's\\box\nnewline";
-        install(tmp.path(), "dev-1", "tok-1", 1_700_000_000, Some(hostile)).unwrap();
+        install(
+            tmp.path(),
+            "dev-1",
+            "tok-1",
+            1_700_000_000,
+            Some(hostile),
+            None,
+        )
+        .unwrap();
         let stored = read_stored_pairings(&dir_of(tmp.path())).unwrap();
         assert_eq!(stored[0].name.as_deref(), Some(hostile));
     }
@@ -1164,12 +1431,44 @@ mod tests {
         assert!(status.unrecognised.is_empty(), "{status:?}");
         assert!(!status.is_obstructed());
 
-        // An install leaves it alone: it is the device's learned state and an
-        // upgrade is not a reason to forget where we live.
+        // An install with no address to offer leaves it exactly alone: it is
+        // the device's learned state, and an upgrade is not a reason to forget
+        // where we live.
         install_here(tmp.path());
         assert_eq!(
             std::fs::read_to_string(dir.join(ENDPOINT_FILE)).unwrap(),
             learned
+        );
+
+        // An install *with* one rewrites our own entry and leaves every other
+        // computer's untouched — `pairing.lua`'s rule, for the same reason: two
+        // computers share this file and only one of them is holding the cable.
+        install(
+            tmp.path(),
+            "dev-2",
+            "tok-2",
+            1_700_000_500,
+            Some("laptop"),
+            Some("192.168.1.63"),
+        )
+        .unwrap();
+        let after = read_endpoints(&dir).unwrap();
+        assert_eq!(
+            after,
+            vec![
+                StoredEndpoint {
+                    device_id: "dev-1".into(),
+                    host: "192.168.1.20".into(),
+                    port: 51861,
+                    seen_at: 0,
+                },
+                StoredEndpoint {
+                    device_id: "dev-2".into(),
+                    host: "192.168.1.63".into(),
+                    port: 0,
+                    seen_at: 1_700_000_500,
+                },
+            ]
         );
 
         // An uninstall takes it, because "uninstall is exact" cannot leave
@@ -1204,11 +1503,66 @@ mod tests {
             lua.create_function(move |_, _: mlua::MultiValue| Ok(s.clone()))?,
         )?;
         stub.set_metatable(Some(meta));
+
+        // Two modules answer for real, and the reason is the bug this harness
+        // did not catch for a release: `gettext` and `ffi/util.template` are
+        // what every user-visible string in the plugin passes through, so a
+        // stub that swallows them turns a menu label into an opaque table and
+        // makes "the menu built" unassertable. Answering them properly is what
+        // lets a test read the labels a person would see.
+        let gettext = lua.create_function(|_, s: String| Ok(s))?;
+        let ffi_util = lua.create_table()?;
+        ffi_util.set(
+            "template",
+            lua.create_function(|_, (fmt, args): (String, mlua::Variadic<String>)| {
+                let mut out = fmt;
+                for (i, a) in args.iter().enumerate() {
+                    out = out.replace(&format!("%{}", i + 1), a);
+                }
+                Ok(out)
+            })?,
+        )?;
+
         let s = stub.clone();
         lua.globals().set(
             "require",
-            lua.create_function(move |_, _: String| Ok(s.clone()))?,
+            lua.create_function(move |lua, name: String| match name.as_str() {
+                "gettext" => lua.globals().get::<mlua::Value>("__rb_gettext"),
+                "ffi/util" => lua.globals().get::<mlua::Value>("__rb_ffi_util"),
+                "ui/widget/container/widgetcontainer" => {
+                    lua.globals().get::<mlua::Value>("__rb_widget")
+                }
+                _ => Ok(mlua::Value::Table(s.clone())),
+            })?,
         )?;
+        lua.globals().set("__rb_gettext", gettext)?;
+        lua.globals().set("__rb_ffi_util", ffi_util)?;
+
+        // A third module answers for real, and for a subtler reason. The plugin
+        // is `WidgetContainer:extend{...}`, so under the swallow-everything stub
+        // the *module itself* is that stub — and a stub whose `__index` answers
+        // every key means `self.window_server` is never nil, so `windowOpen()`
+        // is always true and the menu under test is not the menu on the device.
+        // Six lines of real `extend`/`new` make the plugin a plain table again,
+        // where an unset field reads as nil the way it does on a reader.
+        let widget: mlua::Value = lua
+            .load(
+                r#"local W = {}
+                   function W:extend(t)
+                       t = t or {}
+                       setmetatable(t, { __index = self })
+                       return t
+                   end
+                   function W:new(o)
+                       o = o or {}
+                       setmetatable(o, { __index = self })
+                       if o.init then o:init() end
+                       return o
+                   end
+                   return W"#,
+            )
+            .eval()?;
+        lua.globals().set("__rb_widget", widget)?;
 
         let main = FILES.iter().find(|(n, _)| *n == "main.lua").unwrap().1;
         let module: mlua::Table = lua.load(main).set_name("main.lua").eval()?;
@@ -1237,11 +1591,144 @@ mod tests {
         }
     }
 
+    /// The menu a paired reader actually draws, built from a real `pairing.lua`.
+    ///
+    /// **"Every shipped file compiles" is not "the entry appears", and the gap
+    /// between them is one release wide.** 15b shipped a `main.lua` whose menu
+    /// loop was `for _, entry in ipairs(self.pairings)` — `_` is gettext, bound
+    /// at the top of the module, and the next line calls it. Every gate this
+    /// repo had was green: it compiles under mlua, it compiles under LuaJIT,
+    /// `normalisePairings` and `ladder` both pass. On the device the menu
+    /// vanished from Tools entirely, because the throw happens while KOReader
+    /// is *building* the menu and a paired reader is the only case that runs
+    /// the loop at all. So the gate has to instantiate the plugin and ask it
+    /// for its menu, which is what this does.
+    #[test]
+    fn the_menu_builds_on_a_paired_reader() {
+        let tmp = mount();
+        install(
+            tmp.path(),
+            "dev-a",
+            "tok-a",
+            1_700_000_000,
+            Some("laptop"),
+            None,
+        )
+        .unwrap();
+        let dir = dir_of(tmp.path());
+
+        // `self.path` and `self.ui` are what `pluginloader.lua` supplies. Then
+        // the two calls KOReader makes, in its order: `init` (which reads the
+        // pairing file off the "device") and `addToMainMenu`.
+        let labels = run_plugin_lua(&format!(
+            r#"RB.path = {path:?}
+               RB.ui = require("anything")
+               RB:init()
+               local items = {{}}
+               RB:addToMainMenu(items)
+               local entry = items.readingbuddy
+               local out = {{ entry.text .. "/" .. entry.sorting_hint }}
+               for _, it in ipairs(entry.sub_item_table) do
+                   out[#out + 1] = it.text or it.text_func()
+               end
+               return table.concat(out, " | ")"#,
+            path = dir.to_string_lossy()
+        ))
+        .unwrap();
+
+        assert_eq!(
+            labels,
+            concat!(
+                "readingbuddy/tools | About this pairing",
+                " | Push to laptop | Open the window for a pull"
+            ),
+            "the menu a paired reader draws"
+        );
+    }
+
+    /// The same menu on a reader that is installed but not paired.
+    ///
+    /// The other side of the loop above: with no computers there is nothing to
+    /// push to and no window worth opening, so the entry is present and carries
+    /// the one item that can still say something useful.
+    #[test]
+    fn the_menu_builds_on_an_unpaired_reader() {
+        let tmp = mount();
+        let dir = dir_of(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let labels = run_plugin_lua(&format!(
+            r#"RB.path = {path:?}
+               RB.ui = require("anything")
+               RB:init()
+               local items = {{}}
+               RB:addToMainMenu(items)
+               local out = {{}}
+               for _, it in ipairs(items.readingbuddy.sub_item_table) do
+                   out[#out + 1] = it.text or it.text_func()
+               end
+               return table.concat(out, " | ")"#,
+            path = dir.to_string_lossy()
+        ))
+        .unwrap();
+        assert_eq!(labels, "About this pairing");
+    }
+
+    /// The exact firewall rules the plugin runs on a Kindle.
+    ///
+    /// A Kindle's INPUT policy is DROP with a conntrack accept per interface,
+    /// which passes the answer to a *unicast* probe and drops the answer to a
+    /// *broadcast* one — the ladder's fallback rung, and the one a reader that
+    /// has never pushed depends on. Measured on the device: same second, same
+    /// desktop, unicast answered and broadcast timed out.
+    ///
+    /// None of that runs in CI, so what is asserted is the string. It is worth
+    /// asserting because it is a *command*: a nil port would interpolate as
+    /// `--dport nil` on somebody's reader, and an add and a delete that differ
+    /// by one character leave a rule behind for ever.
+    #[test]
+    fn the_firewall_rules_are_the_ones_koreaders_own_plugins_use() {
+        let rules = run_plugin_lua(
+            r#"return table.concat({
+                   RB.firewallRule("A", "INPUT", "udp", 61862),
+                   RB.firewallRule("D", "OUTPUT", "tcp", 8080),
+                   tostring(RB.firewallRule("A", "INPUT", "udp", nil)),
+                   tostring(RB.firewallRule("X", "INPUT", "udp", 1)),
+                   tostring(RB.firewallRule("A", "FORWARD", "udp", 1)),
+                   tostring(RB.firewallRule("A", "INPUT", "icmp", 1)),
+                   tostring(RB.firewallRule("A", "INPUT", "udp", 70000)),
+               }, "\n")"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rules.lines().collect::<Vec<_>>(),
+            vec![
+                // Byte-for-byte `SSH.koplugin` and `httpinspector.koplugin`.
+                "iptables -A INPUT -p udp --dport 61862 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+                "iptables -D OUTPUT -p tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT",
+                // Everything a caller could get wrong builds no command at all.
+                "nil",
+                "nil",
+                "nil",
+                "nil",
+                "nil",
+            ]
+        );
+    }
+
     #[test]
     fn the_plugin_reads_every_pairing_shape_the_installer_can_write() {
         let tmp = mount();
-        install(tmp.path(), "dev-a", "tok-a", 1_700_000_000, Some("laptop")).unwrap();
-        install(tmp.path(), "dev-b", "tok-b", 1_700_000_100, None).unwrap();
+        install(
+            tmp.path(),
+            "dev-a",
+            "tok-a",
+            1_700_000_000,
+            Some("laptop"),
+            None,
+        )
+        .unwrap();
+        install(tmp.path(), "dev-b", "tok-b", 1_700_000_100, None, None).unwrap();
         let list = std::fs::read_to_string(dir_of(tmp.path()).join(PAIRING_FILE)).unwrap();
 
         // The list shape, straight off the device: both computers, in order,

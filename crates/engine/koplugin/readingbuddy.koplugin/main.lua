@@ -251,6 +251,66 @@ local function nonce()
     return string.format("%d-%d", os.time(), ReadingBuddy._nonce_seq)
 end
 
+-- ---- the Kindle's firewall -------------------------------------------------
+--
+-- **A Kindle drops the answer to a broadcast probe, and this is not a guess.**
+-- Its INPUT policy is DROP, with a per-interface conntrack accept:
+--
+--     -P INPUT DROP
+--     -A INPUT -i wlan0 -p udp -m state --state ESTABLISHED -j ACCEPT
+--
+-- A datagram sent to 255.255.255.255 makes a conntrack entry whose reply tuple
+-- is *from* 255.255.255.255, so a unicast `HERE` from one computer does not
+-- match it, arrives as NEW, and meets the policy. A unicast probe's answer does
+-- match, and passes. Measured on the device, the two rungs seconds apart: the
+-- broadcast timed out, the unicast was answered, and the desktop's own log
+-- showed it had replied to *both*.
+--
+-- So this is not the pull-only problem item 15b assumed it was. Discovery is a
+-- UDP request/**reply**, the reply is inbound, and push needs the hole first.
+--
+-- `SSH.koplugin` and `httpinspector.koplugin` both punch exactly this, and the
+-- rules below are theirs. Two rather than one: this device has `-P OUTPUT
+-- ACCEPT`, so the second is inert here, but it is what plugins known to work on
+-- Kindle firmware do, and this is not the place to be inventive.
+
+-- The rule, as a string. **Pure**, so a test can assert the exact command with
+-- no Kindle to run it on — and `nil` for anything that is not a port, which is
+-- what keeps a nil from becoming `--dport nil` on somebody's device.
+function ReadingBuddy.firewallRule(action, chain, proto, port)
+    port = tonumber(port)
+    if not port or port <= 0 or port > 65535 then return nil end
+    if action ~= "A" and action ~= "D" then return nil end
+    if proto ~= "tcp" and proto ~= "udp" then return nil end
+    if chain == "INPUT" then
+        return string.format(
+            "iptables -%s INPUT -p %s --dport %d -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+            action, proto, port)
+    elseif chain == "OUTPUT" then
+        return string.format(
+            "iptables -%s OUTPUT -p %s --sport %d -m conntrack --ctstate ESTABLISHED -j ACCEPT",
+            action, proto, port)
+    end
+    return nil
+end
+
+-- Open or close a hole, on a Kindle and nowhere else.
+--
+-- Every other device KOReader runs on either has nothing in the way or is not
+-- ours to reconfigure, which is the line `SSH.koplugin` draws too.
+local function firewall(action, proto, port)
+    local Device = require("device")
+    if not Device.isKindle or not Device:isKindle() then
+        return
+    end
+    for _, chain in ipairs({ "INPUT", "OUTPUT" }) do
+        local rule = ReadingBuddy.firewallRule(action, chain, proto, port)
+        if rule then
+            os.execute(rule)
+        end
+    end
+end
+
 -- Rung 1/3/4 of the ladder: ask one address and wait for a `HERE`.
 --
 -- The shape is `plugins/calibre.koplugin/wireless.lua`'s `find_calibre_server`
@@ -262,21 +322,13 @@ end
 -- answers first cannot make this reader send a highlight: the MAC covers the
 -- nonce *and the announced port*, so a captured reply cannot even be
 -- re-advertised pointing somewhere else.
-local function probe(entry, host, timeout)
-    local socket = require("socket")
+local function ask(udp, entry, host)
     local json = require("json")
-    local udp = socket.udp4()
-    if not udp then
-        return nil
-    end
-    udp:setoption("broadcast", true)
-    udp:setsockname("*", 0)
-    udp:settimeout(timeout or 2)
     local n = nonce()
     local hello = json.encode({ v = PROTOCOL_VERSION, device_id = entry.device_id, nonce = n })
     local _, err = udp:sendto(hello, host, RENDEZVOUS_PORT)
     if err then
-        udp:close()
+        logger.dbg("readingbuddy: could not send to", host, err)
         return nil
     end
     -- More than one answer is ordinary on a broadcast: other readingbuddys are
@@ -284,7 +336,12 @@ local function probe(entry, host, timeout)
     for _ = 1, 4 do
         local dgram, from = udp:receivefrom()
         if not dgram then
-            break
+            -- `from` is the reason: "timeout" is the ordinary one, and it is
+            -- worth a line, because the difference between *nothing answered*
+            -- and *something answered wrongly* is the whole of a support
+            -- conversation about a reader that will not push.
+            logger.dbg("readingbuddy: no answer from", host, tostring(from))
+            return nil
         end
         local ok, here = pcall(json.decode, dgram)
         if ok and type(here) == "table" and here.v == PROTOCOL_VERSION
@@ -292,22 +349,70 @@ local function probe(entry, host, timeout)
             local want = hmac(entry.token,
                 string.format("here:%d:%s:%d", PROTOCOL_VERSION, n, here.tcp_port))
             if want == here.mac then
-                udp:close()
+                logger.dbg("readingbuddy: answered by", tostring(from), "port", here.tcp_port)
                 return { host = from, port = here.tcp_port, name = here.name, nonce = n }
             end
+            logger.dbg("readingbuddy: an answer from", tostring(from), "did not prove the token")
         end
     end
-    udp:close()
     return nil
 end
 
+local function probe(entry, host, timeout)
+    local socket = require("socket")
+    local udp = socket.udp4()
+    if not udp then
+        return nil
+    end
+    udp:setoption("broadcast", true)
+    udp:setsockname("*", 0)
+    udp:settimeout(timeout or 2)
+    -- **The hole is for this socket's own port**, read back from the kernel
+    -- rather than fixed. Fixed would be simpler and is wrong twice: it would
+    -- collide with the responder an open pull window binds to the rendezvous
+    -- port, and a rule is worth the narrowest port it can name. The ask is
+    -- wrapped rather than inlined so that the hole is closed on *every* exit —
+    -- a rule left behind is a permanently open port on somebody's reader.
+    local _, myport = udp:getsockname()
+    firewall("A", "udp", myport)
+    local found = ask(udp, entry, host)
+    firewall("D", "udp", myport)
+    udp:close()
+    return found
+end
+
 -- Walk the ladder. First proven answer wins.
+--
+-- **A `dns` rung is resolved here, and skipping that made it dead code.**
+-- `udp:sendto` takes an address and not a name — measured on a Kindle, where
+-- `sendto(msg, "arch-fongo", …)` answers `nil, "Name or service not known"`
+-- while `socket.dns.toip("arch-fongo")` answers `192.168.1.63` on the same
+-- resolver a second later. So the three hostname rungs built a probe that never
+-- left the device: the rung the spec calls *the best one for a roaming laptop*,
+-- silently doing nothing since it was written, and looking correct in a ladder
+-- test that only ever asserted the rungs' order.
+--
+-- It is resolved *here* rather than inside `probe` because this is where a
+-- rung's kind is known; `probe` stays about the wire and takes an address.
 local function discover(entry, cached)
+    local socket = require("socket")
     for _, rung in ipairs(ReadingBuddy.ladder(cached, entry.name)) do
+        local host = rung.host
+        if rung.kind == "dns" then
+            local ip, err = socket.dns.toip(host)
+            if ip then
+                logger.dbg("readingbuddy:", host, "resolves to", ip)
+            else
+                -- Ordinary: most routers register a DHCP hostname and some do
+                -- not, which is exactly why this is a rung and not the design.
+                logger.dbg("readingbuddy: could not resolve", host, tostring(err))
+            end
+            host = ip
+        end
         -- A cached address is tried by a *probe* rather than a bare connect, so
         -- rung 1 proves the token exactly as the others do — otherwise the
         -- cheapest rung would be the only one that trusts an address.
-        local found = probe(entry, rung.host, rung.kind == "cached" and 1 or 2)
+        local found = host and probe(entry, host, rung.kind == "cached" and 1 or 2)
         if found then
             return found
         end
@@ -667,6 +772,16 @@ function ReadingBuddy:openWindow()
         return false
     end
 
+    -- **Both halves of the window need a hole, and for different reasons.** The
+    -- desktop's `HELLO` is unsolicited, so no conntrack entry can exist for it
+    -- and the responder never hears a thing; the dial that follows is an
+    -- inbound TCP connection, which is `httpinspector`'s own case exactly. Push
+    -- needed one rule for a moment; a window needs two for as long as it is
+    -- open, and `closeWindow` is what takes them away again.
+    firewall("A", "udp", RENDEZVOUS_PORT)
+    firewall("A", "tcp", port)
+    self.window_port = port
+
     self.window_server = server
     self.window_zmq = UIManager:insertZMQ(server)
     self.window_responder = responder
@@ -700,6 +815,15 @@ function ReadingBuddy:closeWindow(why)
     UIManager:removeZMQ(self.window_zmq)
     self.window_server:stop()
     self.window_server, self.window_zmq = nil, nil
+    -- The holes go last, after the sockets they were for are gone: the reverse
+    -- of the order they were opened in, so there is no instant where a rule
+    -- stands with nothing behind it. Four hooks reach this function and a device
+    -- can hit two in a row, which is why the port is cleared as it is used.
+    if self.window_port then
+        firewall("D", "tcp", self.window_port)
+        self.window_port = nil
+    end
+    firewall("D", "udp", RENDEZVOUS_PORT)
 end
 
 -- **Four hooks, not one.** The spec named `onEnterStandby`; `httpinspector`
@@ -726,7 +850,18 @@ function ReadingBuddy:addToMainMenu(menu_items)
     }
     -- One entry per paired computer, named. The single-computer file could not
     -- express the choice at all, which is why stage 1 had to come first.
-    for _, entry in ipairs(self.pairings) do
+    --
+    -- **The index is named, and must stay named.** `for _, entry` is the idiom
+    -- everywhere else in this file and is wrong on exactly this loop: `_` is
+    -- gettext, bound at the top of the module, and the loop body is the one
+    -- place that calls it. Shadowing it makes the next line `(a number)(...)`,
+    -- which throws while KOReader is *building* the menu — so the failure is
+    -- not a broken entry, it is **no readingbuddy entry in Tools at all**, on a
+    -- reader that is paired and looks fine otherwise. `_idx` goes unused, which
+    -- Lua is content with; assigning `_ = i` to silence that would *also* be
+    -- the bug, since `_` here is the module's upvalue and the assignment would
+    -- replace gettext with a number for the rest of the process.
+    for _idx, entry in ipairs(self.pairings) do
         table.insert(sub, {
             text = T(_("Push to %1"), ReadingBuddy.computerName(entry)),
             keep_menu_open = true,

@@ -651,9 +651,25 @@ async fn fake_reader(
         let (read, mut write) = stream.into_split();
         let mut reader = BufReader::new(read);
 
+        // **Framed the way `SimpleTCPServer` frames it, which is the whole
+        // point of this double.** KOReader's server reads lines and hands the
+        // request to its callback *only* on an empty one — so a double that
+        // accepts a bare line accepts a request the real reader would sit on
+        // until it timed out and closed. It did, and the desktop shipped
+        // without the terminator: every loopback test passed, and the first
+        // real pull answered "the reader said nothing". Requiring the blank
+        // line here is what makes this test able to fail for that reason.
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         let open: Open = serde_json::from_str(line.trim_end()).unwrap();
+        let mut terminator = String::new();
+        reader.read_line(&mut terminator).await.unwrap();
+        assert_eq!(
+            terminator.trim_end(),
+            "",
+            "a pull request ends with a blank line; without one KOReader's \
+             SimpleTCPServer never calls its receiveCallback at all"
+        );
         // The reader verifies the desktop exactly as the desktop verifies the
         // reader. The symmetry is the design, not a nicety.
         assert_eq!(open.mac, mac(&token, &open_challenge(&open.nonce)));

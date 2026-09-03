@@ -14,5 +14,5 @@
 return {
     fullname = "readingbuddy",
     description = "Links this reader to readingbuddy on your computer.",
-    version = 1,
+    version = 2,
 }

@@ -1063,6 +1063,23 @@ pub async fn pull_from(
             mac: mac(&device.token, &open_challenge(nonce)),
         })?)
         .await?;
+    // **The blank line is the request terminator, and without it the reader
+    // never hears the request at all.**
+    //
+    // `SimpleTCPServer:waitEvent` is HTTP-shaped: it reads lines with a 100 ms
+    // timeout and calls `receiveCallback` *only* on an empty one, closing the
+    // connection with nothing sent if the deadline passes first. So an `open`
+    // frame ending in a single newline is a request the reader accepts, waits
+    // on, times out, and drops — which arrives here as `read_json_line`
+    // returning `None`, i.e. **"the reader said nothing"**, on a device that
+    // was working perfectly and had simply not been told the request was over.
+    //
+    // The reader's own handler already assumed this framing — it strips from
+    // the first `\r\n`, which is `waitEvent` re-joining the lines it read — so
+    // the two halves were written against different pictures of one protocol
+    // and only the half nobody could run was wrong. Found on hardware, because
+    // the loopback tests put our own listener on both ends.
+    write.write_all(b"\n").await?;
     write.flush().await?;
 
     match read_json_line::<Ack, _>(&mut reader).await? {

@@ -1277,6 +1277,11 @@ impl Engine {
             &token,
             paired_at,
             plugin::this_computer().as_deref(),
+            // The hint, not a fact: where this computer would be reached from
+            // the network it is on *now*. The device overwrites it with what it
+            // actually reached, and `None` — a laptop installing with the wifi
+            // off — simply writes nothing.
+            plugin::this_lan_address().as_deref(),
         )?;
         self.storage
             .record_pairing(
