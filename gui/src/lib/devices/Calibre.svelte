@@ -147,7 +147,7 @@
     min-width: 0;
   }
   h3 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
   }
   header {
     margin-bottom: 0.5rem;
@@ -162,14 +162,12 @@
     min-width: 0;
   }
   dt {
-    font-size: 0.72rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   dd {
     margin: 0.1rem 0 0;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     overflow-wrap: anywhere;
   }
   code {
@@ -179,7 +177,7 @@
   }
   .result {
     margin: 0 0 0.7rem;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     max-width: var(--column);
   }
   .actions {
@@ -190,7 +188,7 @@
   }
   button {
     font: inherit;
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     line-height: 1.4;
     color: var(--ink-dim);
     background: var(--bg);

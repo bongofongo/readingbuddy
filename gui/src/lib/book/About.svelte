@@ -194,7 +194,7 @@
     gap: 0.25rem 1.1rem;
     margin: 0;
     max-width: var(--column);
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
   }
   dt {
     color: var(--ink-dim);
@@ -210,7 +210,7 @@
     border-radius: var(--radius);
     padding: 0 0.4rem;
     margin: 0 0.3rem 0.25rem 0;
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
   }
   .blurb {
     max-width: var(--column);
@@ -224,7 +224,7 @@
     padding-top: 0.6rem;
   }
   summary {
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     cursor: pointer;
   }
@@ -232,7 +232,7 @@
     list-style: none;
     padding: 0;
     margin: 0.6rem 0 0;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
   }
   .toc li {
     /* Depth is a column on the entry, exactly as the engine has it — a flat list
@@ -244,7 +244,7 @@
     list-style: none;
     padding: 0;
     margin: 0.6rem 0 0;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
   }
   .prov li {
     display: flex;

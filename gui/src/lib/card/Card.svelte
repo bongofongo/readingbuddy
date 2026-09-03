@@ -56,6 +56,35 @@
    * That makes two card densities and it is the trade `docs/decisions.md` entry
    * 47 argues for: the wall draws the row, and the whole card is one click away
    * on the book that mints it.
+   *
+   * **`detail` decides one more thing since the minimal pass**: whether a read
+   * with no passage says so. On the book's own page there are one or two cards
+   * and *No passage from this read* is a fact about that read, worth a line. On
+   * a wall it was printed under **most** cards on the page — the dev library
+   * renders it twenty-four times out of twenty-four — where it stops being a
+   * fact about any read and becomes a sentence the page repeats. Absence drawn
+   * as absence is right; absence drawn twenty-four times is wallpaper.
+   *
+   * ## It is a box, and the minimal pass tried taking that away and put it back
+   *
+   * The card is a raised panel: `--bg-raised`, a hairline inset and two shadows,
+   * so a card sits on the page as an object rather than being printed on it. The
+   * minimal pass removed all three on the argument that a wall of twenty-four
+   * panels is twenty-four borders, and that the jacket inside each already
+   * carries the lift.
+   *
+   * **Looked at, that was wrong, and the reason is worth keeping.** A card is
+   * not a row in a list — it is *one read of one book*, a composite of five
+   * unlike things (a jacket, a title, a span of dates, a state, a passage
+   * somebody else wrote) whose extent is not otherwise guessable. Whitespace
+   * separates items whose shape repeats; it does not tell you where a ragged
+   * composite ends, and without an edge the passage under card four reads as
+   * though it might belong to card five. Structure is what makes the object
+   * legible, and it is the thing the surface is actually made of.
+   *
+   * What the pass was right about is that the **contents** were shouting: a
+   * brass state word on every card, and a repeated *No passage from this read*.
+   * Those went. The box stayed.
    */
   import type { HighlightDto, NoteDto, RatingDto } from '$lib/api/bindings';
   import { client, type ReadingRow } from '$lib/api/client';
@@ -176,11 +205,15 @@
         </footer>
       {/if}
     </blockquote>
-  {:else}
-    <!-- Absence, drawn as absence — and **not gated on a load** any more, since
-         the passage arrives as a prop and its absence is known at first paint.
-         A read whose marks the dates could not place has no passage of its own,
-         which is ordinary; the move that fills it is the reader's, on the book. -->
+  {:else if detail}
+    <!-- Absence, drawn as absence — and **not gated on a load**, since the
+         passage arrives as a prop and its absence is known at first paint. A
+         read whose marks the dates could not place has no passage of its own,
+         which is ordinary; the move that fills it is the reader's, on the book.
+
+         Gated on `detail`, though: see the note at the top of this file. On a
+         wall this line is under most cards on the page, and a sentence the page
+         repeats twenty-four times is not telling anybody anything. -->
     <p class="hint no-passage">No passage from this read.</p>
   {/if}
 
@@ -230,12 +263,13 @@
   .card {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
-    padding: 1.1rem;
+    gap: var(--s-3);
+    padding: var(--s-4);
     background: var(--bg-raised);
     border-radius: var(--radius);
     /* The same lift the jacket has, so a card sits on the page as an object
-       rather than being printed on it. */
+       rather than being printed on it. See the note at the top of this file for
+       why this survived a pass that was removing exactly this kind of thing. */
     box-shadow:
       inset 0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent),
       0 1px 2px rgb(0 0 0 / 0.2),
@@ -245,7 +279,7 @@
   header {
     display: grid;
     grid-template-columns: 48px minmax(0, 1fr);
-    gap: 1rem;
+    gap: var(--s-3);
     align-items: start;
   }
   .art {
@@ -268,37 +302,42 @@
   /* Above the dates and quieter than the title: it tells you which of two
      otherwise-identical cards you are looking at, which is a caption's job. */
   .ordinal {
-    margin: 0.3rem 0 0;
-    font-size: 0.82rem;
+    margin: var(--s-1) 0 0;
+    font-size: var(--t-micro);
     color: var(--accent-text);
   }
   .when {
-    margin: 0.25rem 0 0;
-    font-size: 0.85rem;
+    margin: var(--s-1) 0 0;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
   }
   .how {
     display: flex;
-    gap: 0.6rem;
+    gap: var(--s-3);
     flex-wrap: wrap;
-    margin: 0.3rem 0 0;
-    font-size: 0.82rem;
+    margin: var(--s-1) 0 0;
+    font-size: var(--t-micro);
   }
+  /* **Dim, not accent.** `Read` and `Put down` are past tense and there is
+     nothing to press: the app's rule is that the accent marks state that is true
+     right now *and that you can act on*. On the wall this word was the second
+     brightest thing on every one of twenty-four cards, which made a page of
+     finished reads look like a page of things wanting attention. */
   .state {
-    color: var(--accent-text);
+    color: var(--ink-dim);
   }
   .far {
     color: var(--ink-dim);
   }
   .rating {
-    margin: 0.35rem 0 0;
-    font-size: 0.9rem;
+    margin: var(--s-2) 0 0;
+    font-size: var(--t-fine);
     color: var(--accent-text);
   }
 
   blockquote {
     margin: 0;
-    padding-left: 0.9rem;
+    padding-left: var(--s-3);
     border-left: 2px solid var(--line);
   }
   blockquote p {
@@ -308,7 +347,7 @@
   }
   blockquote footer {
     margin-top: 0.35rem;
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
 
@@ -316,7 +355,7 @@
     list-style: none;
     padding: 0;
     margin: 0.35rem 0 0;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   .left li {
     /*
@@ -348,7 +387,7 @@
   .kind,
   .marks {
     color: var(--ink-dim);
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
   }
   .marks {
     margin: 0.45rem 0 0;
@@ -363,6 +402,6 @@
      read as unstyled rather than as composed. It gets no rule of its own,
      because a rule is what says *the book is talking*. */
   .card :global(.no-passage) {
-    padding-left: calc(0.9rem + 2px);
+    padding-left: calc(var(--s-3) + 2px);
   }
 </style>

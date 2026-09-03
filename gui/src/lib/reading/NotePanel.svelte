@@ -122,7 +122,7 @@
   textarea {
     font: inherit;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     /* Under the 80-character cap SC 1.4.8 sets, in the one place `ch` is honest
        — see `--editor` in `app.css`. */
     max-width: var(--editor);
@@ -142,11 +142,11 @@
   }
   .bar .hint {
     margin: 0;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   button {
     font: inherit;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     margin-left: auto;
     border-radius: var(--radius);
     padding: 0.4rem 0.9rem;
@@ -161,11 +161,11 @@
   }
   .refusal {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
   }
   .hint {
     color: var(--ink-dim);
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     margin: 0;
   }
   code {

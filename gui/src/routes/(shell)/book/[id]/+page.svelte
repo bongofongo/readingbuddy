@@ -1,44 +1,53 @@
 <script lang="ts">
   /**
-   * The book — the desk, and where the time goes, so it gets the room.
+   * The book — where the time goes, so it gets the room.
    *
-   * ## Three columns, and they are justified by two different arguments
+   * ## One work surface, and a row of four places above it
    *
-   * They are not one move, and separating them says which one is fragile.
+   * It was three columns. The left rail was a mode selector, the right rail was
+   * an inspector, and between them the page kept **twelve controls resident at
+   * all times**: three write verbs, four destinations, a note list, a search
+   * box, a link search and a list of cited passages — all of them on screen
+   * whichever one of them you were using.
    *
-   * **The right rail is an inspector.** Canvas-plus-inspector inverts
-   * master–detail: the centre is the work and the rails are instruments. The
-   * *Link to…* search that writes `[[Title]]` at the cursor is not reference
-   * material beside the editor — it is a tool acting *on* it, and writing a note
-   * and finding the note to link to is one operation. That is what justifies
-   * permanent screen area.
+   * The argument for the rails was that a permanent column is what keeps the
+   * page from being modal: every other destination is visible while you are in
+   * any one of them. That is true, and it is not the only way to be non-modal.
+   * A surface with a URL, a selector naming every alternative, and no dismissal
+   * gesture is not a mode either — which is the case `/reading` has made since
+   * item 54 with four panels and one at a time. What a rail buys over a selector
+   * is that the *contents* of the other places stay legible, and that is worth
+   * much less than three columns cost: nobody reads a note list while writing
+   * into a different note.
    *
-   * **The left rail is a mode selector**, which is a different argument: it turns
-   * an unbounded set of destinations into a fixed column and stages the density,
-   * so at rest you see one work surface rather than all of them. The centre
-   * swaps; the rail is how you swap it. Nothing is modal, because every other
-   * destination is on screen while you are in any one of them.
+   * So the page is now the identity, one row, and one work surface. The row is
+   * its whole interface: **Passages · Notes · Reads · About**, a `Write`, and a
+   * door to this book's cards. Six controls, and each of the four places is
+   * deep — the passages carry their own search, the notes carry the editor, the
+   * editor carries the links and the citations.
    *
-   * The count against it is real and is recorded rather than argued away: header
-   * plus two rails plus centre is four regions, and attended regions run to about
-   * three plus periphery. The mitigation is that the right rail's contents are
-   * conditional on the centre, so at any moment you are attending the centre plus
-   * *one* rail — and the obvious next move, demoting the left rail while a note is
-   * open, needs a visual change this phase does not take.
+   * Where each thing went, since a reader of the old page will look for them:
+   *
+   * - the rail's **note list** became the `Notes` place (`Notes.svelte`);
+   * - the rail's **three write verbs** became one `Write`, with the kind chosen
+   *   inside the composer;
+   * - the right rail's **links, `Link to…` and cited passages** went inside the
+   *   editor, which is the thing they act on (`Connections.svelte`);
+   * - the right rail's **search** went to the passage list, which is what it
+   *   searches;
+   * - the right rail's **reads readout** was a quieter second copy of the
+   *   `Reads` place and simply went.
    *
    * ## The header lost 130px and the state lost its colour
    *
-   * The hero jacket goes from 150px to 52px and the stacked identity becomes one
-   * metadata line. This is epicenter design and the argument is old: **chrome is
-   * cheap to add and expensive to remove, because a region that exists acquires
-   * occupants** — every feature with no natural home gets filed there. A book
-   * page is not a product page; you already know which book you opened.
+   * Unchanged from the last pass and still right. The hero jacket is 52px and
+   * the stacked identity is one metadata line: **chrome is cheap to add and
+   * expensive to remove, because a region that exists acquires occupants**. A
+   * book page is not a product page; you already know which book you opened.
    *
-   * The state and progress fragment is `--ink-dim` rather than `--accent-text`,
-   * which is one of eight jobs the accent was doing at once. The rule adopted
-   * instead: **the accent is for state that is true right now and that you can
-   * act on** — selection, focus, the current page, progress, the primary action.
-   * Everything descriptive is carried by ink, dim, position and weight.
+   * The state and progress fragment is `--ink-dim` rather than `--accent-text`.
+   * The accent is for state that is true right now and that you can act on;
+   * everything descriptive is carried by ink, dim, position and weight.
    *
    * ## Eight calls for one book, recorded rather than worked around
    *
@@ -60,14 +69,22 @@
     NoteDto,
     ReadingDto,
   } from '$lib/api/bindings';
+  // The four places the selector offers, in the order it offers them: what the
+  // book said, what you said, when you read it, where it came from.
+  const PLACES: [Place, string][] = [
+    ['passages', 'Passages'],
+    ['notes', 'Notes'],
+    ['reads', 'Reads'],
+    ['about', 'About'],
+  ];
   import { client, type StoredBook } from '$lib/api/client';
   import About from '$lib/book/About.svelte';
   import Composer from '$lib/book/Composer.svelte';
-  import Connections from '$lib/book/Connections.svelte';
-  import { type Centre, inspects } from '$lib/book/desk';
+  import { type Centre, place, type Place } from '$lib/book/desk';
   import Editor from '$lib/book/Editor.svelte';
+  import MarkSearch from '$lib/book/MarkSearch.svelte';
+  import Notes from '$lib/book/Notes.svelte';
   import Passages from '$lib/book/Passages.svelte';
-  import Rail from '$lib/book/Rail.svelte';
   import Jacket from '$lib/components/Jacket.svelte';
   import { backTarget } from '$lib/nav';
   import {
@@ -145,14 +162,20 @@
   let openNoteId = $state<number | null>(paramNote());
 
   /**
-   * What the centre is showing — and it is **independent of which note is open**.
+   * What the work surface is showing — and it is **independent of which note is
+   * open**.
    *
    * That independence is the whole of how citing works. `Cite` needs a note to
    * cite *into* and a passage to cite *from*, and only one of them can be the
-   * work surface; if opening a note closed the passage list, the gesture the
-   * mouse makes available would be unreachable. So the note stays open — named
-   * in the rail, marked as current, cited into from the passage list — while the
-   * centre shows whatever you last asked it for.
+   * work surface; if leaving the editor closed the note, the gesture the mouse
+   * makes available on a passage would be unreachable. So `openNoteId` survives
+   * a move to the passages — marked in the note list when you come back, and
+   * cited into from the passage list while you are away.
+   *
+   * That is also the piece the rails were carrying and the piece that had to
+   * survive them. With one surface at a time it is the *state* rather than the
+   * *layout* that keeps the two objects alive at once, which is why they are two
+   * variables and not one.
    *
    * Seeded from the URL for the same reason `?note=` is a URL: a moment ends
    * *in* the reflection, and the state survives a reload.
@@ -191,15 +214,6 @@
   let found = $state<number | null>(null);
 
   /**
-   * How the right rail writes into the editor, or `null` when none is open.
-   *
-   * The editor hands this out while it is mounted and takes it back when it is
-   * not, so the *Link to…* search cannot write into a box that has gone — and
-   * the rail never touches a DOM node it does not own.
-   */
-  let insert = $state<((text: string) => void) | null>(null);
-
-  /**
    * Take the reader to a passage in the centre column.
    *
    * The scroll is done from the click rather than in an effect on a prop — the
@@ -216,6 +230,9 @@
       document.getElementById(`passage-${highlightId}`)?.scrollIntoView({ block: 'center' }),
     );
   }
+
+  /** The lit member of the selector — `note` and `compose` are inside `notes`. */
+  const here = $derived(place(centre));
 
   function show(next: Centre) {
     centre = next;
@@ -320,26 +337,6 @@
         ].filter((x): x is string => Boolean(x)),
   );
 
-  /**
-   * The reads, as lines for the right rail's readout.
-   *
-   * Past tense, always: when you read it and how far you got. A reread gets a
-   * line per reading rather than a badge saying it is a reread, and the progress
-   * on each is **that** reading's — putting today's page under a read that closed
-   * in January is what `Progress::of_book` warns about.
-   */
-  const readLines = $derived(
-    readings.map((r) =>
-      [
-        readingSpan(r) ?? dayLabel(r.created_at),
-        readingStateLabel(r.status),
-        progressDetail(r.progress),
-      ]
-        .filter(Boolean)
-        .join(' · '),
-    ),
-  );
-
   async function reloadNotes() {
     notes = await client().listNotes(id);
     // Deleting a note takes its citations with it, so the mark is refreshed with
@@ -347,17 +344,21 @@
     await reloadCitations(notes);
   }
 
-  /** Open **or mint** — one call, and the engine decides which reading it hangs off. */
+  /**
+   * Open **or mint** — one call, and the engine decides which reading it hangs
+   * off.
+   *
+   * It **throws** rather than setting `failure`, which is the change the composer
+   * asked for: the reader is looking at the composer when they press the button,
+   * and a message that replaced the whole page would take the surface they were
+   * working on away to say a write did not land. The composer catches it and says
+   * so in place.
+   */
   async function anchored(kind: 'reflection' | 'review') {
-    try {
-      const api = client();
-      const created =
-        kind === 'reflection' ? await api.openReflection(id) : await api.openReview(id);
-      await reloadNotes();
-      openNoteById(created.id);
-    } catch (e) {
-      failure = e instanceof Error ? e.message : String(e);
-    }
+    const api = client();
+    const created = kind === 'reflection' ? await api.openReflection(id) : await api.openReview(id);
+    await reloadNotes();
+    openNoteById(created.id);
   }
 
   async function toggleCite(highlightId: number, on: boolean) {
@@ -442,95 +443,118 @@
     </div>
   </header>
 
-  <div class="desk">
-    <Rail
-      bookId={id}
-      {notes}
-      {centre}
-      {openNoteId}
-      onshow={show}
-      onopen={openNoteById}
-      oncompose={() => (centre = 'compose')}
-      onanchored={anchored}
-    />
+  <!--
+    The page's whole interface: four places, one action, one door.
 
-    <div class="work">
-      {#if centre === 'note' && openNote}
-        <Editor
-          note={openNote}
-          onreload={reloadNotes}
-          onclose={() => {
-            openNoteId = null;
-            centre = 'passages';
-          }}
-          onready={(fn) => (insert = fn)}
-        />
-      {:else if centre === 'compose'}
-        <Composer
-          bookId={id}
-          oncancel={() => (centre = 'passages')}
-          onwritten={async (noteId) => {
-            await reloadNotes();
-            openNoteById(noteId);
-          }}
-        />
-      {:else if centre === 'reads'}
-        {#if readings.length === 0}
-          <p class="note">No reading recorded for this book.</p>
-          <p class="hint">
-            <code>rb read start</code> opens one, and <code>rb ko pull</code> takes what a connected reader
-            already knows.
-          </p>
-        {:else}
-          <ul class="readings">
-            {#each readings as r (r.id)}
-              <li>
-                <span class="when">{readingSpan(r) ?? dayLabel(r.created_at)}</span>
-                <span class="row2">
-                  {#if readingStateLabel(r.status)}
-                    <span>{readingStateLabel(r.status)}</span>
-                  {/if}
-                  {#if progressDetail(r.progress)}
-                    <span>{progressDetail(r.progress)}</span>
-                  {/if}
-                  <!-- The writer's name, shown rather than branched on — it grows
-                       by one per importer and nothing decides on it. -->
-                  <span class="src">{r.source}</span>
-                </span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      {:else if centre === 'about'}
-        <About {book} {tags} {files} {provenance} />
-      {:else}
-        <Passages
-          {highlights}
-          open={openNote}
-          {cited}
-          {quoted}
-          {found}
-          cards={flashcards}
-          oncite={toggleCite}
-          onannotate={annotate}
-          oncapture={capture}
-        />
-      {/if}
+    A `nav` rather than a `div`, because that is what it is — it moves you
+    between the four surfaces of this page. The four are `.choices`, the same
+    control the shell's row and the shelf's switch use, so *where you are* is
+    said the same way everywhere in the app.
+  -->
+  <nav class="deck" aria-label="This book">
+    <div class="choices">
+      {#each PLACES as [what, label] (what)}
+        <button
+          class="choice"
+          type="button"
+          aria-pressed={here === what}
+          onclick={() => show(what)}
+        >
+          {label}
+        </button>
+      {/each}
     </div>
+    <div class="acts">
+      <!-- The one accent fill this surface gets. Note, reflection or review is
+           chosen inside the composer — three verbs in this row would put the
+           taxonomy on the page before the reader had said they wanted to
+           write. -->
+      <button class="primary" type="button" onclick={() => (centre = 'compose')}>Write</button>
+      <!-- A card carries a passage, and a passage wants a measure and a grid
+           this page is not. The arrow is the app saying you are leaving. -->
+      <a class="door" href={`/book/${id}/cards`}>Cards →</a>
+    </div>
+  </nav>
 
-    <!-- The rail follows the **centre**, not the open note: with the passage list
-         on the work surface it answers about the book, even though a note is
-         still open to cite into. That is what `inspects` names. -->
-    <Connections
-      bookId={id}
-      note={inspects(centre) === 'note' ? openNote : null}
-      cited={citedPassages}
-      marks={notes.length + highlights.length}
-      reads={readLines}
-      oninsert={insert}
-      onopennote={openNoteById}
-      onshowpassage={showPassage}
-    />
+  <div class="work">
+    {#if centre === 'note' && openNote}
+      <Editor
+        note={openNote}
+        cited={citedPassages}
+        onreload={reloadNotes}
+        onclose={() => {
+          openNoteId = null;
+          centre = 'notes';
+        }}
+        onopennote={openNoteById}
+        onshowpassage={showPassage}
+      />
+    {:else if centre === 'compose'}
+      <Composer
+        bookId={id}
+        oncancel={() => (centre = 'notes')}
+        onanchored={anchored}
+        onwritten={async (noteId) => {
+          await reloadNotes();
+          openNoteById(noteId);
+        }}
+      />
+    {:else if centre === 'notes'}
+      <Notes {notes} {openNoteId} onopen={openNoteById} />
+    {:else if centre === 'reads'}
+      {#if readings.length === 0}
+        <p class="note">No reading recorded for this book.</p>
+        <p class="hint">
+          <code>rb read start</code> opens one, and <code>rb ko pull</code> takes what a connected reader
+          already knows.
+        </p>
+      {:else}
+        <ul class="readings">
+          {#each readings as r (r.id)}
+            <li>
+              <span class="when">{readingSpan(r) ?? dayLabel(r.created_at)}</span>
+              <span class="row2">
+                {#if readingStateLabel(r.status)}
+                  <span>{readingStateLabel(r.status)}</span>
+                {/if}
+                {#if progressDetail(r.progress)}
+                  <span>{progressDetail(r.progress)}</span>
+                {/if}
+                <!-- The writer's name, shown rather than branched on — it grows
+                     by one per importer and nothing decides on it. -->
+                <span class="src">{r.source}</span>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if centre === 'about'}
+      <About {book} {tags} {files} {provenance} />
+    {:else}
+      <!-- The search over this book's notes and passages (item 50), with the
+           thing it searches. It was in the right rail on the argument that it
+           belongs to a *column* rather than to a band, because it ranks notes
+           and passages in one list and two bands drew them. There is one band
+           now: a note hit opens the note, a passage hit scrolls to it here, and
+           the box sits with the larger half of what it finds. -->
+      <MarkSearch
+        bookId={id}
+        marks={notes.length + highlights.length}
+        onopennote={openNoteById}
+        onshowpassage={showPassage}
+      />
+      <Passages
+        {highlights}
+        open={openNote}
+        {cited}
+        {quoted}
+        {found}
+        cards={flashcards}
+        oncite={toggleCite}
+        onannotate={annotate}
+        oncapture={capture}
+      />
+    {/if}
   </div>
 {:else}
   <p class="hint">Opening…</p>
@@ -539,18 +563,19 @@
 <style>
   .back {
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     display: inline-block;
-    margin-bottom: 0.9rem;
+    margin-bottom: var(--s-4);
   }
+  /* No rule under it any more: the row below is the page's one edge, and two
+     horizontal lines four rems apart made the identity look like a banner
+     rather than like the name of what you are looking at. */
   .ident {
     display: grid;
     grid-template-columns: 52px minmax(0, 1fr);
-    gap: 1rem;
+    gap: var(--s-3);
     align-items: center;
-    padding-bottom: 1rem;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 1.6rem;
+    margin-bottom: var(--s-4);
   }
   .art {
     aspect-ratio: 2 / 3;
@@ -565,7 +590,7 @@
     min-width: 0;
   }
   h1 {
-    font-size: 1.25rem;
+    font-size: var(--t-lead);
     line-height: 1.25;
     /* The whole title wraps here rather than clipping. This is the one place it
        has room, which is what makes clipping it on a tile acceptable. */
@@ -576,78 +601,56 @@
     font-style: italic;
   }
   .line {
-    margin: 0.2rem 0 0;
-    font-size: 0.82rem;
+    margin: var(--s-1) 0 0;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     overflow-wrap: anywhere;
   }
 
   /*
-   * Where you navigate, what you are doing, what it connects to.
+   * The one row of controls, and the only edge on the page above the work.
    *
-   * Both rails are sticky and the centre is capped, so the work surface keeps a
-   * measure while the window keeps growing. `align-items: start` rather than
-   * `stretch`, because a sticky child of a stretched grid item has nothing to
-   * stick within.
+   * The four places sit left and the two things that leave sit right, which is
+   * the shelf's `band-head` arrangement and the same reading: what this surface
+   * is, then what you can do to it. `margin-left: auto` only where there is a
+   * far side — below that width the two groups are simply two left-aligned rows,
+   * because a right-flushed pair on their own line reads as stranded rather than
+   * as deliberate. (The card wall learned that one at 390px.)
    */
-  .desk {
-    display: grid;
-    grid-template-columns: var(--rail) minmax(0, 1fr) var(--rail-r);
-    gap: 0 2.6rem;
-    align-items: start;
+  .deck {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--s-3) var(--s-5);
+    margin-bottom: var(--s-5);
   }
-  .desk > :global(.rail),
-  .desk > :global(.rrail) {
-    position: sticky;
-    top: 1.5rem;
-    /* A rail longer than the window has to be able to reach its own bottom. */
-    max-height: calc(100vh - 3rem);
-    overflow-y: auto;
+  .acts {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-4);
   }
-  .work {
-    min-width: 0;
+  @media (min-width: 40rem) {
+    .acts {
+      margin-left: auto;
+    }
   }
 
   /*
-   * Two breakpoints, and they drop in this order: context before navigation.
+   * One work surface, and nothing beside it.
    *
-   * At ≤1180 the right rail unsticks and folds under the centre — an inspector
-   * is what a narrow window can least afford, and it is the one region whose
-   * contents are conditional anyway. The left rail stays, because it is how you
-   * get anywhere on this page.
+   * No grid, no rails, no breakpoints — which is most of what the minimal pass
+   * bought here. The three-column version needed two media queries, sticky
+   * positioning on both rails, a `max-height` so a rail could reach its own
+   * bottom, and a `grid-column: auto` reset that existed only to stop the
+   * one-column layout silently rendering as two. Every one of those was
+   * load-bearing and every one of them is gone with the thing it held up.
    *
-   * At ≤860 the left rail stacks above the centre. **`grid-column` must be reset
-   * to `auto` here**: the 1180 rule puts the folded rail in column 2, and
-   * leaving that in place at one column conjures an implicit second track — the
-   * "one column" layout then silently renders as two. That was a real bug in the
-   * prototype, found by screenshotting at 800px.
+   * The surfaces cap their own width — `--editor` for the editor and the
+   * composer, `--column` for the lists, `--passages` for the passage list — so
+   * the measure is a property of what is being read rather than of the page.
    */
-  @media (max-width: 1180px) {
-    .desk {
-      grid-template-columns: var(--rail) minmax(0, 1fr);
-      gap: 0 2rem;
-    }
-    .desk > :global(.rrail) {
-      grid-column: 2;
-      position: static;
-      max-height: none;
-      margin-top: 2.4rem;
-      padding-top: 1.4rem;
-      border-top: 1px solid var(--line);
-    }
-  }
-  @media (max-width: 860px) {
-    .desk {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .desk > :global(.rail) {
-      position: static;
-      max-height: none;
-      margin-bottom: 2rem;
-    }
-    .desk > :global(.rrail) {
-      grid-column: auto;
-    }
+  .work {
+    min-width: 0;
   }
 
   ul.readings {
@@ -655,18 +658,17 @@
     padding: 0;
     margin: 0;
     max-width: var(--column);
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
+  }
+  ul.readings li + li {
+    border-top: 1px solid var(--line);
   }
   ul.readings li {
-    padding: 0.5rem 0;
-    border-bottom: 1px solid var(--line);
-  }
-  ul.readings li:last-child {
-    border-bottom: 0;
+    padding: var(--s-2) 0;
   }
   .row2 {
     display: flex;
-    gap: 0.6rem;
+    gap: var(--s-3);
     flex-wrap: wrap;
     color: var(--ink-dim);
   }
@@ -675,6 +677,6 @@
   }
   .note {
     max-width: var(--column);
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--s-2);
   }
 </style>

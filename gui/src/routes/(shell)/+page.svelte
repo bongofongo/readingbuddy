@@ -30,13 +30,21 @@
    * The book's own page is one link away on every preview, which is what keeps
    * this from being a fork somebody has to get right.
    *
-   * ## Two requests, and the second is an N+1
+   * ## Two requests, and the second is an N+1 that nothing renders
    *
    * `currentlyReading` for the page, and then the newest mark per open reading —
    * for which there is **no request**, so it is `listHighlights` plus
-   * `listNotes` each, fetching every highlight in a book to render one line.
-   * It works and it is wrong; `$lib/library/latest.ts` records why it is left
-   * visible rather than hidden behind a client-side aggregate.
+   * `listNotes` each, fetching every highlight in a book. It works and it is
+   * wrong; `$lib/library/latest.ts` records why it is left visible rather than
+   * hidden behind a client-side aggregate.
+   *
+   * **The preview stopped drawing the mark and the calls stayed**, which reads
+   * like dead code and is not: the mark is the **sort key**, and `ordered` is
+   * what makes a stale reading sink without anybody dismissing it. That ordering
+   * is this page's answer to the one framing `docs/decisions.md` bans, so
+   * deleting the fetch on the grounds that no pixel depends on it would trade a
+   * visible cost for an invisible regression. It now buys ordering alone, which
+   * makes the missing request worth more than it was, not less.
    */
   import { client, type OpenReading } from '$lib/api/client';
   import { latestMark, ordered, type Preview as PreviewOf } from '$lib/library/latest';
@@ -121,7 +129,7 @@
          turned into a tally of what is unfinished. -->
     <div class="previews">
       {#each open as p (p.reading.reading.id)}
-        <Preview book={p.reading.book} reading={p.reading.reading} mark={p.mark} />
+        <Preview book={p.reading.book} reading={p.reading.reading} />
       {/each}
     </div>
   </section>

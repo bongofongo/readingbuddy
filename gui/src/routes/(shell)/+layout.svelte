@@ -38,6 +38,16 @@
    * it. The underline is styled off the attribute for the same reason the
    * links pane carries its direction in text: a state that only exists in CSS
    * is a state no test and no screen reader can see.
+   *
+   * ## The row is `.choices` now, and the app copied it rather than the reverse
+   *
+   * The minimal pass found four different segmented controls in this app — this
+   * row, the shelf's arrangement switch, the card wall's two pill groups,
+   * `/life`'s year rail — three of which lit the current member with a brass
+   * **fill**. This one lit it with ink and a rule underneath, and it was the only
+   * one that could sit beside a second group without the two reading as one
+   * control with two things lit. So it became `app.css`'s `.choice`, and the
+   * other three now speak it.
    */
   import { page } from '$app/state';
 
@@ -95,7 +105,9 @@
         <!-- `undefined` rather than `false`: `aria-current="false"` is a valid
              value meaning *not current*, and it would put the attribute on every
              link in the row for a selector to trip over. -->
-        <a href={n.href} aria-current={here(n.href) ? 'page' : undefined}>{n.label}</a>
+        <a class="choice" href={n.href} aria-current={here(n.href) ? 'page' : undefined}
+          >{n.label}</a
+        >
       {/each}
     </nav>
   </header>
@@ -117,10 +129,10 @@
     width: 100%;
     max-width: var(--shell);
     margin-inline: auto;
-    padding: 1rem 2rem;
+    padding: var(--s-4) var(--s-5) var(--s-5);
     display: flex;
     align-items: baseline;
-    gap: 1.5rem;
+    gap: var(--s-5);
   }
   .mark {
     font-weight: 600;
@@ -131,46 +143,34 @@
        still using it. Found by item 47's screenshot review, in every shot. */
     color: var(--accent-text);
   }
+  /* The row itself. Every link in it is `app.css`'s `.choice`, so *where you
+     are* is drawn here the same way it is drawn on every other switch in the
+     app — in ink, with an accent rule under it, because the accent is spent on
+     state you can act on and *this is the page you are on* is exactly that. */
   header nav {
     margin-left: auto;
     display: flex;
-    gap: 1.4rem;
-    font-size: 0.85rem;
-  }
-  header nav a {
-    color: var(--ink-dim);
-    padding-bottom: 0.25rem;
-    border-bottom: 1px solid transparent;
-  }
-  header nav a:hover {
-    color: var(--ink);
-  }
-  /* Where you are, said twice — in ink and with a rule under it — because the
-     accent is spent on state you can act on and *this is the page you are on*
-     is exactly that. The border is on both states so lighting one does not
-     shift the row. */
-  header nav a[aria-current='page'] {
-    color: var(--ink);
-    border-bottom-color: var(--accent);
+    flex-wrap: wrap;
+    gap: var(--s-4);
   }
   main {
     flex: 1;
     width: 100%;
     max-width: var(--shell);
     margin-inline: auto;
-    padding: 0.5rem 2rem 3rem;
+    padding: 0 var(--s-5) var(--s-6);
   }
   @media (max-width: 860px) {
     header {
-      padding: 0.9rem 1.25rem;
-      gap: 1rem;
+      padding: var(--s-3) var(--s-4) var(--s-4);
+      gap: var(--s-4);
       flex-wrap: wrap;
     }
     header nav {
-      gap: 1rem;
+      gap: var(--s-3);
     }
     main {
-      padding: 0.5rem 1.25rem 2rem;
+      padding: 0 var(--s-4) var(--s-5);
     }
   }
 </style>

@@ -119,7 +119,7 @@
 <style>
   input {
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     width: 100%;
     color: var(--ink);
     background: var(--bg-raised);
@@ -146,7 +146,7 @@
     width: 100%;
     text-align: start;
     font: inherit;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     background: none;
     border: 0;
     padding: 0.3rem 0.1rem;
@@ -161,15 +161,13 @@
     overflow-wrap: anywhere;
   }
   .kind {
-    font-size: 0.66rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     flex: none;
     margin-left: auto;
   }
   .hint {
     margin: 0;
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
   }
 </style>

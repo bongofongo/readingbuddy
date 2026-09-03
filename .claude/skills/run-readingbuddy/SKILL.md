@@ -106,14 +106,65 @@ tty it exits immediately with `Error: No such device or address (os error 6)`
   `WEBKIT_DISABLE_COMPOSITING_MODE=1`, `GDK_BACKEND=wayland`. Falling back
   to X11 is **not** an option here — `DISPLAY=:0` is set but stale, and
   `xdpyinfo -display :0` cannot reach it, so there is no Xwayland to land on.
-- **Nothing can click the GUI.** No `wtype`, no `ydotool`, and this is
-  Hyprland 0.56.2 whose `hyprctl dispatch` takes Lua (`hl.dsp.window.close()`),
-  with no `sendshortcut` dispatcher in that namespace. The GUI can be
-  launched, screenshotted and read; it cannot be driven. To exercise
-  behaviour rather than appearance, drive `api` (the same surface the GUI
-  calls) or the frontend's vitest suite. **Do not probe the Lua dispatcher
-  interactively** — `hl.dsp.window.close()` is live and acts on the focused
-  window.
+- **Nothing can click the GUI — on Linux.** No `wtype`, no `ydotool`, and this
+  is Hyprland 0.56.2 whose `hyprctl dispatch` takes Lua
+  (`hl.dsp.window.close()`), with no `sendshortcut` dispatcher in that
+  namespace. There the GUI can be launched, screenshotted and read; it cannot
+  be driven. To exercise behaviour rather than appearance, drive `api` (the same
+  surface the GUI calls) or the frontend's vitest suite. **Do not probe the Lua
+  dispatcher interactively** — `hl.dsp.window.close()` is live and acts on the
+  focused window.
+
+  **On macOS it can be driven, and the whole driver above does not apply.**
+  There is no Wayland, no `grim` and no WebKitGTK; Tauri renders through
+  WKWebView and none of the four environment settings are needed. What works,
+  and what this file was missing:
+
+  ```bash
+  # geometry, from the accessibility API — not a guess and not a window picker
+  osascript -e 'tell application "System Events" to tell process "readingbuddy-gui" \
+    to get {position, size} of window 1'          # -> 6, 38, 1500, 940
+  screencapture -x -o -R"6,38,1500,940" shot.png  # exactly that window
+  osascript -e 'tell application "System Events" to click at {588, 159}'
+  osascript -e 'tell application "System Events" to key code 121'   # page down
+  ```
+
+  This is **deterministic where `grim` is a coin flip**: the region comes from
+  the window itself, so it cannot capture whatever happened to be on top. Set
+  the size first (`set size of window 1 to {1500, 940}`) and two runs are
+  comparable.
+
+  Three things to know before relying on it:
+
+  - **Screen coordinates from a screenshot** are
+    `screen = displayed × 0.75 + origin` for a 1500-wide window captured at 2×
+    and shown at 2000px. Get the scale wrong and clicks land on the wrong
+    control with no error.
+  - **`:focus-visible` fires on a synthetic click** in WebKit, so a `.choice`
+    renders with a focus ring after a driven click. That is an artifact of
+    driving, not a defect — do not "fix" it.
+  - **macOS may prompt for screen recording** ("tmux is requesting to bypass
+    the system private window picker"). Screenshots work **without** granting
+    it; dismiss it. Granting a persistent bypass is the user's decision, not an
+    agent's.
+
+  Clicking reaches anything with a control on screen. For a route with **no
+  link into it from where you are**, the fallback is a temporary redirect in
+  `gui/src/routes/+layout.svelte`, which vite's HMR applies without a restart:
+
+  ```svelte
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  $effect(() => {
+    if (page.url.pathname !== '/reading') goto('/reading?book=3');
+  });
+  ```
+
+  **Revert it before committing** — `git checkout gui/src/routes/+layout.svelte`.
+  It compares `pathname`, so a target carrying only a query string (`?note=1` on
+  the page you are already on) loops for ever; seed the page's own state instead.
+  A tab or a panel is component state and has no URL at all, so neither trick
+  reaches one — click it.
 - **Port 5173 is not configurable.** It is `devUrl` in
   `gui/src-tauri/tauri.conf.json`, so `pnpm tauri dev` hard-fails with
   `Port 5173 is already in use` when a stale vite is around — and a vite
@@ -168,3 +219,12 @@ tty it exits immediately with `Error: No such device or address (os error 6)`
 
 `make dev-db` — `dev-data/` already existed and rebuilding it would have
 discarded the working library. Everything else in this file was run here.
+
+## Which machine this file is about
+
+Everything above except the macOS block was written on, and verified on, the
+Linux box (Hyprland + WebKitGTK + NVIDIA). The macOS block was written and
+verified on the dev laptop on 2026-09-02 and **the `driver.sh` script does not
+run there at all** — it reaches for `grim`, `hyprctl` and the four WebKitGTK
+environment settings, none of which exist. On macOS, drive the GUI with the
+`osascript` + `screencapture` recipe directly; a driver for it is unwritten.

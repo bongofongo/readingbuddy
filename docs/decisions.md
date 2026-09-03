@@ -3608,3 +3608,150 @@ because item 31 needed somewhere to put reading time.
       justified by the band rendering nothing when nothing was open, and it is
       now the click on the book itself, which is better than a link that says
       where it goes.
+
+57. **The minimal pass — a screen's controls are its interface.** No engine
+    change, no migration, no `API_VERSION` move and no new request. One new
+    route, one deleted component, two new ones, and a control dialect in
+    `app.css`.
+    - **The rule, and where it came from.** Ousterhout's deep modules, applied
+      to screens: a screen is a module, its controls are its interface, its
+      capability is its depth. A screen carrying twelve controls is a *shallow*
+      module — the interface is nearly as large as what sits behind it — and the
+      fix is to narrow the interface, not to draw the twelve more prettily. Four
+      corollaries, and they are the review rules: **one question per surface**
+      (a surface that answers two is two surfaces); **no pass-through controls**
+      (a control that only re-parameterises data another surface owns belongs
+      where that data lives); **a door, not a duplicate** (a quiet surface links
+      to the route that owns the density rather than growing it); **the
+      instrument belongs to the work** (a tool acting on one object is drawn with
+      that object, never as a permanent rail beside it).
+    - **Quantity is a property of a page, not of the app.** `/library` stays
+      dense — a wall of everything you have read is what that page is *for* — and
+      `/life` keeps its figures. What changed is that a page which is not about
+      quantity may not carry quantity's controls.
+    - **`/cards` split in two.** It opened on up to fourteen controls — *Show*
+      (`All`, a chip per year, `Still reading`), *Order* (three), twenty-four
+      cards, a total and a pager — before a reader saw anything. It was answering
+      two questions: *what did I last finish* (six answers, no controls needed)
+      and *everything I have read, arranged how I like* (hundreds, which is what
+      the pills are for). `/cards` is now the first, at six cards in a fixed
+      three-column grid with one door; `/cards/history` is the second and took
+      **every** control with it, unchanged. The history page takes no nav entry:
+      arriving through the door is what makes its count something you asked for.
+    - **`/book/[id]` is one work surface, and this reverses entry 53's three
+      columns.** The rails held twelve resident controls. The argument for them
+      was that a permanent column is what keeps the page non-modal — true, and
+      not the only way to be non-modal: a surface with a URL, a selector naming
+      every alternative, and no dismissal gesture is not a mode either, which is
+      the case entry 54's reading mode has made since it shipped. What a rail
+      buys over a selector is that the *contents* of the other places stay
+      legible, and nobody reads a note list while writing into a different note.
+      So: **Passages · Notes · Reads · About**, a `Write`, and a `Cards →` door.
+      The note list became a place (`Notes.svelte`), the three write verbs became
+      one control with the kind chosen inside the composer, the links and the
+      `Link to…` search went inside the editor they act on, the search went to
+      the passages it searches, and the rail's reads readout — a quieter second
+      copy of the `Reads` place — went entirely.
+    - **`/notes` lost its `All · Notes · Passages` switch.** It was honest —
+      `source` is what the engine narrows on — and it still re-parameterised the
+      answer rather than asking a different question: one ranked list over both
+      indexes, every row already stating its kind. It was also the page's only
+      state that persisted between searches, so a reader who left it on
+      *Passages* had a vault that silently stopped containing their notes.
+      Narrowing by note **kind** remains an engine item and would be a different
+      control with a different argument.
+    - **A fill is an action; a state is an outline.** The accent was doing eight
+      jobs and the minimal pass gave it a budget: **at most one accent fill per
+      surface**, and it is the primary action. Every segmented control now lights
+      its current member the way the shell's nav always did — ink, with an accent
+      rule under it. Three surfaces were filling *state*: the passage list filled
+      every cited toggle, the editor filled the selected rating point a few rems
+      from a filled *Save*, the reader card filled a *plugged in now* badge beside
+      a filled *Install*. Those carry `--accent-text` as a border now.
+    - **Fifteen sub-1rem font sizes became two.** 0.66 through 0.95, no two of
+      them meaning anything different. `--t-micro` is a label and is the smallest
+      type the app may draw; `--t-fine` is secondary reading. A reader cannot
+      tell 0.85rem from 0.88rem, but they can tell that a page has many sizes on
+      it. The uppercase-and-letterspaced band heading went with them: small caps
+      at 0.08em tracking is the dashboard idiom, and six of them over one screen
+      was most of what *busy* meant here.
+    - **The card kept its box, and the pass was wrong to take it.** Unboxing it
+      was tried on the argument that a wall of twenty-four panels is twenty-four
+      borders. Looked at, that inverts the point: a card is not a row but a
+      composite of five unlike things whose extent is not otherwise guessable,
+      and whitespace separates repeating shapes rather than telling you where a
+      ragged composite ends. What was right about the removal was that the
+      *contents* shouted — a brass state word on every card, and *No passage from
+      this read* printed under most of them. Those went; the structure stayed.
+    - **The entrance lost `Write` from each preview.** Three destinations per
+      preview, one preview per open reading, is eighteen controls on the calmest
+      surface in the app. Nothing became unreachable — `Write` is in the row at
+      the top of the book page, one click along a path the preview already
+      starts. `?compose=1` still works, which is what a moment's link relies on.
+    - **Deliberately unchanged**: `/life`'s figures and its year rail,
+      `/devices`' install verbs (they are the reason to be there), `/reading`'s
+      four verbs, and the `mode.ts`/`desk.ts` split — two surfaces cover for
+      different reasons and one type would hide the difference.
+
+58. **The reading life gets a second tab, and it is allowed to rank.** No engine
+    change and no new request in `crates/api` — `ActivityByDay` already existed
+    and was simply not on the TypeScript client. One new route-level control, one
+    new module, and a reversal that needs stating precisely because it undoes
+    text in this file.
+    - **`/life` is two surfaces.** *Timeline* is what the page opens on and is
+      the only thing it opens on: the six figures, then the months drawn as the
+      covers that closed in them. *Everything* is the full disclosure —
+      rankings, distributions, and comparisons across time. `views.ts` holds the
+      closed union and the ordered registry, shaped like `desk.ts`, so a third
+      view is one member and one `{#if}` arm.
+    - **The order is the permission, and it is the whole argument.** What was
+      refused before was not "a number about your reading"; it was being *met*
+      with one. Material a reader goes and asks for is a different act from
+      material drawn on arrival, and the tab is what makes the difference real
+      rather than rhetorical. Draw any of *Everything* on the timeline and this
+      entry no longer holds.
+    - **Ranking is lifted.** Authors, subjects and the longest books sort by
+      size. The prior rule — sets alphabetical, distributions on their own axis,
+      never by size — lived only in `facets.ts`, which named its own reversal as
+      "a product decision and not a sort order". This is that decision. Ties
+      break alphabetically, which is not cosmetic: `Map` iteration is
+      insertion-ordered, so an untied list would reshuffle when an unrelated row
+      was edited.
+    - **Self-comparison is lifted, and this is the half that undoes settled
+      text.** Entries 23 and 28 refused a best month and a run of days on the
+      grounds that both are streaks in costume. *Everything* now carries the
+      busiest month, the month-by-month trend, and the longest run — and it
+      keeps **entry 23's own condition** rather than discarding it: a run is
+      recognised only once it is **over**. `longestRunOf` refuses any run
+      touching today, because a run still going is a thing a reader can be made
+      to feel they must protect. The floor is two days, for entry 23's reason
+      again — two is what *consecutive* means, and a 3 or a 7 would be the app
+      deciding what counts as enough reading. The word is *busiest*, never
+      *best*: the first says what happened, the second grades it.
+    - **What did not move.** The axiom is *"the app tells you what you did; it
+      never tells you what you have left"*, and that is about forward pressure,
+      not about description. So: no goal, no target, no pace, no *on track*, no
+      *behind*, nothing counting what is undone, no mean presented as a standard
+      to hold, and **no figure on a control** — entry 51 stands, and *Everything*
+      never becomes *Everything (11)*. Note that `axiom.test.ts` enforces only
+      `\byet\b`; the rest of that vocabulary lost its test when the Playwright
+      suite went and is a review rule, so it is checked by reading.
+    - **The months lost their sentence and gained their covers.** *Finished
+      Hollow Weather, Distant Bell, Silent Letters…* is a string you have to
+      read; the jackets are things you recognise without reading, which is why a
+      shelf works at all. So the jackets went from 40px to 56px and became the
+      row, the prose went, and what is left is the month, the covers and the two
+      figures. Nothing became unreachable: every jacket links to its book and
+      carries the title as its accessible name, so a screen reader gets a list of
+      titles rather than a sentence assembled by `joinList`.
+    - **Two selection dialects share the page, on purpose.** The tabs are
+      `.choices`; the year rail keeps the left inset entry 57 left unchanged.
+      They are different questions — the horizontal row is *which surface*, the
+      vertical rail is *which period*, and the rail applies to both — and one
+      treatment would claim they were alternatives to each other.
+    - **The figures are still built above the seam, and that is still owed.**
+      Everything in `facets.ts` is derived in TypeScript from rows fetched for
+      another purpose, so every figure is bounded by the route's row ceiling and
+      cannot tell when it was truncated, and every one is over closed readings
+      only. An engine-side aggregate would have neither limitation. Recorded
+      rather than hidden, the way `latest.ts` records its N+1.

@@ -195,7 +195,7 @@
     max-width: var(--column);
     /* Slightly larger than body copy — it is one sentence and it is the point
        of the band. Not a heading: it is prose, and headings name places. */
-    font-size: 1.02rem;
+    font-size: var(--t-lead);
     line-height: 1.4;
     /* A 220-character title is in the fixture on purpose and this sentence
        interpolates one inline, unbounded. It wraps rather than pushing the
@@ -217,7 +217,7 @@
   button {
     flex: none;
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     padding: 0.3rem 0.75rem;
     border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
     border-radius: var(--radius);

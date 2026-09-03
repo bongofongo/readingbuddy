@@ -1,275 +1,152 @@
 <script lang="ts">
   /**
-   * The wall — every card in the library, a page at a time (item 47).
+   * Cards — the last few reads that ended, and a door to all of them.
    *
-   * *"A finished wall that grows, and a year filtered out of it"*
-   * (`gui-vision.md:151`). It is the reading-life half of the card: **my reading
-   * life**, where `/book/[id]/cards` answers **this book's reads**. Neither is a
-   * view of the other, which is the user's ruling — a book's cards reached from
-   * the book are not a filtered wall in the reader's head, whatever they are in
-   * the query.
+   * ## What this page is, after the minimal pass
    *
-   * ## Two requests a page, and why that is the whole item
+   * It used to be the wall: every card in the library, behind two rows of pills
+   * — *Show* with `All`, one chip per year and `Still reading`, and *Order* with
+   * three — over twenty-four bordered boxes, a total and a pager. Roughly
+   * fourteen controls before a single card.
    *
-   * `listReadingRows` carries the book, the reading, the read number and the
-   * passage on every row (item 43), and `countReadings` is asked once per filter
-   * beside it (item 18). So a page of twenty-four cards is **two requests**, and
-   * a page of four hundred would be two as well — the cost is a property of the
-   * row rather than of the page size, which is what "bounded" has to mean before
-   * it stops being the argument every N+1 makes.
+   * Each of those was argued for on its own and the page was still wrong,
+   * because it was answering two questions at once. *What did I last finish* has
+   * six answers, needs no control, and is the one you have when you open the
+   * app. *Everything I have ever read, arranged how I like* has hundreds and is
+   * the reason the pills exist. A surface that answers two questions is two
+   * surfaces — so the second one is `/cards/history`, and it took every control
+   * with it.
    *
-   * A third request, `readingYears`, runs once per filter to find the years
-   * (item 51). It used to be `activityByMonth`, which was a **proxy**: the
-   * activity log is filled by `rb activity --refill` and by nothing
-   * automatically, so a library that had never refilled offered no years at all
-   * while plainly having finished books, and a year could be offered because a
-   * note was written in it while no read ended. The years now come from
-   * `readings.finished_at` under the wall's own filter, so the picker and the
-   * wall agree by construction.
+   * What is left here is the **narrow interface** over a deep thing: one
+   * request, no parameters a reader can set, and one link out to the page that
+   * owns the parameters. The door is not a compromise, it is the mechanism —
+   * arriving at the history page through it is what makes the count there
+   * something you asked for.
    *
-   * ## The cards here carry no rating and no note list
+   * ## One request, and no count
    *
-   * Not an oversight and not a shortfall: item 43 refused to put them on the row
-   * *by name* — "a card would grow the rating; this row will not" — so a wall
-   * that showed them would be four requests per card across a paged list, which
-   * is the pathology item 44 wrote down a whole item in advance. The whole card
-   * is one click away, on the book that minted it. `Card.svelte`'s `detail` prop
-   * is where that line is drawn.
+   * `listReadingRows` with a stated limit and no filter. `countReadings` is
+   * **not** called: a total on this page would be an aggregate about the library
+   * on a surface the reader did not choose to open for one, which is the line
+   * `gui/CLAUDE.md` draws. The history page counts, because you went there.
    *
-   * ## Counts, on purpose
+   * Nothing here says how many are behind the door either — *and 92 more* is the
+   * same number wearing a preposition.
    *
-   * *"No aggregate number on a home surface"* — and this is not one. It is a page
-   * you chose to open, like `/life`, and the number is a count of readings you
-   * have **had**: past tense, matched by a filter you set. It is phrased as a
-   * total and never as a portion of one, because *showing 24 of 400* is a
-   * progress bar through your own library.
+   * ## Why `finished` and not `last_modified`
+   *
+   * A card is minted when a read ends, so the newest cards are the reads that
+   * ended most recently. `last_modified` would reorder this page every time a
+   * note was written against an old book, which makes *what did I last finish*
+   * answer something else. Open reads have no `finished_at` and sort last, which
+   * is right: they have no card-worthy ending to show.
    */
-  import type { ReadingSortDto } from '$lib/api/bindings';
   import { client, type ReadingRow } from '$lib/api/client';
   import Card from '$lib/card/Card.svelte';
-  import WallControls from '$lib/cards/WallControls.svelte';
-  import { PAGE, offsetOf, pageCount, wallFilter, type WallScope } from '$lib/cards/wall';
-  import { countLabel } from '$lib/phrasing';
 
-  let rows = $state<ReadingRow[]>([]);
-  let total = $state(0);
-  let years = $state<number[]>([]);
-  /** Whether any reading has not ended — the *Still reading* chip, never a count. */
-  let anyOpen = $state(false);
-  /** Three states, not a nullable: not asked, asked, answered (item 27's finding). */
-  let loaded = $state(false);
+  /**
+   * How many cards this page draws.
+   *
+   * Six, and the number is chosen to be a **glance** rather than a page: two
+   * rows at a desktop width, one screen at any width, and nothing below the fold
+   * that a reader has to decide whether to scroll for. `limit` is required on
+   * the wire and has no serde default, so a client states a real number — see
+   * `$lib/cards/wall.ts`, which owns the history page's page size for the same
+   * reason and is deliberately not shared with this one. Two surfaces, two
+   * decisions.
+   */
+  const RECENT = 6;
+
+  let rows = $state<ReadingRow[] | null>(null);
   let failure = $state<string | null>(null);
 
-  /** The whole wall is what it opens on. */
-  let scope = $state<WallScope>({ kind: 'all' });
-  let sort = $state<ReadingSortDto>('finished');
-  let offset = $state(0);
-
-  const pages = $derived(pageCount(total));
-  const page = $derived(Math.floor(offset / PAGE));
-  /** The year in force, or `null` — narrowed here rather than in the markup. */
-  const yearShown = $derived(scope.kind === 'year' ? scope.year : null);
-
+  // `$effect` rather than a `+page.ts` load: the data comes from an in-process
+  // engine over Tauri's IPC, which does not exist during `vite build`, and a load
+  // function is the one place SvelteKit might try to run it there.
   $effect(() => {
     client()
-      // Asked over the **whole** wall rather than over the scope in force: the
-      // picker's own job is to offer the other scopes, and asking it under the
-      // current one would leave a reader who picked 2024 with only 2024 to pick
-      // from — a control that removes its own alternatives.
-      .readingYears(null)
-      .then((y) => {
-        years = y.years;
-        anyOpen = y.open;
-      })
-      // The years are an ornament on the wall. A wall that loaded must not be
-      // replaced by an error because the picker above it did not — the shelf's
-      // ruling about its reading strip, one screen over.
-      .catch(() => {
-        years = [];
-        anyOpen = false;
-      });
+      .listReadingRows({ limit: RECENT, sort: 'finished', offset: 0, filter: null })
+      .then((rs) => (rows = rs))
+      .catch((e) => (failure = e instanceof Error ? e.message : String(e)));
   });
-
-  $effect(() => {
-    // Named locally so the effect tracks exactly these three and the fetch below
-    // reads the values it was scheduled for.
-    const which = scope;
-    const order = sort;
-    const from = offset;
-    const filter = wallFilter(which);
-    const api = client();
-    loaded = false;
-    // The **same filter object** goes to both. The engine builds the page's
-    // clause and the count's from one predicate, so a disagreement between the
-    // two numbers could only be this call site's.
-    Promise.all([
-      api.listReadingRows({ limit: PAGE, sort: order, offset: from, filter }),
-      api.countReadings(filter),
-    ])
-      .then(([rs, n]) => {
-        rows = rs;
-        total = n;
-      })
-      .catch((e) => (failure = e instanceof Error ? e.message : String(e)))
-      .finally(() => (loaded = true));
-  });
-
-  function pickScope(next: WallScope) {
-    scope = next;
-    // Back to the first page. Staying on page four of a year that has three
-    // cards asks for offset 72 and gets nothing, which reads as *this year is
-    // empty* and is a lie about the filter rather than about the year.
-    offset = 0;
-  }
-
-  function pickSort(next: ReadingSortDto) {
-    sort = next;
-    offset = 0;
-  }
-
-  function turn(to: number) {
-    offset = offsetOf(to, total);
-  }
 </script>
 
 <svelte:head><title>Cards — readingbuddy</title></svelte:head>
 
-<!-- "Cards", with no figure beside it — the count belongs to the filter and sits
-     with the control that sets it, not in the heading. Not drawn, because the
-     shell's nav already says which place you are in and marks it `aria-current`;
-     the document still needs a name, and a screen reader user still needs to
-     arrive somewhere named. -->
+<!-- The page's name is in the nav, where the shell says where you are — so this
+     heading is for the document outline and for a screen reader, and takes no
+     space on a surface whose whole brief is calm. `/cards/history` draws its
+     heading, because the nav marks *Cards* current on both and the two pages
+     would otherwise be indistinguishable by name. -->
 <h1 class="sr-only">Cards</h1>
 
 {#if failure}
   <!-- A failure redirects: say what was refused and name the thing that works.
        No CLI command — this screen's audience is a reader with no terminal in
-       the window, and the library's failure state is the one that may name one
-       because its audience is whoever mis-set the data dir. -->
+       the window. -->
   <p class="note">These cards did not open: {failure}</p>
   <p class="hint">
     Every card is also on the book that minted it — the <a href="/library">library</a> is the way
     there.
   </p>
+{:else if rows === null}
+  <p class="hint">Reading the cards…</p>
+{:else if rows.length === 0}
+  <!-- Idle is not blank. It says what a card is and where one comes from, and it
+       names no command. The door is not drawn: a link to every card is a lie
+       when there are none, and the move that fills this page is reading. -->
+  <p class="note">No cards here.</p>
+  <p class="hint">
+    A card is one read of one book — its cover, its dates, and a passage you marked. Reading
+    something in the <a href="/library">library</a> is what mints one.
+  </p>
 {:else}
-  <WallControls {years} {anyOpen} {scope} {sort} onscope={pickScope} onsort={pickSort} />
+  <div class="recent">
+    {#each rows as row (row.reading.id)}
+      <Card {row} />
+    {/each}
+  </div>
 
-  {#if !loaded && rows.length === 0}
-    <p class="hint">Reading the wall…</p>
-  {:else if total === 0 && scope.kind === 'open'}
-    <!-- The chip exists because a read is open, so this is only reachable if
-         one closed between the picker's answer and the wall's. Ordinary, and it
-         names where those cards went. -->
-    <p class="note">Nothing open right now.</p>
-    <p class="hint">Every read that has ended is under a year above, and All is the whole wall.</p>
-  {:else if total === 0 && yearShown !== null}
-    <!--
-      A year the picker offered and no card belongs to.
-
-      **Item 51 made this nearly unreachable and it is kept anyway.** The years
-      come from `readings.finished_at` under this wall's own filter now, so an
-      offered year has rows by construction — where the old `activityByMonth`
-      proxy offered a year because a *note* was written in it. What is left is
-      the race: a read closing between the picker's answer and the wall's. Still
-      not a failure, still no *yet*.
-    -->
-    <p class="note">No cards from {yearShown}.</p>
-    <!-- The move is named in plain text and **nothing is bolded**: a review read
-         an emphasised `All` as a link, and it is a pill directly above rather
-         than something to click here. -->
-    <p class="hint">
-      A card is minted when a read ends, and none ended that year. Another year is above, and All is
-      the whole wall.
-    </p>
-  {:else if total === 0}
-    <!-- Idle is not blank. It says what a card is and where one comes from,
-         and it names no command. -->
-    <p class="note">No cards here.</p>
-    <p class="hint">
-      A card is one read of one book — its cover, its dates, and a passage you marked. Reading
-      something in the <a href="/library">library</a> is what mints one.
-    </p>
-  {:else}
-    <div class="wall">
-      {#each rows as row (row.reading.id)}
-        <Card {row} />
-      {/each}
-    </div>
-
-    <!-- Past tense, and a **total** rather than a portion of one. `showing 24 of
-         400` is a progress bar through your own library; `400 cards` is a fact
-         about what you read. -->
-    <p class="tally">{countLabel(total, 'card')}</p>
-
-    {#if pages > 1}
-      <nav class="paging" aria-label="Pages">
-        <button type="button" disabled={page === 0} onclick={() => turn(page - 1)}>‹ Back</button>
-        <span>Page {page + 1} of {pages}</span>
-        <button type="button" disabled={page >= pages - 1} onclick={() => turn(page + 1)}>
-          More ›
-        </button>
-      </nav>
-    {/if}
-  {/if}
+  <!-- The whole interface of this page, and it is a door rather than a control:
+       it changes nothing here, it goes somewhere that owns something this page
+       does not. No figure on it — *and 92 more* is a count of what you have not
+       looked at. -->
+  <p class="out"><a class="door" href="/cards/history">Every card →</a></p>
 {/if}
 
 <style>
   /*
-   * A wall, not a track.
+   * Three columns, and it is a fixed count rather than the wall's `auto-fill`.
    *
-   * `/book/[id]/cards` puts two cards beside each other and clamps the pair,
-   * because one reading is its ordinary case and a lone card stretched across a
-   * window is a banner. This page's ordinary case is dozens, so it fills the
-   * width and the column floor is what decides how many fit. `auto-fill` rather
-   * than `auto-fit`: a last row holding one card should leave the empty tracks
-   * empty rather than stretching that card across them.
+   * The wall does not know how many cards it has, so it fills whatever tracks
+   * fit and lets the last row be short. This page has **exactly six**, and six
+   * into four columns is 4 + 2 — a ragged second row on a surface whose whole
+   * claim is that it is composed. Six into three is two full rows at a desktop
+   * width, three at a tablet and six at a phone, and every one of those is a
+   * complete rectangle. A fixed column count is only available *because* the
+   * count is fixed, which is the same reason the wall may not have one.
    */
-  .wall {
+  .recent {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(258px, 100%), 1fr));
-    gap: 1.6rem;
-    /*
-     * **Stretched, not `align-items: start`.** The passage is one to four lines
-     * and half the cards on a real wall have none at all, so the height spread
-     * is nearly 2× — and start-aligned that came out as bottoms missing by
-     * 70–115px in alternating columns, which reads as broken masonry rather
-     * than as a grid. Equal rows put the ragged edge *inside* a card, where it
-     * is whitespace, instead of between cards, where it is a defect. The
-     * per-book page keeps `start`: it holds one or two cards and has no rows.
-     */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s-5) var(--s-5);
   }
-  .tally {
-    margin: 1.4rem 0 0;
-    font-size: 0.85rem;
-    color: var(--ink-dim);
+  @media (max-width: 900px) {
+    .recent {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
   }
-  .paging {
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    margin-top: 0.5rem;
-    font-size: 0.85rem;
-    color: var(--ink-dim);
+  @media (max-width: 560px) {
+    .recent {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
-  .paging button {
-    font: inherit;
-    padding: 0.25rem 0.7rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: transparent;
-    color: var(--ink-dim);
-    cursor: pointer;
-  }
-  .paging button:hover:not(:disabled) {
-    color: var(--ink);
-  }
-  .paging button:disabled {
-    opacity: 0.4;
-    cursor: default;
+  .out {
+    margin: var(--s-5) 0 0;
   }
   .note {
     max-width: var(--column);
-    margin: 0 0 0.5rem;
+    margin: 0 0 var(--s-2);
   }
   /* The move out of an empty state, in the accent — it is the only link in the
      sentence and it has to look like one. */

@@ -1,5 +1,7 @@
 /*
- * Tokens, and one rule about them: the accent is NOT invented here.
+ * Tokens, and two rules about them.
+ *
+ * **One: the accent is NOT invented here.**
  *
  * `crates/tui/src/theme.rs` already holds it — brass by default, with seven
  * presets the settings screen cycles. `gui/CLAUDE.md` says the GUI inherits that
@@ -9,6 +11,17 @@
  * The accent is a runtime value in the TUI (an atomic, retunable from settings).
  * Here it is a CSS custom property for the same reason: when the GUI grows a
  * settings surface it sets one variable, not a stylesheet.
+ *
+ * **Two: a screen's controls are its interface, and this file is where the
+ * interface is kept small** (the minimal pass, `docs/decisions.md` entry 57).
+ * Before it, twelve components each invented their own button — fifteen distinct
+ * sub-1rem font sizes across the app, all doing the same job, and a 1px border
+ * around every control that existed. A page reads busy long before it has too
+ * many controls, if each control is drawn as loudly as the content. So the
+ * scales and the four control classes at the bottom of this file are not a
+ * convenience: they are the reason a screen can be restyled without being
+ * rewritten, and the reason a new screen cannot quietly invent a thirteenth
+ * dialect.
  *
  * Everything else is deliberately restrained, and item 26 did not change that.
  * The shelf's design lives in the components — the plate, the tile's lift, the
@@ -83,7 +96,50 @@
   --accent-on: #1a1206;
 
   --radius: 3px;
-  --gap: 0.75rem;
+
+  /*
+   * The spacing scale.
+   *
+   * Six steps, and the jump between them widens on purpose: at the small end a
+   * `0.25rem` difference is visible and at the large end it is not, so an even
+   * scale spends its resolution where nobody can see it. `--s-5` and `--s-6` are
+   * the two that do the work of *calm* — the air between a heading and its band,
+   * and between one band and the next.
+   *
+   * It replaced `--gap`, which was declared and used by **nothing**: every
+   * component wrote its own `1.3rem` / `1.6rem` / `0.4rem` instead, which is what
+   * a token that is not a scale gets you.
+   */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1.25rem;
+  --s-5: 2rem;
+  --s-6: 3.5rem;
+
+  /*
+   * The type scale, and the count is the point.
+   *
+   * The app had **fifteen** distinct font sizes under `1rem` — 0.66, 0.68, 0.7,
+   * 0.72, 0.75, 0.76, 0.78, 0.8, 0.82, 0.84, 0.85, 0.88, 0.9, 0.92, 0.95 — and
+   * no two of them meant anything different. A reader cannot tell 0.85rem from
+   * 0.88rem; what they can tell is that a page has many sizes on it, which reads
+   * as noise whatever each one was chosen for.
+   *
+   * Two tiers below body and no more. `--t-micro` is a **label** — the word over
+   * a group, the source of a row — and is the smallest type this app is allowed
+   * to draw. `--t-fine` is secondary *reading*: an author line, a hint, a date,
+   * a snippet. Anything a reader actually reads at length is `--t-body` or above.
+   *
+   * `--t-lead` and `--t-title` are the only sizes above body, and a screen gets
+   * one of them, once. The editor is the exception the book page states for
+   * itself: it is a composition surface, and its own text is body or larger.
+   */
+  --t-micro: 0.78rem;
+  --t-fine: 0.875rem;
+  --t-body: 1rem;
+  --t-lead: 1.2rem;
+  --t-title: 1.55rem;
 
   /*
    * The four widths, and the one thing they are careful about.
@@ -147,7 +203,9 @@ body {
 body {
   background: var(--bg);
   color: var(--ink);
-  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* 1.6 rather than 1.55: the leading is the cheapest whitespace there is, and
+     the one that costs no layout. */
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   /* CJK, Arabic and Hebrew titles are all in the dev library on purpose. Without
    * a fallback chain the RTL and CJK edge cases render as boxes and the layout
    * bug they exist to expose is hidden behind a font bug. */
@@ -212,18 +270,24 @@ h3 {
 }
 
 /*
- * A band's heading. Small, uppercase, letterspaced, dim — item 26's vocabulary,
- * promoted here when the book view needed to speak it too.
+ * A band's heading — item 26's vocabulary, promoted here when the book view
+ * needed to speak it too.
  *
  * It is quiet on purpose: a band heading names a place on the page, and the
  * things it names — your passages, your notes — are what the eye should land on
  * first. Nothing ever appends a number to one.
+ *
+ * **The uppercase and the letterspacing went** in the minimal pass. Small caps
+ * with 0.08em tracking is the dashboard idiom — it is how a panel label is drawn
+ * on a surface whose job is to hold many panels, and it makes every heading
+ * shout in the register that says *this is a widget*. Six of those over one
+ * screen is most of what "busy" meant here. Sentence case at `--t-micro` in
+ * `--ink-dim` names the band just as well and lets the covers under it be the
+ * loudest thing on the page, which is what a shelf is for.
  */
 .band-title {
-  font-size: 0.78rem;
+  font-size: var(--t-micro);
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--ink-dim);
   margin: 0;
 }
@@ -235,7 +299,7 @@ h3 {
 .hint {
   max-width: var(--column);
   color: var(--ink-dim);
-  font-size: 0.88rem;
+  font-size: var(--t-fine);
   /* Sized for the block it usually is, rather than inheriting a paragraph's
      1em gap — these sit tight under the thing they explain. */
   margin: 0 0 0.5rem;
@@ -274,4 +338,151 @@ code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.85em;
   color: var(--accent-text);
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * The control dialect — four classes, and the reason there are only four
+ * ---------------------------------------------------------------------------
+ *
+ * A screen is a module; its controls are its interface. A screen carrying twelve
+ * controls is a shallow module — the interface is nearly as large as the thing
+ * behind it — and the fix is to narrow the interface, not to draw the twelve
+ * more prettily. But the second half of the same argument is that a control the
+ * reader has *never seen before* costs attention no matter how few there are, so
+ * the whole app gets one vocabulary and a screen picks from it.
+ *
+ * `.act` is the default and does the most work. `.primary` is the exception, and
+ * the rule about it is the load-bearing one: **at most one accent fill per
+ * surface.** `app.css` already said the accent is for state you can act on; what
+ * that was missing is a budget. When six things on a screen are filled brass —
+ * two lit filter pills, a lit sort pill, a selected segment, a primary button —
+ * the fill has stopped meaning *this one* and started meaning *this is a
+ * control*, which the border and the label already said.
+ *
+ * So current-state is an **underline**, not a fill. It reads at a glance, it
+ * survives beside a second group without the two competing, and it costs no
+ * box. The one filled thing left on a surface is the action, and the eye finds
+ * it because it is alone.
+ */
+
+/*
+ * A quiet text button: the app's default control.
+ *
+ * No border and no fill. A 1px box around every control is what made the card
+ * wall's header read as a toolbar — and a border is a promise of a boundary that
+ * a word like *Write* or *More* does not need. The hit area is real (the padding
+ * is on the button, not on a wrapper) and `:focus-visible` from above still
+ * draws a ring, which is the part that actually has to be visible.
+ */
+.act {
+  font: inherit;
+  font-size: var(--t-fine);
+  line-height: 1.4;
+  color: var(--ink-dim);
+  background: none;
+  border: 0;
+  padding: var(--s-1) 0;
+  cursor: pointer;
+}
+.act:hover:not(:disabled) {
+  color: var(--ink);
+}
+.act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/*
+ * One of a small set, with the current one marked.
+ *
+ * `.choices` is the row; `.choice` is a member. The current member is `--ink`
+ * with an accent rule under it — the shell's nav treatment, which was already
+ * the calmest of the four segmented controls the app had grown and is now the
+ * only one.
+ *
+ * **The rule is on both states**, transparent when off, so lighting one does not
+ * shift the row by a pixel. And it is `--accent-text` rather than raw `--accent`:
+ * this is a non-text indicator, SC 1.4.11 asks 3:1 of it, and `--accent` on the
+ * light background measures **2.78:1** — the exact defect this file records
+ * twice above. `--accent-text` is 5.09:1 there and 8.84:1 on dark.
+ *
+ * Marked with `aria-pressed` on a button and `aria-current` on a link, because a
+ * state that exists only in CSS is a state no screen reader and no test can see.
+ */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-4);
+}
+.choice {
+  font: inherit;
+  font-size: var(--t-fine);
+  line-height: 1.4;
+  color: var(--ink-dim);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 0 0 var(--s-1);
+  cursor: pointer;
+}
+.choice:hover {
+  color: var(--ink);
+}
+.choice[aria-pressed='true'],
+.choice[aria-current='true'],
+.choice[aria-current='page'] {
+  color: var(--ink);
+  border-bottom-color: var(--accent-text);
+}
+
+/*
+ * The one action a surface is for. At most one of these is drawn at a time.
+ *
+ * **A fill is an action; a state is an outline.** That is the whole budget, and
+ * it is what the three surfaces that broke it were doing wrong: the passage list
+ * filled every *cited* toggle, so a note quoting six passages drew six brass
+ * boxes down one column; the editor filled the selected rating point a few rems
+ * from a filled *Save*; the reader card filled a *plugged in now* badge beside a
+ * filled *Install*. In each case the colour that was supposed to point at one
+ * thing was pointing at three, and the reader has to work out which one they can
+ * press. Those three now carry `--accent-text` as a border and a label, which
+ * says *this one is on* without claiming to be the verb.
+ *
+ * The label is `--accent-on` rather than white: item 26 measured white on brass
+ * at 2.95:1, which put the one thing the fill exists to announce on the harder
+ * side to read. A dark label on a mid-luma fill inverts that.
+ */
+.primary {
+  font: inherit;
+  font-size: var(--t-fine);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--accent-on);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--s-1) var(--s-3);
+  cursor: pointer;
+}
+.primary:hover {
+  filter: brightness(1.08);
+}
+
+/*
+ * A way out of this surface, into one that owns something this one does not.
+ *
+ * The arrow is the app saying you are leaving the page — the book rail's
+ * `Cards →` convention, promoted because the minimal pass made the door the
+ * general answer to *where did that control go*. It is `--accent-text` because a
+ * door is a thing you can act on, and it is a link so it can be middle-clicked
+ * and read as one.
+ */
+.door {
+  font-size: var(--t-fine);
+  color: var(--accent-text);
+}
+.door:hover {
+  text-decoration: underline;
 }

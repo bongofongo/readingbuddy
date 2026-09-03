@@ -59,7 +59,7 @@
 <style>
   .counts {
     color: var(--ink-dim);
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
     margin: 0 0 0.75rem;
   }
   ul {
@@ -80,7 +80,7 @@
   }
   .arrow {
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     width: 1em;
     flex: none;
   }
@@ -105,7 +105,7 @@
   }
   .kind,
   .pending {
-    font-size: 0.72rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     flex: none;
   }

@@ -297,27 +297,32 @@
     flex-wrap: wrap;
   }
   h3 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
     /* The label is the one field a person controls, so it is the one that can
        be any length at all. It wraps rather than truncating: a name someone
        typed is not ours to cut. */
     overflow-wrap: anywhere;
     min-width: 0;
   }
+  /* **Outlined, not filled** — the minimal pass's rule about the accent, which
+     `app.css` states in full: a *fill* is the one action a surface is for, and
+     everything else that is true right now is ink, a rule or an outline. A
+     toggle that fills goes on filling once per row, and a list with six brass
+     boxes down it has spent the colour that was supposed to point at one thing.
+     The outline is `--accent-text` rather than `--accent`: it carries a word,
+     and raw brass measures 2.78:1 on the light theme. */
   .present {
-    font-size: 0.7rem;
+    font-size: var(--t-micro);
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--accent-on);
-    background: var(--accent);
+    color: var(--accent-text);
+    border: 1px solid var(--accent-text);
     border-radius: var(--radius);
-    padding: 0.1rem 0.4rem;
+    padding: 0 var(--s-1);
     white-space: nowrap;
   }
   .state {
     margin: 0.35rem 0 0.7rem;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
   }
   /*
@@ -343,14 +348,12 @@
     min-width: 0;
   }
   dt {
-    font-size: 0.72rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   dd {
     margin: 0.1rem 0 0;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     overflow-wrap: anywhere;
   }
   code {
@@ -365,12 +368,12 @@
    */
   .waiting {
     margin: 0 0 0.6rem;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     color: var(--accent-text);
   }
   .quiet {
     margin: 0 0 0.6rem;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
   }
   /*
@@ -382,13 +385,13 @@
     margin: 0 0 0.7rem;
     padding: 0.5rem 0.7rem;
     border-left: 2px solid var(--line);
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
     max-width: var(--column);
   }
   .destination {
     margin: 0 0 0.6rem;
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
     line-height: 1.5;
     max-width: var(--column);
@@ -411,7 +414,7 @@
   }
   input {
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     flex: 1 1 12rem;
     min-width: 0;
     padding: 0.25rem 0.5rem;
@@ -422,7 +425,7 @@
   }
   button {
     font: inherit;
-    font-size: 0.78rem;
+    font-size: var(--t-micro);
     line-height: 1.4;
     color: var(--ink-dim);
     background: var(--bg);
@@ -446,7 +449,7 @@
   }
   .hint {
     margin: 0.55rem 0 0;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
   }
   /*
    * The full id, small and last. It is not a name — it is what `rb ko plugin
@@ -455,7 +458,7 @@
    */
   .id {
     margin: 0.6rem 0 0;
-    font-size: 0.72rem;
+    font-size: var(--t-micro);
     overflow-wrap: anywhere;
   }
 </style>

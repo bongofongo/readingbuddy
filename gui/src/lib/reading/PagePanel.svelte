@@ -158,7 +158,7 @@
   }
   button {
     font: inherit;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
     background: none;
     border: 1px solid var(--line);
@@ -184,11 +184,11 @@
   }
   .refusal {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
   }
   .hint {
     margin: 0;
     color: var(--ink-dim);
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
   }
 </style>

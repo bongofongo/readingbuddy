@@ -9,6 +9,16 @@
    * the others; it counts nothing, and there is nothing here to finish. What it
    * used to offer was a *layout* — covers or rows — and the difference is the
    * point: the wall's shape is settled, and where its groups fall is not.
+   *
+   * ## It is `.choices` now, not a segmented control
+   *
+   * It used to be a bordered strip on `--bg-raised` with the selected segment
+   * filled brass — a small, tidy widget, and the loudest thing on a page whose
+   * whole content is jackets. The minimal pass gave the app one way of saying
+   * *this one of these* (`app.css`'s `.choice`), which the shell's nav row
+   * already spoke, and this is now the same three words in the same treatment.
+   * The library keeps the control: quantity is this page's purpose and how the
+   * quantity is arranged is the one question it asks.
    */
   import { ARRANGEMENTS, type ArrangementId } from './arrangements';
 
@@ -19,51 +29,20 @@
 </script>
 
 <!-- Callback prop, never `createEventDispatcher` (Svelte 5). -->
-<div class="switch" role="group" aria-label="Shelf arrangement">
+<div class="choices" role="group" aria-label="Shelf arrangement">
   {#each ARRANGEMENTS as a (a.id)}
-    <button
-      type="button"
-      class:on={a.id === current}
-      aria-pressed={a.id === current}
-      onclick={() => onpick(a.id)}
-    >
+    <button class="choice" type="button" aria-pressed={a.id === current} onclick={() => onpick(a.id)}>
       {a.label}
     </button>
   {/each}
 </div>
 
 <style>
-  .switch {
-    display: inline-flex;
-    gap: 1px;
-    padding: 2px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-  }
-  button {
-    font: inherit;
-    font-size: 0.76rem;
-    line-height: 1.4;
-    color: var(--ink-dim);
-    background: none;
-    border: 0;
-    border-radius: 2px;
-    padding: 0.15rem 0.6rem;
-    cursor: pointer;
-  }
-  button:hover {
-    color: var(--ink);
-  }
-  /* State persists and is visible — the axiom's first clause, and the reason
-     this is a segmented control rather than a cycling button with one label.
-     The selected point is a **surface**, so it takes `--accent` with an
-     `--accent-on` label: white on brass measured 2.95:1 while the *unselected*
-     segment measured 5.61:1, which put the one thing this control exists to
-     show on the harder side to read. */
-  button.on {
-    color: var(--accent-on);
-    background: var(--accent);
-    font-weight: 600;
+  /* Tighter than the shell's row: three one-word arrangements read as a set at
+     this spacing, and the nav's `--s-4` between six multi-word places would make
+     them look like six. Everything else — the size, the colour, the rule under
+     the current one — is `app.css`'s. */
+  .choices {
+    gap: var(--s-3);
   }
 </style>

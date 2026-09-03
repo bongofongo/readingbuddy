@@ -273,7 +273,7 @@
     position: absolute;
     top: 1.1rem;
     left: 1.25rem;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
     border-bottom: 1px solid transparent;
     padding-bottom: 1px;
@@ -348,11 +348,11 @@
     box-shadow: 0 3px 12px rgb(0 0 0 / 35%);
   }
   .working h1 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
   }
 
   h1 {
-    font-size: 1.5rem;
+    font-size: var(--t-title);
     /* A 220-character title is in the fixture on purpose. Wrapping is fine;
        shoving the verbs off the bottom of the window is not. */
     max-width: var(--column);
@@ -369,7 +369,7 @@
   .said {
     margin: 0;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
 
   .verbrow {
@@ -408,7 +408,7 @@
   }
   .hint {
     color: var(--ink-dim);
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     max-width: var(--column);
     margin: 0;
   }

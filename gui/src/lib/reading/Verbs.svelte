@@ -78,7 +78,7 @@
 
   button {
     font: inherit;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     color: var(--ink-dim);
     background: none;
     border: 1px solid transparent;
@@ -104,7 +104,7 @@
     border-color: var(--accent);
   }
   .key {
-    font-size: 0.7rem;
+    font-size: var(--t-micro);
     opacity: 0.65;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
@@ -112,7 +112,7 @@
   .ways {
     display: flex;
     gap: 1rem;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     padding-left: 1.25rem;
     border-left: 1px solid var(--line);
   }

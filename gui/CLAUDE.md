@@ -25,6 +25,29 @@ accent is spent only on state you can act on.
 (`/reading`) is the book with the window to itself, which is what turned the one
 layout into a `(shell)/` group — see the section below, and entry 54.
 
+**And then the minimal pass re-cut the interface of every screen** —
+`docs/decisions.md` entry **57**, which is the shorter read and is settled. One
+rule, from Ousterhout's deep modules: **a screen is a module, its controls are
+its interface, its capability is its depth.** A screen carrying twelve controls
+is a shallow module, and the fix is to narrow the interface rather than to draw
+the twelve more prettily. Four corollaries, and they are the review rules for
+anything added here:
+
+1. **One question per surface.** A surface that answers two is two surfaces.
+2. **No pass-through controls.** A control that only re-parameterises data
+   another surface owns is information leakage; it belongs where that data lives.
+3. **A door, not a duplicate.** A quiet surface links to the route that owns the
+   density; it does not grow that route's controls.
+4. **The instrument belongs to the work.** A tool acting on one object is drawn
+   with that object, never as a permanent rail beside it.
+
+What that changed: `/cards` went quiet and `/cards/history` took its controls,
+the book page became one work surface with a four-place selector, `/notes` lost
+its source switch, the accent got a budget (**one fill per surface**), fifteen
+sub-1rem font sizes became two, and `app.css` grew the app's one control
+dialect. Quantity is a property of a page and not of the app: `/library` and
+`/life` are dense on purpose.
+
 Read first: [`../docs/gui/gui-vision.md`](../docs/gui/gui-vision.md) (what the
 product is), [`../docs/decisions.md`](../docs/decisions.md) entry 53 (the layout,
 settled), [`../docs/gui/testing.md`](../docs/gui/testing.md) (the four layers),
@@ -40,13 +63,14 @@ gui/src/lib/phrasing.ts       words for values the engine already decided
 gui/src/lib/shelf/            the wall: its arrangements, its groups (item 26, the layout rework)
 gui/src/lib/nav.ts            where a book link goes, and what *back* means
 gui/src/lib/library/          the "Reading now" page's preview and its order
-gui/src/lib/book/             the desk's three columns + four pure modules (items 27, 50)
+gui/src/lib/book/             the one work surface + four pure modules (items 27, 50; entry 57)
 gui/src/lib/moments/          the ceremony + its sentence (item 28)
 gui/src/lib/card/             one card, per reading (item 28)
 gui/src/lib/life/             the reading-life page's parts + its spans (item 28)
 gui/src/lib/devices/          the readers page: the join, its words, its two cards (item 55)
 gui/src/routes/(shell)/       the app with its header: +page (reading now), library,
-                              book/[id], book/[id]/cards, cards, notes, life, devices
+                              book/[id], book/[id]/cards, cards, cards/history,
+                              notes, life, devices
 gui/src/routes/reading/       the app without one — reading mode (item 54)
 gui/src/lib/reading/          its panels and its one-panel-at-a-time rule
 gui/src-tauri/                the Rust backend, package `readingbuddy-gui`
@@ -283,46 +307,51 @@ grid tile and a hero want different ones.
 
 ## The book view
 
-`src/lib/book/`, and it is **three columns** since the layout rework: where you
-navigate, what you are doing, what it connects to.
+`src/lib/book/`, and it is **one work surface** since the minimal pass —
+`docs/decisions.md` entry 57. Header, one row of controls, one surface.
 
-**The two rails are two different arguments and it matters which is fragile.**
-The right rail is an *inspector* — the `Link to…` search that writes
-`[[Title]]` at the cursor is an instrument acting on the editor, not reference
-material beside it, and writing a note and finding the note to link to is one
-operation. The left rail is a *mode selector*: it turns an unbounded set of
-destinations into a fixed column and stages the density. Its **note list is the
-section that changes**, and that is what keeps the rail from habituating into
-wallpaper — the failure mode of a persistent rail is not clutter, it is that the
-one time it matters it is invisible. Do not move that section elsewhere.
+The row is the page's whole interface: **Passages · Notes · Reads · About** as
+`app.css`'s `.choices`, a `Write`, and a `Cards →` door. Six controls where there
+used to be about twelve resident at all times.
 
-**The centre is independent of which note is open**, and that is load-bearing:
-`Cite` needs a note to cite *into* and a passage to cite *from*, and only one of
-them can be the work surface. Opening a note does not close the passage list —
-the note stays open, marked in the rail, and the centre shows whatever was last
-asked for. `?note=` and `?compose=1` seed it; neither writes anything.
+**This reverses entry 53's three columns, and the reversal is the part to
+understand before re-opening it.** The rails were justified by *a permanent
+column is what keeps the page from being modal*. That is true and it is not the
+only way to be non-modal: a surface with a URL, a selector naming every
+alternative, and no dismissal gesture is not a mode either — which is exactly the
+case `/reading` has made since item 54, with four panels and one at a time. What
+a rail buys over a selector is that the **contents** of the other places stay
+legible, and that is worth much less than a third of the window: nobody reads a
+note list while writing into a different note.
 
-`NotePane`'s three-depths-in-one-pane is gone: the list is the rail
-(`Rail.svelte`), the editor is the centre (`Editor.svelte`, `Composer.svelte`),
-the links are the right rail (`Connections.svelte`). All three are visible at
-once, which is what the third column bought.
+Where the twelve went, since a reader of the old page will look for them:
 
-**The editor is the largest body text in the app, not the smallest.** It was
-`0.9rem` — a dense-UI size on a long-form composition surface. Monospace stays,
-on the **file-format** argument rather than the aesthetic one: the vault is plain
-markdown and Obsidian is the other thing editing it. **The title is read-only**
-because nothing on the wire renames a note; a control that silently did nothing
-would be worse, and the rename is an engine item.
+- the rail's **note list** is a place (`Notes.svelte`), reached from the
+  selector — it was the section of the rail that *changed*, which is why it is
+  the one that earned a surface;
+- the rail's **three write verbs** are one `Write`; the kind (note, reflection,
+  review) is chosen inside `Composer.svelte`, which is the deep-module trade —
+  one control on the page, the taxonomy behind it;
+- the right rail's **links, `Link to…` and cited passages** live inside
+  `Editor.svelte` (`Connections.svelte`), because the rail's own argument was
+  that they are instruments acting on the editor;
+- the right rail's **search** is above the passage list, which is what it
+  searches;
+- the right rail's **reads readout** was a quieter second copy of the `Reads`
+  place, and went.
 
-**The passage list is a composite widget.** The hover-revealed controls are right
-— three buttons × forty passages is the *too much happening* the brief objects to
-— but `opacity: 0` removes nothing from the tab order, so the reveal alone ships
-~120 tab stops on invisible buttons. The list is one stop, arrow keys move within
-it, and only the active row's controls are tabbable. It deliberately does **not**
-claim `role="listbox"`: a role is a promise, and listbox commits to type-ahead, a
-selection model and non-interactive children. `opacity` alone and never
-`visibility: hidden`, which would make the controls unreachable to anything that
-checks visibility before acting.
+`desk.ts` holds six `Centre` values and four `Place`s: `note` and `compose` are
+**inside** `notes`, which is what `place()` says. Lighting *Notes* while a note
+is open is the honest answer to *where am I*, and the same control is the way
+back to the list. Do not merge it with `$lib/reading/mode.ts`'s identically
+shaped type — two surfaces, two arguments, and one type would hide the
+difference.
+
+**`openNoteId` and `centre` are two variables and must stay two.** `Cite` needs a
+note to cite *into* and a passage to cite *from*, and only one can be the work
+surface — so leaving the editor for the passages does not close the note. With
+the rails gone it is the *state* rather than the *layout* that keeps both objects
+alive, which makes this the piece that had to survive them.
 
 Four rules the older items settled, all still true:
 
@@ -331,6 +360,16 @@ rewritten on every import; `annotation` is the reader's and no import touches it
 Unlabelled they are two grey paragraphs, and this screen is the only place that
 distinction is visible at all.
 
+**The passage list is a composite widget.** The hover-revealed controls are right
+— three buttons × forty passages is *too much happening* — but `opacity: 0`
+removes nothing from the tab order, so the reveal alone would ship ~120 tab stops
+on invisible buttons. The list is one stop, arrow keys move within it, and only
+the active row's controls are tabbable. It deliberately does **not** claim
+`role="listbox"`: a role is a promise, and listbox commits to type-ahead, a
+selection model and non-interactive children. `opacity` alone and never
+`visibility: hidden`, which would make the controls unreachable to anything that
+checks visibility before acting.
+
 **Citing is per *open* note.** `CitationsFor` is one call for the note the page
 has open, which is what makes `Uncite` reachable.
 
@@ -338,8 +377,9 @@ has open, which is what makes `Uncite` reachable.
 `citationsForNotes(noteIds)`, never one `CitationsFor` per note. **The mark and
 the toggle are different facts and are drawn apart**: *a note quotes this* is
 accent **text** on the passage's metadata line; *the note I have open quotes
-this* is an accent-**filled** button. Collapsing them passes every assertion and
-leaves the reader unable to tell which they are looking at.
+this* is the toggle, now an accent **outline** rather than a fill (entry 57's
+budget — a fill is an action). Collapsing them passes every assertion and leaves
+the reader unable to tell which they are looking at.
 
 **A card is captured from the passage, and the word is typed even when it is
 selected** (item 49). A selection *prefills* the box and is never the word
@@ -348,13 +388,17 @@ happened to be selected is a hidden mode, and `UNIQUE(book_id, word)` makes the
 word the card's identity. `false` means you already had it, unchanged — not an
 error and not styled as one.
 
-**The search moved into the right rail** (item 50). It is one ranked list over
-this book's notes *and* passages, so it cannot belong to either band; the rail is
-where it answers about the centre. Three rules it carries: the order is the
-engine's and nothing above the seam re-sorts or splits it; `limit` is required
-and `0` is an empty list rather than *no limit*; and the snippet is **text, not
-markup** — `>>`/`<<` around the terms, un-mixed by `book/snippet.ts`, with
-`{@html}` nowhere near it.
+**The search's three rules are unchanged by the move** (item 50): the order is
+the engine's and nothing above the seam re-sorts or splits it; `limit` is
+required and `0` is an empty list rather than *no limit*; and the snippet is
+**text, not markup** — `>>`/`<<` around the terms, un-mixed by `book/snippet.ts`,
+with `{@html}` nowhere near it.
+
+**The editor is the largest body text in the app, not the smallest.** Monospace
+stays, on the **file-format** argument rather than the aesthetic one: the vault
+is plain markdown and Obsidian is the other thing editing it. **The title is
+read-only** because nothing on the wire renames a note; a control that silently
+did nothing would be worse, and the rename is an engine item.
 
 **`heroSrc` is `cover_path`; `coverSrc` is `cover_shelf_path`.** Two methods, so
 a call site says which it meant.
@@ -397,10 +441,15 @@ results at `26rem` beside the focused note at the prose measure — the reverse 
 what the draft proposed, which gave the prose column to structured metadata and a
 38–42 character measure to the actual prose.
 
-**Its chips are the engine's own two sources**: All, Notes, Passages. Note *kind*
-is not on `SearchMarks`, so *Reflections* and *Reviews* would be a client-side
-filter over a ranked, limited list — which silently returns fewer rows than exist
-and calls it an answer. Kind filtering is an engine item.
+**It has no scope switch, and that is the minimal pass's one removal here.** It
+offered *All · Notes · Passages* — the engine's own two `source` values plus
+both — and every one was honest, unlike the *Reflections · Reviews* the draft
+asked for, which would have been a client-side filter over a ranked, limited list
+(kind filtering is still an engine item). It went because it **re-parameterised
+the answer rather than asking a different question**: one ranked list over both
+indexes, every row already stating its kind. It was also the page's only state
+that persisted between searches, so a reader who left it on *Passages* had a
+vault that had silently stopped containing their notes.
 
 **Counts are allowed here**, because it is a page you chose to open and `3 out ·
 2 in` are edges that exist. **A dangling-links index is not**: it is an orphan
@@ -437,15 +486,45 @@ a selection predicate and item 44 put it in SQL. It is one call per card, which
 is right here and wrong for a wall across the library — that wall needs **item
 43** and this route is deliberately kept behind it.
 
-**The months are written as sentences, not as a stat block** (the layout
-rework). A grid of chips invites reading *down* a column, and a column of
-comparable numbers is a scoreboard one glance away. The figures are unchanged and
-still the engine's; what went is the grid that made them a series. **A month in
-which nothing was finished says nothing about finishing** — *Finished nothing.*
-is a deficit sentence wearing a fact. Which books closed in a month is one
+**`/life` is two tabs since entry 58, and the order of them is the argument.**
+*Timeline* is what the page opens on and the only thing it opens on; *Everything*
+is the full disclosure — rankings, distributions and comparisons across time — and
+a reader **goes** there. `$lib/life/views.ts` is the seam, shaped like `desk.ts`.
+What was refused before was not a number about your reading, it was being *met*
+with one, so drawing any of *Everything* on the timeline is what would break this.
+
+**Entry 58 lifted two bans and kept one condition.** Ranking is allowed on the
+second tab (authors, subjects, longest books, by size; ties alphabetical so the
+list cannot reshuffle on an unrelated edit). Self-comparison is allowed there too
+— the busiest month, the trend, the longest run — and that half undoes settled
+text in entries 23 and 28, so it keeps **entry 23's own condition**: a run is
+recognised only once it is **over**. `longestRunOf` refuses a run touching today.
+The floor is two days because that is what *consecutive* means. The word is
+*busiest*, never *best*. And what did **not** move: no goal, no target, no pace,
+nothing counting what is undone, and no figure on a control.
+
+**The months are the timeline, drawn as covers.** The prose sentence
+(*Finished Hollow Weather, Distant Bell…*) went and the jackets went from 40px to
+56px: a title is a string you have to read and a jacket is a thing you recognise
+without reading. Nothing became unreachable — each jacket links to its book and
+carries the title as its accessible name. **A month in which nothing was finished
+says nothing about finishing** — *Finished nothing.* is a deficit sentence wearing
+a fact — and a month with activity but no closed read keeps its row, its name and
+its figures, with no covers. Which books closed in a month is one
 `listReadingRows` with a `finished_in` span per year, placed by the reading's own
 `finished_at`: that is placing a date, not deriving a measure, which is the line
 the next rule draws.
+
+**`facets.ts` is derived above the seam and that is owed, not settled.** Every
+figure on the second tab is built in TypeScript from rows fetched for the months'
+sake, so each is bounded by the route's row ceiling, cannot tell when it was
+truncated, and covers closed readings only. An engine aggregate would have none
+of those limits. Written down rather than hidden, like `latest.ts`' N+1.
+
+**Two selection dialects share the page on purpose.** The tabs are `.choices`;
+the year rail keeps the left inset entry 57 left unchanged. Horizontal is *which
+surface*, vertical is *which period*, and the rail applies to both — one
+treatment would claim they were alternatives to each other.
 
 **The year rail comes from the months, not from `readingYears`.** The two answer
 different questions: `readingYears` is *which years a reading closed in*, right
@@ -464,17 +543,33 @@ it. `activity_days` is *days with something on them*, never *in a row*.
 
 ## The wall, and the years it offers
 
-`/cards` (item 47) is the library's readings, a page at a time — two requests a
-page, `listReadingRows` and `countReadings`, both taking the **same filter
-object** so the rows and the total cannot be about different sets.
+**Two routes since the minimal pass**, and which one you are editing decides
+every rule below.
+
+`/cards` is the quiet one: the six most recently ended reads, one
+`listReadingRows` with a stated limit and **no** `countReadings`, in a fixed
+three-column grid, and one `.door` — *Every card →*. No filter, no sort, no
+pager, no tally. A fixed column count is available here *because* the count is
+fixed; the wall may not have one.
+
+`/cards/history` is the wall (item 47) — the library's readings, a page at a
+time, two requests a page (`listReadingRows` and `countReadings`, both taking the
+**same filter object** so the rows and the total cannot be about different sets).
+It took every control `/cards` used to carry, unchanged.
+
+**The history route takes no nav entry, and that is the mechanism rather than an
+omission.** The count is allowed there for the reason it is allowed on `/life`:
+it is a page you chose to open. Arriving through the door is what makes that
+true. A seventh nav entry would make it a place the app offers, and the number on
+it an aggregate the app volunteers.
 
 **The year picker has a request of its own** (item 51). It used to derive its
-years from `activityByMonth`, and that was a proxy: the activity log is filled
-by `rb activity --refill` and by nothing automatically, so a library that had
-never refilled offered *no years* while plainly having finished books, and a
-year could be offered because a note was written in it while no read ended.
-`readingYears` answers the actual question — which years a matching reading
-**closed** in — so an offered year has cards behind it by construction.
+years from `activityByMonth`, and that was a proxy: the activity log is filled by
+`rb activity --refill` and by nothing automatically, so a library that had never
+refilled offered *no years* while plainly having finished books, and a year could
+be offered because a note was written in it while no read ended. `readingYears`
+answers the actual question — which years a matching reading **closed** in — so
+an offered year has cards behind it by construction.
 
 Three rules it carries:
 
@@ -493,6 +588,14 @@ Three rules it carries:
   can be in the future — a Goodreads `Date Read`, a device clock — and the clamp
   turns that year into an inverted span the engine refuses, replacing the wall
   with an error.
+
+**The card kept its box.** The minimal pass unboxed it and put it back: a card is
+not a row but a composite of five unlike things whose extent is not otherwise
+guessable, and whitespace separates repeating shapes rather than telling you
+where a ragged composite ends. What went instead was the shouting — the state
+word is `--ink-dim` now (past tense, nothing to press) and *No passage from this
+read* is gated on `detail`, so the book's own page says it and a wall of
+twenty-four does not.
 
 ## Devices
 
@@ -575,8 +678,20 @@ only, this page's four readers live in `fake.ts` alone, and a real
 
 ## The tokens, and the two things measured about them
 
-`src/app.css` carries the reasoning; this is the routing. **Four widths and no
-`--measure`.** `ch` is the advance of the zero glyph, so `68ch` of a proportional
+`src/app.css` carries the reasoning; this is the routing.
+
+**Three scales and one control dialect, all from the minimal pass.** `--s-1` …
+`--s-6` is the spacing scale (it replaced `--gap`, which was declared and used by
+nothing while every component wrote its own `1.3rem`). `--t-micro` … `--t-title`
+is the type scale: the app had **fifteen** distinct sub-1rem sizes and no two of
+them meant anything different, so there are two tiers below body now — `--t-micro`
+is a *label* and is the smallest type this app may draw, `--t-fine` is secondary
+reading. `.act` / `.choices`+`.choice` / `.primary` / `.door` are the four
+controls; **a screen that invents a fifth is the failure mode to watch for**, and
+`.band-title` lost its uppercase and letterspacing because small caps at 0.08em
+is the dashboard idiom and this is not a dashboard.
+
+**Four widths and no `--measure`.** `ch` is the advance of the zero glyph, so `68ch` of a proportional
 face is ~85–90 real characters — the old name asserted a character count it did
 not have. The value was chosen by eye and looks right, so the value stayed and
 the name went: `--column` (an ordinary column), `--editor` in `ch` (a monospace
@@ -585,10 +700,18 @@ face is where `ch` is honest), `--passages` in `rem`, plus `--rail` / `--rail-r`
 
 **The accent is for state that is true right now and that you can act on** —
 selection, focus, the current page, progress, the primary action. It was doing
-eight jobs at once, and when a colour means eight things it means none; the two
-that most need to be loud are *this is selected* and *this is the action*.
+eight jobs at once, and when a colour means eight things it means none.
 Everything descriptive is ink, dim, position and weight. `--accent` is a surface
 (with `--accent-on` labels), `--accent-text` is anything that carries words.
+
+**And it has a budget: a fill is an action, a state is an outline.** At most one
+accent *fill* per surface, and it is the primary action; a current member of a
+set is ink with an accent rule under it (`.choice`). Three surfaces were filling
+state and were corrected — the passage list filled every cited toggle, the editor
+filled the selected rating point a few rems from a filled *Save*, the reader card
+filled a *plugged in now* badge beside a filled *Install*. When six things on a
+screen are brass, the fill has stopped meaning *this one* and started meaning
+*this is a control*, which the label already said.
 
 **Two contrast defects were found by measuring, and both are fixed.** The focus
 ring used raw `--accent` in *both* themes — **2.78:1** on the light background,

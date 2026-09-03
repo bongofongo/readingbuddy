@@ -45,7 +45,7 @@
    * useful the more diligently the feature is used. A dangling target is visible
    * wherever it is linked *from*, which is where it means something.
    */
-  import type { NoteDto, SearchHitDto, SearchSourceDto } from '$lib/api/bindings';
+  import type { NoteDto, SearchHitDto } from '$lib/api/bindings';
   import { client, type StoredBook } from '$lib/api/client';
   import { linkPane, type LinkPane } from '$lib/book/links';
   import LinksPane from '$lib/book/LinksPane.svelte';
@@ -62,23 +62,28 @@
   const RECENT = 30;
 
   /**
-   * The three scopes, and they are the engine's own two sources plus both.
+   * There is no scope switch, and that is the minimal pass's one removal here.
    *
-   * The draft asked for *All · Notes · Reflections · Reviews*. **Note kind is not
-   * on this request**, so those three would have to be a client-side filter over
-   * a ranked, limited list — which silently returns fewer rows than exist and
-   * calls it an answer. `source` is what the engine actually narrows on, so the
-   * chips narrow on that and the kind is shown on every row instead. Filtering by
-   * kind is an engine item.
+   * It offered *All · Notes · Passages* — the engine's own two `source` values
+   * plus both — and every one of the three was honest: `source` is what the
+   * engine narrows on, unlike the *Reflections · Reviews* the draft asked for,
+   * which would have been a client-side filter over a ranked, limited list.
+   *
+   * It went anyway, because **it re-parameterised the answer rather than asking
+   * a different question.** `searchMarks` returns one ranked list over both
+   * indexes; every row already states whether it is a note or a passage; and a
+   * reader who wanted only notes could see them in the list they were already
+   * looking at. What the switch bought was a shorter list of the same results,
+   * at the cost of the page's only piece of state that has to be remembered
+   * between one search and the next — set it to *Passages*, search again three
+   * minutes later, and the vault has silently stopped containing your notes.
+   *
+   * The page is one box and one ranked list now, which is the question it
+   * actually answers. Narrowing by note **kind** remains an engine item, and if
+   * it ever arrives it is a different control with a different argument: it
+   * would ask the engine something, not hide part of what it said.
    */
-  const SCOPES: { id: SearchSourceDto | null; label: string }[] = [
-    { id: null, label: 'All' },
-    { id: 'note', label: 'Notes' },
-    { id: 'highlight', label: 'Passages' },
-  ];
-
   let query = $state('');
-  let scope = $state<SearchSourceDto | null>(null);
   let hits = $state<SearchHitDto[]>([]);
   let recent = $state<NoteDto[]>([]);
   let failure = $state<string | null>(null);
@@ -131,7 +136,6 @@
 
   $effect(() => {
     const q = query;
-    const source = scope;
     const seq = ++asked;
     // The empty query is **not a search**: the engine issues no statement for it
     // and answers with nothing, so this needs no guard against blankness — but it
@@ -145,7 +149,9 @@
     }
     const handle = setTimeout(() => {
       client()
-        .searchMarks(q, null, LIMIT, source)
+        // `null` for the source: the whole vault, always. The switch that used
+        // to narrow this is gone — see the note above `query`.
+        .searchMarks(q, null, LIMIT, null)
         .then((found) => {
           if (seq !== asked) return;
           hits = found;
@@ -228,18 +234,6 @@
       placeholder="A word you remember"
     />
   </label>
-  <div class="scopes" role="group" aria-label="What to search">
-    {#each SCOPES as s (s.label)}
-      <button
-        type="button"
-        class:on={s.id === scope}
-        aria-pressed={s.id === scope}
-        onclick={() => (scope = s.id)}
-      >
-        {s.label}
-      </button>
-    {/each}
-  </div>
   <p class="hint">Full text, over every note in the vault and the passages too.</p>
 </div>
 
@@ -380,7 +374,7 @@
   }
   input {
     font: inherit;
-    font-size: 1rem;
+    font-size: var(--t-body);
     width: 100%;
     max-width: 46rem;
     color: var(--ink);
@@ -389,37 +383,8 @@
     border-radius: var(--radius);
     padding: 0.55rem 0.8rem;
   }
-  .scopes {
-    display: inline-flex;
-    gap: 1px;
-    padding: 2px;
-    margin: 0.6rem 0 0.5rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-  }
-  .scopes button {
-    font: inherit;
-    font-size: 0.76rem;
-    color: var(--ink-dim);
-    background: none;
-    border: 0;
-    border-radius: 2px;
-    padding: 0.15rem 0.7rem;
-    cursor: pointer;
-  }
-  .scopes button:hover {
-    color: var(--ink);
-  }
-  /* The selected point is a surface, so it takes `--accent` with an
-     `--accent-on` label — the pair `app.css` defines for exactly this. */
-  .scopes button.on {
-    color: var(--accent-on);
-    background: var(--accent);
-    font-weight: 600;
-  }
   .hint {
-    margin: 0;
+    margin: var(--s-2) 0 0;
   }
 
   /*
@@ -459,7 +424,7 @@
     width: 100%;
     text-align: start;
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
     background: none;
     border: 0;
     /* Stated on both states so selecting a row does not shift its text. */
@@ -482,9 +447,7 @@
     overflow-wrap: anywhere;
   }
   .kind {
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     flex: none;
     margin-left: auto;
@@ -494,7 +457,7 @@
   }
   .snippet {
     display: block;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     overflow-wrap: anywhere;
     /* Two lines, so a long body cannot make one result the height of the list. */
@@ -516,12 +479,12 @@
     min-width: 0;
   }
   .focus h2 {
-    font-size: 1.05rem;
+    font-size: var(--t-lead);
     overflow-wrap: anywhere;
   }
   .whose {
     margin: 0.25rem 0 0.8rem;
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   .whose a:hover {
@@ -529,7 +492,7 @@
   }
   .body {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
     line-height: 1.7;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -542,7 +505,7 @@
     display: flex;
     gap: 1rem;
     margin-top: 0.6rem;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   .acts a:hover {

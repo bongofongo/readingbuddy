@@ -42,6 +42,7 @@ import type {
   CalibreReportDto,
   CalibreStatusDto,
   CreatedNoteDto,
+  DayActivityDto,
   DeviceScanDto,
   FieldSourceDto,
   FlashcardDto,
@@ -350,6 +351,23 @@ export interface LibraryClient {
    * puts those below the seam, which is the entire reason this request exists.
    */
   activityByMonth(from: string, to: string): Promise<MonthActivityDto[]>;
+
+  /**
+   * The days of a period that carry an event, oldest first.
+   *
+   * The same rule as its monthly sibling: **only days carrying an event come
+   * back**, so the gaps are absences and not zeroes, and a client must not fold
+   * these into months (see above — that is the whole reason `activityByMonth`
+   * exists as its own request).
+   *
+   * The one thing this is for is a **run of consecutive days**, which needs the
+   * days themselves and cannot be recovered from any coarser grain. Note what
+   * that permits and what it does not: a run is a fact about the past and is
+   * only honest once it is **over**, which is the condition `docs/decisions.md`
+   * entry 23 attached to `run_ended` and entry 58 carries forward. A run
+   * touching today is still running, and showing one would put pressure on it.
+   */
+  activityByDay(from: string, to: string): Promise<DayActivityDto[]>;
 
   // ---- what is behind one book (item 27) ---------------------------------
 
@@ -991,6 +1009,13 @@ export class TauriClient implements LibraryClient {
     return expect(
       await this.#call({ method: 'activity_by_month', params: { from, to } }),
       'activity_by_month',
+    ).value;
+  }
+
+  async activityByDay(from: string, to: string): Promise<DayActivityDto[]> {
+    return expect(
+      await this.#call({ method: 'activity_by_day', params: { from, to } }),
+      'activity_by_day',
     ).value;
   }
 

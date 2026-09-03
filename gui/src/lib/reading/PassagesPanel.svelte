@@ -127,19 +127,17 @@
   .place {
     margin: 0.35rem 0 0;
     color: var(--ink-dim);
-    font-size: 0.8rem;
+    font-size: var(--t-micro);
   }
   .said {
     margin: 0.4rem 0 0;
     color: var(--ink-dim);
-    font-size: 0.88rem;
+    font-size: var(--t-fine);
   }
   .who {
     display: inline-block;
     margin-right: 0.45rem;
-    font-size: 0.68rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
     border: 1px solid var(--line);
     border-radius: var(--radius);
@@ -153,12 +151,12 @@
   }
   .refusal {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: var(--t-fine);
   }
   .hint {
     margin: 0;
     color: var(--ink-dim);
-    font-size: 0.85rem;
+    font-size: var(--t-fine);
   }
   .hint a {
     color: var(--accent-text);

@@ -101,14 +101,14 @@
     min-width: 0;
   }
   dt {
-    font-size: 1.5rem;
+    font-size: var(--t-title);
     line-height: 1.15;
     letter-spacing: -0.01em;
     overflow-wrap: anywhere;
   }
   dd {
     margin: 0.15rem 0 0;
-    font-size: 0.82rem;
+    font-size: var(--t-micro);
     color: var(--ink-dim);
   }
   /*
@@ -120,7 +120,7 @@
    * measurements would make "not measured" look like a value.
    */
   .absent dt {
-    font-size: 0.95rem;
+    font-size: var(--t-fine);
     font-style: italic;
     color: var(--ink-dim);
     /* Sits on the same baseline as the figures beside it rather than floating
