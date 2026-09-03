@@ -475,6 +475,26 @@ pub enum Request {
     /// Close it. Idempotent — a client cannot know the window did not expire
     /// between drawing the button and the user pressing it.
     StopListening,
+    /// Fetch from a paired reader whose own window is open (item 15b).
+    ///
+    /// **The same rendezvous dialled the other way**, with no new message in
+    /// it: we broadcast the same `HELLO`, the reader answers the same `HERE`,
+    /// and the MAC is verified before a byte is sent — so a rogue answering
+    /// first cannot make us open a session with it. The entries still travel
+    /// reader → desktop, which is *wireless is read-only toward us* as the
+    /// shape of the protocol rather than a rule somebody remembers.
+    ///
+    /// It does **not** need [`Request::StartListening`]: a seeker sends first,
+    /// so the reply comes back to the ephemeral port it sent from. Pulling with
+    /// the door shut is the ordinary case.
+    ///
+    /// Refuses with `wireless_refused` when nothing answers. A client must not
+    /// guess between *the window is shut*, *another subnet* and *the AP dropped
+    /// the broadcast* — the message names the only one the user can act on.
+    /// The reply is [`Response::PullReports`], one per sidecar that arrived.
+    PullFromReader {
+        device_id: String,
+    },
 
     /// Measured reading time out of the device's `statistics.sqlite3`.
     ///

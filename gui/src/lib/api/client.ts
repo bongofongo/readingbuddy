@@ -57,6 +57,7 @@ import type {
   OutgoingLinkDto,
   ListenerStatusDto,
   PairedDeviceDto,
+  PullReportDto,
   PathsDto,
   PluginStatusDto,
   RatingDto,
@@ -615,6 +616,19 @@ export interface LibraryClient {
 
   /** Close it. Idempotent — the window may have expired since the button was drawn. */
   stopListening(): Promise<ListenerStatusDto>;
+
+  /**
+   * Fetch from a paired reader whose **own** window is open (item 15b).
+   *
+   * The mirror of the door: push is one tap on the reader, pull is one click
+   * here, and which is convenient depends on which device is in your hand. It
+   * needs no listener of ours — a seeker sends first.
+   *
+   * Rejects with `wireless_refused` when nothing answers, and that message is
+   * the one to show: the window is shut, the reader is on another network, or
+   * the access point dropped the broadcast, and only the first is actionable.
+   */
+  pullFromReader(deviceId: string): Promise<PullReportDto[]>;
   /**
    * Mounted volumes that hold a KOReader install.
    *
@@ -1237,6 +1251,13 @@ export class TauriClient implements LibraryClient {
 
   async stopListening(): Promise<ListenerStatusDto> {
     return expect(await this.#call({ method: 'stop_listening' }), 'listener_status').value;
+  }
+
+  async pullFromReader(deviceId: string): Promise<PullReportDto[]> {
+    return expect(
+      await this.#call({ method: 'pull_from_reader', params: { device_id: deviceId } }),
+      'pull_reports',
+    ).value;
   }
 
   async pairedDevices(): Promise<PairedDeviceDto[]> {

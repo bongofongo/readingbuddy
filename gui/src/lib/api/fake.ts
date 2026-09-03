@@ -45,6 +45,7 @@ import type {
   OutgoingLinkDto,
   ListenerStatusDto,
   PairedDeviceDto,
+  PullReportDto,
   PathsDto,
   PluginStatusDto,
   RatingDto,
@@ -2060,6 +2061,34 @@ export class FakeClient implements LibraryClient {
   async stopListening(): Promise<ListenerStatusDto> {
     this.#listener = { ...this.#listener, mode: { kind: 'off' }, tcp_port: null };
     return this.#listener;
+  }
+
+  /**
+   * A reader whose window is open, which in a fixture is *always* — the point
+   * of the fixture is the shape of a successful pull, and a refusal is what
+   * `pullFromReader` on an unknown id already gives.
+   */
+  async pullFromReader(deviceId: string): Promise<PullReportDto[]> {
+    if (!this.#paired.some((d) => d.device_id === deviceId)) {
+      throw new Error('no paired reader answered; is its window open?');
+    }
+    return [
+      {
+        stats: {
+          book_id: 1,
+          book_title: 'Pachinko',
+          inserted: 3,
+          updated: 1,
+          skipped: 0,
+          flashcards: 0,
+          matched_by: 'md5',
+          percent_finished: 0.42,
+          status: { status: 'reading' },
+          rating: null,
+        },
+        warnings: [],
+      },
+    ];
   }
 
   async pairedDevices(): Promise<PairedDeviceDto[]> {

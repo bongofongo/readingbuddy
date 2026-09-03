@@ -47,6 +47,7 @@
     onStats,
     onRename,
     onForget,
+    onPull,
   }: {
     reader: Reader;
     /** What is on the volume. `null` until the scan answers, or if it refused. */
@@ -59,6 +60,15 @@
     onStats: (mount: string) => void;
     onRename: (deviceId: string, label: string) => void;
     onForget: (deviceId: string) => void;
+    /**
+     * Fetch over the LAN from a reader whose own window is open (item 15b).
+     *
+     * Offered for a reader that is **not** here, and that is the whole point:
+     * with the volume in front of you the cable is better in every way, and a
+     * wireless button beside a plugged-in reader is a slower path to the same
+     * place. This is for the one in the other room.
+     */
+    onPull: (deviceId: string) => void;
   } = $props();
 
   const here = $derived(isHere(reader));
@@ -234,6 +244,9 @@
       {:else}
         <button onclick={openRename}>Give it a name</button>
         {#if !here}
+          <button onclick={() => onPull(device.device_id)} disabled={busy !== null}>
+            Fetch over wifi
+          </button>
           <!-- Only offered for a reader that is *not* here. With the volume in
                front of you, taking the plugin off is the exact move and this
                one would leave a token behind on a device you are holding. -->
@@ -242,6 +255,10 @@
       {/if}
     </div>
     {#if !here && !renaming}
+      <p class="hint">
+        Fetching needs the reader on the same network with its window open —
+        <em>Tools → readingbuddy → Open the window</em>. It closes itself.
+      </p>
       <p class="hint">
         Forgetting is only on this computer — the plugin stays on the reader, and readingbuddy
         cannot reach it from here. Plug it in and <em>Take the plugin off</em> removes it properly.

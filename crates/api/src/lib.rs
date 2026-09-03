@@ -529,6 +529,18 @@ impl Api {
         Ok(self.engine.stop_listening().await?.into())
     }
 
+    /// Fetch from a paired reader whose window is open. See
+    /// [`Request::PullFromReader`].
+    pub async fn pull_from_reader(&self, device_id: &str) -> ApiResult<Vec<PullReportDto>> {
+        Ok(self
+            .engine
+            .pull_from_reader(device_id)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     /// Measured reading time out of a mounted device's `statistics.sqlite3`
     /// (item 31), as rows in the activity log.
     ///
@@ -1132,6 +1144,9 @@ impl Api {
                 Response::ListenerStatus(self.start_listening(minutes).await?)
             }
             R::StopListening => Response::ListenerStatus(self.stop_listening().await?),
+            R::PullFromReader { device_id } => {
+                Response::PullReports(self.pull_from_reader(&device_id).await?)
+            }
             R::SyncMount { mount } => {
                 Response::MountSync(self.sync_mount(Path::new(&mount)).await?)
             }

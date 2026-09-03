@@ -85,6 +85,30 @@
     void loadListener();
   });
 
+  /**
+   * Fetch over the LAN. The mirror of the door, and the failure it reports is
+   * the useful half: *no reader answered; is its window open?* names the one
+   * cause the user can do something about, and the page must not improve on it
+   * by guessing at the other two.
+   */
+  async function pull(deviceId: string): Promise<void> {
+    busy = deviceId;
+    try {
+      const reports = await client().pullFromReader(deviceId);
+      const books = reports.length;
+      const marks = reports.reduce((n, r) => n + r.stats.inserted, 0);
+      said =
+        books === 0
+          ? 'That reader had nothing to send.'
+          : `${books} book${books === 1 ? '' : 's'} came across, ${marks} new passage${marks === 1 ? '' : 's'}.`;
+      await load();
+    } catch (e) {
+      said = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = null;
+    }
+  }
+
   async function loadListener(): Promise<void> {
     // Its own read, not part of `load()`: a daemon that could not take the
     // rendezvous port is a reason to draw the door shut, never a reason for the
@@ -289,6 +313,7 @@
             onStats={stats}
             onRename={rename}
             onForget={forget}
+            onPull={pull}
           />
         {/each}
       </div>
@@ -318,6 +343,7 @@
             onStats={stats}
             onRename={rename}
             onForget={forget}
+            onPull={pull}
           />
         {/each}
       </div>

@@ -190,6 +190,14 @@ pub enum WirelessRefusal {
     /// The protocol version is not one we speak.
     #[error("this reader speaks wireless protocol v{theirs}; this readingbuddy speaks v{ours}")]
     UnsupportedVersion { theirs: u32, ours: u32 },
+    /// Nobody answered, or nobody who could prove the token did.
+    ///
+    /// The reader's window is shut, it is on another subnet, or the AP dropped
+    /// the broadcast — and a client must not guess between them: *no reader
+    /// answered; is its window open?* is the only honest sentence, and it is
+    /// the mirror of the push side's *is the door open on your computer?*
+    #[error("no paired reader answered; is its window open?")]
+    ReaderNotFound,
     #[error("malformed wireless message: {0}")]
     Malformed(String),
     #[error("a pushed sidecar declared {len} bytes; the limit is {max}")]
@@ -350,9 +358,14 @@ impl Ack {
     }
 }
 
-/// What one push session brought across.
+/// What one session moved.
+///
+/// **The same type in both directions**, because the same bytes move the same
+/// way: entries always flow *reader → desktop*, whether the reader connected
+/// (push) or we did (pull). "Wireless is read-only toward us" is not a policy
+/// somebody has to enforce here — it is the shape of the protocol.
 #[derive(Debug, Default)]
-pub struct PushReport {
+pub struct WirelessReport {
     pub device_id: String,
     /// One per sidecar that arrived, in the order they did.
     pub pulled: Vec<PullReport>,
@@ -383,11 +396,55 @@ pub struct UdpBeacon {
 }
 
 impl UdpBeacon {
-    /// Bind the fixed rendezvous port with broadcast enabled.
+    /// Bind the fixed rendezvous port with broadcast enabled. The **opener's**
+    /// socket: it must be on the well-known port, because that is where probes
+    /// arrive.
     pub async fn bind(addr: IpAddr) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(SocketAddr::new(addr, RENDEZVOUS_PORT)).await?;
         socket.set_broadcast(true)?;
         Ok(UdpBeacon { socket })
+    }
+
+    /// Bind **any** port, with broadcast enabled. The *seeker's* socket.
+    ///
+    /// Deliberately not the fixed port: a desktop that is both listening and
+    /// pulling would otherwise be asking to bind a port it already holds, and
+    /// the seeker has no need of a well-known address — it sends first, so the
+    /// reply comes back to whatever it sent from.
+    pub async fn bind_ephemeral(addr: IpAddr) -> std::io::Result<Self> {
+        let socket = UdpSocket::bind(SocketAddr::new(addr, 0)).await?;
+        socket.set_broadcast(true)?;
+        Ok(UdpBeacon { socket })
+    }
+
+    /// Stop waiting after `d`. A seeker must not block for ever on a LAN where
+    /// nothing is going to answer.
+    pub fn deadline(self, d: std::time::Duration) -> TimedBeacon {
+        TimedBeacon {
+            inner: self,
+            until: tokio::time::Instant::now() + d,
+        }
+    }
+}
+
+/// A [`Beacon`] that gives up. `recv` answers `None` once the deadline passes,
+/// which is exactly the *nobody answered* the seeker turns into a refusal.
+#[derive(Debug)]
+pub struct TimedBeacon {
+    inner: UdpBeacon,
+    until: tokio::time::Instant,
+}
+
+#[async_trait::async_trait]
+impl Beacon for TimedBeacon {
+    async fn recv(&self) -> Option<(Vec<u8>, SocketAddr)> {
+        tokio::time::timeout_at(self.until, self.inner.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+    async fn send_to(&self, bytes: &[u8], to: SocketAddr) -> std::io::Result<()> {
+        self.inner.send_to(bytes, to).await
     }
 }
 
@@ -755,7 +812,7 @@ impl Listener {
         storage: &Storage,
         stream: TcpStream,
         peer: SocketAddr,
-    ) -> Result<PushReport> {
+    ) -> Result<WirelessReport> {
         let (read, mut write) = stream.into_split();
         let mut reader = BufReader::new(read);
 
@@ -803,80 +860,8 @@ impl Listener {
         write.write_all(&to_line(&Ack::ok())?).await?;
         write.flush().await?;
 
-        let mut report = PushReport {
-            device_id: device.device_id.clone(),
-            ..Default::default()
-        };
-        loop {
-            let frame: PushFrame = match read_json_line(&mut reader).await? {
-                Some(f) => f,
-                None => refuse!(WirelessRefusal::Malformed(
-                    "the connection ended mid-session".into()
-                )),
-            };
-            let PushFrame::Entry {
-                name,
-                len,
-                sha256,
-                mac: entry_mac,
-            } = frame
-            else {
-                break;
-            };
-            if len > MAX_SIDECAR_BYTES {
-                refuse!(WirelessRefusal::TooLarge {
-                    len,
-                    max: MAX_SIDECAR_BYTES,
-                });
-            }
-            let mut body = vec![0u8; len as usize];
-            reader.read_exact(&mut body).await?;
-
-            // The hash is checked before the MAC and both before the parse:
-            // the MAC covers the *hash*, so a body that does not match its
-            // declared hash is refused without the credential ever being
-            // consulted, and nothing is parsed until both hold.
-            if sha256_hex(&body) != sha256 {
-                refuse!(WirelessRefusal::Malformed(format!(
-                    "the body of {name} does not match its declared hash"
-                )));
-            }
-            if !verify(
-                &device.token,
-                &body_challenge(&open.nonce, &sha256),
-                &entry_mac,
-            ) {
-                refuse!(WirelessRefusal::BadCredential);
-            }
-            let Ok(src) = String::from_utf8(body) else {
-                refuse!(WirelessRefusal::Malformed(format!("{name} is not UTF-8")));
-            };
-
-            // Here, and this is the point of the whole item: the bytes go into
-            // exactly the import a cable would have fed.
-            match import_book_from_sidecar_src(storage, &src, &PathBuf::from(&name)).await {
-                Ok(pull) => {
-                    report.warnings.extend(pull.warnings.iter().cloned());
-                    report.pulled.push(pull);
-                    write.write_all(&to_line(&Ack::ok())?).await?;
-                }
-                // One bad sidecar does not end a session carrying thirty good
-                // ones — the provider rule (`degrade, never abort`) applied to
-                // a transport. The reader is told, and the next frame is read.
-                Err(e) => {
-                    report
-                        .warnings
-                        .push(Diagnostic::sidecar_unreadable(PathBuf::from(&name), &e));
-                    write
-                        .write_all(&to_line(&Ack {
-                            ok: false,
-                            error: Some(e.to_string()),
-                        })?)
-                        .await?;
-                }
-            }
-            write.flush().await?;
-        }
+        let report =
+            receive_entries(storage, &device, &open.nonce, &mut reader, &mut write).await?;
 
         let now = now_unix();
         // The two stamps are separate on purpose. `last_wireless_at` is *this
@@ -906,6 +891,201 @@ impl Listener {
         }
         Ok(report)
     }
+}
+
+/// Read entry frames until `Done`, importing each.
+///
+/// **The whole of the transfer, shared by both verbs**, and that sharing is the
+/// point of stage 3 rather than an optimisation of it. Push and pull differ in
+/// exactly one thing — who opened the connection — and after the handshake the
+/// bytes move identically, reader to desktop, because writing to a device over
+/// the wire is out of scope by decision. Two copies of this loop would be two
+/// dialects of one protocol, which is what items 26–28 taught and what this
+/// item was kept in one thread to avoid.
+///
+/// The order of checks is load-bearing: hash, then MAC, then parse. The MAC
+/// covers the *hash*, so a body that does not match its declared hash is
+/// refused without the credential being consulted at all, and nothing reaches
+/// the Lua sandbox until both hold.
+async fn receive_entries<R, W>(
+    storage: &Storage,
+    device: &PairedDevice,
+    nonce: &str,
+    reader: &mut BufReader<R>,
+    write: &mut W,
+) -> Result<WirelessReport>
+where
+    R: tokio::io::AsyncRead + Unpin + Send,
+    W: tokio::io::AsyncWrite + Unpin + Send,
+{
+    let mut report = WirelessReport {
+        device_id: device.device_id.clone(),
+        ..Default::default()
+    };
+    loop {
+        let frame: PushFrame = match read_json_line(reader).await? {
+            Some(f) => f,
+            None => {
+                return Err(
+                    WirelessRefusal::Malformed("the connection ended mid-session".into()).into(),
+                );
+            }
+        };
+        let PushFrame::Entry {
+            name,
+            len,
+            sha256,
+            mac: entry_mac,
+        } = frame
+        else {
+            return Ok(report);
+        };
+        if len > MAX_SIDECAR_BYTES {
+            let r = WirelessRefusal::TooLarge {
+                len,
+                max: MAX_SIDECAR_BYTES,
+            };
+            let _ = write.write_all(&to_line(&Ack::refused(&r))?).await;
+            return Err(r.into());
+        }
+        let mut body = vec![0u8; len as usize];
+        reader.read_exact(&mut body).await?;
+
+        if sha256_hex(&body) != sha256 {
+            let r = WirelessRefusal::Malformed(format!(
+                "the body of {name} does not match its declared hash"
+            ));
+            let _ = write.write_all(&to_line(&Ack::refused(&r))?).await;
+            return Err(r.into());
+        }
+        if !verify(&device.token, &body_challenge(nonce, &sha256), &entry_mac) {
+            let r = WirelessRefusal::BadCredential;
+            let _ = write.write_all(&to_line(&Ack::refused(&r))?).await;
+            return Err(r.into());
+        }
+        let Ok(src) = String::from_utf8(body) else {
+            let r = WirelessRefusal::Malformed(format!("{name} is not UTF-8"));
+            let _ = write.write_all(&to_line(&Ack::refused(&r))?).await;
+            return Err(r.into());
+        };
+
+        // Here, and this is the point of the whole item: the bytes go into
+        // exactly the import a cable would have fed.
+        match import_book_from_sidecar_src(storage, &src, &PathBuf::from(&name)).await {
+            Ok(pull) => {
+                report.warnings.extend(pull.warnings.iter().cloned());
+                report.pulled.push(pull);
+                write.write_all(&to_line(&Ack::ok())?).await?;
+            }
+            // One bad sidecar does not end a session carrying thirty good ones
+            // — the provider rule (`degrade, never abort`) applied to a
+            // transport. The far side is told, and the next frame is read.
+            Err(e) => {
+                report
+                    .warnings
+                    .push(Diagnostic::sidecar_unreadable(PathBuf::from(&name), &e));
+                write
+                    .write_all(&to_line(&Ack {
+                        ok: false,
+                        error: Some(e.to_string()),
+                    })?)
+                    .await?;
+            }
+        }
+        write.flush().await?;
+    }
+}
+
+// ---- the seeker: pull (item 15b, stage 3) ----------------------------------
+
+/// Find a reader whose window is open, and take what it has.
+///
+/// **The rendezvous, run the other way round, with no new message in it.** The
+/// desktop broadcasts the same `HELLO`; a reader with its window open answers
+/// the same `HERE`; the desktop verifies the same MAC before connecting and
+/// sends the same `OPEN`. The only thing that swaps is who dials — and the
+/// entries still travel reader → desktop, so [`receive_entries`] is literally
+/// the same function.
+///
+/// The spec proposed an unsolicited **beacon** here instead, so the devices
+/// page could show *ready* with no probe. That was refused and the reason is
+/// worth keeping: an announcement nobody challenged carries no fresh nonce, so
+/// it can only sign something the reader chose, which makes it **replayable** —
+/// and it would be a fourth message type serving a fifth. One datagram sent
+/// when somebody asks is not a scan, and it keeps *the seeker verifies identity
+/// before sending a byte* true in both directions.
+pub async fn pull_from(
+    storage: &Storage,
+    device: &PairedDevice,
+    beacon: &dyn Beacon,
+    broadcast: SocketAddr,
+    nonce: &str,
+) -> Result<WirelessReport> {
+    let hello = Hello {
+        v: PROTOCOL_VERSION,
+        device_id: device.device_id.clone(),
+        nonce: nonce.to_string(),
+    };
+    beacon
+        .send_to(&serde_json::to_vec(&hello)?, broadcast)
+        .await?;
+
+    // More than one answer is ordinary on a broadcast — other readingbuddys and
+    // other readers are entitled to be on the LAN — so this reads until one
+    // *proves the token* rather than trusting whoever replied first. That is
+    // the property the whole design is built on: identity, not address.
+    let (addr, here) = loop {
+        let Some((bytes, from)) = beacon.recv().await else {
+            return Err(WirelessRefusal::ReaderNotFound.into());
+        };
+        if let Ok(here) = serde_json::from_slice::<Here>(&bytes)
+            && here.v == PROTOCOL_VERSION
+            && verify(
+                &device.token,
+                &here_challenge(nonce, here.tcp_port),
+                &here.mac,
+            )
+        {
+            break (from, here);
+        }
+    };
+
+    let target = SocketAddr::new(addr.ip(), here.tcp_port);
+    let stream = TcpStream::connect(target).await?;
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+
+    write
+        .write_all(&to_line(&Open {
+            v: PROTOCOL_VERSION,
+            device_id: device.device_id.clone(),
+            nonce: nonce.to_string(),
+            mac: mac(&device.token, &open_challenge(nonce)),
+        })?)
+        .await?;
+    write.flush().await?;
+
+    match read_json_line::<Ack, _>(&mut reader).await? {
+        Some(a) if a.ok => {}
+        Some(a) => {
+            return Err(WirelessRefusal::Malformed(
+                a.error.unwrap_or_else(|| "the reader refused".into()),
+            )
+            .into());
+        }
+        None => return Err(WirelessRefusal::Malformed("the reader said nothing".into()).into()),
+    }
+
+    let report = receive_entries(storage, device, nonce, &mut reader, &mut write).await?;
+    // A pull is *this reader reached us* exactly as a push is — it came down
+    // the same wire and the address is as good a breadcrumb either way. It is
+    // still not a sync: what the reader had open to give is not everything it
+    // has, which is migration `0020`'s argument and does not change with the
+    // direction of the dial.
+    storage
+        .stamp_wireless_contact(&device.device_id, Some(&addr.ip().to_string()))
+        .await?;
+    Ok(report)
 }
 
 fn to_line<T: serde::Serialize>(v: &T) -> Result<Vec<u8>> {

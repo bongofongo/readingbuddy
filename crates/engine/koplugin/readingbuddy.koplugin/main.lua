@@ -507,6 +507,210 @@ function ReadingBuddy:push(entry)
     end)
 end
 
+-- ---- the reader's window: pull (stage 3) -----------------------------------
+--
+-- The mirror of the desktop's door. The user opens it deliberately, it closes
+-- itself, and while it is shut there is nothing on the network to find.
+--
+-- **`SimpleTCPServer` has no run loop.** It exposes `start`, `stop`, `send` and
+-- a `waitEvent` that does exactly one non-blocking `accept`; `UIManager` polls
+-- it because `insertZMQ` puts it in the list the main loop drains each cycle,
+-- which is how `httpinspector` runs the same class. That is also why this
+-- window must be short and must close itself: once a client connects,
+-- `waitEvent` reads header lines **in line** with a 100 ms socket timeout and
+-- then holds 500 ms for the response, so a stalled peer stalls the UI thread
+-- for up to six tenths of a second per connection. Nothing here may be left
+-- open "just in case".
+--
+-- The UDP responder is polled from the same place, for the same reason the
+-- desktop's dies with its TCP listener: an announcer that outlives the thing it
+-- announces sends a computer to a closed port.
+local WINDOW_SECONDS = 120
+
+-- A `waitEvent`-shaped object `UIManager` can poll, wrapping the rendezvous
+-- socket. It answers a `HELLO` from a computer we are paired with and is silent
+-- to everything else — a probe from a stranger learns nothing, which is what
+-- makes "there is nothing to find" true rather than merely intended.
+local function makeResponder(entries, tcp_port)
+    local socket = require("socket")
+    local json = require("json")
+    local udp = socket.udp4()
+    if not udp then
+        return nil
+    end
+    udp:setoption("broadcast", true)
+    if not udp:setsockname("*", RENDEZVOUS_PORT) then
+        -- Another program holds the port. Fail closed and silently: the window
+        -- simply cannot be found, which is a state the desktop already words.
+        udp:close()
+        return nil
+    end
+    -- Zero, not a small number: this is polled from the UI loop, and any
+    -- blocking read at all is a stutter on every frame.
+    udp:settimeout(0)
+    return {
+        socket = udp,
+        stop = function(self) self.socket:close() end,
+        waitEvent = function(self)
+            local dgram, host, port = self.socket:receivefrom()
+            if not dgram then
+                return
+            end
+            local ok, hello = pcall(json.decode, dgram)
+            if not ok or type(hello) ~= "table" or hello.v ~= PROTOCOL_VERSION then
+                return
+            end
+            local entry = entries[hello.device_id]
+            if not entry or type(hello.nonce) ~= "string" then
+                return
+            end
+            self.socket:sendto(json.encode({
+                v = PROTOCOL_VERSION,
+                name = entry.reader_name,
+                tcp_port = tcp_port,
+                mac = hmac(entry.token,
+                    string.format("here:%d:%s:%d", PROTOCOL_VERSION, hello.nonce, tcp_port)),
+            }), host, port)
+        end,
+    }
+end
+
+function ReadingBuddy:windowOpen()
+    return self.window_server ~= nil
+end
+
+-- Serve one pulled session. The desktop opened it, so it sends `OPEN` and we
+-- send the entries — the same frames as a push with the dial reversed, which is
+-- why nothing about the payload or its MACs changes.
+function ReadingBuddy:onPullRequest(data, client)
+    local json = require("json")
+    local sha = require("ffi/sha2")
+    local server = self.window_server
+
+    local function line(tbl)
+        client:send(json.encode(tbl) .. "\n")
+    end
+
+    local open = nil
+    local ok, parsed = pcall(json.decode, (data:gsub("\r\n.*$", "")))
+    if ok then open = parsed end
+    if type(open) ~= "table" or open.v ~= PROTOCOL_VERSION then
+        line({ ok = false, error = "bad request" })
+        return server:send("", client)
+    end
+    local entry = self.pairings_by_id[open.device_id]
+    if not entry
+        or type(open.nonce) ~= "string"
+        or hmac(entry.token, string.format("open:%d:%s", PROTOCOL_VERSION, open.nonce)) ~= open.mac then
+        -- No detail. Which byte differed is exactly what an attacker wants.
+        line({ ok = false, error = "refused" })
+        return server:send("", client)
+    end
+    line({ ok = true })
+
+    for _, sc in ipairs(self:collectSidecars()) do
+        local digest = sha.sha256(sc.body)
+        line({
+            kind = "entry",
+            name = sc.name,
+            len = #sc.body,
+            sha256 = digest,
+            mac = hmac(entry.token,
+                string.format("body:%d:%s:%s", PROTOCOL_VERSION, open.nonce, digest)),
+        })
+        client:send(sc.body)
+        -- The far side acks each entry. We do not branch on it: one sidecar it
+        -- could not parse is its business and must not stop the rest, which is
+        -- the same rule the desktop applies in the other direction.
+        client:receive("*l")
+    end
+    line({ kind = "done" })
+    client:receive("*l")
+    -- A completed session closes the window, exactly as a completed push closes
+    -- the desktop's door: the user asked for one transfer, not for a service.
+    UIManager:nextTick(function() self:closeWindow("done") end)
+    return server:send("", client)
+end
+
+function ReadingBuddy:openWindow()
+    if self:windowOpen() then
+        return true
+    end
+    self.pairings_by_id = {}
+    for _, entry in ipairs(self.pairings) do
+        entry.reader_name = entry.reader_name or "reader"
+        self.pairings_by_id[entry.device_id] = entry
+    end
+
+    local ServerClass = require("ui/message/simpletcpserver")
+    local server = ServerClass:new{
+        host = "*",
+        -- Port 0 asks the kernel for a free one, which is announced in every
+        -- `HERE`. Nothing on this side is well-known except the UDP port.
+        port = 0,
+        receiveCallback = function(data, client) return self:onPullRequest(data, client) end,
+    }
+    local started, err = server:start()
+    if not started then
+        UIManager:show(InfoMessage:new{ text = T(_("Could not open the window: %1"), tostring(err)) })
+        return false
+    end
+    local _, port = server.server:getsockname()
+    port = tonumber(port)
+
+    local responder = makeResponder(self.pairings_by_id, port)
+    if not responder then
+        server:stop()
+        UIManager:show(InfoMessage:new{
+            text = _("Could not open the window: something else is using readingbuddy's port."),
+        })
+        return false
+    end
+
+    self.window_server = server
+    self.window_zmq = UIManager:insertZMQ(server)
+    self.window_responder = responder
+    self.window_responder_zmq = UIManager:insertZMQ(responder)
+    -- The window closes itself. `scheduleIn` rather than a deadline checked on
+    -- each poll, so a device that goes to sleep and wakes has already been
+    -- closed by the standby hook rather than reopening on a stale clock.
+    self.window_timer = function() self:closeWindow("timeout") end
+    UIManager:scheduleIn(WINDOW_SECONDS, self.window_timer)
+    return true
+end
+
+-- Close it. Idempotent, because four separate hooks call it and a device can
+-- reach two of them in a row.
+function ReadingBuddy:closeWindow(why)
+    if not self:windowOpen() then
+        return
+    end
+    logger.dbg("readingbuddy: closing the window,", why)
+    if self.window_timer then
+        UIManager:unschedule(self.window_timer)
+        self.window_timer = nil
+    end
+    -- The responder goes first: an announcer that outlives its listener sends a
+    -- computer to a closed port.
+    if self.window_responder then
+        UIManager:removeZMQ(self.window_responder_zmq)
+        self.window_responder:stop()
+        self.window_responder, self.window_responder_zmq = nil, nil
+    end
+    UIManager:removeZMQ(self.window_zmq)
+    self.window_server:stop()
+    self.window_server, self.window_zmq = nil, nil
+end
+
+-- **Four hooks, not one.** The spec named `onEnterStandby`; `httpinspector`
+-- handles all four and it is right — a device suspends, it also exits, and a
+-- widget closing under an open socket leaks it. A window left open across a
+-- suspend is a listening port on a device in somebody's bag.
+function ReadingBuddy:onEnterStandby() self:closeWindow("standby") end
+function ReadingBuddy:onSuspend() self:closeWindow("suspend") end
+function ReadingBuddy:onExit() self:closeWindow("exit") end
+function ReadingBuddy:onCloseWidget() self:closeWindow("close") end
+
 function ReadingBuddy:addToMainMenu(menu_items)
     -- `sorting_hint = "tools"` must name a menu id that exists, or
     -- `menusorter.lua` indexes a nil and KOReader crashes on startup. "tools"
@@ -528,6 +732,39 @@ function ReadingBuddy:addToMainMenu(menu_items)
             keep_menu_open = true,
             callback = function()
                 self:push(entry)
+            end,
+        })
+    end
+    -- The other direction: let the computer come and get it. One entry, not one
+    -- per computer — the window is open to every paired computer at once, and
+    -- which of them dials is the desktop's choice rather than the reader's.
+    if #self.pairings > 0 then
+        table.insert(sub, {
+            text_func = function()
+                return self:windowOpen() and _("Close the window") or _("Open the window for a pull")
+            end,
+            keep_menu_open = true,
+            callback = function()
+                if self:windowOpen() then
+                    self:closeWindow("menu")
+                    UIManager:show(InfoMessage:new{ text = _("The window is closed.") })
+                    return
+                end
+                -- Wifi must already be up. `runWhenOnline` would prompt for the
+                -- radio and then open a window the user walks away from, which
+                -- is the opposite of a door you hold open on purpose.
+                local NetworkMgr = require("ui/network/manager")
+                if not NetworkMgr:isOnline() then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Turn wifi on first, then open the window."),
+                    })
+                    return
+                end
+                if self:openWindow() then
+                    UIManager:show(InfoMessage:new{
+                        text = _("The window is open for two minutes. Choose Pull on your computer.\n\nIt closes itself, and when the reader sleeps."),
+                    })
+                end
             end,
         })
     end
