@@ -123,6 +123,20 @@ That buys the property that matters more than confidentiality: **the reader
 verifies identity, not address.** A rogue responder on a café LAN that answers a
 broadcast first cannot make the reader send it a single highlight.
 
+> **Correction, measured on hardware (2026-09-03).** Everything below that
+> treats the Kindle firewall as a *pull-only* problem is wrong, and the section
+> "Pull, and why the reader beacons" is where it is stated most confidently.
+> A Kindle's `INPUT` policy is DROP with a conntrack accept per interface, so
+> the unicast `HERE` answering a **broadcast** probe arrives as NEW and is
+> dropped — discovery is a request/*reply*, and the reply is inbound. Push is
+> therefore the verb that fails first on a stock Kindle, not the safe one. Two
+> fixes, both shipped: the plugin punches the same `iptables` hole
+> `SSH.koplugin` does, for the probe socket's own port and for an open window's
+> two ports; and the installer **stamps this computer's address** into
+> `endpoint.lua` over the cable, which makes rung 1 unicast and needs no hole at
+> all. Also measured: `udp:sendto` takes an **address, not a name**, so rungs
+> 4–6 below had never once put a packet on the wire.
+
 TLS is therefore deferred, with the reason written down: LuaSec is present
 (`socketutil.lua:8` requires `ssl.https`, `httpasync.lua` does non-blocking
 TLS), but a LAN listener means a self-signed certificate and a pinned

@@ -169,6 +169,22 @@ it copies.**
   import is automatic and read-only, mount → install is explicit and shows the
   path); uninstall is exact; the plugin **fails closed** and never blocks or
   slows the reader UI.
+- **The wireless link is two user-driven verbs, never a hook.** *Push* is a tap
+  on the reader; *pull* is the desktop fetching while the reader holds a window
+  open. Discovery only works while the other side is open, so with the door shut
+  there is no service to find and nothing to leak.
+- **The token never crosses the wire.** It keys an HMAC challenge; both sides
+  prove possession and neither transmits it. The reader verifies **identity, not
+  address**, so a rogue answering a broadcast first cannot be sent a highlight.
+- **The payload is the sidecar bytes**, so wireless is a transport for the
+  import we already have rather than a second import.
+- **On a Kindle the plugin punches its own firewall hole**, transiently, for the
+  moment it probes and for as long as a pull window is open — `SSH.koplugin` and
+  `httpinspector.koplugin`'s rule, `Device:isKindle()`-gated, removed again on
+  every path. There is **no setup step**: a user never types a firewall command.
+- **The installer stamps this computer's address** into `endpoint.lua` over the
+  cable, so a reader's first rung is a unicast probe. It is a hint the device
+  overwrites with what it actually reached.
 
 ## Files
 
