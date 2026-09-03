@@ -21,7 +21,7 @@ endif
 GUI_PKG := $(wildcard gui/package.json)
 GUI_DEPS := $(wildcard gui/node_modules)
 
-.PHONY: help test test-engine test-import golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf ts ts-check dev-db web-check web-fix shots routes e2e
+.PHONY: help test test-engine test-import skips golden corpus corpus-check synthetic goodreads kostats lint build-check fmt fmt-check check ci clean dist bench bench-box bench-trend perf ts ts-check dev-db web-check web-fix shots routes e2e
 
 # Perf output, kept so runs can be compared over time.
 #
@@ -52,6 +52,48 @@ help: ## Show this help
 
 test: ## Run the whole workspace test suite
 	$(RUN) --workspace
+
+skips: ## Which tests skipped for want of a fixture — they are silent in `make test`
+	@# A fixture-gated test prints `SKIPPED:` and then PASSES, and cargo captures
+	@# a passing test's stderr — so the engine standards' "no silently-skipping
+	@# tests" rule is carried by a marker that an ordinary run cannot show you.
+	@# This target is the reading of it. Three deliberate choices:
+	@#
+	@# `cargo test`, never the RUN variable. nextest captures per-test and only
+	@# replays output for failures, and its --no-capture serialises the entire
+	@# run to hand back these same few lines. Plain cargo test gives them up
+	@# without the tax, so this is the one target that does not want nextest.
+	@#
+	@# --no-fail-fast, because a real failure elsewhere must not truncate the
+	@# list: the answer to "what did not assert here" should not depend on
+	@# whether something else happens to be broken. This target reports and
+	@# never gates — `READINGBUDDY_REQUIRE_FIXTURES=1 make test` is the gate,
+	@# and scheduled.yml is where it runs.
+	@# One marker printed = one test that did not assert, so the RAW line count
+	@# is the test count. The list is folded because one absent file commonly
+	@# silences several tests (three want `epubs/pachinko.epub`), and a bare
+	@# `sort -u` would have quietly reported the number of missing FILES under
+	@# the word "tests" — six where the answer is eight. Both numbers, then.
+	@raw=$$(mktemp); folded=$$(mktemp); \
+	cargo test --workspace --no-fail-fast -- --nocapture 2>&1 \
+	  | grep -aoE 'SKIPPED[: ].*' > "$$raw" || true; \
+	sort "$$raw" | uniq -c | sort -rn > "$$folded"; \
+	n=$$(wc -l < "$$raw" | tr -d ' '); \
+	m=$$(wc -l < "$$folded" | tr -d ' '); \
+	echo ""; \
+	if [ "$$n" -gt 0 ]; then \
+	  echo "$$n tests passed without asserting anything ($$m fixtures absent):"; \
+	  awk '{ c = $$1; $$1 = ""; sub(/^ /, ""); \
+	         if (c > 1) printf "  %s  (x%d)\n", $$0, c; \
+	         else printf "  %s\n", $$0 }' "$$folded"; \
+	  echo ""; \
+	  echo "Each wants a fixture that is gitignored by design (your own epubs,"; \
+	  echo "your own KOReader exports). To make them failures instead:"; \
+	  echo "  READINGBUDDY_REQUIRE_FIXTURES=1 make test"; \
+	else \
+	  echo "No skips — every test on this machine asserted something."; \
+	fi; \
+	rm -f "$$raw" "$$folded"
 
 test-import: ## Run only the KOReader import harness
 ifdef NEXTEST
