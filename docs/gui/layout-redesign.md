@@ -11,8 +11,13 @@ status: **built and settled.** What shipped is `docs/decisions.md` entry 53, and
         places and won every one of them.
 source: `docs/gui/gui-vision.md` for the product argument and the axiom this is
         held against; `docs/gui/spec-gui-17-28.md` for the engine underneath it.
-        The clickable prototype is `docs/gui/layout-prototype.html` — open it in
-        a browser, it needs no server and no build.
+        The clickable prototype this file was written beside,
+        `docs/gui/layout-prototype.html`, has been **deleted** — the GUI itself
+        now answers every question the prototype was built to answer, and a
+        second mockup of a shipped screen is a thing that rots rather than a
+        thing you consult. Prose below still argues "beside the prototype"; read
+        those passages as the historical record they are, and `git show
+        b31c975` if you ever need the artefact back.
 ---
 
 # The layout
